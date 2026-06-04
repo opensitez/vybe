@@ -1,24 +1,41 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 fn p(data: &str, body: &str) -> String {
-    format!("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.", data, body)
+    format!(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.",
+        data, body
+    )
 }
 
 // ═══════════════════════════════════════════════════════════
 // 1. COPY REPLACING
 // ═══════════════════════════════════════════════════════════
-#[test] fn copy_basic() { compile_ok(&p("", "    COPY COMMON-DEFS.")); }
-#[test] fn copy_replacing() { compile_ok(&p("", "    COPY CUSTOMER-REC REPLACING OLD-NAME BY NEW-NAME.")); }
-#[test] fn copy_replacing_multi() { compile_ok(&p("", "    COPY RECORD-DEF REPLACING \"OLD\" BY \"NEW\" \"FIELD1\" BY \"FIELD2\".")); }
+#[test]
+fn copy_basic() {
+    compile_ok(&p("", "    COPY COMMON-DEFS."));
+}
+#[test]
+fn copy_replacing() {
+    compile_ok(&p(
+        "",
+        "    COPY CUSTOMER-REC REPLACING OLD-NAME BY NEW-NAME.",
+    ));
+}
+#[test]
+fn copy_replacing_multi() {
+    compile_ok(&p(
+        "",
+        "    COPY RECORD-DEF REPLACING \"OLD\" BY \"NEW\" \"FIELD1\" BY \"FIELD2\".",
+    ));
+}
 
 // ═══════════════════════════════════════════════════════════
 // 2. FILE SECTION with FD/SD
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn fd_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FDTEST.
 DATA DIVISION.
@@ -33,12 +50,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "FD Test".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn sd_sort_file() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SDTEST.
 DATA DIVISION.
@@ -52,7 +71,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "SD Test".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -62,7 +82,7 @@ PROCEDURE DIVISION.
 fn perform_test_after() {
     compile_ok(&p(
         "01 WS-I PIC 9(3) VALUE 0.",
-        "    PERFORM WITH TEST AFTER UNTIL WS-I >= 5\n        ADD 1 TO WS-I\n        DISPLAY WS-I\n    END-PERFORM."
+        "    PERFORM WITH TEST AFTER UNTIL WS-I >= 5\n        ADD 1 TO WS-I\n        DISPLAY WS-I\n    END-PERFORM.",
     ));
 }
 
@@ -70,7 +90,7 @@ fn perform_test_after() {
 fn perform_test_before() {
     compile_ok(&p(
         "01 WS-I PIC 9(3) VALUE 0.",
-        "    PERFORM WITH TEST BEFORE UNTIL WS-I >= 5\n        ADD 1 TO WS-I\n    END-PERFORM."
+        "    PERFORM WITH TEST BEFORE UNTIL WS-I >= 5\n        ADD 1 TO WS-I\n    END-PERFORM.",
     ));
 }
 
@@ -78,7 +98,7 @@ fn perform_test_before() {
 fn perform_test_after_runs_once() {
     compile_ok(&p(
         "01 WS-I PIC 9(3) VALUE 10.",
-        "    PERFORM WITH TEST AFTER UNTIL WS-I >= 5\n        DISPLAY \"Ran at least once\"\n        ADD 1 TO WS-I\n    END-PERFORM."
+        "    PERFORM WITH TEST AFTER UNTIL WS-I >= 5\n        DISPLAY \"Ran at least once\"\n        ADD 1 TO WS-I\n    END-PERFORM.",
     ));
 }
 
@@ -89,7 +109,7 @@ fn perform_test_after_runs_once() {
 fn string_with_pointer() {
     compile_ok(&p(
         "01 WS-A PIC X(10) VALUE \"Hello\".\n01 WS-B PIC X(10) VALUE \"World\".\n01 WS-R PIC X(25).\n01 WS-PTR PIC 9(3) VALUE 1.",
-        "    STRING WS-A DELIMITED BY SIZE WS-B DELIMITED BY SIZE INTO WS-R WITH POINTER WS-PTR."
+        "    STRING WS-A DELIMITED BY SIZE WS-B DELIMITED BY SIZE INTO WS-R WITH POINTER WS-PTR.",
     ));
 }
 
@@ -100,7 +120,7 @@ fn string_with_pointer() {
 fn unstring_with_count() {
     compile_ok(&p(
         "01 WS-SRC PIC X(30) VALUE \"A,BB,CCC\".\n01 F1 PIC X(10).\n01 F2 PIC X(10).\n01 F3 PIC X(10).\n01 C1 PIC 9(3).\n01 C2 PIC 9(3).\n01 C3 PIC 9(3).",
-        "    UNSTRING WS-SRC DELIMITED BY \",\" INTO F1 COUNT C1 F2 COUNT C2 F3 COUNT C3."
+        "    UNSTRING WS-SRC DELIMITED BY \",\" INTO F1 COUNT C1 F2 COUNT C2 F3 COUNT C3.",
     ));
 }
 
@@ -108,7 +128,7 @@ fn unstring_with_count() {
 fn unstring_multi_delim() {
     compile_ok(&p(
         "01 WS-SRC PIC X(30) VALUE \"A,B;C\".\n01 F1 PIC X(10).\n01 F2 PIC X(10).\n01 F3 PIC X(10).",
-        "    UNSTRING WS-SRC DELIMITED BY \",\" OR \";\" INTO F1 F2 F3."
+        "    UNSTRING WS-SRC DELIMITED BY \",\" OR \";\" INTO F1 F2 F3.",
     ));
 }
 
@@ -117,7 +137,8 @@ fn unstring_multi_delim() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn occurs_depending_on() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ODO.
 DATA DIVISION.
@@ -129,7 +150,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "ODO Test".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -137,7 +159,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn cond_88_range() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. RANGE88.
 DATA DIVISION.
@@ -151,7 +174,8 @@ PROCEDURE DIVISION.
         DISPLAY "Adult"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -161,7 +185,7 @@ PROCEDURE DIVISION.
 fn add_corresponding() {
     compile_ok(&p(
         "01 SRC.\n   05 AMT PIC 9(5) VALUE 100.\n01 DST.\n   05 AMT PIC 9(5) VALUE 50.",
-        "    ADD CORRESPONDING SRC TO DST."
+        "    ADD CORRESPONDING SRC TO DST.",
     ));
 }
 
@@ -169,7 +193,7 @@ fn add_corresponding() {
 fn subtract_corresponding() {
     compile_ok(&p(
         "01 SRC.\n   05 AMT PIC 9(5) VALUE 30.\n01 DST.\n   05 AMT PIC 9(5) VALUE 100.",
-        "    SUBTRACT CORRESPONDING SRC FROM DST."
+        "    SUBTRACT CORRESPONDING SRC FROM DST.",
     ));
 }
 
@@ -177,7 +201,7 @@ fn subtract_corresponding() {
 fn add_corr() {
     compile_ok(&p(
         "01 A.\n   05 X PIC 9(5) VALUE 10.\n01 B.\n   05 X PIC 9(5) VALUE 20.",
-        "    ADD CORR A TO B."
+        "    ADD CORR A TO B.",
     ));
 }
 
@@ -188,7 +212,7 @@ fn add_corr() {
 fn accept_command_line() {
     compile_ok(&p(
         "01 WS-ARGS PIC X(100).",
-        "    ACCEPT WS-ARGS FROM COMMAND-LINE."
+        "    ACCEPT WS-ARGS FROM COMMAND-LINE.",
     ));
 }
 
@@ -199,7 +223,7 @@ fn accept_command_line() {
 fn set_88_true() {
     compile_ok(&p(
         "01 WS-STATUS PIC X(1).\n   88 IS-ACTIVE VALUE \"A\".\n   88 IS-INACTIVE VALUE \"I\".",
-        "    SET IS-ACTIVE TO TRUE.\n    SET IS-INACTIVE TO FALSE."
+        "    SET IS-ACTIVE TO TRUE.\n    SET IS-INACTIVE TO FALSE.",
     ));
 }
 
@@ -208,7 +232,8 @@ fn set_88_true() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn special_names_decimal_comma() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SPECNAMES.
 ENVIRONMENT DIVISION.
@@ -220,7 +245,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-AMT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -228,7 +254,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn evaluate_nested_for_also() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EVALALSO.
 DATA DIVISION.
@@ -248,7 +275,8 @@ PROCEDURE DIVISION.
             DISPLAY "Inactive"
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -256,7 +284,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn national_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. UTF8.
 DATA DIVISION.
@@ -265,12 +294,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn national_usage() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. NATUSAGE.
 DATA DIVISION.
@@ -280,7 +311,8 @@ PROCEDURE DIVISION.
     MOVE "Hello World" TO WS-TEXT.
     DISPLAY WS-TEXT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -288,7 +320,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn do_while_menu() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MENU.
 DATA DIVISION.
@@ -303,12 +336,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Goodbye".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn file_section_with_processing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FILEPROC.
 DATA DIVISION.
@@ -328,12 +363,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "File processing".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn corresponding_arithmetic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CORRARITH.
 DATA DIVISION.
@@ -351,12 +388,14 @@ PROCEDURE DIVISION.
     DISPLAY "Total Sales: " WS-SALES OF WS-TOTAL.
     DISPLAY "Total Costs: " WS-COSTS OF WS-TOTAL.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn command_line_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CLIAPP.
 DATA DIVISION.
@@ -369,5 +408,6 @@ PROCEDURE DIVISION.
     ACCEPT WS-NAME.
     DISPLAY "Hello " WS-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }

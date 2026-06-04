@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── XML GENERATE basic ────────────────────────────────────────
 
-#[test] fn xml_generate_basic() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -18,11 +20,14 @@ use super::helpers::compile_ok;
                COUNT IN ws-count
            DISPLAY ws-xml(1:ws-count)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_single_field() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_single_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -35,11 +40,14 @@ use super::helpers::compile_ok;
                COUNT IN ws-len
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_numeric_field() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_numeric_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -52,11 +60,14 @@ use super::helpers::compile_ok;
                COUNT IN ws-len
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_nested_group() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_nested_group() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -76,11 +87,14 @@ use super::helpers::compile_ok;
                COUNT IN ws-len
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_with_encoding() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_with_encoding() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -96,11 +110,14 @@ use super::helpers::compile_ok;
                ENCODING 1208
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_with_xml_declaration() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_with_xml_declaration() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -116,11 +133,14 @@ use super::helpers::compile_ok;
                WITH XML-DECLARATION
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_with_attributes() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_with_attributes() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -137,11 +157,14 @@ use super::helpers::compile_ok;
                WITH ATTRIBUTES
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_on_exception() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_on_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -159,13 +182,16 @@ use super::helpers::compile_ok;
            END-XML
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── XML PARSE ────────────────────────────────────────────────
 
-#[test] fn xml_parse_basic() {
-    compile_ok(r#"
+#[test]
+fn xml_parse_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -180,11 +206,14 @@ use super::helpers::compile_ok;
            STOP RUN.
        xml-handler SECTION.
            ADD 1 TO ws-event-count.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_parse_with_encoding() {
-    compile_ok(r#"
+#[test]
+fn xml_parse_with_encoding() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -200,11 +229,14 @@ use super::helpers::compile_ok;
            STOP RUN.
        handle-xml SECTION.
            ADD 1 TO ws-count.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_parse_on_exception() {
-    compile_ok(r#"
+#[test]
+fn xml_parse_on_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -222,11 +254,14 @@ use super::helpers::compile_ok;
            STOP RUN.
        xml-proc SECTION.
            CONTINUE.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_parse_event_types() {
-    compile_ok(r#"
+#[test]
+fn xml_parse_event_types() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -254,11 +289,14 @@ use super::helpers::compile_ok;
                WHEN OTHER
                    CONTINUE
            END-EVALUATE.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_parse_extract_content() {
-    compile_ok(r#"
+#[test]
+fn xml_parse_extract_content() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -285,13 +323,16 @@ use super::helpers::compile_ok;
                    END-EVALUATE
                WHEN OTHER CONTINUE
            END-EVALUATE.
-"#);
+"#,
+    );
 }
 
 // ── XML GENERATE + PARSE roundtrip ───────────────────────────
 
-#[test] fn xml_generate_parse_roundtrip() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_parse_roundtrip() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -311,11 +352,14 @@ use super::helpers::compile_ok;
            STOP RUN.
        count-events SECTION.
            ADD 1 TO ws-events.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_special_chars() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_special_chars() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -329,11 +373,14 @@ use super::helpers::compile_ok;
                COUNT IN ws-len
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_name_override() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_name_override() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -351,11 +398,14 @@ use super::helpers::compile_ok;
                NAMESPACE-PREFIX IS "cust"
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_suppress_when_zero() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_suppress_when_zero() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -372,11 +422,14 @@ use super::helpers::compile_ok;
                SUPPRESS WHEN ZERO
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn xml_generate_suppress_when_spaces() {
-    compile_ok(r#"
+#[test]
+fn xml_generate_suppress_when_spaces() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -393,5 +446,6 @@ use super::helpers::compile_ok;
                SUPPRESS WHEN SPACES
            DISPLAY ws-xml(1:ws-len)
            STOP RUN.
-"#);
+"#,
+    );
 }

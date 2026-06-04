@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── ACCEPT FROM ENVIRONMENT ───────────────────────────────────
 
-#[test] fn accept_environment_basic() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -13,11 +15,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-home FROM ENVIRONMENT "HOME"
            DISPLAY ws-home
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_path() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_path() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -27,11 +32,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-path FROM ENVIRONMENT "PATH"
            DISPLAY ws-path
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_user() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_user() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -41,11 +49,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-user FROM ENVIRONMENT "USER"
            DISPLAY "User: " ws-user
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_name_keyword() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_name_keyword() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -56,11 +67,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-env-val FROM ENVIRONMENT NAME ws-env-name
            DISPLAY ws-env-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_name_variable() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_name_variable() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -75,11 +89,14 @@ use super::helpers::compile_ok;
                DISPLAY ws-var-val
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_custom_var() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_custom_var() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -98,11 +115,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-db-host
            DISPLAY ws-db-port
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_missing_var() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_missing_var() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -119,11 +139,14 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY ws-status
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_multiple() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_multiple() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -139,11 +162,14 @@ use super::helpers::compile_ok;
            DISPLAY "user:  " ws-user
            DISPLAY "shell: " ws-shell
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_and_display() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_and_display() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -162,11 +188,14 @@ use super::helpers::compile_ok;
                    DISPLAY "Running in dev mode"
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_in_subroutine() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_in_subroutine() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. main-prog.
        DATA DIVISION.
@@ -192,11 +221,14 @@ use super::helpers::compile_ok;
                MOVE ws-val TO lk-config
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_with_inspect() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_with_inspect() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -209,11 +241,14 @@ use super::helpers::compile_ok;
                TALLYING ws-colon-ct FOR ALL ":"
            DISPLAY ws-colon-ct
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_environment_numeric() {
-    compile_ok(r#"
+#[test]
+fn accept_environment_numeric() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -227,13 +262,16 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY ws-timeout-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ACCEPT FROM DATE / TIME / DAY ────────────────────────────
 
-#[test] fn accept_from_date() {
-    compile_ok(r#"
+#[test]
+fn accept_from_date() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -243,11 +281,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-date FROM DATE
            DISPLAY ws-date
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_from_date_yyyymmdd() {
-    compile_ok(r#"
+#[test]
+fn accept_from_date_yyyymmdd() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -257,11 +298,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-date FROM DATE YYYYMMDD
            DISPLAY ws-date
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_from_time() {
-    compile_ok(r#"
+#[test]
+fn accept_from_time() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -271,11 +315,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-time FROM TIME
            DISPLAY ws-time
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_from_day() {
-    compile_ok(r#"
+#[test]
+fn accept_from_day() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -285,11 +332,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-day FROM DAY
            DISPLAY ws-day
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_from_day_yyyyddd() {
-    compile_ok(r#"
+#[test]
+fn accept_from_day_yyyyddd() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -299,11 +349,14 @@ use super::helpers::compile_ok;
            ACCEPT ws-day FROM DAY YYYYDDD
            DISPLAY ws-day
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_from_day_of_week() {
-    compile_ok(r#"
+#[test]
+fn accept_from_day_of_week() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -321,11 +374,14 @@ use super::helpers::compile_ok;
                WHEN 7 DISPLAY "Sunday"
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn accept_date_and_time_combined() {
-    compile_ok(r#"
+#[test]
+fn accept_date_and_time_combined() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -341,5 +397,6 @@ use super::helpers::compile_ok;
            DISPLAY ws-time
            DISPLAY ws-day
            STOP RUN.
-"#);
+"#,
+    );
 }

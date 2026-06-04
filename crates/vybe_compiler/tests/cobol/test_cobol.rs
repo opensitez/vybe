@@ -1,25 +1,25 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check, run_prints};
-
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok, run_prints};
 
 // ═══════════════════════════════════════════════════════════
 // PROGRAM STRUCTURE
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn minimal_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. HELLO.
 PROCEDURE DIVISION.
     DISPLAY "Hello, World!".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn program_with_data() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. VARS.
 DATA DIVISION.
@@ -30,12 +30,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-NAME.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn program_with_author() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. META.
 AUTHOR. Test Author.
@@ -43,7 +45,8 @@ DATE-WRITTEN. 2024-01-01.
 PROCEDURE DIVISION.
     DISPLAY "Hello".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -51,7 +54,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn pic_alpha() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PICALPHA.
 DATA DIVISION.
@@ -60,12 +64,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-TEXT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn pic_numeric() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PICNUM.
 DATA DIVISION.
@@ -78,12 +84,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-AMOUNT.
     DISPLAY WS-SIGNED.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn group_items() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. GROUPS.
 DATA DIVISION.
@@ -97,12 +105,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-LAST-NAME.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn level_88_conditions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. COND88.
 DATA DIVISION.
@@ -115,12 +125,14 @@ PROCEDURE DIVISION.
         DISPLAY "Active"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn occurs_table() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TABLES.
 DATA DIVISION.
@@ -133,12 +145,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-ITEM(1).
     DISPLAY WS-ITEM(2).
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn occurs_table_runtime_element_and_iteration() {
-    let output = run_prints(r#"
+    let output = run_prints(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TABLES-RUNTIME.
 DATA DIVISION.
@@ -156,7 +170,8 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY WS-SUM.
     STOP RUN.
-"#);
+"#,
+    );
 
     assert_eq!(output, vec!["10".to_string(), "60".to_string()]);
 }
@@ -166,7 +181,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn add_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ARITH.
 DATA DIVISION.
@@ -178,12 +194,14 @@ PROCEDURE DIVISION.
     ADD WS-A TO WS-B.
     ADD WS-A WS-B GIVING WS-C.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn subtract_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SUB.
 DATA DIVISION.
@@ -195,12 +213,14 @@ PROCEDURE DIVISION.
     SUBTRACT WS-B FROM WS-A.
     SUBTRACT WS-B FROM WS-A GIVING WS-C.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multiply_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MUL.
 DATA DIVISION.
@@ -212,12 +232,14 @@ PROCEDURE DIVISION.
     MULTIPLY WS-A BY WS-B.
     MULTIPLY WS-A BY WS-B GIVING WS-C.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn divide_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DIV.
 DATA DIVISION.
@@ -229,12 +251,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DIVIDE WS-A BY WS-B GIVING WS-C REMAINDER WS-R.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compute_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. COMP.
 DATA DIVISION.
@@ -247,7 +271,8 @@ PROCEDURE DIVISION.
     COMPUTE WS-RESULT = (WS-A + WS-B) * 2.
     COMPUTE WS-RESULT = WS-A ** 2.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -255,7 +280,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn move_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MOV.
 DATA DIVISION.
@@ -266,12 +292,14 @@ PROCEDURE DIVISION.
     MOVE "Hello" TO WS-A.
     MOVE 42 TO WS-B.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn move_corresponding() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MOVCORR.
 DATA DIVISION.
@@ -285,7 +313,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     MOVE CORRESPONDING WS-SRC TO WS-DST.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -293,7 +322,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn if_else() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. IFELSE.
 DATA DIVISION.
@@ -306,12 +336,14 @@ PROCEDURE DIVISION.
         DISPLAY "Minor"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn if_nested() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. IFNEST.
 DATA DIVISION.
@@ -332,12 +364,14 @@ PROCEDURE DIVISION.
         END-IF
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn evaluate_when() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EVAL.
 DATA DIVISION.
@@ -355,12 +389,14 @@ PROCEDURE DIVISION.
             DISPLAY "Unknown"
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn evaluate_true() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EVTRUE.
 DATA DIVISION.
@@ -378,7 +414,8 @@ PROCEDURE DIVISION.
             DISPLAY "Cold"
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -386,7 +423,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn perform_times() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PTIMES.
 PROCEDURE DIVISION.
@@ -394,12 +432,14 @@ PROCEDURE DIVISION.
         DISPLAY "Hello"
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_until() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PUNTIL.
 DATA DIVISION.
@@ -411,12 +451,14 @@ PROCEDURE DIVISION.
         ADD 1 TO WS-I
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_varying() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PVARY.
 DATA DIVISION.
@@ -427,12 +469,14 @@ PROCEDURE DIVISION.
         DISPLAY WS-I
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_paragraph() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PPARA.
 PROCEDURE DIVISION.
@@ -440,7 +484,8 @@ PROCEDURE DIVISION.
     STOP RUN.
 GREET-PARA.
     DISPLAY "Hello from paragraph".
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -448,7 +493,8 @@ GREET-PARA.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn string_concat() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. STRCAT.
 DATA DIVISION.
@@ -463,12 +509,14 @@ PROCEDURE DIVISION.
            INTO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn unstring_split() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. UNSPLIT.
 DATA DIVISION.
@@ -484,12 +532,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-LAST.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_tallying() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INSP.
 DATA DIVISION.
@@ -500,12 +550,14 @@ PROCEDURE DIVISION.
     INSPECT WS-TEXT TALLYING WS-COUNT FOR ALL "l".
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_replacing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INSPR.
 DATA DIVISION.
@@ -515,7 +567,8 @@ PROCEDURE DIVISION.
     INSPECT WS-TEXT REPLACING ALL "l" BY "r".
     DISPLAY WS-TEXT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -523,7 +576,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn func_length() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FLEN.
 DATA DIVISION.
@@ -534,12 +588,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION LENGTH(WS-TEXT) TO WS-LEN.
     DISPLAY WS-LEN.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_upper_lower() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FCASE.
 DATA DIVISION.
@@ -553,12 +609,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-UP.
     DISPLAY WS-LOW.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_trim() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FTRIM.
 DATA DIVISION.
@@ -569,12 +627,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION TRIM(WS-TEXT) TO WS-OUT.
     DISPLAY WS-OUT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_reverse() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FREV.
 DATA DIVISION.
@@ -585,12 +645,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION REVERSE(WS-TEXT) TO WS-OUT.
     DISPLAY WS-OUT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_current_date() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FDATE.
 DATA DIVISION.
@@ -600,12 +662,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION CURRENT-DATE TO WS-DATE.
     DISPLAY WS-DATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_max_min() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FMINMAX.
 DATA DIVISION.
@@ -617,12 +681,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION MIN(10 20 30) TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_mod_rem() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FMOD.
 DATA DIVISION.
@@ -632,12 +698,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION MOD(17 5) TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_numval() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FNUMVAL.
 DATA DIVISION.
@@ -648,12 +716,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION NUMVAL(WS-TEXT) TO WS-NUMBER.
     DISPLAY WS-NUMBER.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn func_substitute() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FSUB.
 DATA DIVISION.
@@ -665,7 +735,8 @@ PROCEDURE DIVISION.
          TO WS-OUT.
     DISPLAY WS-OUT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -673,7 +744,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn file_read_write() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FILEIO.
 DATA DIVISION.
@@ -682,7 +754,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "File I/O test".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -690,7 +763,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn accept_input() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INPUT.
 DATA DIVISION.
@@ -701,7 +775,8 @@ PROCEDURE DIVISION.
     ACCEPT WS-NAME.
     DISPLAY "Hello " WS-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -709,7 +784,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn initialize_stmt() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INIT.
 DATA DIVISION.
@@ -722,7 +798,8 @@ PROCEDURE DIVISION.
     DISPLAY WS-NAME.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -730,7 +807,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn json_generate() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. JSONGEN.
 DATA DIVISION.
@@ -743,12 +821,14 @@ PROCEDURE DIVISION.
     JSON GENERATE WS-JSON FROM WS-PERSON.
     DISPLAY WS-JSON.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_parse() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. JSONPAR.
 DATA DIVISION.
@@ -761,7 +841,8 @@ PROCEDURE DIVISION.
     JSON PARSE WS-JSON INTO WS-PERSON.
     DISPLAY WS-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -769,13 +850,15 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn raise_exception() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EXCEPT.
 PROCEDURE DIVISION.
     RAISE EXCEPTION "Something went wrong".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -783,13 +866,15 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn goback_stmt() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. GOBACK1.
 PROCEDURE DIVISION.
     DISPLAY "Done".
     GOBACK.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -797,7 +882,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn call_subprogram() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CALLER.
 DATA DIVISION.
@@ -807,7 +893,8 @@ PROCEDURE DIVISION.
     CALL "SUBPROG" USING WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -815,7 +902,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn search_table() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SRCH.
 DATA DIVISION.
@@ -828,7 +916,8 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "Search test".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -836,7 +925,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn set_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SETST.
 DATA DIVISION.
@@ -848,7 +938,8 @@ PROCEDURE DIVISION.
     SET IS-ON TO TRUE.
     DISPLAY WS-FLAG.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -856,7 +947,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn continue_stmt() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CONT.
 DATA DIVISION.
@@ -869,7 +961,8 @@ PROCEDURE DIVISION.
         CONTINUE
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -877,7 +970,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn fizzbuzz() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FIZZBUZZ.
 DATA DIVISION.
@@ -901,12 +995,14 @@ PROCEDURE DIVISION.
         END-EVALUATE
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn factorial() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FACTORIAL.
 DATA DIVISION.
@@ -920,12 +1016,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Factorial of " WS-N " = " WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn temperature_converter() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEMPCONV.
 DATA DIVISION.
@@ -937,12 +1035,14 @@ PROCEDURE DIVISION.
     DISPLAY "Celsius: " WS-CELSIUS.
     DISPLAY "Fahrenheit: " WS-FAHRENHEIT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn string_processing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. STRPROC.
 DATA DIVISION.
@@ -962,12 +1062,14 @@ PROCEDURE DIVISION.
     DISPLAY "Lower: " WS-LOWER.
     DISPLAY "Length: " WS-LEN.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn paragraph_perform_thru() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PARATHRU.
 PROCEDURE DIVISION.
@@ -978,12 +1080,14 @@ INIT-PARA.
     DISPLAY "Initializing".
 PROCESS-PARA.
     DISPLAY "Processing".
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multiple_conditions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MULTICOND.
 DATA DIVISION.
@@ -1002,7 +1106,8 @@ PROCEDURE DIVISION.
         DISPLAY "A is not zero"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1010,7 +1115,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn boolean_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. BOOL.
 DATA DIVISION.
@@ -1023,12 +1129,14 @@ PROCEDURE DIVISION.
         DISPLAY "False"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn display_multiple() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DISPMUL.
 DATA DIVISION.
@@ -1038,18 +1146,21 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "Name: " WS-NAME " Age: " WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn display_multiple_runtime_single_line() {
-    let output = run_prints(r#"
+    let output = run_prints(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DISPMULRUN.
 PROCEDURE DIVISION.
     DISPLAY "Name: " "Alice" " Age: " 30.
     STOP RUN.
-"#);
+"#,
+    );
 
     assert_eq!(output, vec!["Name: Alice Age: 30".to_string()]);
 }

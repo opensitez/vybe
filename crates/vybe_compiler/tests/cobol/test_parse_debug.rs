@@ -2,17 +2,22 @@ use super::helpers::compile_ok;
 
 #[test]
 fn parse_data_items_standalone() {
-    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-X PIC X(10) VALUE \"Hello\".\nPROCEDURE DIVISION.\n    STOP RUN.");
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-X PIC X(10) VALUE \"Hello\".\nPROCEDURE DIVISION.\n    STOP RUN.",
+    );
 }
 
 #[test]
 fn parse_data_items_no_trailing_newline() {
-    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. CALC.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-MSG PIC X(20) VALUE \"From COBOL\".\nPROCEDURE DIVISION.\n    DISPLAY WS-MSG.\n    STOP RUN.");
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. CALC.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-MSG PIC X(20) VALUE \"From COBOL\".\nPROCEDURE DIVISION.\n    DISPLAY WS-MSG.\n    STOP RUN.",
+    );
 }
 
 #[test]
 fn parse_data_items_with_env_div() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CALC.
 ENVIRONMENT DIVISION.
@@ -22,12 +27,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-MSG.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn parse_subscript_access() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -38,5 +45,6 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-ITEM(WS-IDX).
     STOP RUN.
-"#);
+"#,
+    );
 }

@@ -9,7 +9,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn formatted_date() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -19,12 +20,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION FORMATTED-DATE("YYYY-MM-DD" 20240101) TO WS-DATE.
     DISPLAY WS-DATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn formatted_time() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -34,12 +37,14 @@ PROCEDURE DIVISION.
     MOVE FUNCTION FORMATTED-TIME("HH:MM:SS" 123000) TO WS-TIME.
     DISPLAY WS-TIME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn date_of_integer() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -50,12 +55,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-DATE = FUNCTION DATE-OF-INTEGER(WS-INT).
     DISPLAY WS-DATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn integer_of_date() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -66,12 +73,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-INT = FUNCTION INTEGER-OF-DATE(WS-DATE).
     DISPLAY WS-INT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn integer_of_date_runtime_day_difference() {
-    let output = run_prints(r#"
+    let output = run_prints(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -83,14 +92,16 @@ PROCEDURE DIVISION.
         FUNCTION INTEGER-OF-DATE(20240116).
     DISPLAY WS-DIFF.
     STOP RUN.
-"#);
+"#,
+    );
 
     assert_eq!(output, vec!["30"]);
 }
 
 #[test]
 fn day_of_integer() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -100,12 +111,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-DAY = FUNCTION DAY-OF-INTEGER(738886).
     DISPLAY WS-DAY.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn annuity() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -115,12 +128,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-RESULT = FUNCTION ANNUITY(0.05 12).
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn present_value() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -130,12 +145,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-RESULT = FUNCTION PRESENT-VALUE(0.08 1000).
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_numval() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -148,12 +165,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-NUM = FUNCTION NUMVAL(WS-STR).
     DISPLAY WS-NUM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn chained_intrinsics() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -164,12 +183,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-RESULT = FUNCTION ABS(FUNCTION SQRT(WS-VAL)).
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn intrinsic_in_expression() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -181,12 +202,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-RESULT = FUNCTION MAX(WS-A WS-B) + 5.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn concatenate_multi() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -200,12 +223,14 @@ PROCEDURE DIVISION.
         TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn substitute_multiple() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -217,12 +242,14 @@ PROCEDURE DIVISION.
         TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn when_compiled_intrinsic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -232,5 +259,6 @@ PROCEDURE DIVISION.
     MOVE FUNCTION WHEN-COMPILED TO WS-COMPILED.
     DISPLAY WS-COMPILED.
     STOP RUN.
-"#);
+"#,
+    );
 }

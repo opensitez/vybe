@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── SEARCH ALL — binary search on sorted table ────────────────
 
-#[test] fn search_all_basic() {
-    compile_ok(r#"
+#[test]
+fn search_all_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -28,11 +30,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_not_found() {
-    compile_ok(r#"
+#[test]
+fn search_all_not_found() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -57,11 +62,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_first_element() {
-    compile_ok(r#"
+#[test]
+fn search_all_first_element() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -86,11 +94,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_last_element() {
-    compile_ok(r#"
+#[test]
+fn search_all_last_element() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -114,11 +125,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_alpha_key() {
-    compile_ok(r#"
+#[test]
+fn search_all_alpha_key() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -143,11 +157,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_compound_key() {
-    compile_ok(r#"
+#[test]
+fn search_all_compound_key() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -175,11 +192,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_with_perform_action() {
-    compile_ok(r#"
+#[test]
+fn search_all_with_perform_action() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -215,11 +235,14 @@ use super::helpers::compile_ok;
                DISPLAY "not found"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_descending_key() {
-    compile_ok(r#"
+#[test]
+fn search_all_descending_key() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -244,11 +267,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_varying_occurs() {
-    compile_ok(r#"
+#[test]
+fn search_all_varying_occurs() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -275,11 +301,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_nested_table() {
-    compile_ok(r#"
+#[test]
+fn search_all_nested_table() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -307,11 +336,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_index_after_search() {
-    compile_ok(r#"
+#[test]
+fn search_all_index_after_search() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -335,11 +367,14 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-idx-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn search_all_large_table() {
-    compile_ok(r#"
+#[test]
+fn search_all_large_table() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -363,5 +398,6 @@ use super::helpers::compile_ok;
            END-SEARCH
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }

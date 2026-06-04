@@ -4,8 +4,10 @@ use super::helpers::compile_ok;
 // CANCEL releases the storage and initialization state of a
 // called subprogram so that the next CALL re-initializes it.
 
-#[test] fn cancel_basic() {
-    compile_ok(r#"
+#[test]
+fn cancel_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
@@ -13,11 +15,14 @@ use super::helpers::compile_ok;
            CANCEL "utility-sub"
            DISPLAY "cancelled"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_then_recall() {
-    compile_ok(r#"
+#[test]
+fn cancel_then_recall() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -31,11 +36,14 @@ use super::helpers::compile_ok;
            CALL "counter-sub" USING ws-result
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_by_identifier() {
-    compile_ok(r#"
+#[test]
+fn cancel_by_identifier() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -46,11 +54,14 @@ use super::helpers::compile_ok;
            CANCEL ws-prog-name
            DISPLAY "done"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_multiple_programs() {
-    compile_ok(r#"
+#[test]
+fn cancel_multiple_programs() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
@@ -62,11 +73,14 @@ use super::helpers::compile_ok;
            CANCEL "module-c"
            DISPLAY "all cancelled"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_after_exception() {
-    compile_ok(r#"
+#[test]
+fn cancel_after_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -80,22 +94,28 @@ use super::helpers::compile_ok;
            CANCEL "risky-module"
            DISPLAY ws-status
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_uncalled_program() {
-    compile_ok(r#"
+#[test]
+fn cancel_uncalled_program() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
            CANCEL "never-called-prog"
            DISPLAY "no error expected"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_in_conditional() {
-    compile_ok(r#"
+#[test]
+fn cancel_in_conditional() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -108,11 +128,14 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY ws-flag
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_in_loop() {
-    compile_ok(r#"
+#[test]
+fn cancel_in_loop() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -125,11 +148,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            DISPLAY "loop done"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_resets_initial_program() {
-    compile_ok(r#"
+#[test]
+fn cancel_resets_initial_program() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -143,11 +169,14 @@ use super::helpers::compile_ok;
            CALL "init-counter" USING ws-count
            DISPLAY ws-count
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_with_call_on_exception() {
-    compile_ok(r#"
+#[test]
+fn cancel_with_call_on_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -166,11 +195,14 @@ use super::helpers::compile_ok;
            END-IF
        end-prog.
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_variable_list() {
-    compile_ok(r#"
+#[test]
+fn cancel_variable_list() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -185,11 +217,14 @@ use super::helpers::compile_ok;
            CANCEL ws-mod-2
            DISPLAY "freed"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_nested_call_chain() {
-    compile_ok(r#"
+#[test]
+fn cancel_nested_call_chain() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
@@ -200,11 +235,14 @@ use super::helpers::compile_ok;
            CALL "level-3"
            CANCEL "level-3"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_preserves_caller_state() {
-    compile_ok(r#"
+#[test]
+fn cancel_preserves_caller_state() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -215,11 +253,14 @@ use super::helpers::compile_ok;
            CANCEL "sub-prog"
            DISPLAY ws-local
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn cancel_dynamic_dispatch() {
-    compile_ok(r#"
+#[test]
+fn cancel_dynamic_dispatch() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -236,5 +277,6 @@ use super::helpers::compile_ok;
            CANCEL ws-handler
            DISPLAY "dispatched"
            STOP RUN.
-"#);
+"#,
+    );
 }

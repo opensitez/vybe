@@ -1,9 +1,10 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 fn p(data: &str, body: &str) -> String {
-    format!("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.", data, body)
+    format!(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.",
+        data, body
+    )
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -13,7 +14,7 @@ fn p(data: &str, body: &str) -> String {
 fn call_async_basic() {
     compile_ok(&p(
         "01 WS-HANDLE PIC X(10).",
-        "    CALL \"WORKER\" ASYNC RETURNING WS-HANDLE."
+        "    CALL \"WORKER\" ASYNC RETURNING WS-HANDLE.",
     ));
 }
 
@@ -21,7 +22,7 @@ fn call_async_basic() {
 fn call_async_with_args() {
     compile_ok(&p(
         "01 WS-HANDLE PIC X(10).\n01 WS-INPUT PIC X(20) VALUE \"Data\".",
-        "    CALL \"PROCESSOR\" ASYNC USING WS-INPUT RETURNING WS-HANDLE."
+        "    CALL \"PROCESSOR\" ASYNC USING WS-INPUT RETURNING WS-HANDLE.",
     ));
 }
 
@@ -29,7 +30,7 @@ fn call_async_with_args() {
 fn call_async_no_handle() {
     compile_ok(&p(
         "01 WS-DATA PIC X(20) VALUE \"Fire and forget\".",
-        "    CALL \"BACKGROUND\" ASYNC USING WS-DATA."
+        "    CALL \"BACKGROUND\" ASYNC USING WS-DATA.",
     ));
 }
 
@@ -38,18 +39,12 @@ fn call_async_no_handle() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn wait_for_handle() {
-    compile_ok(&p(
-        "01 WS-HANDLE PIC X(10).",
-        "    WAIT FOR WS-HANDLE."
-    ));
+    compile_ok(&p("01 WS-HANDLE PIC X(10).", "    WAIT FOR WS-HANDLE."));
 }
 
 #[test]
 fn wait_basic() {
-    compile_ok(&p(
-        "01 WS-H PIC X(10).",
-        "    WAIT WS-H."
-    ));
+    compile_ok(&p("01 WS-H PIC X(10).", "    WAIT WS-H."));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -59,7 +54,7 @@ fn wait_basic() {
 fn async_spawn_and_join() {
     compile_ok(&p(
         "01 WS-HANDLE PIC X(10).\n01 WS-RESULT PIC X(20).",
-        "    CALL \"COMPUTE-TASK\" ASYNC RETURNING WS-HANDLE.\n    DISPLAY \"Working...\".\n    WAIT FOR WS-HANDLE.\n    DISPLAY \"Done\"."
+        "    CALL \"COMPUTE-TASK\" ASYNC RETURNING WS-HANDLE.\n    DISPLAY \"Working...\".\n    WAIT FOR WS-HANDLE.\n    DISPLAY \"Done\".",
     ));
 }
 
@@ -67,7 +62,7 @@ fn async_spawn_and_join() {
 fn multiple_async_calls() {
     compile_ok(&p(
         "01 WS-H1 PIC X(10).\n01 WS-H2 PIC X(10).\n01 WS-H3 PIC X(10).",
-        "    CALL \"TASK1\" ASYNC RETURNING WS-H1.\n    CALL \"TASK2\" ASYNC RETURNING WS-H2.\n    CALL \"TASK3\" ASYNC RETURNING WS-H3.\n    WAIT FOR WS-H1.\n    WAIT FOR WS-H2.\n    WAIT FOR WS-H3.\n    DISPLAY \"All done\"."
+        "    CALL \"TASK1\" ASYNC RETURNING WS-H1.\n    CALL \"TASK2\" ASYNC RETURNING WS-H2.\n    CALL \"TASK3\" ASYNC RETURNING WS-H3.\n    WAIT FOR WS-H1.\n    WAIT FOR WS-H2.\n    WAIT FOR WS-H3.\n    DISPLAY \"All done\".",
     ));
 }
 
@@ -76,17 +71,14 @@ fn multiple_async_calls() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn run_unit_basic() {
-    compile_ok(&p(
-        "",
-        "    RUN-UNIT \"BATCH-PROCESS\"."
-    ));
+    compile_ok(&p("", "    RUN-UNIT \"BATCH-PROCESS\"."));
 }
 
 #[test]
 fn run_unit_with_args() {
     compile_ok(&p(
         "01 WS-FILE PIC X(20) VALUE \"input.dat\".",
-        "    RUN-UNIT \"PROCESSOR\" USING WS-FILE."
+        "    RUN-UNIT \"PROCESSOR\" USING WS-FILE.",
     ));
 }
 
@@ -97,7 +89,7 @@ fn run_unit_with_args() {
 fn lock_unlock_basic() {
     compile_ok(&p(
         "01 WS-MUTEX PIC X(10).",
-        "    LOCK WS-MUTEX.\n    DISPLAY \"Critical section\".\n    UNLOCK WS-MUTEX."
+        "    LOCK WS-MUTEX.\n    DISPLAY \"Critical section\".\n    UNLOCK WS-MUTEX.",
     ));
 }
 
@@ -105,7 +97,7 @@ fn lock_unlock_basic() {
 fn lock_with_data_access() {
     compile_ok(&p(
         "01 WS-MUTEX PIC X(10).\n01 WS-COUNTER PIC 9(10) VALUE 0.",
-        "    LOCK WS-MUTEX.\n    ADD 1 TO WS-COUNTER.\n    UNLOCK WS-MUTEX."
+        "    LOCK WS-MUTEX.\n    ADD 1 TO WS-COUNTER.\n    UNLOCK WS-MUTEX.",
     ));
 }
 
@@ -114,7 +106,8 @@ fn lock_with_data_access() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn perform_async_paragraph() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FIBER.
 PROCEDURE DIVISION.
@@ -123,7 +116,8 @@ PROCEDURE DIVISION.
     STOP RUN.
 WORKER-PARA.
     DISPLAY "Worker running".
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -131,7 +125,8 @@ WORKER-PARA.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn yield_in_paragraph() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. YIELDTEST.
 PROCEDURE DIVISION.
@@ -143,12 +138,14 @@ GENERATOR-PARA.
     DISPLAY "Step 2".
     YIELD.
     DISPLAY "Step 3".
-"#);
+"#,
+    );
 }
 
 #[test]
 fn suspend_stmt() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SUSPTEST.
 PROCEDURE DIVISION.
@@ -156,7 +153,8 @@ PROCEDURE DIVISION.
     SUSPEND.
     DISPLAY "After suspend".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -164,7 +162,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn parallel_file_processing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PARALLEL.
 DATA DIVISION.
@@ -186,12 +185,14 @@ PROCEDURE DIVISION.
     DISPLAY "File 2 done".
     DISPLAY "All processing complete".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn producer_consumer() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PRODCONS.
 DATA DIVISION.
@@ -208,12 +209,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Produced " WS-COUNT " items".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn async_batch_with_monitor() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ASYNCBATCH.
 DATA DIVISION.
@@ -234,12 +237,14 @@ PROCEDURE DIVISION.
     DISPLAY "Total: " WS-TOTAL.
     UNLOCK WS-LOCK.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn fiber_generator_pattern() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. GENERATOR.
 DATA DIVISION.
@@ -257,12 +262,14 @@ NUMBER-GENERATOR.
     YIELD.
     MOVE 3 TO WS-VALUE.
     DISPLAY WS-VALUE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn concurrent_counter() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CONCOUNT.
 DATA DIVISION.
@@ -278,12 +285,14 @@ PROCEDURE DIVISION.
     WAIT FOR WS-H2.
     DISPLAY "Final counter: " WS-COUNTER.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn async_with_error_handling() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ASYNCERR.
 DATA DIVISION.
@@ -299,5 +308,6 @@ PROCEDURE DIVISION.
         DISPLAY "Task failed"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }

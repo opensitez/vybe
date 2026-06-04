@@ -27,8 +27,8 @@
 use std::collections::BTreeSet;
 use vybe_bytecode::VM;
 use vybe_compiler::ast::{
-    Argument, BindingPattern, Expression, ExprKind, Literal, StmtKind,
-    Statement, VarDeclKind, VarDeclarator,
+    Argument, BindingPattern, ExprKind, Expression, Literal, Statement, StmtKind, VarDeclKind,
+    VarDeclarator,
 };
 
 use super::helpers;
@@ -52,10 +52,7 @@ fn cobol_imports_for(src: &str) -> Vec<(String, String)> {
 fn compile_array_call(count: Expression, init: Expression) -> Vec<(String, String)> {
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("Array")),
-        args: vec![
-            Argument::positional(count),
-            Argument::positional(init),
-        ],
+        args: vec![Argument::positional(count), Argument::positional(init)],
         optional: false,
     });
 
@@ -75,8 +72,9 @@ fn compile_array_call(count: Expression, init: Expression) -> Vec<(String, Strin
         body: vec![Statement::new(stmt)],
         imports: Vec::new(),
     };
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::cobol::profile_source())
-        .expect("parse profile");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::cobol::profile_source())
+            .expect("parse profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
@@ -96,12 +94,18 @@ fn array_call_with_null_init_emits_only_newwithlength() {
         Expression::new(ExprKind::Lit(Literal::Float(5.0))),
         Expression::new(ExprKind::Lit(Literal::Null)),
     );
-    assert!(imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
-        "expected `vybe:js-array.newWithLength` import; got: {:?}", imports);
+    assert!(
+        imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
+        "expected `vybe:js-array.newWithLength` import; got: {:?}",
+        imports
+    );
     // fill() is NOT emitted when init is null — newWithLength already
     // null-fills.
-    assert!(!imports.contains(&("vybe:js-array".into(), "fill".into())),
-        "expected no `vybe:js-array.fill` for null-init shortcut; got: {:?}", imports);
+    assert!(
+        !imports.contains(&("vybe:js-array".into(), "fill".into())),
+        "expected no `vybe:js-array.fill` for null-init shortcut; got: {:?}",
+        imports
+    );
 }
 
 #[test]
@@ -110,10 +114,16 @@ fn array_call_with_non_null_init_emits_fill_too() {
         Expression::new(ExprKind::Lit(Literal::Float(5.0))),
         Expression::new(ExprKind::Lit(Literal::Float(42.0))),
     );
-    assert!(imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
-        "expected newWithLength import; got: {:?}", imports);
-    assert!(imports.contains(&("vybe:js-array".into(), "fill".into())),
-        "expected fill import to initialise non-null value; got: {:?}", imports);
+    assert!(
+        imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
+        "expected newWithLength import; got: {:?}",
+        imports
+    );
+    assert!(
+        imports.contains(&("vybe:js-array".into(), "fill".into())),
+        "expected fill import to initialise non-null value; got: {:?}",
+        imports
+    );
 }
 
 #[test]
@@ -122,7 +132,8 @@ fn real_cobol_nested_occurs_emits_wasm_js_array_import() {
     // group. After the walker's `ident_or_keyword` fix the nested field
     // now flows through the `Array(count, init)` → `vybe:js-array.*`
     // intercept.
-    let imports = cobol_imports_for(r#"
+    let imports = cobol_imports_for(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. PILOT.
        DATA DIVISION.
@@ -132,7 +143,9 @@ fn real_cobol_nested_occurs_emits_wasm_js_array_import() {
        PROCEDURE DIVISION.
        MAIN-PARA.
            STOP RUN.
-"#.trim());
+"#
+        .trim(),
+    );
 
     assert!(
         imports.iter().any(|(m, _)| m == "vybe:js-array"),
@@ -151,7 +164,8 @@ fn real_cobol_nested_occurs_emits_wasm_js_array_import() {
 fn real_cobol_occurs_with_value_clause_also_emits_fill() {
     // OCCURS + VALUE → initialised with a non-null default, so the
     // intercept emits `fill` in addition to `newWithLength`.
-    let imports = cobol_imports_for(r#"
+    let imports = cobol_imports_for(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. PILOT.
        DATA DIVISION.
@@ -161,15 +175,19 @@ fn real_cobol_occurs_with_value_clause_also_emits_fill() {
        PROCEDURE DIVISION.
        MAIN-PARA.
            STOP RUN.
-"#.trim());
+"#
+        .trim(),
+    );
 
     assert!(
         imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
-        "newWithLength missing; imports = {:?}", imports
+        "newWithLength missing; imports = {:?}",
+        imports
     );
     assert!(
         imports.contains(&("vybe:js-array".into(), "fill".into())),
-        "fill should be emitted when OCCURS has a non-null VALUE; imports = {:?}", imports
+        "fill should be emitted when OCCURS has a non-null VALUE; imports = {:?}",
+        imports
     );
 }
 
@@ -178,7 +196,8 @@ fn real_cobol_occurs_runs_end_to_end() {
     // Compile + execute a COBOL program with a nested OCCURS table.
     // The program body is a no-op (STOP RUN) — the test verifies the
     // data declarations don't trap at load time.
-    helpers::run(r#"
+    helpers::run(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. PILOT.
        DATA DIVISION.
@@ -188,7 +207,9 @@ fn real_cobol_occurs_runs_end_to_end() {
        PROCEDURE DIVISION.
        MAIN-PARA.
            STOP RUN.
-"#.trim());
+"#
+        .trim(),
+    );
 }
 
 #[test]
@@ -223,8 +244,9 @@ fn array_call_end_to_end_runtime_produces_array_of_length_n() {
         body: vec![Statement::new(decl)],
         imports: Vec::new(),
     };
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::cobol::profile_source())
-        .expect("parse profile");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::cobol::profile_source())
+            .expect("parse profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");

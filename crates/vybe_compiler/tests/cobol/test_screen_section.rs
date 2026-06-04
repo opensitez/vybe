@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── SCREEN SECTION declaration ────────────────────────────────
 
-#[test] fn screen_section_blank() {
-    compile_ok(r#"
+#[test]
+fn screen_section_blank() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -13,11 +15,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY main-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_literal_field() {
-    compile_ok(r#"
+#[test]
+fn screen_section_literal_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -28,11 +33,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY header-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_input_field() {
-    compile_ok(r#"
+#[test]
+fn screen_section_input_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -47,11 +55,14 @@ use super::helpers::compile_ok;
            MOVE "Alice" TO ws-name
            DISPLAY name-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_multiple_fields() {
-    compile_ok(r#"
+#[test]
+fn screen_section_multiple_fields() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -74,11 +85,14 @@ use super::helpers::compile_ok;
            MOVE 30 TO ws-age
            DISPLAY entry-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_highlight() {
-    compile_ok(r#"
+#[test]
+fn screen_section_highlight() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -92,11 +106,14 @@ use super::helpers::compile_ok;
            MOVE "test" TO ws-val
            DISPLAY hi-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_reverse_video() {
-    compile_ok(r#"
+#[test]
+fn screen_section_reverse_video() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -108,11 +125,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY status-bar
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_blink() {
-    compile_ok(r#"
+#[test]
+fn screen_section_blink() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -122,11 +142,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY alert-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_foreground_background() {
-    compile_ok(r#"
+#[test]
+fn screen_section_foreground_background() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -140,11 +163,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY colored-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_auto_tab() {
-    compile_ok(r#"
+#[test]
+fn screen_section_auto_tab() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -157,11 +183,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY code-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_required() {
-    compile_ok(r#"
+#[test]
+fn screen_section_required() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -175,11 +204,14 @@ use super::helpers::compile_ok;
            MOVE 12345678 TO ws-id
            DISPLAY id-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_protected() {
-    compile_ok(r#"
+#[test]
+fn screen_section_protected() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -191,11 +223,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY view-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_secure_password() {
-    compile_ok(r#"
+#[test]
+fn screen_section_secure_password() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -209,11 +244,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY login-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_with_accept() {
-    compile_ok(r#"
+#[test]
+fn screen_section_with_accept() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -229,11 +267,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY menu-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_nested_group() {
-    compile_ok(r#"
+#[test]
+fn screen_section_nested_group() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -255,11 +296,14 @@ use super::helpers::compile_ok;
            MOVE "IL" TO ws-state
            DISPLAY addr-screen
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn screen_section_grid_layout() {
-    compile_ok(r#"
+#[test]
+fn screen_section_grid_layout() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -280,5 +324,6 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY grid-screen
            STOP RUN.
-"#);
+"#,
+    );
 }

@@ -4,8 +4,10 @@ use super::helpers::compile_ok;
 // INITIAL: each CALL reinitializes all working storage and
 // internal files as if called for the first time.
 
-#[test] fn program_id_initial_basic() {
-    compile_ok(r#"
+#[test]
+fn program_id_initial_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test INITIAL.
        DATA DIVISION.
@@ -15,11 +17,14 @@ use super::helpers::compile_ok;
            ADD 1 TO ws-counter
            DISPLAY ws-counter
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_initial_with_call() {
-    compile_ok(r#"
+#[test]
+fn program_id_initial_with_call() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. main-prog.
        DATA DIVISION.
@@ -41,11 +46,14 @@ use super::helpers::compile_ok;
            ADD 1 TO ws-internal
            MOVE ws-internal TO ls-result
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_initial_reset_behavior() {
-    compile_ok(r#"
+#[test]
+fn program_id_initial_reset_behavior() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. reset-test INITIAL.
        DATA DIVISION.
@@ -58,15 +66,18 @@ use super::helpers::compile_ok;
            DISPLAY ws-val
            DISPLAY ws-txt
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── PROGRAM-ID COMMON ─────────────────────────────────────────
 // COMMON: nested program visible to ALL programs in the compile
 // unit, not just the directly containing program.
 
-#[test] fn program_id_common_nested() {
-    compile_ok(r#"
+#[test]
+fn program_id_common_nested() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. outer-prog.
        DATA DIVISION.
@@ -93,11 +104,14 @@ use super::helpers::compile_ok;
 
        END PROGRAM common-util.
        END PROGRAM outer-prog.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_common_basic() {
-    compile_ok(r#"
+#[test]
+fn program_id_common_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. host-prog.
        DATA DIVISION.
@@ -119,15 +133,18 @@ use super::helpers::compile_ok;
 
        END PROGRAM shared-sub.
        END PROGRAM host-prog.
-"#);
+"#,
+    );
 }
 
 // ── PROGRAM-ID RECURSIVE ──────────────────────────────────────
 // RECURSIVE: allows a program to call itself (directly or
 // indirectly). Each activation has its own LOCAL-STORAGE.
 
-#[test] fn program_id_recursive_basic() {
-    compile_ok(r#"
+#[test]
+fn program_id_recursive_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. factorial IS RECURSIVE.
        DATA DIVISION.
@@ -146,11 +163,14 @@ use super::helpers::compile_ok;
                MULTIPLY lk-n BY ls-sub-result GIVING lk-result
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_recursive_fibonacci() {
-    compile_ok(r#"
+#[test]
+fn program_id_recursive_fibonacci() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. fib IS RECURSIVE.
        DATA DIVISION.
@@ -174,11 +194,14 @@ use super::helpers::compile_ok;
                    ADD ls-a ls-b GIVING lk-result
            END-EVALUATE
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_recursive_with_local_storage() {
-    compile_ok(r#"
+#[test]
+fn program_id_recursive_with_local_storage() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. rec-sum IS RECURSIVE.
        DATA DIVISION.
@@ -197,11 +220,14 @@ use super::helpers::compile_ok;
                ADD lk-n ls-partial GIVING lk-result
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_recursive_countdown() {
-    compile_ok(r#"
+#[test]
+fn program_id_recursive_countdown() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. countdown IS RECURSIVE.
        DATA DIVISION.
@@ -216,13 +242,16 @@ use super::helpers::compile_ok;
                CALL "countdown" USING ls-next
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }
 
 // ── INITIAL + RECURSIVE combination ──────────────────────────
 
-#[test] fn program_id_initial_and_recursive() {
-    compile_ok(r#"
+#[test]
+fn program_id_initial_and_recursive() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. init-rec IS INITIAL RECURSIVE.
        DATA DIVISION.
@@ -238,13 +267,16 @@ use super::helpers::compile_ok;
                DISPLAY ls-depth
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }
 
 // ── PROGRAM-ID with PROGRAM keyword explicit ──────────────────
 
-#[test] fn program_id_with_end_program() {
-    compile_ok(r#"
+#[test]
+fn program_id_with_end_program() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. bounded-prog.
        DATA DIVISION.
@@ -254,11 +286,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-val
            STOP RUN.
        END PROGRAM bounded-prog.
-"#);
+"#,
+    );
 }
 
-#[test] fn program_id_nested_end_program() {
-    compile_ok(r#"
+#[test]
+fn program_id_nested_end_program() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. outer.
        DATA DIVISION.
@@ -279,13 +314,16 @@ use super::helpers::compile_ok;
        END PROGRAM inner.
 
        END PROGRAM outer.
-"#);
+"#,
+    );
 }
 
 // ── RECURSIVE with mutual recursion ──────────────────────────
 
-#[test] fn mutual_recursion_even_odd() {
-    compile_ok(r#"
+#[test]
+fn mutual_recursion_even_odd() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. is-even IS RECURSIVE.
        DATA DIVISION.
@@ -320,5 +358,6 @@ use super::helpers::compile_ok;
                CALL "is-even" USING ls-n-minus-1 lk-result
            END-IF
            GOBACK.
-"#);
+"#,
+    );
 }

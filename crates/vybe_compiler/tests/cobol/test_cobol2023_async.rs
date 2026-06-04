@@ -9,7 +9,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn call_async_returning() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -21,12 +22,14 @@ PROCEDURE DIVISION.
     WAIT FOR WS-HANDLE.
     DISPLAY "Done".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multiple_async_calls_sync() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -43,12 +46,14 @@ PROCEDURE DIVISION.
     WAIT FOR WS-H3.
     DISPLAY "All complete".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn lock_unlock_resource() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -61,12 +66,14 @@ PROCEDURE DIVISION.
     UNLOCK WS-MUTEX.
     DISPLAY WS-COUNTER.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_async_fiber() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
@@ -75,12 +82,14 @@ PROCEDURE DIVISION.
     STOP RUN.
 WORKER-TASK.
     DISPLAY "Worker running".
-"#);
+"#,
+    );
 }
 
 #[test]
 fn yield_in_loop() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -93,12 +102,14 @@ PROCEDURE DIVISION.
         YIELD
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn suspend_resume() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
@@ -106,12 +117,14 @@ PROCEDURE DIVISION.
     SUSPEND.
     DISPLAY "After resume".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn call_by_reference() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -121,12 +134,14 @@ PROCEDURE DIVISION.
     CALL "UPDATE-VALUE" USING BY REFERENCE WS-ARG.
     DISPLAY WS-ARG.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn call_by_content() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -136,12 +151,14 @@ PROCEDURE DIVISION.
     CALL "READ-VALUE" USING BY CONTENT WS-ARG.
     DISPLAY WS-ARG.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn call_by_value() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -151,12 +168,14 @@ PROCEDURE DIVISION.
     CALL "COPY-VALUE" USING BY VALUE WS-ARG.
     DISPLAY WS-ARG.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn call_on_exception() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -168,5 +187,6 @@ PROCEDURE DIVISION.
         NOT ON EXCEPTION DISPLAY "Call succeeded"
     END-CALL.
     STOP RUN.
-"#);
+"#,
+    );
 }

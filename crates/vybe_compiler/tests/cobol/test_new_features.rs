@@ -1,116 +1,215 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 fn p(data: &str, body: &str) -> String {
-    format!("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.", data, body)
+    format!(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.",
+        data, body
+    )
 }
 
-fn d() -> &'static str { "01 R PIC 9(10) VALUE 0.\n01 A PIC 9(10) VALUE 10.\n01 B PIC 9(10) VALUE 20." }
+fn d() -> &'static str {
+    "01 R PIC 9(10) VALUE 0.\n01 A PIC 9(10) VALUE 10.\n01 B PIC 9(10) VALUE 20."
+}
 
 // ═══════════════════════════════════════════════════════════
 // EXIT PERFORM / EXIT PARAGRAPH
 // ═══════════════════════════════════════════════════════════
-#[test] fn exit_perform() { compile_ok(&p(d(), "    PERFORM 10 TIMES\n        EXIT PERFORM\n    END-PERFORM.")); }
-#[test] fn exit_paragraph() {
-    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    PERFORM MY-PARA.\n    STOP RUN.\nMY-PARA.\n    DISPLAY \"Start\".\n    EXIT PARAGRAPH.\n    DISPLAY \"Never\".");
+#[test]
+fn exit_perform() {
+    compile_ok(&p(
+        d(),
+        "    PERFORM 10 TIMES\n        EXIT PERFORM\n    END-PERFORM.",
+    ));
 }
-#[test] fn exit_alone() { compile_ok(&p("", "    EXIT.")); }
+#[test]
+fn exit_paragraph() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    PERFORM MY-PARA.\n    STOP RUN.\nMY-PARA.\n    DISPLAY \"Start\".\n    EXIT PARAGRAPH.\n    DISPLAY \"Never\".",
+    );
+}
+#[test]
+fn exit_alone() {
+    compile_ok(&p("", "    EXIT."));
+}
 
 // ═══════════════════════════════════════════════════════════
 // REWRITE / DELETE / START
 // ═══════════════════════════════════════════════════════════
-#[test] fn rewrite_basic() { compile_ok(&p("01 REC PIC X(80).", "    REWRITE REC.")); }
-#[test] fn rewrite_from() { compile_ok(&p("01 REC PIC X(80).\n01 NEW-REC PIC X(80) VALUE \"Updated\".", "    REWRITE REC FROM NEW-REC.")); }
-#[test] fn delete_file() { compile_ok(&p("", "    DELETE WS-FILE.")); }
-#[test] fn start_file() { compile_ok(&p("", "    START WS-FILE KEY = WS-KEY.")); }
-#[test] fn start_no_key() { compile_ok(&p("", "    START WS-FILE.")); }
+#[test]
+fn rewrite_basic() {
+    compile_ok(&p("01 REC PIC X(80).", "    REWRITE REC."));
+}
+#[test]
+fn rewrite_from() {
+    compile_ok(&p(
+        "01 REC PIC X(80).\n01 NEW-REC PIC X(80) VALUE \"Updated\".",
+        "    REWRITE REC FROM NEW-REC.",
+    ));
+}
+#[test]
+fn delete_file() {
+    compile_ok(&p("", "    DELETE WS-FILE."));
+}
+#[test]
+fn start_file() {
+    compile_ok(&p("", "    START WS-FILE KEY = WS-KEY."));
+}
+#[test]
+fn start_no_key() {
+    compile_ok(&p("", "    START WS-FILE."));
+}
 
 // ═══════════════════════════════════════════════════════════
 // INSPECT CONVERTING
 // ═══════════════════════════════════════════════════════════
-#[test] fn inspect_converting() { compile_ok(&p(
-    "01 TXT PIC X(20) VALUE \"Hello World\".",
-    "    INSPECT TXT CONVERTING \"abcdefghij\" TO \"ABCDEFGHIJ\"."
-)); }
-#[test] fn inspect_converting_spaces() { compile_ok(&p(
-    "01 TXT PIC X(20) VALUE \"a b c\".",
-    "    INSPECT TXT CONVERTING \" \" TO \"-\"."
-)); }
+#[test]
+fn inspect_converting() {
+    compile_ok(&p(
+        "01 TXT PIC X(20) VALUE \"Hello World\".",
+        "    INSPECT TXT CONVERTING \"abcdefghij\" TO \"ABCDEFGHIJ\".",
+    ));
+}
+#[test]
+fn inspect_converting_spaces() {
+    compile_ok(&p(
+        "01 TXT PIC X(20) VALUE \"a b c\".",
+        "    INSPECT TXT CONVERTING \" \" TO \"-\".",
+    ));
+}
 
 // ═══════════════════════════════════════════════════════════
 // CLASS CONDITIONS (IS NUMERIC, IS ALPHABETIC)
 // ═══════════════════════════════════════════════════════════
-#[test] fn is_numeric() { compile_ok(&p(
-    "01 X PIC X(10) VALUE \"12345\".",
-    "    IF X IS NUMERIC\n        DISPLAY \"Number\"\n    END-IF."
-)); }
-#[test] fn is_not_numeric() { compile_ok(&p(
-    "01 X PIC X(10) VALUE \"Hello\".",
-    "    IF X IS NOT NUMERIC\n        DISPLAY \"Not a number\"\n    END-IF."
-)); }
-#[test] fn is_alphabetic() { compile_ok(&p(
-    "01 X PIC X(10) VALUE \"Hello\".",
-    "    IF X IS ALPHABETIC\n        DISPLAY \"Alpha\"\n    END-IF."
-)); }
-#[test] fn is_alphabetic_lower() { compile_ok(&p(
-    "01 X PIC X(10) VALUE \"hello\".",
-    "    IF X IS ALPHABETIC-LOWER\n        DISPLAY \"Lower\"\n    END-IF."
-)); }
-#[test] fn is_alphabetic_upper() { compile_ok(&p(
-    "01 X PIC X(10) VALUE \"HELLO\".",
-    "    IF X IS ALPHABETIC-UPPER\n        DISPLAY \"Upper\"\n    END-IF."
-)); }
+#[test]
+fn is_numeric() {
+    compile_ok(&p(
+        "01 X PIC X(10) VALUE \"12345\".",
+        "    IF X IS NUMERIC\n        DISPLAY \"Number\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_not_numeric() {
+    compile_ok(&p(
+        "01 X PIC X(10) VALUE \"Hello\".",
+        "    IF X IS NOT NUMERIC\n        DISPLAY \"Not a number\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_alphabetic() {
+    compile_ok(&p(
+        "01 X PIC X(10) VALUE \"Hello\".",
+        "    IF X IS ALPHABETIC\n        DISPLAY \"Alpha\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_alphabetic_lower() {
+    compile_ok(&p(
+        "01 X PIC X(10) VALUE \"hello\".",
+        "    IF X IS ALPHABETIC-LOWER\n        DISPLAY \"Lower\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_alphabetic_upper() {
+    compile_ok(&p(
+        "01 X PIC X(10) VALUE \"HELLO\".",
+        "    IF X IS ALPHABETIC-UPPER\n        DISPLAY \"Upper\"\n    END-IF.",
+    ));
+}
 
 // ═══════════════════════════════════════════════════════════
 // SIGN CONDITIONS (IS POSITIVE, IS NEGATIVE, IS ZERO)
 // ═══════════════════════════════════════════════════════════
-#[test] fn is_positive() { compile_ok(&p(
-    "01 X PIC S9(5) VALUE 10.",
-    "    IF X IS POSITIVE\n        DISPLAY \"Positive\"\n    END-IF."
-)); }
-#[test] fn is_negative() { compile_ok(&p(
-    "01 X PIC S9(5) VALUE -5.",
-    "    IF X IS NEGATIVE\n        DISPLAY \"Negative\"\n    END-IF."
-)); }
-#[test] fn is_zero() { compile_ok(&p(
-    "01 X PIC 9(5) VALUE 0.",
-    "    IF X IS ZERO\n        DISPLAY \"Zero\"\n    END-IF."
-)); }
-#[test] fn is_not_zero() { compile_ok(&p(
-    "01 X PIC 9(5) VALUE 5.",
-    "    IF X IS NOT ZERO\n        DISPLAY \"Non-zero\"\n    END-IF."
-)); }
+#[test]
+fn is_positive() {
+    compile_ok(&p(
+        "01 X PIC S9(5) VALUE 10.",
+        "    IF X IS POSITIVE\n        DISPLAY \"Positive\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_negative() {
+    compile_ok(&p(
+        "01 X PIC S9(5) VALUE -5.",
+        "    IF X IS NEGATIVE\n        DISPLAY \"Negative\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_zero() {
+    compile_ok(&p(
+        "01 X PIC 9(5) VALUE 0.",
+        "    IF X IS ZERO\n        DISPLAY \"Zero\"\n    END-IF.",
+    ));
+}
+#[test]
+fn is_not_zero() {
+    compile_ok(&p(
+        "01 X PIC 9(5) VALUE 5.",
+        "    IF X IS NOT ZERO\n        DISPLAY \"Non-zero\"\n    END-IF.",
+    ));
+}
 
 // ═══════════════════════════════════════════════════════════
 // COPY
 // ═══════════════════════════════════════════════════════════
-#[test] fn copy_stmt() { compile_ok(&p("", "    COPY COMMON-DEFS.")); }
+#[test]
+fn copy_stmt() {
+    compile_ok(&p("", "    COPY COMMON-DEFS."));
+}
 
 // ═══════════════════════════════════════════════════════════
 // MERGE
 // ═══════════════════════════════════════════════════════════
-#[test] fn merge_ascending() { compile_ok(&p("", "    MERGE WS-FILE ON ASCENDING KEY WS-KEY.")); }
-#[test] fn merge_descending() { compile_ok(&p("", "    MERGE WS-FILE ON DESCENDING KEY WS-KEY.")); }
+#[test]
+fn merge_ascending() {
+    compile_ok(&p("", "    MERGE WS-FILE ON ASCENDING KEY WS-KEY."));
+}
+#[test]
+fn merge_descending() {
+    compile_ok(&p("", "    MERGE WS-FILE ON DESCENDING KEY WS-KEY."));
+}
 
 // ═══════════════════════════════════════════════════════════
 // OO COBOL 2023 — INVOKE
 // ═══════════════════════════════════════════════════════════
-#[test] fn invoke_basic() { compile_ok(&p("01 OBJ PIC X(10).\n01 RES PIC X(10).", "    INVOKE OBJ GET-NAME RETURNING RES.")); }
-#[test] fn invoke_using() { compile_ok(&p("01 OBJ PIC X(10).\n01 ARG PIC X(10) VALUE \"Test\".", "    INVOKE OBJ PROCESS USING ARG.")); }
+#[test]
+fn invoke_basic() {
+    compile_ok(&p(
+        "01 OBJ PIC X(10).\n01 RES PIC X(10).",
+        "    INVOKE OBJ GET-NAME RETURNING RES.",
+    ));
+}
+#[test]
+fn invoke_using() {
+    compile_ok(&p(
+        "01 OBJ PIC X(10).\n01 ARG PIC X(10) VALUE \"Test\".",
+        "    INVOKE OBJ PROCESS USING ARG.",
+    ));
+}
 
 // ═══════════════════════════════════════════════════════════
 // VALIDATE / FREE / ALLOCATE
 // ═══════════════════════════════════════════════════════════
-#[test] fn validate_stmt() { compile_ok(&p("01 X PIC 9(5) VALUE 123.", "    VALIDATE X.")); }
-#[test] fn free_stmt() { compile_ok(&p("01 PTR PIC X(10).", "    FREE PTR.")); }
-#[test] fn allocate_stmt() { compile_ok(&p("01 PTR PIC X(10).", "    ALLOCATE PTR.")); }
+#[test]
+fn validate_stmt() {
+    compile_ok(&p("01 X PIC 9(5) VALUE 123.", "    VALIDATE X."));
+}
+#[test]
+fn free_stmt() {
+    compile_ok(&p("01 PTR PIC X(10).", "    FREE PTR."));
+}
+#[test]
+fn allocate_stmt() {
+    compile_ok(&p("01 PTR PIC X(10).", "    ALLOCATE PTR."));
+}
 
 // ═══════════════════════════════════════════════════════════
 // PERFORM THRU (extended tests)
 // ═══════════════════════════════════════════════════════════
-#[test] fn perform_thru_3() {
-    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    PERFORM STEP-A THRU STEP-C.\n    STOP RUN.\nSTEP-A.\n    DISPLAY \"A\".\nSTEP-B.\n    DISPLAY \"B\".\nSTEP-C.\n    DISPLAY \"C\".");
+#[test]
+fn perform_thru_3() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    PERFORM STEP-A THRU STEP-C.\n    STOP RUN.\nSTEP-A.\n    DISPLAY \"A\".\nSTEP-B.\n    DISPLAY \"B\".\nSTEP-C.\n    DISPLAY \"C\".",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -118,7 +217,8 @@ fn d() -> &'static str { "01 R PIC 9(10) VALUE 0.\n01 A PIC 9(10) VALUE 10.\n01 
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn data_validation() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. VALIDATE.
 DATA DIVISION.
@@ -142,12 +242,14 @@ PROCEDURE DIVISION.
         DISPLAY "Amount is non-zero"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn char_translation() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CONVERT.
 DATA DIVISION.
@@ -161,12 +263,14 @@ PROCEDURE DIVISION.
     DISPLAY "Original:  " WS-TEXT.
     DISPLAY "Converted: " WS-COPY.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn exit_perform_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EXITPERF.
 DATA DIVISION.
@@ -181,12 +285,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Finished at " WS-I.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn file_operations() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FILEOPS.
 DATA DIVISION.
@@ -202,12 +308,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-RECORD.
     CLOSE WS-FILE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn invoke_oo_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. OOPROG.
 DATA DIVISION.
@@ -219,12 +327,14 @@ PROCEDURE DIVISION.
     INVOKE WS-OBJ PROCESS USING WS-ARG RETURNING WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multi_condition_evaluate() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MULTIEVAL.
 DATA DIVISION.
@@ -248,12 +358,14 @@ PROCEDURE DIVISION.
             DISPLAY "Unknown"
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn batch_processing_pattern() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. BATCH.
 DATA DIVISION.
@@ -277,12 +389,14 @@ PROCEDURE DIVISION.
     DISPLAY "Successful:    " WS-SUCCESS.
     DISPLAY "Errors:        " WS-ERRORS.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn string_manipulation_advanced() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. STRMANIP.
 DATA DIVISION.
@@ -309,12 +423,14 @@ PROCEDURE DIVISION.
     DISPLAY "Length:   " WS-LEN.
     DISPLAY "Periods:  " WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn interest_calculator() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INTEREST.
 DATA DIVISION.
@@ -336,12 +452,14 @@ PROCEDURE DIVISION.
     DISPLAY "Years:     " WS-YEARS.
     DISPLAY "Total:     " WS-TOTAL.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn paragraph_with_conditions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PARACONDN.
 DATA DIVISION.
@@ -363,13 +481,15 @@ PROCESS-PARA.
             DISPLAY "Processing other type"
         END-IF
     END-IF.
-"#);
+"#,
+    );
 }
 
 #[test]
- // COMPUTE with subscripted target needs parser work
+// COMPUTE with subscripted target needs parser work
 fn nested_perform_with_compute() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. NESTPERF.
 DATA DIVISION.
@@ -387,12 +507,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Multiplication table done".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn free_allocate_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DYNALLOC.
 DATA DIVISION.
@@ -404,5 +526,6 @@ PROCEDURE DIVISION.
     FREE WS-PTR.
     DISPLAY "Freed".
     STOP RUN.
-"#);
+"#,
+    );
 }

@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── ON SIZE ERROR / NOT ON SIZE ERROR — ADD ───────────────────
 
-#[test] fn add_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn add_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -16,11 +18,14 @@ use super::helpers::compile_ok;
            END-ADD
            DISPLAY ws-overflow
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn add_not_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn add_not_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -33,11 +38,14 @@ use super::helpers::compile_ok;
            END-ADD
            DISPLAY ws-ok-flag
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn add_both_size_error_branches() {
-    compile_ok(r#"
+#[test]
+fn add_both_size_error_branches() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -51,13 +59,16 @@ use super::helpers::compile_ok;
            END-ADD
            DISPLAY ws-status
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR — SUBTRACT ──────────────────────────────────
 
-#[test] fn subtract_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn subtract_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -70,11 +81,14 @@ use super::helpers::compile_ok;
            END-SUBTRACT
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn subtract_not_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn subtract_not_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -87,13 +101,16 @@ use super::helpers::compile_ok;
            END-SUBTRACT
            DISPLAY ws-ok
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR — MULTIPLY ──────────────────────────────────
 
-#[test] fn multiply_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn multiply_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -106,11 +123,14 @@ use super::helpers::compile_ok;
            END-MULTIPLY
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn multiply_giving_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn multiply_giving_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -125,13 +145,16 @@ use super::helpers::compile_ok;
            END-MULTIPLY
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR — DIVIDE ────────────────────────────────────
 
-#[test] fn divide_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn divide_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -145,11 +168,14 @@ use super::helpers::compile_ok;
            END-DIVIDE
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn divide_giving_remainder_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn divide_giving_remainder_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -167,13 +193,16 @@ use super::helpers::compile_ok;
            DISPLAY ws-q
            DISPLAY ws-r
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR — COMPUTE ───────────────────────────────────
 
-#[test] fn compute_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn compute_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -186,11 +215,14 @@ use super::helpers::compile_ok;
            END-COMPUTE
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn compute_not_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn compute_not_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -204,11 +236,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-result
            DISPLAY ws-ok
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn compute_both_branches_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn compute_both_branches_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -222,13 +257,16 @@ use super::helpers::compile_ok;
            END-COMPUTE
            DISPLAY ws-status
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR in ADD GIVING ───────────────────────────────
 
-#[test] fn add_giving_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn add_giving_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -243,13 +281,16 @@ use super::helpers::compile_ok;
            END-ADD
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Nested ON SIZE ERROR ──────────────────────────────────────
 
-#[test] fn nested_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn nested_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -267,13 +308,16 @@ use super::helpers::compile_ok;
            END-ADD
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ON SIZE ERROR with ROUNDED ────────────────────────────────
 
-#[test] fn compute_rounded_on_size_error() {
-    compile_ok(r#"
+#[test]
+fn compute_rounded_on_size_error() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -287,5 +331,6 @@ use super::helpers::compile_ok;
            END-COMPUTE
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }

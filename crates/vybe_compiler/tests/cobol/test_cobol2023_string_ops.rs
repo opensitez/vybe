@@ -8,7 +8,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn string_with_pointer() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -23,12 +24,14 @@ PROCEDURE DIVISION.
         WITH POINTER WS-PTR.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn string_overflow_handler() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -42,12 +45,14 @@ PROCEDURE DIVISION.
         NOT ON OVERFLOW DISPLAY "OK"
     END-STRING.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn unstring_multi_delimiter() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -64,12 +69,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-LAST.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn unstring_with_count() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -87,12 +94,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-CNT1.
     DISPLAY WS-CNT2.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn unstring_with_delimiter_in() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -110,12 +119,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-DELIM1.
     DISPLAY WS-DELIM2.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn unstring_tallying() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -133,12 +144,14 @@ PROCEDURE DIVISION.
         TALLYING IN WS-COUNT.
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_tallying_all() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -149,12 +162,14 @@ PROCEDURE DIVISION.
     INSPECT WS-STR TALLYING WS-COUNT FOR ALL "A".
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_tallying_leading() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -165,12 +180,14 @@ PROCEDURE DIVISION.
     INSPECT WS-STR TALLYING WS-COUNT FOR LEADING "A".
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_tallying_before_initial() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -182,12 +199,14 @@ PROCEDURE DIVISION.
         BEFORE INITIAL "X".
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_replacing_first() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -197,12 +216,14 @@ PROCEDURE DIVISION.
     INSPECT WS-STR REPLACING FIRST "A" BY "X".
     DISPLAY WS-STR.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn inspect_converting() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -213,12 +234,14 @@ PROCEDURE DIVISION.
         TO "ABCDEFGHIJKLMNOPQRSTUVWXYZ".
     DISPLAY WS-STR.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn reference_modification_variable() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -231,12 +254,14 @@ PROCEDURE DIVISION.
     MOVE WS-STR(WS-POS:WS-LEN) TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn reference_modification_no_length() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -247,5 +272,6 @@ PROCEDURE DIVISION.
     MOVE WS-STR(7:) TO WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }

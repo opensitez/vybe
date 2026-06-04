@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── LINAGE basic ──────────────────────────────────────────────
 
-#[test] fn linage_basic() {
-    compile_ok(r#"
+#[test]
+fn linage_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -22,11 +24,14 @@ use super::helpers::compile_ok;
            WRITE print-rec
            CLOSE print-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_with_footing() {
-    compile_ok(r#"
+#[test]
+fn linage_with_footing() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -48,11 +53,14 @@ use super::helpers::compile_ok;
            WRITE rpt-line
            CLOSE rpt
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_with_top_bottom() {
-    compile_ok(r#"
+#[test]
+fn linage_with_top_bottom() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -74,11 +82,14 @@ use super::helpers::compile_ok;
            WRITE page-rec
            CLOSE page-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_lines_at_top_only() {
-    compile_ok(r#"
+#[test]
+fn linage_lines_at_top_only() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -98,11 +109,14 @@ use super::helpers::compile_ok;
            WRITE out-line
            CLOSE out-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_lines_at_bottom_only() {
-    compile_ok(r#"
+#[test]
+fn linage_lines_at_bottom_only() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -122,11 +136,14 @@ use super::helpers::compile_ok;
            WRITE rpt-line
            CLOSE rpt-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_full_specification() {
-    compile_ok(r#"
+#[test]
+fn linage_full_specification() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -152,11 +169,14 @@ use super::helpers::compile_ok;
            WRITE full-line AFTER ADVANCING 1 LINE
            CLOSE full-rpt
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_with_variable() {
-    compile_ok(r#"
+#[test]
+fn linage_with_variable() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -183,11 +203,14 @@ use super::helpers::compile_ok;
            WRITE var-line
            CLOSE var-rpt
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_write_advancing_page() {
-    compile_ok(r#"
+#[test]
+fn linage_write_advancing_page() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -211,11 +234,14 @@ use super::helpers::compile_ok;
            WRITE pg-line AFTER ADVANCING PAGE
            CLOSE pg-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_counter_access() {
-    compile_ok(r#"
+#[test]
+fn linage_counter_access() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -242,11 +268,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            CLOSE cnt-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_at_end_of_page() {
-    compile_ok(r#"
+#[test]
+fn linage_at_end_of_page() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -274,11 +303,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            CLOSE eop-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn linage_not_at_end_of_page() {
-    compile_ok(r#"
+#[test]
+fn linage_not_at_end_of_page() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -305,5 +337,6 @@ use super::helpers::compile_ok;
            END-WRITE
            CLOSE nep-file
            STOP RUN.
-"#);
+"#,
+    );
 }

@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── RAISE EXCEPTION with class ────────────────────────────────
 
-#[test] fn raise_exception_class() {
-    compile_ok(r#"
+#[test]
+fn raise_exception_class() {
+    compile_ok(
+        r#"
        CLASS-ID. AppException INHERITS FROM EXCEPTION-OBJECT.
        DATA DIVISION.
        WORKING-STORAGE SECTION.
@@ -23,11 +25,14 @@ use super::helpers::compile_ok;
            GOBACK.
        END METHOD SET-MESSAGE.
        END CLASS AppException.
-"#);
+"#,
+    );
 }
 
-#[test] fn raise_built_in_exception() {
-    compile_ok(r#"
+#[test]
+fn raise_built_in_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -37,11 +42,14 @@ use super::helpers::compile_ok;
            RAISE EXCEPTION EC-PROGRAM-ARG-OMITTED
            DISPLAY ws-caught
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn raise_and_resume() {
-    compile_ok(r#"
+#[test]
+fn raise_and_resume() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -53,13 +61,16 @@ use super::helpers::compile_ok;
            ADD 1 TO ws-x
            DISPLAY ws-x
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── User-defined exception hierarchy ─────────────────────────
 
-#[test] fn custom_exception_class() {
-    compile_ok(r#"
+#[test]
+fn custom_exception_class() {
+    compile_ok(
+        r#"
        CLASS-ID. ValidationException INHERITS FROM EXCEPTION-OBJECT.
        DATA DIVISION.
        WORKING-STORAGE SECTION.
@@ -75,11 +86,14 @@ use super::helpers::compile_ok;
            GOBACK.
        END METHOD INITIALIZE-EX.
        END CLASS ValidationException.
-"#);
+"#,
+    );
 }
 
-#[test] fn exception_hierarchy_two_levels() {
-    compile_ok(r#"
+#[test]
+fn exception_hierarchy_two_levels() {
+    compile_ok(
+        r#"
        CLASS-ID. BaseException INHERITS FROM EXCEPTION-OBJECT.
        END CLASS BaseException.
 
@@ -95,11 +109,14 @@ use super::helpers::compile_ok;
            GOBACK.
        END METHOD SET-SQL-CODE.
        END CLASS DatabaseException.
-"#);
+"#,
+    );
 }
 
-#[test] fn exception_hierarchy_three_levels() {
-    compile_ok(r#"
+#[test]
+fn exception_hierarchy_three_levels() {
+    compile_ok(
+        r#"
        CLASS-ID. AppBaseEx INHERITS FROM EXCEPTION-OBJECT.
        END CLASS AppBaseEx.
 
@@ -118,13 +135,16 @@ use super::helpers::compile_ok;
            GOBACK.
        END METHOD SET-FILENAME.
        END CLASS FileNotFoundException.
-"#);
+"#,
+    );
 }
 
 // ── INVOKE on exception objects ───────────────────────────────
 
-#[test] fn invoke_exception_method() {
-    compile_ok(r#"
+#[test]
+fn invoke_exception_method() {
+    compile_ok(
+        r#"
        CLASS-ID. MyException INHERITS FROM EXCEPTION-OBJECT.
        DATA DIVISION.
        WORKING-STORAGE SECTION.
@@ -153,13 +173,16 @@ use super::helpers::compile_ok;
            INVOKE ws-ex GET-CODE RETURNING ws-code
            DISPLAY ws-code
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Standard exception conditions ────────────────────────────
 
-#[test] fn ec_program_arg_omitted() {
-    compile_ok(r#"
+#[test]
+fn ec_program_arg_omitted() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -170,11 +193,14 @@ use super::helpers::compile_ok;
                RAISE EXCEPTION EC-PROGRAM-ARG-OMITTED
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn ec_size_overflow() {
-    compile_ok(r#"
+#[test]
+fn ec_size_overflow() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -185,11 +211,14 @@ use super::helpers::compile_ok;
                ON SIZE ERROR RAISE EXCEPTION EC-SIZE-OVERFLOW
            END-ADD
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn ec_bound_ptr_null() {
-    compile_ok(r#"
+#[test]
+fn ec_bound_ptr_null() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -201,11 +230,14 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY "checked"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn ec_io_file_missing() {
-    compile_ok(r#"
+#[test]
+fn ec_io_file_missing() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -233,13 +265,16 @@ use super::helpers::compile_ok;
                DISPLAY "file error handled"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Exception propagation ─────────────────────────────────────
 
-#[test] fn exception_in_subprogram() {
-    compile_ok(r#"
+#[test]
+fn exception_in_subprogram() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. main-prog.
        DATA DIVISION.
@@ -260,11 +295,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION USING lk-result.
            MOVE "Y" TO lk-result
            GOBACK.
-"#);
+"#,
+    );
 }
 
-#[test] fn exception_object_null_reference() {
-    compile_ok(r#"
+#[test]
+fn exception_object_null_reference() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -279,11 +317,14 @@ use super::helpers::compile_ok;
                DISPLAY "null object reference"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn resume_after_exception() {
-    compile_ok(r#"
+#[test]
+fn resume_after_exception() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -298,5 +339,6 @@ use super::helpers::compile_ok;
            ADD ws-step TO ws-total
            DISPLAY ws-total
            STOP RUN.
-"#);
+"#,
+    );
 }

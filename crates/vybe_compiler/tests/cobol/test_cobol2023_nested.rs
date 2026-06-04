@@ -6,7 +6,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn nested_program_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MAIN-PROG.
 PROCEDURE DIVISION.
@@ -19,12 +20,14 @@ PROCEDURE DIVISION.
     STOP RUN.
 END PROGRAM HELPER.
 END PROGRAM MAIN-PROG.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn nested_program_with_data() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. OUTER.
 DATA DIVISION.
@@ -43,48 +46,56 @@ PROCEDURE DIVISION.
     STOP RUN.
 END PROGRAM INNER.
 END PROGRAM OUTER.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn copy_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
     COPY STANDARD-HEADER.
     DISPLAY "After copy".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn copy_replacing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
     COPY CUSTOMER-REC REPLACING ==OLD-NAME== BY ==CUST-NAME==.
     DISPLAY "After copy replacing".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn copy_of_library() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
     COPY DATE-UTILS OF COMMON-LIB.
     DISPLAY "Copy from library".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn paragraphs_as_modules() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -101,12 +112,14 @@ CALCULATE-TOTAL.
     ADD WS-TAX TO WS-TOTAL.
 DISPLAY-RESULT.
     DISPLAY "Total: " WS-TOTAL.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_thru_sections() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -122,12 +135,14 @@ PROCESS-PARA.
     ADD 10 TO WS-COUNTER.
 CLEANUP-PARA.
     ADD 100 TO WS-COUNTER.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn exit_section() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 PROCEDURE DIVISION.
@@ -138,12 +153,14 @@ WORK-PARA.
     DISPLAY "Working".
     EXIT SECTION.
     DISPLAY "Never reached".
-"#);
+"#,
+    );
 }
 
 #[test]
 fn exit_method() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MY-CLASS.
 OBJECT.
@@ -155,12 +172,14 @@ PROCEDURE DIVISION.
 END METHOD PROCESS.
 END OBJECT.
 END CLASS MY-CLASS.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn global_data_item() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -171,12 +190,14 @@ PROCEDURE DIVISION.
     MOVE "Global value" TO WS-SHARED.
     DISPLAY WS-SHARED.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn external_data_item() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -185,12 +206,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-EXT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn local_storage_section() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -202,12 +225,14 @@ PROCEDURE DIVISION.
     ADD WS-PERSIST TO WS-LOCAL.
     DISPLAY WS-LOCAL.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn linkage_section() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -218,5 +243,6 @@ LINKAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-MAIN.
     STOP RUN.
-"#);
+"#,
+    );
 }

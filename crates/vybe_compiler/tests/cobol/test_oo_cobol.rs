@@ -1,23 +1,23 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 // ═══════════════════════════════════════════════════════════
 // BASIC CLASS DEFINITION
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn class_empty() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MY-CLASS.
 END CLASS MY-CLASS.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_method() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. GREETER.
 OBJECT.
@@ -27,12 +27,14 @@ PROCEDURE DIVISION.
 END METHOD GREET.
 END OBJECT.
 END CLASS GREETER.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_data() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. PERSON.
 OBJECT.
@@ -50,12 +52,14 @@ PROCEDURE DIVISION USING WS-INPUT.
 END METHOD SET-NAME.
 END OBJECT.
 END CLASS PERSON.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_init() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. COUNTER.
 OBJECT.
@@ -76,7 +80,8 @@ PROCEDURE DIVISION.
 END METHOD GET-VALUE.
 END OBJECT.
 END CLASS COUNTER.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -84,7 +89,8 @@ END CLASS COUNTER.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn class_inherits() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. ANIMAL.
 OBJECT.
@@ -94,12 +100,14 @@ PROCEDURE DIVISION.
 END METHOD SPEAK.
 END OBJECT.
 END CLASS ANIMAL.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_inherits_from() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. DOG INHERITS FROM ANIMAL.
 OBJECT.
@@ -109,7 +117,8 @@ PROCEDURE DIVISION.
 END METHOD SPEAK.
 END OBJECT.
 END CLASS DOG.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -117,19 +126,22 @@ END CLASS DOG.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn interface_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 INTERFACE-ID. PRINTABLE.
 METHOD-ID. TO-STRING.
 PROCEDURE DIVISION RETURNING WS-RESULT.
 END METHOD TO-STRING.
 END INTERFACE PRINTABLE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn interface_multi_method() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 INTERFACE-ID. COMPARABLE.
 METHOD-ID. COMPARE-TO.
@@ -139,12 +151,14 @@ METHOD-ID. EQUALS.
 PROCEDURE DIVISION USING OTHER-OBJ RETURNING WS-RESULT.
 END METHOD EQUALS.
 END INTERFACE COMPARABLE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_implements() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MY-STRING IMPLEMENTS PRINTABLE.
 OBJECT.
@@ -157,7 +171,8 @@ PROCEDURE DIVISION.
 END METHOD TO-STRING.
 END OBJECT.
 END CLASS MY-STRING.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -165,7 +180,8 @@ END CLASS MY-STRING.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn class_factory() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MATH-UTILS.
 FACTORY.
@@ -179,16 +195,18 @@ PROCEDURE DIVISION USING WS-X RETURNING WS-RESULT.
 END METHOD CUBE.
 END FACTORY.
 END CLASS MATH-UTILS.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
 // PROPERTY GET/SET
 // ═══════════════════════════════════════════════════════════
 #[test]
- // OO COBOL PROPERTY GET/SET with data items needs parser work
+// OO COBOL PROPERTY GET/SET with data items needs parser work
 fn property_get_set() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. POINT.
 OBJECT.
@@ -214,7 +232,8 @@ PROCEDURE DIVISION USING WS-VAL.
 END METHOD SET-Y.
 END OBJECT.
 END CLASS POINT.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -222,7 +241,8 @@ END CLASS POINT.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn invoke_method() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TESTINVOKE.
 DATA DIVISION.
@@ -233,12 +253,14 @@ PROCEDURE DIVISION.
     INVOKE WS-OBJ GREET RETURNING WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn invoke_with_using() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TESTINVOKE2.
 DATA DIVISION.
@@ -250,7 +272,8 @@ PROCEDURE DIVISION.
     INVOKE WS-OBJ SAY-HELLO USING WS-ARG RETURNING WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -258,7 +281,8 @@ PROCEDURE DIVISION.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn bank_account_class() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. BANK-ACCOUNT.
 OBJECT.
@@ -288,12 +312,14 @@ PROCEDURE DIVISION.
 END METHOD GET-BALANCE.
 END OBJECT.
 END CLASS BANK-ACCOUNT.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn shape_hierarchy() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. SHAPE.
 OBJECT.
@@ -310,12 +336,14 @@ PROCEDURE DIVISION.
 END METHOD DESCRIBE.
 END OBJECT.
 END CLASS SHAPE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rectangle_class() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. RECTANGLE INHERITS FROM SHAPE.
 OBJECT.
@@ -335,12 +363,14 @@ PROCEDURE DIVISION.
 END METHOD AREA.
 END OBJECT.
 END CLASS RECTANGLE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn employee_class() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. EMPLOYEE.
 OBJECT.
@@ -368,7 +398,8 @@ PROCEDURE DIVISION.
 END METHOD DISPLAY-INFO.
 END OBJECT.
 END CLASS EMPLOYEE.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -396,7 +427,8 @@ END CLASS CALCULATOR.
 
 #[test]
 fn interface_as_component() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 INTERFACE-ID. SERIALIZABLE.
 METHOD-ID. SERIALIZE.
@@ -406,7 +438,8 @@ METHOD-ID. DESERIALIZE.
 PROCEDURE DIVISION USING WS-JSON.
 END METHOD DESERIALIZE.
 END INTERFACE SERIALIZABLE.
-"#);
+"#,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -414,7 +447,8 @@ END INTERFACE SERIALIZABLE.
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn parse_multiple_implements() {
-    assert!(parse_ok(r#"
+    assert!(parse_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MY-OBJ IMPLEMENTS PRINTABLE, COMPARABLE.
 OBJECT.
@@ -424,12 +458,14 @@ PROCEDURE DIVISION.
 END METHOD TO-STRING.
 END OBJECT.
 END CLASS MY-OBJ.
-"#));
+"#
+    ));
 }
 
 #[test]
 fn parse_factory_and_object() {
-    assert!(parse_ok(r#"
+    assert!(parse_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. MY-FACTORY.
 FACTORY.
@@ -445,17 +481,20 @@ PROCEDURE DIVISION.
 END METHOD PROCESS.
 END OBJECT.
 END CLASS MY-FACTORY.
-"#));
+"#
+    ));
 }
 
 #[test]
 fn parse_interface_inherits() {
-    assert!(parse_ok(r#"
+    assert!(parse_ok(
+        r#"
 IDENTIFICATION DIVISION.
 INTERFACE-ID. SORTABLE INHERITS FROM COMPARABLE.
 METHOD-ID. SORT-KEY.
 PROCEDURE DIVISION RETURNING WS-KEY.
 END METHOD SORT-KEY.
 END INTERFACE SORTABLE.
-"#));
+"#
+    ));
 }

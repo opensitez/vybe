@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── CURRENCY SIGN ─────────────────────────────────────────────
 
-#[test] fn currency_sign_default() {
-    compile_ok(r#"
+#[test]
+fn currency_sign_default() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -16,11 +18,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-amount
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn currency_sign_euro() {
-    compile_ok(r#"
+#[test]
+fn currency_sign_euro() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -33,11 +38,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-price
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn currency_sign_pound() {
-    compile_ok(r#"
+#[test]
+fn currency_sign_pound() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -50,13 +58,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-amount
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── DECIMAL-POINT IS COMMA ────────────────────────────────────
 
-#[test] fn decimal_point_is_comma() {
-    compile_ok(r#"
+#[test]
+fn decimal_point_is_comma() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -69,11 +80,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn decimal_point_comma_arithmetic() {
-    compile_ok(r#"
+#[test]
+fn decimal_point_comma_arithmetic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -89,11 +103,14 @@ use super::helpers::compile_ok;
            ADD ws-a ws-b GIVING ws-c
            DISPLAY ws-c
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn decimal_point_comma_with_currency() {
-    compile_ok(r#"
+#[test]
+fn decimal_point_comma_with_currency() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -107,13 +124,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-price
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── CLASS definition ──────────────────────────────────────────
 
-#[test] fn class_digit_chars() {
-    compile_ok(r#"
+#[test]
+fn class_digit_chars() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -130,11 +150,14 @@ use super::helpers::compile_ok;
                DISPLAY "not digit"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn class_alpha_chars() {
-    compile_ok(r#"
+#[test]
+fn class_alpha_chars() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -152,11 +175,14 @@ use super::helpers::compile_ok;
                WHEN OTHER                DISPLAY "other"
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn class_special_chars() {
-    compile_ok(r#"
+#[test]
+fn class_special_chars() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -171,11 +197,14 @@ use super::helpers::compile_ok;
                DISPLAY "valid hex"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn class_with_multiple_ranges() {
-    compile_ok(r#"
+#[test]
+fn class_with_multiple_ranges() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -190,13 +219,16 @@ use super::helpers::compile_ok;
                DISPLAY "alphanumeric"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ALPHABET definition ───────────────────────────────────────
 
-#[test] fn alphabet_ebcdic() {
-    compile_ok(r#"
+#[test]
+fn alphabet_ebcdic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -209,11 +241,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-char
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alphabet_ascii() {
-    compile_ok(r#"
+#[test]
+fn alphabet_ascii() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -226,11 +261,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY ws-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alphabet_standard_1() {
-    compile_ok(r#"
+#[test]
+fn alphabet_standard_1() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -240,11 +278,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "ok"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alphabet_user_defined() {
-    compile_ok(r#"
+#[test]
+fn alphabet_user_defined() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -254,13 +295,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "ok"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── SYMBOLIC CHARACTERS ───────────────────────────────────────
 
-#[test] fn symbolic_characters_basic() {
-    compile_ok(r#"
+#[test]
+fn symbolic_characters_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -274,11 +318,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "tab char defined"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn symbolic_characters_multiple() {
-    compile_ok(r#"
+#[test]
+fn symbolic_characters_multiple() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -294,13 +341,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "control chars defined"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── CONSOLE IS CRT (interactive I/O) ─────────────────────────
 
-#[test] fn console_is_crt() {
-    compile_ok(r#"
+#[test]
+fn console_is_crt() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -310,13 +360,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "console output"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Combined SPECIAL-NAMES ────────────────────────────────────
 
-#[test] fn special_names_combined() {
-    compile_ok(r#"
+#[test]
+fn special_names_combined() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -336,5 +389,6 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY ws-price
            STOP RUN.
-"#);
+"#,
+    );
 }

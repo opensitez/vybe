@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── ROUNDED (default — nearest away from zero) ─────────────────
 
-#[test] fn rounded_basic_add() {
-    compile_ok(r#"
+#[test]
+fn rounded_basic_add() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -13,11 +15,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED = 1.35
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_basic_subtract() {
-    compile_ok(r#"
+#[test]
+fn rounded_basic_subtract() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -29,11 +34,14 @@ use super::helpers::compile_ok;
            SUBTRACT ws-b FROM ws-a GIVING ws-result ROUNDED
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_basic_multiply() {
-    compile_ok(r#"
+#[test]
+fn rounded_basic_multiply() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -43,11 +51,14 @@ use super::helpers::compile_ok;
            MULTIPLY 3 BY 3.7 GIVING ws-result ROUNDED
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_basic_divide() {
-    compile_ok(r#"
+#[test]
+fn rounded_basic_divide() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -57,13 +68,16 @@ use super::helpers::compile_ok;
            DIVIDE 3 INTO 10 GIVING ws-result ROUNDED
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE TRUNCATION ───────────────────────────────────
 
-#[test] fn rounded_mode_truncation_positive() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_truncation_positive() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -73,11 +87,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TRUNCATION = 2.79
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_truncation_negative() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_truncation_negative() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -87,11 +104,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TRUNCATION = -2.79
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_truncation_divide() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_truncation_divide() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -101,13 +121,16 @@ use super::helpers::compile_ok;
            DIVIDE 6 INTO 10 GIVING ws-q ROUNDED MODE TRUNCATION
            DISPLAY ws-q
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE NEAREST-EVEN (banker's rounding) ─────────────
 
-#[test] fn rounded_mode_nearest_even_half_up() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_nearest_even_half_up() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -117,11 +140,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE NEAREST-EVEN = 2.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_nearest_even_half_down() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_nearest_even_half_down() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -131,11 +157,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE NEAREST-EVEN = 3.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_nearest_even_divide() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_nearest_even_divide() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -145,13 +174,16 @@ use super::helpers::compile_ok;
            DIVIDE 3 INTO 1 GIVING ws-result ROUNDED MODE NEAREST-EVEN
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE TOWARD-GREATER (ceiling) ─────────────────────
 
-#[test] fn rounded_mode_toward_greater_positive() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_toward_greater_positive() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -161,11 +193,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TOWARD-GREATER = 2.1
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_toward_greater_negative() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_toward_greater_negative() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -175,11 +210,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TOWARD-GREATER = -2.9
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_toward_greater_exact() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_toward_greater_exact() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -189,13 +227,16 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TOWARD-GREATER = 3.0
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE TOWARD-LESSER (floor) ────────────────────────
 
-#[test] fn rounded_mode_toward_lesser_positive() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_toward_lesser_positive() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -205,11 +246,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TOWARD-LESSER = 2.9
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_toward_lesser_negative() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_toward_lesser_negative() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -219,13 +263,16 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE TOWARD-LESSER = -2.1
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE NEAREST-TOWARD-ZERO ─────────────────────────
 
-#[test] fn rounded_mode_nearest_toward_zero_pos() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_nearest_toward_zero_pos() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -235,11 +282,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE NEAREST-TOWARD-ZERO = 2.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_nearest_toward_zero_neg() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_nearest_toward_zero_neg() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -249,13 +299,16 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE NEAREST-TOWARD-ZERO = -2.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE AWAY-FROM-ZERO ───────────────────────────────
 
-#[test] fn rounded_mode_away_from_zero_pos() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_away_from_zero_pos() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -265,11 +318,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE AWAY-FROM-ZERO = 2.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_mode_away_from_zero_neg() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_away_from_zero_neg() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -279,13 +335,16 @@ use super::helpers::compile_ok;
            COMPUTE ws-result ROUNDED MODE AWAY-FROM-ZERO = -2.5
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ROUNDED MODE PROHIBITED ───────────────────────────────────
 
-#[test] fn rounded_mode_prohibited_exact() {
-    compile_ok(r#"
+#[test]
+fn rounded_mode_prohibited_exact() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -298,13 +357,16 @@ use super::helpers::compile_ok;
            END-COMPUTE
            DISPLAY ws-err
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Multiple ROUNDED in one statement ────────────────────────
 
-#[test] fn rounded_multiple_giving() {
-    compile_ok(r#"
+#[test]
+fn rounded_multiple_giving() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -320,11 +382,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-b
            DISPLAY ws-c
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn rounded_in_financial_calc() {
-    compile_ok(r#"
+#[test]
+fn rounded_in_financial_calc() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -340,5 +405,6 @@ use super::helpers::compile_ok;
            DISPLAY ws-interest
            DISPLAY ws-total
            STOP RUN.
-"#);
+"#,
+    );
 }

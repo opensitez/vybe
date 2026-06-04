@@ -7,7 +7,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn json_generate_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -20,12 +21,14 @@ PROCEDURE DIVISION.
     JSON GENERATE WS-JSON FROM WS-PERSON.
     DISPLAY WS-JSON.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_generate_name_override() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -40,12 +43,14 @@ PROCEDURE DIVISION.
         NAME OF WS-LAST-NAME IS "lastName".
     DISPLAY WS-JSON.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_generate_omit_field() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -59,12 +64,14 @@ PROCEDURE DIVISION.
         NAME OF WS-INTERNAL IS OMITTED.
     DISPLAY WS-JSON.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_parse_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -78,12 +85,14 @@ PROCEDURE DIVISION.
     DISPLAY WS-NAME.
     DISPLAY WS-AGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_generate_nested() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -99,12 +108,14 @@ PROCEDURE DIVISION.
     JSON GENERATE WS-JSON FROM WS-ORDER.
     DISPLAY WS-JSON.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_roundtrip() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -122,5 +133,6 @@ PROCEDURE DIVISION.
     DISPLAY WS-ID2.
     DISPLAY WS-DESC2.
     STOP RUN.
-"#);
+"#,
+    );
 }

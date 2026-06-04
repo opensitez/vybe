@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── REPOSITORY paragraph — CLASS ─────────────────────────────
 
-#[test] fn repository_class_basic() {
-    compile_ok(r#"
+#[test]
+fn repository_class_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -16,11 +18,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "repository class declared"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_multiple_classes() {
-    compile_ok(r#"
+#[test]
+fn repository_multiple_classes() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -36,11 +41,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "multi-class repository"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_class_and_interface() {
-    compile_ok(r#"
+#[test]
+fn repository_class_and_interface() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -54,13 +62,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "class and interface in repository"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── REPOSITORY — FUNCTION ALL INTRINSIC ──────────────────────
 
-#[test] fn repository_function_all_intrinsic() {
-    compile_ok(r#"
+#[test]
+fn repository_function_all_intrinsic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -76,11 +87,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-result
            DISPLAY UPPER-CASE(ws-text)
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_function_all_intrinsic_math() {
-    compile_ok(r#"
+#[test]
+fn repository_function_all_intrinsic_math() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -100,11 +114,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-e
            DISPLAY ws-abs-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_function_all_intrinsic_string() {
-    compile_ok(r#"
+#[test]
+fn repository_function_all_intrinsic_string() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -125,13 +142,16 @@ use super::helpers::compile_ok;
            DISPLAY ws-up
            DISPLAY ws-rev
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── REPOSITORY — specific FUNCTION entries ────────────────────
 
-#[test] fn repository_specific_function() {
-    compile_ok(r#"
+#[test]
+fn repository_specific_function() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -149,11 +169,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-val = ABS(-7)
            DISPLAY ws-val
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_function_with_alias() {
-    compile_ok(r#"
+#[test]
+fn repository_function_with_alias() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -173,13 +196,16 @@ use super::helpers::compile_ok;
            DISPLAY ws-up
            DISPLAY ws-lo
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── REPOSITORY in CLASS-ID definitions ───────────────────────
 
-#[test] fn repository_in_class() {
-    compile_ok(r#"
+#[test]
+fn repository_in_class() {
+    compile_ok(
+        r#"
        CLASS-ID. Calculator.
        ENVIRONMENT DIVISION.
        CONFIGURATION SECTION.
@@ -200,11 +226,14 @@ use super::helpers::compile_ok;
            GOBACK.
        END METHOD square-root.
        END CLASS Calculator.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_class_hierarchy() {
-    compile_ok(r#"
+#[test]
+fn repository_class_hierarchy() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -222,13 +251,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "fleet management system"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── REPOSITORY with both FUNCTION and CLASS ───────────────────
 
-#[test] fn repository_mixed() {
-    compile_ok(r#"
+#[test]
+fn repository_mixed() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -247,11 +279,14 @@ use super::helpers::compile_ok;
            COMPUTE ws-len = LENGTH("hello")
            DISPLAY ws-len
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn repository_in_module_with_invoke() {
-    compile_ok(r#"
+#[test]
+fn repository_in_module_with_invoke() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -268,5 +303,6 @@ use super::helpers::compile_ok;
            COMPUTE ws-len = LENGTH(TRIM(ws-input))
            DISPLAY ws-len
            STOP RUN.
-"#);
+"#,
+    );
 }

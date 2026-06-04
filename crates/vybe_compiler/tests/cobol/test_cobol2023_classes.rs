@@ -6,7 +6,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn class_with_multiple_methods() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. CALCULATOR.
 OBJECT.
@@ -20,12 +21,14 @@ PROCEDURE DIVISION USING WS-A WS-B RETURNING WS-RESULT.
 END METHOD MULTIPLY-NUMBERS.
 END OBJECT.
 END CLASS CALCULATOR.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_factory_and_object() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. SINGLETON.
 FACTORY.
@@ -41,12 +44,14 @@ PROCEDURE DIVISION.
 END METHOD DO-WORK.
 END OBJECT.
 END CLASS SINGLETON.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_data_division() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. COUNTER.
 OBJECT.
@@ -63,12 +68,14 @@ PROCEDURE DIVISION RETURNING WS-RESULT.
 END METHOD GET-COUNT.
 END OBJECT.
 END CLASS COUNTER.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_inherits_with_override() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. SHAPE.
 OBJECT.
@@ -78,12 +85,14 @@ PROCEDURE DIVISION.
 END METHOD DESCRIBE.
 END OBJECT.
 END CLASS SHAPE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_implements_interface() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. PRINTABLE-ITEM IMPLEMENTS PRINTABLE.
 OBJECT.
@@ -93,12 +102,14 @@ PROCEDURE DIVISION.
 END METHOD PRINT-SELF.
 END OBJECT.
 END CLASS PRINTABLE-ITEM.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn interface_with_multiple_methods() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 INTERFACE-ID. SERIALIZABLE.
 METHOD-ID. SERIALIZE.
@@ -111,12 +122,14 @@ METHOD-ID. GET-FORMAT.
 PROCEDURE DIVISION RETURNING WS-FMT.
 END METHOD GET-FORMAT.
 END INTERFACE SERIALIZABLE.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_with_property_get_set() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 CLASS-ID. PERSON.
 OBJECT.
@@ -133,12 +146,14 @@ PROCEDURE DIVISION USING WS-NEW-NAME.
 END METHOD SET-NAME.
 END OBJECT.
 END CLASS PERSON.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn invoke_method_with_returning() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEST-INVOKE.
 DATA DIVISION.
@@ -149,5 +164,6 @@ PROCEDURE DIVISION.
     INVOKE WS-OBJ GET-VALUE RETURNING WS-RESULT.
     DISPLAY WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }

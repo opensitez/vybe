@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── ALL figurative constant ───────────────────────────────────
 
-#[test] fn all_single_char_fill() {
-    compile_ok(r#"
+#[test]
+fn all_single_char_fill() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -13,11 +15,14 @@ use super::helpers::compile_ok;
            MOVE ALL "-" TO ws-line
            DISPLAY ws-line
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_multi_char_pattern() {
-    compile_ok(r#"
+#[test]
+fn all_multi_char_pattern() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -27,11 +32,14 @@ use super::helpers::compile_ok;
            MOVE ALL "AB" TO ws-banner
            DISPLAY ws-banner
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_zero_fill() {
-    compile_ok(r#"
+#[test]
+fn all_zero_fill() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -41,11 +49,14 @@ use super::helpers::compile_ok;
            MOVE ALL "0" TO ws-field
            DISPLAY ws-field
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_star_fill() {
-    compile_ok(r#"
+#[test]
+fn all_star_fill() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -55,11 +66,14 @@ use super::helpers::compile_ok;
            MOVE ALL "*" TO ws-border
            DISPLAY ws-border
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_in_string() {
-    compile_ok(r#"
+#[test]
+fn all_in_string() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -73,11 +87,14 @@ use super::helpers::compile_ok;
                   INTO ws-result
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_in_compare() {
-    compile_ok(r#"
+#[test]
+fn all_in_compare() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -90,11 +107,14 @@ use super::helpers::compile_ok;
                DISPLAY "not all stars"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_numeric_pattern() {
-    compile_ok(r#"
+#[test]
+fn all_numeric_pattern() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -104,11 +124,14 @@ use super::helpers::compile_ok;
            MOVE ALL "12" TO ws-mask
            DISPLAY ws-mask
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn all_as_initial_value() {
-    compile_ok(r#"
+#[test]
+fn all_as_initial_value() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -119,13 +142,16 @@ use super::helpers::compile_ok;
            DISPLAY ws-underline
            DISPLAY ws-dots
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── HIGH-VALUES / HIGH-VALUE ──────────────────────────────────
 
-#[test] fn high_values_move() {
-    compile_ok(r#"
+#[test]
+fn high_values_move() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -135,11 +161,14 @@ use super::helpers::compile_ok;
            MOVE HIGH-VALUES TO ws-key
            DISPLAY "high values set"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn high_value_singular() {
-    compile_ok(r#"
+#[test]
+fn high_value_singular() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -151,11 +180,14 @@ use super::helpers::compile_ok;
                DISPLAY "is high value"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn high_values_in_compare() {
-    compile_ok(r#"
+#[test]
+fn high_values_in_compare() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -168,11 +200,14 @@ use super::helpers::compile_ok;
                DISPLAY "key is below max"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn high_values_end_of_table_sentinel() {
-    compile_ok(r#"
+#[test]
+fn high_values_end_of_table_sentinel() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -192,11 +227,14 @@ use super::helpers::compile_ok;
                DISPLAY ws-code(ws-idx)
            END-PERFORM
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn high_values_in_evaluate() {
-    compile_ok(r#"
+#[test]
+fn high_values_in_evaluate() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -210,13 +248,16 @@ use super::helpers::compile_ok;
                WHEN OTHER       DISPLAY "data: " ws-status
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── LOW-VALUES / LOW-VALUE ────────────────────────────────────
 
-#[test] fn low_values_move() {
-    compile_ok(r#"
+#[test]
+fn low_values_move() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -226,11 +267,14 @@ use super::helpers::compile_ok;
            MOVE LOW-VALUES TO ws-init
            DISPLAY "low values set"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn low_value_singular() {
-    compile_ok(r#"
+#[test]
+fn low_value_singular() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -242,11 +286,14 @@ use super::helpers::compile_ok;
                DISPLAY "is low value"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn low_values_as_minimum_key() {
-    compile_ok(r#"
+#[test]
+fn low_values_as_minimum_key() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -260,11 +307,14 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn low_values_initialize_field() {
-    compile_ok(r#"
+#[test]
+fn low_values_initialize_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -273,13 +323,16 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "initialized"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── QUOTES / QUOTE ────────────────────────────────────────────
 
-#[test] fn quote_in_string() {
-    compile_ok(r#"
+#[test]
+fn quote_in_string() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -289,11 +342,14 @@ use super::helpers::compile_ok;
            MOVE QUOTE TO ws-msg
            DISPLAY ws-msg
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn quotes_fill() {
-    compile_ok(r#"
+#[test]
+fn quotes_fill() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -303,13 +359,16 @@ use super::helpers::compile_ok;
            MOVE QUOTES TO ws-field
            DISPLAY ws-field
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── ZEROS / ZERO / ZEROES ─────────────────────────────────────
 
-#[test] fn zeros_to_numeric() {
-    compile_ok(r#"
+#[test]
+fn zeros_to_numeric() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -319,11 +378,14 @@ use super::helpers::compile_ok;
            MOVE ZEROS TO ws-n
            DISPLAY ws-n
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn zero_singular() {
-    compile_ok(r#"
+#[test]
+fn zero_singular() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -336,11 +398,14 @@ use super::helpers::compile_ok;
                DISPLAY "non-zero"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn zeroes_to_alpha() {
-    compile_ok(r#"
+#[test]
+fn zeroes_to_alpha() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -350,13 +415,16 @@ use super::helpers::compile_ok;
            MOVE ZEROES TO ws-field
            DISPLAY ws-field
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── SPACES / SPACE ────────────────────────────────────────────
 
-#[test] fn spaces_to_alpha() {
-    compile_ok(r#"
+#[test]
+fn spaces_to_alpha() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -368,11 +436,14 @@ use super::helpers::compile_ok;
                DISPLAY "cleared"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn space_singular_compare() {
-    compile_ok(r#"
+#[test]
+fn space_singular_compare() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -383,13 +454,16 @@ use super::helpers::compile_ok;
                DISPLAY "blank"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Figurative constants as VALUE clauses ─────────────────────
 
-#[test] fn value_high_values() {
-    compile_ok(r#"
+#[test]
+fn value_high_values() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -401,11 +475,14 @@ use super::helpers::compile_ok;
        PROCEDURE DIVISION.
            DISPLAY "initialized"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn figurative_in_condition_all_paths() {
-    compile_ok(r#"
+#[test]
+fn figurative_in_condition_all_paths() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -422,5 +499,6 @@ use super::helpers::compile_ok;
                WHEN OTHER                  DISPLAY ws-field
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }

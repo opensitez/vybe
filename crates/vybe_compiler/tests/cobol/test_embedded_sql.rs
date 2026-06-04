@@ -1,9 +1,10 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 fn p(data: &str, body: &str) -> String {
-    format!("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.", data, body)
+    format!(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.",
+        data, body
+    )
 }
 
 fn d() -> &'static str {
@@ -23,20 +24,26 @@ fn sql_connect() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_select_into() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        SELECT NAME, BALANCE\n        INTO :WS-NAME, :WS-AMT\n        FROM CUSTOMERS\n        WHERE ID = :WS-ID\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        SELECT NAME, BALANCE\n        INTO :WS-NAME, :WS-AMT\n        FROM CUSTOMERS\n        WHERE ID = :WS-ID\n    END-EXEC.",
+    ));
 }
 
 #[test]
 fn sql_select_simple() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        SELECT NAME INTO :WS-NAME FROM USERS WHERE ID = 1\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        SELECT NAME INTO :WS-NAME FROM USERS WHERE ID = 1\n    END-EXEC.",
+    ));
 }
 
 #[test]
 fn sql_select_check_sqlcode() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        SELECT NAME INTO :WS-NAME FROM USERS WHERE ID = :WS-ID\n    END-EXEC.\n    IF SQLCODE = 0\n        DISPLAY WS-NAME\n    ELSE\n        DISPLAY \"Not found\"\n    END-IF."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        SELECT NAME INTO :WS-NAME FROM USERS WHERE ID = :WS-ID\n    END-EXEC.\n    IF SQLCODE = 0\n        DISPLAY WS-NAME\n    ELSE\n        DISPLAY \"Not found\"\n    END-IF.",
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -44,14 +51,18 @@ fn sql_select_check_sqlcode() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_insert() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        INSERT INTO CUSTOMERS (ID, NAME, BALANCE)\n        VALUES (:WS-ID, :WS-NAME, :WS-AMT)\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        INSERT INTO CUSTOMERS (ID, NAME, BALANCE)\n        VALUES (:WS-ID, :WS-NAME, :WS-AMT)\n    END-EXEC.",
+    ));
 }
 
 #[test]
 fn sql_insert_simple() {
-    compile_ok(&p(d(),
-        "    EXEC SQL INSERT INTO LOG (MSG) VALUES ('Hello') END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL INSERT INTO LOG (MSG) VALUES ('Hello') END-EXEC.",
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -59,8 +70,10 @@ fn sql_insert_simple() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_update() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        UPDATE CUSTOMERS\n        SET NAME = :WS-NAME, BALANCE = :WS-AMT\n        WHERE ID = :WS-ID\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        UPDATE CUSTOMERS\n        SET NAME = :WS-NAME, BALANCE = :WS-AMT\n        WHERE ID = :WS-ID\n    END-EXEC.",
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -68,8 +81,10 @@ fn sql_update() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_delete() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        DELETE FROM CUSTOMERS WHERE ID = :WS-ID\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        DELETE FROM CUSTOMERS WHERE ID = :WS-ID\n    END-EXEC.",
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -90,8 +105,10 @@ fn sql_rollback() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_declare_cursor() {
-    compile_ok(&p(d(),
-        "    EXEC SQL\n        DECLARE C1 CURSOR FOR\n        SELECT ID, NAME FROM CUSTOMERS\n    END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL\n        DECLARE C1 CURSOR FOR\n        SELECT ID, NAME FROM CUSTOMERS\n    END-EXEC.",
+    ));
 }
 
 #[test]
@@ -101,8 +118,10 @@ fn sql_open_cursor() {
 
 #[test]
 fn sql_fetch_cursor() {
-    compile_ok(&p(d(),
-        "    EXEC SQL FETCH C1 INTO :WS-ID, :WS-NAME END-EXEC."));
+    compile_ok(&p(
+        d(),
+        "    EXEC SQL FETCH C1 INTO :WS-ID, :WS-NAME END-EXEC.",
+    ));
 }
 
 #[test]
@@ -115,7 +134,9 @@ fn sql_close_cursor() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_cursor_loop() {
-    compile_ok(&p(d(), r#"
+    compile_ok(&p(
+        d(),
+        r#"
     EXEC SQL CONNECT :WS-DSN END-EXEC.
     EXEC SQL
         DECLARE CUST-CURSOR CURSOR FOR
@@ -131,7 +152,8 @@ fn sql_cursor_loop() {
         END-IF
     END-PERFORM.
     EXEC SQL CLOSE CUST-CURSOR END-EXEC.
-"#));
+"#,
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -139,7 +161,9 @@ fn sql_cursor_loop() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn sql_transaction() {
-    compile_ok(&p(d(), r#"
+    compile_ok(&p(
+        d(),
+        r#"
     EXEC SQL CONNECT :WS-DSN END-EXEC.
     EXEC SQL
         INSERT INTO ACCOUNTS (ID, BALANCE)
@@ -152,7 +176,8 @@ fn sql_transaction() {
         EXEC SQL ROLLBACK END-EXEC
         DISPLAY "Rolled back"
     END-IF.
-"#));
+"#,
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -160,7 +185,8 @@ fn sql_transaction() {
 // ═══════════════════════════════════════════════════════════
 #[test]
 fn banking_transaction() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. BANKING.
 DATA DIVISION.
@@ -195,12 +221,14 @@ PROCEDURE DIVISION.
         DISPLAY "Insufficient funds"
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn customer_report() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CUSTREPORT.
 DATA DIVISION.
@@ -240,12 +268,14 @@ PROCEDURE DIVISION.
     DISPLAY "Total Customers: " WS-COUNT.
     DISPLAY "Total Balance:   " WS-TOTAL.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn batch_insert() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. BATCHINS.
 DATA DIVISION.
@@ -271,12 +301,14 @@ PROCEDURE DIVISION.
     EXEC SQL COMMIT END-EXEC.
     DISPLAY "Inserted 100 records".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn error_handling_sql() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SQLERR.
 DATA DIVISION.
@@ -300,12 +332,14 @@ PROCEDURE DIVISION.
             DISPLAY "SQL Error: " SQLCODE
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multiple_tables() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MULTITBL.
 DATA DIVISION.
@@ -330,5 +364,6 @@ PROCEDURE DIVISION.
         DISPLAY "Order: " WS-ORD-ID " Amount: " WS-ORD-AMT
     END-IF.
     STOP RUN.
-"#);
+"#,
+    );
 }

@@ -6,7 +6,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn typedef_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -15,12 +16,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     TYPEDEF AMOUNT-TYPE AS PIC 9(7)V99.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn validate_statement() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -29,12 +32,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     VALIDATE WS-INPUT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn allocate_and_free() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -44,12 +49,14 @@ PROCEDURE DIVISION.
     ALLOCATE WS-PTR.
     FREE WS-PTR.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_late_binding() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -64,12 +71,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_occurs_depending() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -81,12 +90,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-COUNT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_redefines() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -99,12 +110,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-YEAR.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_88_level_conditions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -120,12 +133,14 @@ PROCEDURE DIVISION.
     SET WS-ACTIVE TO TRUE.
     DISPLAY WS-STATUS.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_national_usage() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -136,12 +151,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-UTF8.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_comp_variants() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -154,12 +171,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-BIN.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn data_item_indexed_table() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -171,5 +190,6 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY WS-COL(1).
     STOP RUN.
-"#);
+"#,
+    );
 }

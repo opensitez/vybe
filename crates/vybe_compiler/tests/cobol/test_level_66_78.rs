@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Level 66 RENAMES ──────────────────────────────────────────
 
-#[test] fn renames_basic() {
-    compile_ok(r#"
+#[test]
+fn renames_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -19,11 +21,14 @@ use super::helpers::compile_ok;
            MOVE "IL"          TO state
            DISPLAY city-state
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn renames_thru_multiple_fields() {
-    compile_ok(r#"
+#[test]
+fn renames_thru_multiple_fields() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -40,11 +45,14 @@ use super::helpers::compile_ok;
            MOVE "Smith"   TO emp-last
            DISPLAY emp-name
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn renames_single_field() {
-    compile_ok(r#"
+#[test]
+fn renames_single_field() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -57,11 +65,14 @@ use super::helpers::compile_ok;
            MOVE "USD" TO pay-currency
            DISPLAY pay-curr-alias
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn renames_numeric_fields() {
-    compile_ok(r#"
+#[test]
+fn renames_numeric_fields() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -77,11 +88,14 @@ use super::helpers::compile_ok;
            MOVE 25   TO date-day
            DISPLAY date-yymmdd
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn renames_in_move() {
-    compile_ok(r#"
+#[test]
+fn renames_in_move() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -99,11 +113,14 @@ use super::helpers::compile_ok;
            MOVE src-ab TO tgt-data
            DISPLAY tgt-data
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn renames_with_redefines_sibling() {
-    compile_ok(r#"
+#[test]
+fn renames_with_redefines_sibling() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -119,13 +136,16 @@ use super::helpers::compile_ok;
            MOVE 9999.99 TO pd-amount
            DISPLAY pd-code-amount
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── Level 78 constants (COBOL 2002+) ─────────────────────────
 
-#[test] fn level_78_integer_constant() {
-    compile_ok(r#"
+#[test]
+fn level_78_integer_constant() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -137,11 +157,14 @@ use super::helpers::compile_ok;
            MOVE MAX-SIZE TO ws-count
            DISPLAY ws-count
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_real_constant() {
-    compile_ok(r#"
+#[test]
+fn level_78_real_constant() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -153,11 +176,14 @@ use super::helpers::compile_ok;
            MOVE PI TO ws-result
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_string_constant() {
-    compile_ok(r#"
+#[test]
+fn level_78_string_constant() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -169,11 +195,14 @@ use super::helpers::compile_ok;
            MOVE APP-NAME TO ws-title
            DISPLAY ws-title
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_used_in_compute() {
-    compile_ok(r#"
+#[test]
+fn level_78_used_in_compute() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -189,11 +218,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-tax
            DISPLAY ws-discount
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_used_in_if() {
-    compile_ok(r#"
+#[test]
+fn level_78_used_in_if() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -210,11 +242,14 @@ use super::helpers::compile_ok;
                DISPLAY "Fail"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_multiple_constants() {
-    compile_ok(r#"
+#[test]
+fn level_78_multiple_constants() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -233,11 +268,14 @@ use super::helpers::compile_ok;
                WHEN STATUS-FATAL DISPLAY "Fatal"
            END-EVALUATE
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_in_perform() {
-    compile_ok(r#"
+#[test]
+fn level_78_in_perform() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -252,11 +290,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            DISPLAY ws-sum
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_boolean_constant() {
-    compile_ok(r#"
+#[test]
+fn level_78_boolean_constant() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -270,11 +311,14 @@ use super::helpers::compile_ok;
                DISPLAY "Active"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_with_level_88() {
-    compile_ok(r#"
+#[test]
+fn level_78_with_level_88() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -288,11 +332,14 @@ use super::helpers::compile_ok;
                DISPLAY "Max retries reached"
            END-IF
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn level_78_mixed_with_66() {
-    compile_ok(r#"
+#[test]
+fn level_78_mixed_with_66() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -309,5 +356,6 @@ use super::helpers::compile_ok;
            MOVE "HDR" TO rec-header
            DISPLAY ws-len
            STOP RUN.
-"#);
+"#,
+    );
 }

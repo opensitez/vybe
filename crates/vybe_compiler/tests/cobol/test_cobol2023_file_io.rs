@@ -7,7 +7,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn file_section_fd() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 ENVIRONMENT DIVISION.
@@ -30,12 +31,14 @@ PROCEDURE DIVISION.
     OPEN INPUT CUSTOMER-FILE.
     CLOSE CUSTOMER-FILE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn file_section_sd() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 ENVIRONMENT DIVISION.
@@ -53,12 +56,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "Sort file defined".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn read_at_end() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -71,12 +76,14 @@ PROCEDURE DIVISION.
         NOT AT END DISPLAY WS-REC
     END-READ.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn write_advancing_lines() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -85,12 +92,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     WRITE WS-REC AFTER ADVANCING 2 LINES.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn write_advancing_page() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -99,12 +108,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     WRITE WS-REC BEFORE ADVANCING PAGE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn indexed_file_organization() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 ENVIRONMENT DIVISION.
@@ -122,12 +133,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "Indexed file defined".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn relative_file_organization() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 ENVIRONMENT DIVISION.
@@ -142,12 +155,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "Relative file defined".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn alternate_key() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 ENVIRONMENT DIVISION.
@@ -165,12 +180,14 @@ WORKING-STORAGE SECTION.
 PROCEDURE DIVISION.
     DISPLAY "File with alternate key".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn start_with_key() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -182,12 +199,14 @@ PROCEDURE DIVISION.
         NOT INVALID KEY DISPLAY "Found"
     END-START.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rewrite_with_invalid_key() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -199,12 +218,14 @@ PROCEDURE DIVISION.
         NOT INVALID KEY DISPLAY "OK"
     END-REWRITE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn delete_with_invalid_key() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -216,12 +237,14 @@ PROCEDURE DIVISION.
         NOT INVALID KEY DISPLAY "Deleted"
     END-DELETE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn open_multiple_modes() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -232,12 +255,14 @@ PROCEDURE DIVISION.
          OUTPUT WS-OUT-FILE.
     CLOSE WS-IN-FILE WS-OUT-FILE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn sort_with_input_output_procedure() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.
@@ -249,5 +274,6 @@ PROCEDURE DIVISION.
         USING WS-IN-FILE
         GIVING WS-OUT-FILE.
     STOP RUN.
-"#);
+"#,
+    );
 }

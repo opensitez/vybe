@@ -4,8 +4,10 @@ use super::helpers::compile_ok;
 // ALTER changes the target of a GO TO so it jumps to a
 // different paragraph on next execution.
 
-#[test] fn alter_basic() {
-    compile_ok(r#"
+#[test]
+fn alter_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -25,11 +27,14 @@ use super::helpers::compile_ok;
            MOVE "B" TO ws-path
            DISPLAY ws-path
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alter_conditional() {
-    compile_ok(r#"
+#[test]
+fn alter_conditional() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -54,11 +59,14 @@ use super::helpers::compile_ok;
            MOVE "SLOW" TO ws-result
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alter_multiple_targets() {
-    compile_ok(r#"
+#[test]
+fn alter_multiple_targets() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -82,11 +90,14 @@ use super::helpers::compile_ok;
        step-3.
            DISPLAY "step 3"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alter_then_reset() {
-    compile_ok(r#"
+#[test]
+fn alter_then_reset() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -107,11 +118,14 @@ use super::helpers::compile_ok;
            MOVE 2 TO ws-count
            DISPLAY ws-count
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn alter_in_loop() {
-    compile_ok(r#"
+#[test]
+fn alter_in_loop() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -134,15 +148,18 @@ use super::helpers::compile_ok;
        done.
            DISPLAY ws-iter
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── STOP literal ─────────────────────────────────────────────
 // STOP "message" pauses execution and displays the literal.
 // Legacy feature; STOP RUN terminates the program.
 
-#[test] fn stop_literal_string() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_string() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -153,11 +170,14 @@ use super::helpers::compile_ok;
            DISPLAY ws-flag
            STOP "Press Enter to continue"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_literal_numeric() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_numeric() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
@@ -165,11 +185,14 @@ use super::helpers::compile_ok;
            STOP 0
            DISPLAY "after pause"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_literal_in_conditional() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_in_conditional() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -181,11 +204,14 @@ use super::helpers::compile_ok;
            END-IF
            DISPLAY "continuing"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_literal_after_compute() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_after_compute() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -196,11 +222,14 @@ use super::helpers::compile_ok;
            STOP "Check result"
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_run_from_nested_perform() {
-    compile_ok(r#"
+#[test]
+fn stop_run_from_nested_perform() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -215,11 +244,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            DISPLAY ws-found
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_literal_with_spaces() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_with_spaces() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
@@ -227,15 +259,19 @@ use super::helpers::compile_ok;
            STOP "   "
            DISPLAY "done"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn stop_literal_long_message() {
-    compile_ok(r#"
+#[test]
+fn stop_literal_long_message() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
            STOP "This is a longer pause message for the operator"
            STOP RUN.
-"#);
+"#,
+    );
 }

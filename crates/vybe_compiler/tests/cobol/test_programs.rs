@@ -1,21 +1,22 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
-
-
+use super::helpers::{compile_ok, compile_ok_check, parse_ok};
 
 #[test]
 fn hello_world() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. HELLO.
 PROCEDURE DIVISION.
     DISPLAY "Hello, World!".
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn fizzbuzz_full() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FIZZBUZZ.
 DATA DIVISION.
@@ -39,12 +40,14 @@ PROCEDURE DIVISION.
         END-EVALUATE
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn factorial_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FACTORIAL.
 DATA DIVISION.
@@ -58,12 +61,14 @@ PROCEDURE DIVISION.
     END-PERFORM.
     DISPLAY "Factorial of " WS-N " = " WS-RESULT.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn fibonacci_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. FIBONACCI.
 DATA DIVISION.
@@ -81,12 +86,14 @@ PROCEDURE DIVISION.
         MOVE WS-TEMP TO WS-B
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn temperature_converter() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEMPCONV.
 DATA DIVISION.
@@ -101,12 +108,14 @@ PROCEDURE DIVISION.
         DISPLAY WS-CELSIUS " C = " WS-FAHRENHEIT " F"
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn string_processing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. STRPROC.
 DATA DIVISION.
@@ -129,12 +138,14 @@ PROCEDURE DIVISION.
     DISPLAY "Length:   " WS-LEN.
     DISPLAY "Replaced: " WS-REPLACED.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn employee_record() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. EMPLOYEE.
 DATA DIVISION.
@@ -156,12 +167,14 @@ PROCEDURE DIVISION.
     DISPLAY "Bonus:    " WS-BONUS.
     DISPLAY "Total:    " WS-TOTAL.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn grade_calculator() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. GRADES.
 DATA DIVISION.
@@ -193,12 +206,14 @@ PROCEDURE DIVISION.
             DISPLAY "Grade: F"
     END-EVALUATE.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn table_processing() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TABPROC.
 DATA DIVISION.
@@ -216,12 +231,14 @@ PROCEDURE DIVISION.
         DISPLAY "Item " WS-I ": " WS-ITEM(WS-I)
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn paragraph_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PARAPROG.
 DATA DIVISION.
@@ -242,12 +259,14 @@ CALC-PARA.
     DISPLAY "Calculated".
 OUTPUT-PARA.
     DISPLAY "Result: " WS-RESULT.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn csv_parser() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CSVPARSE.
 DATA DIVISION.
@@ -265,12 +284,14 @@ PROCEDURE DIVISION.
     DISPLAY "Age:   " WS-AGE.
     DISPLAY "City:  " WS-CITY.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn math_functions_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MATHPROG.
 DATA DIVISION.
@@ -298,12 +319,14 @@ PROCEDURE DIVISION.
     COMPUTE WS-R = FUNCTION MEAN(10 20 30).
     DISPLAY "MEAN = " WS-R.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn json_roundtrip() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. JSONRT.
 DATA DIVISION.
@@ -321,12 +344,14 @@ PROCEDURE DIVISION.
     JSON PARSE WS-JSON INTO WS-PARSED.
     DISPLAY "Name: " WS-P-NAME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn bubble_sort() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. BSORT.
 DATA DIVISION.
@@ -356,12 +381,14 @@ PROCEDURE DIVISION.
         DISPLAY WS-NUM(WS-I)
     END-PERFORM.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn date_time_operations() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DATETIME.
 DATA DIVISION.
@@ -374,12 +401,14 @@ PROCEDURE DIVISION.
     DISPLAY "Current Date: " WS-DATE.
     DISPLAY "Current Time: " WS-TIME.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn reference_modification_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. REFMOD.
 DATA DIVISION.
@@ -396,12 +425,14 @@ PROCEDURE DIVISION.
     DISPLAY "Middle: " WS-MIDDLE.
     DISPLAY "Last:   " WS-LAST.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn perform_thru_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. PTHRU.
 PROCEDURE DIVISION.
@@ -414,12 +445,14 @@ STEP-2.
     DISPLAY "Step 2: Process".
 STEP-3.
     DISPLAY "Step 3: Finalize".
-"#);
+"#,
+    );
 }
 
 #[test]
 fn quadratic_formula() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. QUADRATIC.
 DATA DIVISION.
@@ -439,12 +472,14 @@ PROCEDURE DIVISION.
     DISPLAY "Root 1: " WS-ROOT1.
     DISPLAY "Root 2: " WS-ROOT2.
     STOP RUN.
-"#);
+"#,
+    );
 }
 
 #[test]
 fn report_generation() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 IDENTIFICATION DIVISION.
 PROGRAM-ID. REPORT.
 DATA DIVISION.
@@ -465,5 +500,6 @@ PROCEDURE DIVISION.
     ADD 19.99 TO WS-TOTAL.
     DISPLAY "Total: " WS-TOTAL.
     STOP RUN.
-"#);
+"#,
+    );
 }

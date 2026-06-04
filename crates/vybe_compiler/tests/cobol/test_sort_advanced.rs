@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── SORT with DUPLICATES IN ORDER ─────────────────────────────
 
-#[test] fn sort_duplicates_in_order_ascending() {
-    compile_ok(r#"
+#[test]
+fn sort_duplicates_in_order_ascending() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -25,11 +27,14 @@ use super::helpers::compile_ok;
                USING "input.dat"
                GIVING "output.dat"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_duplicates_in_order_descending() {
-    compile_ok(r#"
+#[test]
+fn sort_duplicates_in_order_descending() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -49,11 +54,14 @@ use super::helpers::compile_ok;
                USING "data.dat"
                GIVING "sorted.dat"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_duplicates_multiple_keys() {
-    compile_ok(r#"
+#[test]
+fn sort_duplicates_multiple_keys() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -75,13 +83,16 @@ use super::helpers::compile_ok;
                USING "employees.dat"
                GIVING "sorted-employees.dat"
            STOP RUN.
-"#);
+"#,
+    );
 }
 
 // ── SORT with INPUT PROCEDURE (RELEASE) ───────────────────────
 
-#[test] fn sort_input_procedure_basic() {
-    compile_ok(r#"
+#[test]
+fn sort_input_procedure_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -120,11 +131,14 @@ use super::helpers::compile_ok;
                END-READ
            END-PERFORM
            CLOSE in-file.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_input_procedure_with_filter() {
-    compile_ok(r#"
+#[test]
+fn sort_input_procedure_with_filter() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -163,11 +177,14 @@ use super::helpers::compile_ok;
                READ raw-file AT END MOVE "Y" TO ws-eof END-READ
            END-PERFORM
            CLOSE raw-file.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_input_procedure_transform() {
-    compile_ok(r#"
+#[test]
+fn sort_input_procedure_transform() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -202,13 +219,16 @@ use super::helpers::compile_ok;
                READ src AT END MOVE "Y" TO ws-eof END-READ
            END-PERFORM
            CLOSE src.
-"#);
+"#,
+    );
 }
 
 // ── SORT with OUTPUT PROCEDURE (RETURN) ───────────────────────
 
-#[test] fn sort_output_procedure_basic() {
-    compile_ok(r#"
+#[test]
+fn sort_output_procedure_basic() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -245,11 +265,14 @@ use super::helpers::compile_ok;
                END-RETURN
            END-PERFORM
            CLOSE out-file.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_output_procedure_not_at_end() {
-    compile_ok(r#"
+#[test]
+fn sort_output_procedure_not_at_end() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -287,11 +310,14 @@ use super::helpers::compile_ok;
                END-RETURN
            END-PERFORM
            CLOSE ofile.
-"#);
+"#,
+    );
 }
 
-#[test] fn sort_output_procedure_aggregate() {
-    compile_ok(r#"
+#[test]
+fn sort_output_procedure_aggregate() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -329,13 +355,16 @@ use super::helpers::compile_ok;
            IF ws-prev-dept NOT = SPACES
                DISPLAY ws-prev-dept ws-dept-total
            END-IF.
-"#);
+"#,
+    );
 }
 
 // ── SORT with both INPUT and OUTPUT PROCEDURE ─────────────────
 
-#[test] fn sort_input_and_output_procedure() {
-    compile_ok(r#"
+#[test]
+fn sort_input_and_output_procedure() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -384,13 +413,16 @@ use super::helpers::compile_ok;
                RETURN sf AT END MOVE "Y" TO ws-done END-RETURN
            END-PERFORM
            CLOSE dst.
-"#);
+"#,
+    );
 }
 
 // ── RELEASE statement standalone ─────────────────────────────
 
-#[test] fn release_from_working_storage() {
-    compile_ok(r#"
+#[test]
+fn release_from_working_storage() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -418,13 +450,16 @@ use super::helpers::compile_ok;
            MOVE "BKEY" TO sk
            MOVE 99 TO sval
            RELEASE srec FROM srec.
-"#);
+"#,
+    );
 }
 
 // ── RETURN statement standalone ───────────────────────────────
 
-#[test] fn return_into_working_storage() {
-    compile_ok(r#"
+#[test]
+fn return_into_working_storage() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -454,13 +489,16 @@ use super::helpers::compile_ok;
                    NOT AT END ADD 1 TO ws-count
                END-RETURN
            END-PERFORM.
-"#);
+"#,
+    );
 }
 
 // ── MERGE with OUTPUT PROCEDURE ───────────────────────────────
 
-#[test] fn merge_output_procedure() {
-    compile_ok(r#"
+#[test]
+fn merge_output_procedure() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -498,11 +536,14 @@ use super::helpers::compile_ok;
                END-RETURN
            END-PERFORM
            CLOSE out.
-"#);
+"#,
+    );
 }
 
-#[test] fn merge_with_duplicates() {
-    compile_ok(r#"
+#[test]
+fn merge_with_duplicates() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -522,5 +563,6 @@ use super::helpers::compile_ok;
                USING "a.dat" "b.dat" "c.dat"
                GIVING "merged.dat"
            STOP RUN.
-"#);
+"#,
+    );
 }

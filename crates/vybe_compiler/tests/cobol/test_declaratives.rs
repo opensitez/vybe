@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── DECLARATIVES basic structure ──────────────────────────────
 
-#[test] fn declaratives_section_empty() {
-    compile_ok(r#"
+#[test]
+fn declaratives_section_empty() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -19,11 +21,14 @@ use super::helpers::compile_ok;
            MOVE "Y" TO ws-flag
            DISPLAY ws-flag
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_after_error_on_file() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_after_error_on_file() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -48,11 +53,14 @@ use super::helpers::compile_ok;
            OPEN INPUT my-file
            CLOSE my-file
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_after_exception_input() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_after_exception_input() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -74,11 +82,14 @@ use super::helpers::compile_ok;
        END DECLARATIVES.
        main-para SECTION.
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_after_exception_output() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_after_exception_output() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -100,11 +111,14 @@ use super::helpers::compile_ok;
        END DECLARATIVES.
        main-para SECTION.
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_after_all_files() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_after_all_files() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -119,11 +133,14 @@ use super::helpers::compile_ok;
        main-section SECTION.
            DISPLAY ws-count
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_multiple_use_sections() {
-    compile_ok(r#"
+#[test]
+fn declaratives_multiple_use_sections() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        ENVIRONMENT DIVISION.
@@ -150,11 +167,14 @@ use super::helpers::compile_ok;
        END DECLARATIVES.
        main-para SECTION.
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_with_working_storage_access() {
-    compile_ok(r#"
+#[test]
+fn declaratives_with_working_storage_access() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -175,11 +195,14 @@ use super::helpers::compile_ok;
        main-section SECTION.
            DISPLAY ws-error-count
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_for_debugging() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_for_debugging() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -195,11 +218,14 @@ use super::helpers::compile_ok;
            ADD 1 TO ws-counter
            DISPLAY ws-counter
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_use_for_debugging_specific() {
-    compile_ok(r#"
+#[test]
+fn declaratives_use_for_debugging_specific() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -215,11 +241,14 @@ use super::helpers::compile_ok;
            MOVE 42 TO ws-x
            DISPLAY ws-x
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_procedural_flow_unaffected() {
-    compile_ok(r#"
+#[test]
+fn declaratives_procedural_flow_unaffected() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -238,11 +267,14 @@ use super::helpers::compile_ok;
            END-PERFORM
            DISPLAY ws-result
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_goback_in_handler() {
-    compile_ok(r#"
+#[test]
+fn declaratives_goback_in_handler() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -258,11 +290,14 @@ use super::helpers::compile_ok;
        main-section SECTION.
            DISPLAY ws-handled
            STOP RUN.
-"#);
+"#,
+    );
 }
 
-#[test] fn declaratives_with_perform_in_handler() {
-    compile_ok(r#"
+#[test]
+fn declaratives_with_perform_in_handler() {
+    compile_ok(
+        r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
        DATA DIVISION.
@@ -280,5 +315,6 @@ use super::helpers::compile_ok;
        log-error.
            ADD 1 TO ws-err-count
            DISPLAY "Error logged: " ws-err-count.
-"#);
+"#,
+    );
 }
