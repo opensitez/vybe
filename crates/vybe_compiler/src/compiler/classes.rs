@@ -363,7 +363,8 @@ impl Compiler {
             // preventing the default from applying and causing an infinite loop.
             // Only register fixed-arity generators (no rest, no arguments).
             if !lowered_has_rest {
-                self.generator_param_counts.insert(cname.clone(), params.len());
+                self.generator_param_counts
+                    .insert(cname.clone(), params.len());
             }
         }
         // Multi-value tuple returns: if the pre-scan marked this function

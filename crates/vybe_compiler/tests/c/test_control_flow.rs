@@ -2,7 +2,8 @@ use super::helpers::*;
 
 #[test]
 fn switch_basic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 2;
@@ -14,13 +15,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["two"]);
 }
 
 #[test]
 fn switch_default() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 99;
@@ -30,13 +33,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["other"]);
 }
 
 #[test]
 fn nested_loops() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     for (int i = 0; i < 2; i++) {
@@ -46,13 +51,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["00", "01", "10", "11"]);
 }
 
 #[test]
 fn early_return() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int sign(int n) {
     if (n > 0) return 1;
@@ -65,6 +72,7 @@ int main() {
     printf("%d\n", sign(0));
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "-1", "0"]);
 }

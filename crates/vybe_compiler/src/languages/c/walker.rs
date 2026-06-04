@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CParser, Rule};
 use crate::ast::*;
+use crate::platforms::libc::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND};
 use crate::platforms::libc::{ctype_adapter, math_adapter, string_adapter};
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -46,8 +47,12 @@ struct Walker {
     /// identifiers declared as `char*`; used for pointer-like string traversal.
     char_pointers: HashSet<String>,
     /// identifiers declared as non-char pointer to array (int*, double*, etc.)
-    /// used for slice-based pointer arithmetic.
+    /// These are PLAIN arrays (int arr[N]) — direct JS array indexing.
     array_ptr_vars: HashSet<String>,
+    /// identifiers that ARE pointer variables backed by a carray object
+    /// `{__ref_kind:"carray", __base:Array, __idx:i32}`.
+    /// Covers `int *p = arr;` and parameters declared as `int *p`.
+    carray_ptr_vars: HashSet<String>,
     /// identifiers whose address has been taken with `&name`; later plain
     /// reads/writes go through the common reference-cell AST.
     address_taken: HashSet<String>,
@@ -110,11 +115,13 @@ impl Walker {
                 }
                 if let Some(pp) = params_pair {
                     // Function-like macro: store for expansion at call sites
-                    let params: Vec<String> = pp.into_inner()
+                    let params: Vec<String> = pp
+                        .into_inner()
                         .filter(|p| p.as_rule() == Rule::ident_name)
                         .map(|p| p.as_str().to_string())
                         .collect();
-                    let body_text = value_pair.map(|p| p.as_str().trim().to_string())
+                    let body_text = value_pair
+                        .map(|p| p.as_str().trim().to_string())
                         .unwrap_or_default();
                     self.macros.insert(name, (params, body_text));
                     continue;
@@ -231,12 +238,8 @@ impl Walker {
                         let mut type_hint = None;
                         for d in decl.into_inner() {
                             match d.as_rule() {
-                                Rule::declaration_specifiers => {
-                                    type_hint = Some(self.type_text(d))
-                                }
-                                Rule::declarator => {
-                                    pname = self.declarator_name_and_params(d).0
-                                }
+                                Rule::declaration_specifiers => type_hint = Some(self.type_text(d)),
+                                Rule::declarator => pname = self.declarator_name_and_params(d).0,
                                 _ => {}
                             }
                         }
@@ -392,8 +395,8 @@ impl Walker {
                     Rule::declarator => {
                         is_pointer_decl = p.as_str().contains('*');
                         // Detect function-pointer or prototype declarator: has param_suffix
-                        is_function_proto = p.as_str().contains('(')
-                            && !p.as_str().starts_with('*'); // not a function-pointer type
+                        is_function_proto =
+                            p.as_str().contains('(') && !p.as_str().starts_with('*'); // not a function-pointer type
                         let (n, bounds) = self.declarator_name_and_bounds(p);
                         name = n;
                         array_bounds = bounds;
@@ -407,12 +410,13 @@ impl Walker {
                                 // Array of structs: convert each element to a named object.
                                 // `struct Pair pairs[2] = {{1,2},{3,4}}` → [{a:1,b:2},{a:3,b:4}]
                                 if let ExprKind::Array(elems) = raw.kind {
-                                    let converted: Vec<ArrayElement> = elems.into_iter().map(|el| {
-                                        ArrayElement {
+                                    let converted: Vec<ArrayElement> = elems
+                                        .into_iter()
+                                        .map(|el| ArrayElement {
                                             value: convert_array_init_to_struct(el.value, fields),
                                             ..el
-                                        }
-                                    }).collect();
+                                        })
+                                        .collect();
                                     array_bounds = None; // embedded in literal
                                     expr(ExprKind::Array(converted))
                                 } else {
@@ -440,28 +444,53 @@ impl Walker {
             if type_text.contains("char") {
                 // Track char* pointers AND char arrays (initialized with string literals)
                 // for substring-based pointer arithmetic.
-                let init_is_string = init.as_ref()
+                let init_is_string = init
+                    .as_ref()
                     .map(|i| matches!(i.kind, ExprKind::Lit(Literal::Str(_))))
                     .unwrap_or(false);
                 if is_pointer_decl || init_is_string {
                     self.char_pointers.insert(name.clone());
                 }
-            } else if is_pointer_decl && !init_is_addr_of {
-                // Non-char pointer initialized to an array (not &scalar) — track for
-                // slice-based pointer arithmetic.
-                self.array_ptr_vars.insert(name.clone());
+            } else if is_pointer_decl {
+                // Non-char pointer variable — decide scalar-cell vs carray.
+                // If the walked init is already a carray object (e.g. from `&arr[n]`),
+                // track this var as carray; otherwise wrap a plain array as carray.
+                let init_is_carray = init.as_ref().map(|i| is_carray_object(i)).unwrap_or(false);
+                if init_is_carray {
+                    // int *p = &arr[n] → init already carray from apply_prefix
+                    self.carray_ptr_vars.insert(name.clone());
+                } else if !init_is_addr_of {
+                    // int *p = arr → wrap as carray
+                    self.carray_ptr_vars.insert(name.clone());
+                    if let Some(ref raw_init) = init {
+                        init = Some(self.wrap_as_carray_init(raw_init.clone()));
+                    }
+                }
+                // else: int *p = &scalar → scalar cell (address_taken mechanism)
             }
             // Zero-init struct/union instances when no explicit initializer.
             if init.is_none() {
                 if let Some(fields) = &struct_fields {
                     if let Some(ref bounds) = array_bounds {
                         // Array of structs: pre-fill with N copies of zero struct.
-                        let count = bounds.first()
-                            .and_then(|b| if let ExprKind::Lit(Literal::Int(n)) = &b.kind { Some(*n as usize) } else { None })
+                        let count = bounds
+                            .first()
+                            .and_then(|b| {
+                                if let ExprKind::Lit(Literal::Int(n)) = &b.kind {
+                                    Some(*n as usize)
+                                } else {
+                                    None
+                                }
+                            })
                             .unwrap_or(0);
                         if count > 0 {
                             let zeros: Vec<ArrayElement> = (0..count)
-                                .map(|_| ArrayElement { value: self.zero_struct(fields), spread: false, key: None, by_ref: false })
+                                .map(|_| ArrayElement {
+                                    value: self.zero_struct(fields),
+                                    spread: false,
+                                    key: None,
+                                    by_ref: false,
+                                })
                                 .collect();
                             init = Some(expr(ExprKind::Array(zeros)));
                             array_bounds = None;
@@ -484,11 +513,20 @@ impl Walker {
             // char array with char initializers `{'h','i','\0'}` → join chars to string
             if array_bounds.is_some() && is_char_type {
                 if let Some(ExprKind::Array(elems)) = init.as_ref().map(|i| &i.kind) {
-                    let s: String = elems.iter().filter_map(|el| {
-                        if let ExprKind::Lit(Literal::Int(code)) = &el.value.kind {
-                            if *code == 0 { None } else { char::from_u32(*code as u32) }
-                        } else { None }
-                    }).collect();
+                    let s: String = elems
+                        .iter()
+                        .filter_map(|el| {
+                            if let ExprKind::Lit(Literal::Int(code)) = &el.value.kind {
+                                if *code == 0 {
+                                    None
+                                } else {
+                                    char::from_u32(*code as u32)
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     init = Some(expr(ExprKind::Lit(Literal::Str(s))));
                     array_bounds = None;
                 }
@@ -498,13 +536,25 @@ impl Walker {
             if !type_text.contains("char") && struct_fields.is_none() {
                 if let (Some(bounds), Some(init_expr)) = (&array_bounds, &init) {
                     if let ExprKind::Array(elems) = &init_expr.kind {
-                        let count = bounds.first()
-                            .and_then(|b| if let ExprKind::Lit(Literal::Int(n)) = &b.kind { Some(*n as usize) } else { None })
+                        let count = bounds
+                            .first()
+                            .and_then(|b| {
+                                if let ExprKind::Lit(Literal::Int(n)) = &b.kind {
+                                    Some(*n as usize)
+                                } else {
+                                    None
+                                }
+                            })
                             .unwrap_or(0);
                         if count > elems.len() {
                             let mut padded = elems.clone();
                             while padded.len() < count {
-                                padded.push(ArrayElement { value: expr(ExprKind::Lit(Literal::Int(0))), spread: false, key: None, by_ref: false });
+                                padded.push(ArrayElement {
+                                    value: expr(ExprKind::Lit(Literal::Int(0))),
+                                    spread: false,
+                                    key: None,
+                                    by_ref: false,
+                                });
                             }
                             init = Some(expr(ExprKind::Array(padded)));
                         }
@@ -533,9 +583,16 @@ impl Walker {
                 8
             } else if let Some(ref bounds) = array_bounds {
                 let base = sizeof_from_type_text(&type_text);
-                let count: i64 = bounds.iter().map(|b| {
-                    if let ExprKind::Lit(Literal::Int(n)) = &b.kind { *n } else { 1 }
-                }).product();
+                let count: i64 = bounds
+                    .iter()
+                    .map(|b| {
+                        if let ExprKind::Lit(Literal::Int(n)) = &b.kind {
+                            *n
+                        } else {
+                            1
+                        }
+                    })
+                    .product();
                 base * count
             } else if let Some(ExprKind::Array(elems)) = init.as_ref().map(|i| &i.kind) {
                 // array_bounds was cleared after pre-fill — count elements
@@ -549,7 +606,11 @@ impl Walker {
                 }
             } else {
                 let su = self.sizeof_struct_union(&type_text);
-                if su > 0 { su } else { sizeof_from_type_text(&type_text) }
+                if su > 0 {
+                    su
+                } else {
+                    sizeof_from_type_text(&type_text)
+                }
             };
             self.var_sizes.insert(name.clone(), sz);
             // Non-char arrays (int arr[n], double arr[n]) decay to pointer for arithmetic.
@@ -799,7 +860,14 @@ impl Walker {
                 }
             }
         }
-        (name, if bounds.is_empty() { None } else { Some(bounds) })
+        (
+            name,
+            if bounds.is_empty() {
+                None
+            } else {
+                Some(bounds)
+            },
+        )
     }
 
     fn walk_initializer(&mut self, pair: Pair<Rule>) -> Expression {
@@ -873,7 +941,10 @@ impl Walker {
     }
 
     fn type_text(&self, pair: Pair<Rule>) -> String {
-        pair.as_str().split_whitespace().collect::<Vec<_>>().join(" ")
+        pair.as_str()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     // ── Statements ─────────────────────────────────────────────────────────
@@ -1104,7 +1175,10 @@ impl Walker {
                                     cases,
                                     default,
                                 );
-                            } else if started && !pending_conditions.is_empty() && cur_body.is_empty() {
+                            } else if started
+                                && !pending_conditions.is_empty()
+                                && cur_body.is_empty()
+                            {
                                 // grouped case: just accumulate the new condition into pending
                             } else if started {
                                 flush(
@@ -1298,11 +1372,13 @@ impl Walker {
                 CompoundOp::Shr => BinOp::Shr,
                 _ => BinOp::Add,
             };
-            let rhs = self.rewrite_char_ptr_arith(expr(ExprKind::Binary {
+            let rhs_raw = expr(ExprKind::Binary {
                 op: bin,
                 left: Box::new(target.clone()),
                 right: Box::new(value),
-            }));
+            });
+            let rhs_raw = self.rewrite_char_ptr_arith(rhs_raw);
+            let rhs = self.rewrite_carray_ptr_arith(rhs_raw);
             expr(ExprKind::Assign {
                 target: Box::new(target),
                 value: Box::new(rhs),
@@ -1338,13 +1414,116 @@ impl Walker {
         }
         let result = fold_binary(operands, ops);
         let result = self.rewrite_logical_bool(result);
-        self.rewrite_char_ptr_arith(result)
+        let result = self.rewrite_char_ptr_arith(result);
+        self.rewrite_carray_ptr_arith(result)
+    }
+
+    /// Wrap a pointer init expression as a carray object.
+    /// `arr` (plain array ident) → `make_carray_ptr(arr, 0)`
+    /// `arr + n`                 → `make_carray_ptr(arr, n)`
+    /// `arr - n`                 → `make_carray_ptr(arr, -n)` — rare but valid
+    /// Anything else            → `make_carray_ptr(expr, 0)`
+    fn wrap_as_carray_init(&self, raw: Expression) -> Expression {
+        let zero = expr(ExprKind::Lit(Literal::Int(0)));
+        match raw.kind {
+            ExprKind::Ident(ref name) if self.array_ptr_vars.contains(name) => {
+                pointers::make_carray_ptr(raw, zero)
+            }
+            ExprKind::Ident(ref name) if self.carray_ptr_vars.contains(name) => {
+                // Pointer copy — just use the existing carray object
+                raw
+            }
+            ExprKind::Binary {
+                op: BinOp::Add,
+                ref left,
+                ref right,
+            } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
+                pointers::make_carray_ptr(*left.clone(), *right.clone())
+            }
+            ExprKind::Binary {
+                op: BinOp::Sub,
+                ref left,
+                ref right,
+            } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
+                let neg_n = expr(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: right.clone(),
+                });
+                pointers::make_carray_ptr(*left.clone(), neg_n)
+            }
+            _ => pointers::make_carray_ptr(raw, zero),
+        }
+    }
+
+    /// Rewrite carray pointer arithmetic expressions.
+    /// Runs after `rewrite_char_ptr_arith` so char* expressions are already handled.
+    fn rewrite_carray_ptr_arith(&self, e: Expression) -> Expression {
+        let ExprKind::Binary { op, left, right } = e.kind else {
+            return e;
+        };
+        let left_is_carray_var =
+            matches!(&left.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
+        let right_is_carray_var =
+            matches!(&right.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
+        let left_is_array_var =
+            matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n));
+        let left_is_carray_obj = is_carray_object(&left);
+        let right_is_carray_obj = is_carray_object(&right);
+
+        match op {
+            BinOp::Add => {
+                if left_is_carray_var {
+                    return pointers::carray_advance(*left, *right);
+                }
+                if left_is_array_var {
+                    // arr + n → carray ptr starting at element n
+                    return pointers::make_carray_ptr(*left, *right);
+                }
+                if left_is_carray_obj {
+                    return pointers::carray_advance(*left, *right);
+                }
+            }
+            BinOp::Sub => {
+                if left_is_carray_var && right_is_carray_var {
+                    return pointers::carray_diff(*left, *right);
+                }
+                if (left_is_carray_obj || left_is_carray_var)
+                    && (right_is_carray_obj || right_is_carray_var)
+                {
+                    return pointers::carray_diff(*left, *right);
+                }
+                if left_is_carray_var {
+                    // p - n → new carray with __idx - n
+                    return carray_retreat(*left, *right);
+                }
+                if left_is_array_var && right_is_carray_var {
+                    // arr(as ptr at 0) - p → 0 - p.__idx = -p.__idx
+                    return expr(ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        expr: Box::new(expr(ExprKind::Member {
+                            object: right,
+                            field: CARRAY_IDX_KEY.to_string(),
+                            null_safe: false,
+                        })),
+                    });
+                }
+                if left_is_carray_obj {
+                    return carray_retreat(*left, *right);
+                }
+            }
+            _ => {}
+        }
+        expr(ExprKind::Binary { op, left, right })
     }
 
     /// C logical && and || return 0 or 1 (not the operand value).
     /// Wrap the result in `? 1 : 0` to normalize.
     fn rewrite_logical_bool(&self, e: Expression) -> Expression {
-        if let ExprKind::Binary { op: BinOp::And | BinOp::Or, .. } = &e.kind {
+        if let ExprKind::Binary {
+            op: BinOp::And | BinOp::Or,
+            ..
+        } = &e.kind
+        {
             return expr(ExprKind::Ternary {
                 cond: Box::new(e),
                 then: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
@@ -1363,7 +1542,9 @@ impl Walker {
             let left_is_str = matches!(left.kind, ExprKind::Lit(Literal::Str(_)));
             let left_is_char_ptr = if let ExprKind::Ident(ref n) = left.kind {
                 self.char_pointers.contains(n)
-            } else { false };
+            } else {
+                false
+            };
             if !matches!(op, BinOp::Add | BinOp::Sub) {
                 return expr(ExprKind::Binary { op, left, right });
             }
@@ -1431,18 +1612,156 @@ impl Walker {
     fn apply_prefix(&mut self, op: &str, operand: Expression) -> Expression {
         match op {
             "*" => {
-                // *(ptr + n) → ptr[n] for any pointer (int array, char array, etc.)
-                if let ExprKind::Binary { op: BinOp::Add, left, right } = operand.kind {
-                    return expr(ExprKind::Index {
-                        object: left,
-                        index: right,
-                        null_safe: false,
-                    });
+                // *carray_var → carray_deref_read
+                if let ExprKind::Ident(ref name) = operand.kind {
+                    if self.carray_ptr_vars.contains(name) {
+                        return pointers::carray_deref_read(operand);
+                    }
+                }
+                // *(p++) or *(p--) where p is a carray var
+                // Use explicit sequence: advance/retreat p, then index at the old position.
+                // PostInc on a member may not mutate the object in place reliably.
+                //   *(p++) → (p.__idx += 1, p.__base[p.__idx - 1])  [advance, then read old]
+                //   *(p--) → (p.__idx -= 1, p.__base[p.__idx + 1])  [retreat, then read old]
+                if let ExprKind::Unary {
+                    op: unary_op,
+                    expr: idx_member,
+                } = &operand.kind
+                {
+                    if matches!(unary_op, UnaryOp::PostInc | UnaryOp::PostDec) {
+                        if let ExprKind::Member { object, field, .. } = &idx_member.kind {
+                            if field == CARRAY_IDX_KEY {
+                                if let ExprKind::Ident(ptr_name) = &object.kind {
+                                    if self.carray_ptr_vars.contains(ptr_name.as_str()) {
+                                        let (side_effect, offset) =
+                                            if matches!(unary_op, UnaryOp::PostInc) {
+                                                (
+                                                    pointers::carray_advance_inplace(
+                                                        ptr_name,
+                                                        expr(ExprKind::Lit(Literal::Int(1))),
+                                                    ),
+                                                    -1i64,
+                                                )
+                                            } else {
+                                                (
+                                                    pointers::carray_retreat_inplace(
+                                                        ptr_name,
+                                                        expr(ExprKind::Lit(Literal::Int(1))),
+                                                    ),
+                                                    1i64,
+                                                )
+                                            };
+                                        let base_arr = expr(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: CARRAY_BASE_KEY.to_string(),
+                                            null_safe: false,
+                                        });
+                                        let new_idx = expr(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: CARRAY_IDX_KEY.to_string(),
+                                            null_safe: false,
+                                        });
+                                        let old_idx = expr(ExprKind::Binary {
+                                            op: if offset < 0 { BinOp::Sub } else { BinOp::Add },
+                                            left: Box::new(new_idx),
+                                            right: Box::new(expr(ExprKind::Lit(Literal::Int(
+                                                offset.abs(),
+                                            )))),
+                                        });
+                                        let read_old = expr(ExprKind::Index {
+                                            object: Box::new(base_arr),
+                                            index: Box::new(old_idx),
+                                            null_safe: false,
+                                        });
+                                        return expr(ExprKind::Sequence(vec![
+                                            side_effect,
+                                            read_old,
+                                        ]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // *(advance_seq, p) where sequence ends in carray ident → deref after advance
+                if let ExprKind::Sequence(ref parts) = operand.kind {
+                    if let Some(last) = parts.last() {
+                        if let ExprKind::Ident(ref name) = last.kind {
+                            if self.carray_ptr_vars.contains(name) {
+                                // Emit the sequence side-effects, then read the carray
+                                let mut seq_with_deref = parts.clone();
+                                let last_ident = seq_with_deref.pop().unwrap();
+                                let deref = pointers::carray_deref_read(last_ident);
+                                seq_with_deref.push(deref);
+                                return expr(ExprKind::Sequence(seq_with_deref));
+                            }
+                        }
+                    }
+                }
+                // *(carray_var + n) / *(carray_var - n) — inline indexed access
+                if let ExprKind::Binary {
+                    op: ref bop,
+                    ref left,
+                    ref right,
+                } = operand.kind
+                {
+                    if let ExprKind::Ident(ref name) = left.kind {
+                        if self.carray_ptr_vars.contains(name) {
+                            let new_idx = match bop {
+                                BinOp::Add => expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(expr(ExprKind::Member {
+                                        object: left.clone(),
+                                        field: CARRAY_IDX_KEY.to_string(),
+                                        null_safe: false,
+                                    })),
+                                    right: right.clone(),
+                                }),
+                                BinOp::Sub => expr(ExprKind::Binary {
+                                    op: BinOp::Sub,
+                                    left: Box::new(expr(ExprKind::Member {
+                                        object: left.clone(),
+                                        field: CARRAY_IDX_KEY.to_string(),
+                                        null_safe: false,
+                                    })),
+                                    right: right.clone(),
+                                }),
+                                _ => expr(ExprKind::Member {
+                                    object: left.clone(),
+                                    field: CARRAY_IDX_KEY.to_string(),
+                                    null_safe: false,
+                                }),
+                            };
+                            return expr(ExprKind::Index {
+                                object: Box::new(expr(ExprKind::Member {
+                                    object: left.clone(),
+                                    field: CARRAY_BASE_KEY.to_string(),
+                                    null_safe: false,
+                                })),
+                                index: Box::new(new_idx),
+                                null_safe: false,
+                            });
+                        }
+                    }
+                }
+                // *carray_object (result of carray_advance etc.) → .__base[.__idx]
+                if is_carray_object(&operand) {
+                    return pointers::carray_deref_read(operand);
                 }
                 // *(ptr.slice(n)) or *(ptr.substring(n)) → ptr[n]
                 // This happens when rewrite_char_ptr_arith already transformed p+n→p.slice(n)
-                if let ExprKind::Call { ref callee, ref args, .. } = operand.kind {
-                    if let ExprKind::Member { ref object, ref field, .. } = callee.kind {
+                if let ExprKind::Call {
+                    ref callee,
+                    ref args,
+                    ..
+                } = operand.kind
+                {
+                    if let ExprKind::Member {
+                        ref object,
+                        ref field,
+                        ..
+                    } = callee.kind
+                    {
                         if (field == "slice" || field == "substring") && !args.is_empty() {
                             return expr(ExprKind::Index {
                                 object: object.clone(),
@@ -1452,7 +1771,7 @@ impl Walker {
                         }
                     }
                 }
-                // *char_ptr or *int_array_ptr → ptr[0]
+                // *char_ptr or *plain_array → ptr[0]
                 if let ExprKind::Ident(ref name) = operand.kind {
                     if self.char_pointers.contains(name) || self.array_ptr_vars.contains(name) {
                         return expr(ExprKind::Index {
@@ -1468,6 +1787,39 @@ impl Walker {
                 })
             }
             "&" => {
+                // &arr[n] / &char_str[n] → make_carray_ptr(arr, n)
+                if let ExprKind::Index {
+                    ref object,
+                    ref index,
+                    ..
+                } = operand.kind
+                {
+                    if let ExprKind::Ident(ref name) = object.kind {
+                        if self.array_ptr_vars.contains(name) || self.char_pointers.contains(name) {
+                            return pointers::make_carray_ptr(*object.clone(), *index.clone());
+                        }
+                        if self.carray_ptr_vars.contains(name) {
+                            // &p[n] → carray at p.__base with p.__idx + n
+                            let new_idx = expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(expr(ExprKind::Member {
+                                    object: object.clone(),
+                                    field: CARRAY_IDX_KEY.to_string(),
+                                    null_safe: false,
+                                })),
+                                right: index.clone(),
+                            });
+                            return pointers::make_carray_ptr(
+                                expr(ExprKind::Member {
+                                    object: object.clone(),
+                                    field: CARRAY_BASE_KEY.to_string(),
+                                    null_safe: false,
+                                }),
+                                new_idx,
+                            );
+                        }
+                    }
+                }
                 let operand = match operand.kind {
                     ExprKind::RefLoad(inner) => *inner,
                     other => expr(other),
@@ -1494,7 +1846,18 @@ impl Walker {
                 expr: Box::new(operand),
             }),
             "++" => {
-                if let ExprKind::Ident(name) = &operand.kind {
+                if let ExprKind::Ident(ref name) = operand.kind {
+                    if self.carray_ptr_vars.contains(name) {
+                        // ++p: advance and evaluate to the updated pointer (for *++p)
+                        let advance = pointers::carray_advance_inplace(
+                            name,
+                            expr(ExprKind::Lit(Literal::Int(1))),
+                        );
+                        return expr(ExprKind::Sequence(vec![
+                            advance,
+                            expr(ExprKind::Ident(name.clone())),
+                        ]));
+                    }
                     let is_char = self.char_pointers.contains(name);
                     if is_char {
                         return expr(ExprKind::Assign {
@@ -1505,7 +1868,9 @@ impl Walker {
                                     field: "substring".to_string(),
                                     null_safe: false,
                                 })),
-                                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(1))))],
+                                args: vec![Argument::positional(expr(ExprKind::Lit(
+                                    Literal::Int(1),
+                                )))],
                                 optional: false,
                             })),
                         });
@@ -1517,6 +1882,19 @@ impl Walker {
                 })
             }
             "--" => {
+                if let ExprKind::Ident(ref name) = operand.kind {
+                    if self.carray_ptr_vars.contains(name) {
+                        // --p: retreat and evaluate to the updated pointer (for *--p)
+                        let retreat = pointers::carray_retreat_inplace(
+                            name,
+                            expr(ExprKind::Lit(Literal::Int(1))),
+                        );
+                        return expr(ExprKind::Sequence(vec![
+                            retreat,
+                            expr(ExprKind::Ident(name.clone())),
+                        ]));
+                    }
+                }
                 expr(ExprKind::Unary {
                     op: UnaryOp::PreDec,
                     expr: Box::new(operand),
@@ -1578,11 +1956,36 @@ impl Walker {
                     } else {
                         (base, idx)
                     };
-                    expr(ExprKind::Index {
-                        object: Box::new(obj),
-                        index: Box::new(ix),
-                        null_safe: false,
-                    })
+                    // carray pointer: p[n] → p.__base[p.__idx + n]
+                    let is_carray_var =
+                        matches!(&obj.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
+                    let is_carray_obj = is_carray_object(&obj);
+                    if is_carray_var || is_carray_obj {
+                        let adjusted = expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(expr(ExprKind::Member {
+                                object: Box::new(obj.clone()),
+                                field: CARRAY_IDX_KEY.to_string(),
+                                null_safe: false,
+                            })),
+                            right: Box::new(ix),
+                        });
+                        expr(ExprKind::Index {
+                            object: Box::new(expr(ExprKind::Member {
+                                object: Box::new(obj),
+                                field: CARRAY_BASE_KEY.to_string(),
+                                null_safe: false,
+                            })),
+                            index: Box::new(adjusted),
+                            null_safe: false,
+                        })
+                    } else {
+                        expr(ExprKind::Index {
+                            object: Box::new(obj),
+                            index: Box::new(ix),
+                            null_safe: false,
+                        })
+                    }
                 }
                 Rule::member_suffix | Rule::arrow_suffix => {
                     let field = suffix.into_inner().next().unwrap().as_str().to_string();
@@ -1594,9 +1997,20 @@ impl Walker {
                 }
                 Rule::inc_dec_suffix => {
                     if suffix.as_str() == "++" {
-                        if let ExprKind::Ident(name) = &base.kind {
-                            let is_char = self.char_pointers.contains(name);
-                            if is_char {
+                        if let ExprKind::Ident(ref name) = base.kind {
+                            if self.carray_ptr_vars.contains(name) {
+                                // p++ — return PostInc of the index member so *p++ can work.
+                                // Statement-level: just increments p.__idx.
+                                // Expression-level (*p++): apply_prefix("*") handles this pattern.
+                                expr(ExprKind::Unary {
+                                    op: UnaryOp::PostInc,
+                                    expr: Box::new(expr(ExprKind::Member {
+                                        object: Box::new(base.clone()),
+                                        field: CARRAY_IDX_KEY.to_string(),
+                                        null_safe: false,
+                                    })),
+                                })
+                            } else if self.char_pointers.contains(name) {
                                 expr(ExprKind::Assign {
                                     target: Box::new(ident(name)),
                                     value: Box::new(expr(ExprKind::Call {
@@ -1624,15 +2038,30 @@ impl Walker {
                             })
                         }
                     } else {
-                    let op = if suffix.as_str() == "++" {
-                        UnaryOp::PostInc
-                    } else {
-                        UnaryOp::PostDec
-                    };
-                    expr(ExprKind::Unary {
-                        op,
-                        expr: Box::new(base),
-                    })
+                        // suffix is "--"
+                        if let ExprKind::Ident(ref name) = base.kind {
+                            if self.carray_ptr_vars.contains(name) {
+                                // p-- — same trick: PostDec of index member
+                                expr(ExprKind::Unary {
+                                    op: UnaryOp::PostDec,
+                                    expr: Box::new(expr(ExprKind::Member {
+                                        object: Box::new(base.clone()),
+                                        field: CARRAY_IDX_KEY.to_string(),
+                                        null_safe: false,
+                                    })),
+                                })
+                            } else {
+                                expr(ExprKind::Unary {
+                                    op: UnaryOp::PostDec,
+                                    expr: Box::new(base),
+                                })
+                            }
+                        } else {
+                            expr(ExprKind::Unary {
+                                op: UnaryOp::PostDec,
+                                expr: Box::new(base),
+                            })
+                        }
                     }
                 }
                 _ => base,
@@ -1643,11 +2072,7 @@ impl Walker {
 
     /// C library call normalizations. Returns the final expression to use
     /// (may wrap the call in puts() for printf-style functions).
-    fn normalize_call(
-        &mut self,
-        callee: Expression,
-        args: Vec<Argument>,
-    ) -> Expression {
+    fn normalize_call(&mut self, callee: Expression, args: Vec<Argument>) -> Expression {
         if let ExprKind::Ident(name) = &callee.kind {
             // Check if this is a function-like macro call
             if let Some((params, body)) = self.macros.get(name.as_str()).cloned() {
@@ -1920,7 +2345,10 @@ impl Walker {
                             args: vec![Argument::positional(s_arg.value)],
                             optional: false,
                         });
-                        return nan_to_default(parse_call, expr(ExprKind::Lit(Literal::Float(0.0))));
+                        return nan_to_default(
+                            parse_call,
+                            expr(ExprKind::Lit(Literal::Float(0.0))),
+                        );
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -1932,11 +2360,24 @@ impl Walker {
                 }
                 // calloc(count, size) → pre-filled zero array
                 "calloc" => {
-                    let count_val = args.into_iter().next()
-                        .and_then(|a| if let ExprKind::Lit(Literal::Int(n)) = &a.value.kind { Some(*n as usize) } else { None })
+                    let count_val = args
+                        .into_iter()
+                        .next()
+                        .and_then(|a| {
+                            if let ExprKind::Lit(Literal::Int(n)) = &a.value.kind {
+                                Some(*n as usize)
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or(0);
                     let zeros: Vec<ArrayElement> = (0..count_val)
-                        .map(|_| ArrayElement { value: expr(ExprKind::Lit(Literal::Int(0))), spread: false, key: None, by_ref: false })
+                        .map(|_| ArrayElement {
+                            value: expr(ExprKind::Lit(Literal::Int(0))),
+                            spread: false,
+                            key: None,
+                            by_ref: false,
+                        })
                         .collect();
                     return expr(ExprKind::Array(zeros));
                 }
@@ -1954,8 +2395,11 @@ impl Walker {
         // comma trick `(0, op.apply)(args)` to force a plain call.
         if let ExprKind::Member { object, .. } = &callee.kind {
             if let ExprKind::Ident(var_name) = &object.kind {
-                let type_text = self.var_types.get(var_name.as_str())
-                    .cloned().unwrap_or_default();
+                let type_text = self
+                    .var_types
+                    .get(var_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
                 let is_struct_type = type_text.contains("struct")
                     || type_text.contains("union")
                     || self.structs.contains_key(type_text.trim());
@@ -1980,7 +2424,12 @@ impl Walker {
     }
 
     /// Expand a function-like macro call by substituting args for params in the body.
-    fn expand_macro_call(&mut self, params: &[String], body: &str, args: Vec<Argument>) -> Expression {
+    fn expand_macro_call(
+        &mut self,
+        params: &[String],
+        body: &str,
+        args: Vec<Argument>,
+    ) -> Expression {
         // Build a substituted body text by replacing param names with arg source text.
         // We use a simple token-level substitution on the body string.
         let mut substituted = body.to_string();
@@ -2050,9 +2499,7 @@ impl Walker {
                 let s = parse_string_literal(inner.as_str());
                 expr(ExprKind::Lit(Literal::Str(s)))
             }
-            Rule::bool_literal => {
-                expr(ExprKind::Lit(Literal::Bool(inner.as_str() == "true")))
-            }
+            Rule::bool_literal => expr(ExprKind::Lit(Literal::Bool(inner.as_str() == "true"))),
             _ => expr(ExprKind::Lit(Literal::Null)),
         }
     }
@@ -2160,18 +2607,18 @@ fn parse_escape_char(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Op
     }
     let esc = chars.next().unwrap_or('\0');
     Some(match esc {
-        'n'  => 10,
-        't'  => 9,
-        'r'  => 13,
-        '0'  => 0,
-        'a'  => 7,
-        'b'  => 8,
-        'f'  => 12,
-        'v'  => 11,
+        'n' => 10,
+        't' => 9,
+        'r' => 13,
+        '0' => 0,
+        'a' => 7,
+        'b' => 8,
+        'f' => 12,
+        'v' => 11,
         '\\' => 92,
         '\'' => 39,
-        '"'  => 34,
-        'x'  => {
+        '"' => 34,
+        'x' => {
             // \xHH — consume hex digits
             let mut val = 0u32;
             for _ in 0..2 {
@@ -2213,7 +2660,10 @@ fn parse_string_literal(raw: &str) -> String {
             loop {
                 match chars.peek() {
                     None => break,
-                    Some(&'"') => { chars.next(); break; }
+                    Some(&'"') => {
+                        chars.next();
+                        break;
+                    }
                     Some(&'\\') => {
                         if let Some(code) = parse_escape_char(&mut chars) {
                             if let Some(ch) = char::from_u32(code) {
@@ -2221,7 +2671,9 @@ fn parse_string_literal(raw: &str) -> String {
                             }
                         }
                     }
-                    _ => { out.push(chars.next().unwrap()); }
+                    _ => {
+                        out.push(chars.next().unwrap());
+                    }
                 }
             }
         }
@@ -2241,7 +2693,9 @@ fn convert_array_init_to_struct(raw: Expression, fields: &[String]) -> Expressio
                 return raw; // already empty / no conversion needed
             }
             // Check if it's already an Object (designated initializers)
-            let props: Vec<ObjectProperty> = elems.iter().enumerate()
+            let props: Vec<ObjectProperty> = elems
+                .iter()
+                .enumerate()
                 .filter_map(|(i, el)| {
                     let fname = fields.get(i)?.clone();
                     if el.key.is_some() {
@@ -2295,7 +2749,7 @@ impl Walker {
         // struct → 4 bytes per field (int-sized), union → 4 bytes (largest int-like member)
         let per_field = 4i64;
         if is_union {
-            per_field  // max of members
+            per_field // max of members
         } else {
             per_field * fields.len() as i64
         }
@@ -2318,7 +2772,9 @@ impl Walker {
                 }
                 sizeof_from_type_text(pair.as_str().trim())
             }
-            Rule::type_name | Rule::declaration_specifiers | Rule::type_specifier
+            Rule::type_name
+            | Rule::declaration_specifiers
+            | Rule::type_specifier
             | Rule::type_specifier_strict => {
                 let text = pair.as_str().trim();
                 // Could be a variable name parsed as typedef_name
@@ -2327,18 +2783,27 @@ impl Walker {
                 }
                 if let Some(ty) = self.var_types.get(text) {
                     let su = self.sizeof_struct_union(ty);
-                    return if su > 0 { su } else { sizeof_from_type_text(ty) };
+                    return if su > 0 {
+                        su
+                    } else {
+                        sizeof_from_type_text(ty)
+                    };
                 }
                 if let Some(sz) = self.sizeof_from_expr_text(text) {
                     return sz;
                 }
                 // struct/union: sum or max of member sizes
                 let sz = self.sizeof_struct_union(text);
-                if sz > 0 { return sz; }
+                if sz > 0 {
+                    return sz;
+                }
                 sizeof_from_type_text(text)
             }
-            Rule::unary_expression | Rule::postfix_expression | Rule::primary_expression
-            | Rule::expression | Rule::assignment_expression => {
+            Rule::unary_expression
+            | Rule::postfix_expression
+            | Rule::primary_expression
+            | Rule::expression
+            | Rule::assignment_expression => {
                 // sizeof(expr) — check if it's a variable name we know
                 let text = pair.as_str().trim();
                 // Strip parens
@@ -2358,7 +2823,11 @@ impl Walker {
                 }
                 if let Some(ty) = self.var_types.get(text) {
                     let su = self.sizeof_struct_union(ty);
-                    return if su > 0 { su } else { sizeof_from_type_text(ty) };
+                    return if su > 0 {
+                        su
+                    } else {
+                        sizeof_from_type_text(ty)
+                    };
                 }
                 if let Some(sz) = self.sizeof_from_expr_text(text) {
                     return sz;
@@ -2386,11 +2855,15 @@ impl Walker {
                 }
                 // Fall through to text-based guess
                 let base = sizeof_from_type_text(text);
-                if base != 8 { return base; }
+                if base != 8 {
+                    return base;
+                }
                 // Try inner nodes
                 for inner in pair.clone().into_inner() {
                     let s = self.sizeof_from_rule(&inner);
-                    if s != 8 { return s; }
+                    if s != 8 {
+                        return s;
+                    }
                 }
                 8
             }
@@ -2450,7 +2923,11 @@ impl Walker {
         }
         if let Some(ty) = self.var_types.get(text) {
             let su = self.sizeof_struct_union(ty);
-            return Some(if su > 0 { su } else { sizeof_from_type_text(ty) });
+            return Some(if su > 0 {
+                su
+            } else {
+                sizeof_from_type_text(ty)
+            });
         }
         if let Some((_, rhs)) = text.rsplit_once(',') {
             return self.sizeof_from_expr_text(rhs.trim());
@@ -2481,13 +2958,15 @@ fn sizeof_from_type_text(text: &str) -> i64 {
     let t = normalized_c_type_name(text);
     let t = t.split('[').next().unwrap_or(t.as_str()).trim();
     // Pointer → pointer size (8 on 64-bit)
-    if t.contains('*') { return 8; }
+    if t.contains('*') {
+        return 8;
+    }
     match t {
         "char" | "int8_t" | "uint8_t" | "_Bool" | "bool" => 1,
         "short" | "int16_t" | "uint16_t" => 2,
         "int" | "float" | "int32_t" | "uint32_t" => 4,
-        "long" | "double" | "long long" | "int64_t" | "uint64_t"
-        | "size_t" | "ssize_t" | "ptrdiff_t" => 8,
+        "long" | "double" | "long long" | "int64_t" | "uint64_t" | "size_t" | "ssize_t"
+        | "ptrdiff_t" => 8,
         "long double" => 16,
         "void" => 1,
         _ => 8, // unknown / struct / pointer-like → pointer size
@@ -2495,8 +2974,7 @@ fn sizeof_from_type_text(text: &str) -> i64 {
 }
 
 fn normalized_c_type_name(text: &str) -> String {
-    text
-        .replace("const ", "")
+    text.replace("const ", "")
         .replace("volatile ", "")
         .replace("static ", "")
         .replace("unsigned ", "")
@@ -2510,7 +2988,11 @@ fn normalized_c_type_name(text: &str) -> String {
 /// `strchr(s, needle_str)` — find first occurrence, return suffix or null.
 fn strchr_expr(s: Expression, needle: Expression) -> Expression {
     let idx_call = expr(ExprKind::Call {
-        callee: Box::new(expr(ExprKind::Member { object: Box::new(s.clone()), field: "indexOf".to_string(), null_safe: false })),
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(s.clone()),
+            field: "indexOf".to_string(),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(needle)],
         optional: false,
     });
@@ -2521,7 +3003,11 @@ fn strchr_expr(s: Expression, needle: Expression) -> Expression {
             right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
         })),
         then: Box::new(expr(ExprKind::Call {
-            callee: Box::new(expr(ExprKind::Member { object: Box::new(s), field: "slice".to_string(), null_safe: false })),
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(s),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(idx_call)],
             optional: false,
         })),
@@ -2532,7 +3018,11 @@ fn strchr_expr(s: Expression, needle: Expression) -> Expression {
 /// `strrchr(s, needle_str)` — find last occurrence, return suffix or null.
 fn strrchr_expr(s: Expression, needle: Expression) -> Expression {
     let idx_call = expr(ExprKind::Call {
-        callee: Box::new(expr(ExprKind::Member { object: Box::new(s.clone()), field: "lastIndexOf".to_string(), null_safe: false })),
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(s.clone()),
+            field: "lastIndexOf".to_string(),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(needle)],
         optional: false,
     });
@@ -2543,12 +3033,65 @@ fn strrchr_expr(s: Expression, needle: Expression) -> Expression {
             right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
         })),
         then: Box::new(expr(ExprKind::Call {
-            callee: Box::new(expr(ExprKind::Member { object: Box::new(s), field: "slice".to_string(), null_safe: false })),
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(s),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(idx_call)],
             optional: false,
         })),
         else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
     })
+}
+
+/// True if `e` is an Object literal tagged as a carray (from `make_carray_ptr`).
+fn is_carray_object(e: &Expression) -> bool {
+    if let ExprKind::Object(ref props) = e.kind {
+        props.iter().any(|p| {
+            if let ObjectProperty::KeyValue { key, value } = p {
+                if let (ExprKind::Lit(Literal::Str(k)), ExprKind::Lit(Literal::Str(v))) =
+                    (&key.kind, &value.kind)
+                {
+                    return k == "__ref_kind" && v == CARRAY_KIND;
+                }
+            }
+            false
+        })
+    } else {
+        false
+    }
+}
+
+/// Build a new carray pointer retreated by `n`: `{__base, __idx: __idx - n}`.
+fn carray_retreat(ptr: Expression, n: Expression) -> Expression {
+    let new_idx = Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(ptr.clone()),
+            field: CARRAY_IDX_KEY.to_string(),
+            null_safe: false,
+        })),
+        right: Box::new(n),
+    });
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str("__ref_kind".to_string()))),
+            value: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_BASE_KEY.to_string()))),
+            value: Expression::new(ExprKind::Member {
+                object: Box::new(ptr),
+                field: CARRAY_BASE_KEY.to_string(),
+                null_safe: false,
+            }),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_IDX_KEY.to_string()))),
+            value: new_idx,
+        },
+    ]))
 }
 
 fn nan_to_default(value: Expression, default_value: Expression) -> Expression {
@@ -2570,8 +3113,15 @@ fn extract_enum_val(init: &Option<Expression>, default: i64) -> i64 {
     let Some(e) = init else { return default };
     match &e.kind {
         ExprKind::Lit(Literal::Int(i)) => *i,
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
-            if let ExprKind::Lit(Literal::Int(i)) = &expr.kind { -i } else { default }
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => {
+            if let ExprKind::Lit(Literal::Int(i)) = &expr.kind {
+                -i
+            } else {
+                default
+            }
         }
         _ => default,
     }
@@ -2594,24 +3144,51 @@ fn expr_to_c_source(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(n)) => n.to_string(),
         ExprKind::Lit(Literal::Float(f)) => format!("{}", f),
-        ExprKind::Lit(Literal::Str(s)) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
-        ExprKind::Lit(Literal::Bool(b)) => if *b { "1".to_string() } else { "0".to_string() },
+        ExprKind::Lit(Literal::Str(s)) => {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+        ExprKind::Lit(Literal::Bool(b)) => {
+            if *b {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        }
         ExprKind::Ident(name) => name.clone(),
         ExprKind::Binary { op, left, right } => {
             let op_str = match op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::Mod => "%", BinOp::And => "&&",
-                BinOp::Or => "||", BinOp::Eq => "==", BinOp::NotEq => "!=",
-                BinOp::Lt => "<", BinOp::LtEq => "<=", BinOp::Gt => ">",
-                BinOp::GtEq => ">=", BinOp::BitAnd => "&", BinOp::BitOr => "|",
-                BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::And => "&&",
+                BinOp::Or => "||",
+                BinOp::Eq => "==",
+                BinOp::NotEq => "!=",
+                BinOp::Lt => "<",
+                BinOp::LtEq => "<=",
+                BinOp::Gt => ">",
+                BinOp::GtEq => ">=",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
+                BinOp::BitXor => "^",
+                BinOp::Shl => "<<",
+                BinOp::Shr => ">>",
                 _ => "+",
             };
-            format!("({} {} {})", expr_to_c_source(left), op_str, expr_to_c_source(right))
+            format!(
+                "({} {} {})",
+                expr_to_c_source(left),
+                op_str,
+                expr_to_c_source(right)
+            )
         }
         ExprKind::Unary { op, expr: e } => {
             let op_str = match op {
-                UnaryOp::Neg => "-", UnaryOp::Not => "!", UnaryOp::BitNot => "~",
+                UnaryOp::Neg => "-",
+                UnaryOp::Not => "!",
+                UnaryOp::BitNot => "~",
                 _ => "",
             };
             format!("({}{})", op_str, expr_to_c_source(e))
@@ -2633,8 +3210,14 @@ fn replace_word(text: &str, word: &str, replacement: &str) -> String {
         let before = &rest[..pos];
         let after = &rest[pos + word.len()..];
         // Check word boundaries
-        let before_ok = before.chars().last().map_or(true, |c| !c.is_alphanumeric() && c != '_');
-        let after_ok = after.chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '_');
+        let before_ok = before
+            .chars()
+            .last()
+            .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+        let after_ok = after
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric() && c != '_');
         if before_ok && after_ok {
             result.push_str(before);
             result.push_str(replacement);

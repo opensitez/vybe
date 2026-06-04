@@ -16,8 +16,6 @@ mod calls;
 mod classes;
 mod events;
 mod expressions;
-#[path = "../php/compiler.rs"]
-mod php;
 
 use crate::ast::*;
 use crate::emitter as common;
@@ -261,11 +259,11 @@ pub struct Compiler {
     /// br_label depths (caller's `br 0` would land on a stale callee
     /// BLOCK target). Saved/restored across nested function decls.
     function_label_base: u32,
-    line: u32,
-    defined_globals: HashSet<String>,
+    pub(crate) line: u32,
+    pub(crate) defined_globals: HashSet<String>,
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
-    defined_functions: HashSet<String>,
+    pub(crate) defined_functions: HashSet<String>,
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_param_types: HashMap<String, Vec<Option<String>>>,
     function_min_arity: HashMap<String, usize>,
@@ -275,7 +273,7 @@ pub struct Compiler {
     fortran_interface_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     fortran_operator_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
-    defined_classes: HashSet<String>,
+    pub(crate) defined_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
     defined_class_methods: HashSet<String>,
@@ -751,15 +749,6 @@ impl Compiler {
             return trimmed[7..].trim().to_string();
         }
         trimmed.to_string()
-    }
-
-    fn stdlib_global_name(stdlib_name: &str) -> String {
-        match stdlib_name {
-            "regex_replace_pat_first" => "__ecma_regexp_replace_pat_first".to_string(),
-            "regex_split_pat_first" => "__ecma_regexp_split_pat_first".to_string(),
-            "regex_match_all_pat_first" => "__ecma_regexp_match_all_pat_first".to_string(),
-            _ => format!("__vybe_{}", stdlib_name),
-        }
     }
 
     pub fn with_profile(profile: LanguageProfile) -> Self {
@@ -1453,14 +1442,13 @@ impl Compiler {
         // need the VM to reserve slots at call-frame entry.
         let locals = self.scope().next_slot.max(self.chunks[0].local_count);
         self.chunks[0].local_count = locals;
-        // Skip stdlib bundling when compiling polyfill source. Polyfills
-        // ARE stdlib chunks (extracted via `emitter::stdlib::build_polyfill`)
-        // — re-running `finalize_with_stdlib` here would call back into
-        // `build_stdlib` → `build_polyfill` → `Compiler::compile` → here
+        // Skip helper linking when compiling runtime helper source.
+        // Re-running finalization here would call back into helper
+        // compilation and recurse through `Compiler::compile`.
         // and recurse forever. Cheap thread-local guard since polyfill
         // compilation is single-threaded at vybex build time.
-        if !crate::emitter::stdlib::is_compiling_polyfill() {
-            common::bundle::finalize_with_stdlib(&mut self.chunks);
+        if !crate::emitter::runtime_helpers::is_compiling_runtime_helper() {
+            common::bundle::finalize_with_runtime_helpers(&mut self.chunks);
         }
         Self::normalize_import_table(&mut self.chunks);
         let host_imports = self.collected_host_imports();
@@ -1893,7 +1881,7 @@ impl Compiler {
         }
     }
 
-    pub(super) fn resolve_source_type_alias(&self, name: &str) -> String {
+    pub(crate) fn resolve_source_type_alias(&self, name: &str) -> String {
         let normalized = Self::strip_global_namespace_prefix(name);
         let trimmed = normalized.trim().replace('\\', ".");
         let (head, tail) = trimmed
@@ -3176,6 +3164,10 @@ impl Compiler {
         self.pointer_cell_bindings
             .get(&self.current)
             .is_some_and(|bindings| bindings.contains(&key))
+            || self
+                .pointer_cell_bindings
+                .values()
+                .any(|bindings| bindings.contains(&key))
     }
 
     fn mark_pointer_cell_binding(&mut self, name: &str) {
@@ -3214,7 +3206,7 @@ impl Compiler {
 
     fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
         let canon_name = self.canon(name);
-        if !self.defined_globals.contains(&canon_name) {
+        if self.profile.name != "c" && !self.defined_globals.contains(&canon_name) {
             return false;
         }
 
@@ -3322,7 +3314,7 @@ impl Compiler {
     /// `local_count` to the new high-water mark.
     ///
     /// Why this exists: helpers in `emitter/` (`emit_invoke_method`,
-    /// `emit_get_range`, `emit_array_pair`, `emit_stdlib_call_*`) allocate
+    /// `emit_get_range`, `emit_array_pair`, `emit_runtime_helper_call_*`) allocate
     /// scratch slots starting at `chunk.local_count`. If `chunk.local_count`
     /// isn't kept in sync with `scope.next_slot` during compilation, those
     /// scratch slots overlap named locals (params, rest-collection slots,
@@ -3517,27 +3509,27 @@ impl Compiler {
         }
         slot
     }
-    fn chunk(&mut self) -> &mut Chunk {
+    pub(crate) fn chunk(&mut self) -> &mut Chunk {
         &mut self.chunks[self.current]
     }
 
-    fn reserve_local_slot(&mut self, slot: u16) {
+    pub(crate) fn reserve_local_slot(&mut self, slot: u16) {
         self.chunks[self.current].local_count = self.chunks[self.current].local_count.max(slot + 1);
     }
 
-    fn emit(&mut self, op: Op) {
+    pub(crate) fn emit(&mut self, op: Op) {
         let l = self.line;
         self.chunks[self.current].emit_op(op, l);
     }
-    fn emit_u16(&mut self, op: Op, v: u16) {
+    pub(crate) fn emit_u16(&mut self, op: Op, v: u16) {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(op, v, l);
     }
-    fn emit_u8(&mut self, op: Op, v: u8) {
+    pub(crate) fn emit_u8(&mut self, op: Op, v: u8) {
         let l = self.line;
         self.chunks[self.current].emit_op_u8(op, v, l);
     }
-    fn emit_const(&mut self, val: Value) {
+    pub(crate) fn emit_const(&mut self, val: Value) {
         let idx = self.chunks[self.current].add_constant(val);
         self.emit_u16(Op::CONST, idx);
     }
@@ -3573,7 +3565,7 @@ impl Compiler {
     fn current_offset(&self) -> usize {
         self.chunks[self.current].current_offset()
     }
-    fn str_const(&mut self, s: &str) -> u16 {
+    pub(crate) fn str_const(&mut self, s: &str) -> u16 {
         self.chunks[self.current].add_constant(Value::String(Arc::from(s)))
     }
     #[allow(dead_code)]
@@ -3581,10 +3573,10 @@ impl Compiler {
         self.chunks[0].add_constant(Value::String(Arc::from(s)))
     }
 
-    fn import(&mut self, module: &str, name: &str) -> u16 {
+    pub(crate) fn import(&mut self, module: &str, name: &str) -> u16 {
         self.chunks[self.current].add_import(module, name)
     }
-    fn emit_host_call(&mut self, idx: u16, argc: u8) {
+    pub(crate) fn emit_host_call(&mut self, idx: u16, argc: u8) {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(Op::CALL_IMPORT, idx, l);
         self.chunks[self.current].emit(argc, l);
@@ -4436,7 +4428,6 @@ impl Compiler {
         }
         Ok(())
     }
-
 
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
@@ -5776,7 +5767,7 @@ impl Compiler {
         }
     }
 
-    fn emit_var_get(&mut self, name: &str) {
+    pub(crate) fn emit_var_get(&mut self, name: &str) {
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
@@ -6293,7 +6284,6 @@ impl Compiler {
         self.profile.name == "js"
     }
 
-
     fn is_python_profile(&self) -> bool {
         self.profile.name == "python"
     }
@@ -6564,6 +6554,18 @@ impl Compiler {
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
                 match &expr.kind {
+                    ExprKind::Call { callee, args, .. }
+                        if self.profile.name == "c"
+                            && matches!(&callee.kind, ExprKind::Ident(name) if name == "exit") =>
+                    {
+                        if let Some(first) = args.first() {
+                            self.compile_expr(&first.value)?;
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        self.emit_return_through_finally(1)?;
+                        return Ok(());
+                    }
                     ExprKind::Call { callee, args, .. }
                         if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt")
                             && args.len() == 2 =>
@@ -9911,7 +9913,6 @@ impl Compiler {
         self.compile_enum_decl_as_class(name, Some("Enum"), interfaces, synthetic_members, span)
     }
 
-
     fn emit_match_pattern_match_slot(
         &mut self,
         pattern: &Pattern,
@@ -11724,9 +11725,6 @@ impl Compiler {
         self.emit_to_primitive("number");
     }
 
-
-
-
     fn emit_pascal_relational_compare(&mut self, cmp_fn: fn(&mut Chunk, u32)) {
         let t_b = self.define_local("__pas_cmp_b");
         let t_a = self.define_local("__pas_cmp_a");
@@ -13492,42 +13490,6 @@ impl Compiler {
                     }
                     let line = self.line;
                     self.emit_common(name.as_str(), args.len() as u8, line);
-                }
-                BuiltinEmit::Stdlib(stdlib_name) => {
-                    let global_name = Self::stdlib_global_name(stdlib_name);
-                    let name_idx = self.str_const(&global_name);
-                    let synthetic_args: Vec<Argument> = args
-                        .iter()
-                        .map(|arg| Argument::positional((**arg).clone()))
-                        .collect();
-                    let rest_signature =
-                        crate::emitter::stdlib::rest_fixed_arity(stdlib_name).map(|fixed_count| {
-                            CallSignature {
-                                param_names: vec![String::new(); fixed_count as usize + 1],
-                                min_arity: fixed_count as usize,
-                                has_rest: true,
-                            }
-                        });
-
-                    if let Some(signature) = rest_signature.as_ref() {
-                        let callee_slot = self.define_local("__stdlib_fn");
-                        self.emit_u16(Op::GLOBAL_GET, name_idx);
-                        self.emit_u16(Op::LOCAL_SET, callee_slot);
-                        self.emit(Op::DROP);
-                        self.emit_known_rest_call_from_local(
-                            callee_slot,
-                            None,
-                            &synthetic_args,
-                            signature,
-                        )?;
-                    } else {
-                        // Push func ref FIRST, then args, then call_ref.
-                        self.emit_u16(Op::GLOBAL_GET, name_idx);
-                        for a in args {
-                            self.compile_expr(a)?;
-                        }
-                        self.emit_u8(Op::CALL_REF, args.len() as u8);
-                    }
                 }
                 BuiltinEmit::Noop => {
                     self.emit(Op::NULL);
@@ -15309,7 +15271,7 @@ impl Compiler {
             }
             "php_rsort" => {
                 // PHP `rsort($arr)` — descending in-place sort. Compose
-                // from existing stdlib: `sort_in_place(arr)` for the
+                // from the existing runtime helper: `sort_in_place(arr)` for the
                 // ascending sort, then `array_reverse` for descending.
                 // PHP arrays are JS arrays in our model, so the sort +
                 // reverse mutate the same backing storage the caller's
@@ -16773,7 +16735,32 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, str_slot);
                     self.emit(Op::DROP);
 
-                    self.compile_expr(args[1])?;
+                    // If the map is a literal array, sort entries by key length
+                    // (longest first) so longer keys take priority over shorter ones.
+                    use crate::ast::{ArrayElement, ExprKind, Literal};
+                    let sorted_arg: Option<crate::ast::Expression> =
+                        if let ExprKind::Array(ref items) = args[1].kind {
+                            let mut sorted = items.clone();
+                            sorted.sort_by(|a, b| {
+                                let la = match a.key.as_ref().map(|k| &k.kind) {
+                                    Some(ExprKind::Lit(Literal::Str(s))) => s.len(),
+                                    _ => 0,
+                                };
+                                let lb = match b.key.as_ref().map(|k| &k.kind) {
+                                    Some(ExprKind::Lit(Literal::Str(s))) => s.len(),
+                                    _ => 0,
+                                };
+                                lb.cmp(&la) // descending
+                            });
+                            Some(crate::ast::Expression {
+                                kind: ExprKind::Array(sorted),
+                                span: args[1].span.clone(),
+                            })
+                        } else {
+                            None
+                        };
+                    let map_arg = sorted_arg.as_ref().unwrap_or(&args[1]);
+                    self.compile_expr(map_arg)?;
                     common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
                     let entries_slot = self.define_local("__strtr_entries");
                     self.emit_u16(Op::LOCAL_SET, entries_slot);
@@ -16818,6 +16805,68 @@ impl Compiler {
                         line,
                     );
 
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                } else if args.len() == 3 {
+                    // strtr($str, $from, $to): replace each char $from[i] with $to[i]
+                    self.compile_expr(args[0])?;
+                    let str_slot = self.define_local("__strtr3_str");
+                    self.emit_u16(Op::LOCAL_SET, str_slot);
+                    self.emit(Op::DROP);
+                    self.compile_expr(args[1])?;
+                    let from_slot = self.define_local("__strtr3_from");
+                    self.emit_u16(Op::LOCAL_SET, from_slot);
+                    self.emit(Op::DROP);
+                    self.compile_expr(args[2])?;
+                    let to_slot = self.define_local("__strtr3_to");
+                    self.emit_u16(Op::LOCAL_SET, to_slot);
+                    self.emit(Op::DROP);
+
+                    // Loop: for i in 0..min(len(from), len(to))
+                    let i_slot = self.define_local("__strtr3_i");
+                    let flen_slot = self.define_local("__strtr3_flen");
+                    self.emit_const(Value::F64(0.0));
+                    self.emit_u16(Op::LOCAL_SET, i_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, from_slot);
+                    self.emit(Op::STR_LENGTH);
+                    self.emit_u16(Op::LOCAL_SET, flen_slot);
+                    self.emit(Op::DROP);
+
+                    let loop_state =
+                        common::loops::emit_loop_start(&mut self.chunks, self.current, line);
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit_u16(Op::LOCAL_GET, flen_slot);
+                    common::ops::emit_dyn_lt(&mut self.chunks[self.current], line);
+                    common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
+
+                    // from_char = from.charAt(i); to_char = to.charAt(i)
+                    let from_char_slot = self.define_local("__strtr3_fc");
+                    let to_char_slot = self.define_local("__strtr3_tc");
+                    self.emit_u16(Op::LOCAL_GET, from_slot);
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit(Op::STR_CHAR_AT);
+                    self.emit_u16(Op::LOCAL_SET, from_char_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, to_slot);
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit(Op::STR_CHAR_AT);
+                    self.emit_u16(Op::LOCAL_SET, to_char_slot);
+                    self.emit(Op::DROP);
+
+                    // str_slot = STR_REPLACE(str_slot, from_char, to_char)
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                    self.emit_u16(Op::LOCAL_GET, from_char_slot);
+                    self.emit_u16(Op::LOCAL_GET, to_char_slot);
+                    self.emit(Op::STR_REPLACE);
+                    self.emit_u16(Op::LOCAL_SET, str_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, i_slot);
+                    self.emit_const(Value::F64(1.0));
+                    self.emit(Op::F64_ADD);
+                    self.emit_u16(Op::LOCAL_SET, i_slot);
+                    self.emit(Op::DROP);
+                    common::loops::emit_loop_end(&mut self.chunks, self.current, loop_state, line);
                     self.emit_u16(Op::LOCAL_GET, str_slot);
                 } else {
                     self.emit(Op::NULL);

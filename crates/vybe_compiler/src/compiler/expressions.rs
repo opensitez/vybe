@@ -230,15 +230,12 @@ impl Compiler {
         Ok(())
     }
 
-
-
     fn emit_generator_return_from_resume_slot(&mut self, resume_slot: u16) -> Result<(), String> {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let value_key = self.str_const("value");
         self.emit_u16(Op::STRUCT_GET, value_key);
         self.emit_return_through_finally(1)
     }
-
 
     pub(super) fn emit_generator_resume_value(&mut self) -> Result<(), String> {
         let resume_slot = self.define_local("__yield_resume");
@@ -378,7 +375,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, id_slot);
     }
 
-    pub(super) fn emit_generator_yield_value(&mut self, yielded_slot: u16) {
+    pub(crate) fn emit_generator_yield_value(&mut self, yielded_slot: u16) {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         self.emit(Op::REF_IS_OBJECT);
         let line = self.line;
@@ -419,7 +416,7 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    pub(super) fn emit_generator_yield_key_or_fallback(
+    pub(crate) fn emit_generator_yield_key_or_fallback(
         &mut self,
         yielded_slot: u16,
         fallback_slot: Option<u16>,
@@ -456,7 +453,7 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    pub(super) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
+    pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
         match &expr.kind {
             // ── Literals ────────────────────────────────────────────────
             ExprKind::Lit(lit) => match lit {
@@ -670,12 +667,30 @@ impl Compiler {
                         "int" | "uint" | "long" | "ulong" | "short" | "ushort" | "byte" | "sbyte"
                     )
                 };
+                let is_c_integral_type = |type_hint: &str| {
+                    let hint = Self::normalize_type_hint(type_hint);
+                    hint.contains("int")
+                        || hint.contains("long")
+                        || hint.contains("short")
+                        || hint.contains("char")
+                        || hint == "uint8"
+                        || hint == "uint32"
+                        || hint == "bool"
+                        || hint == "_bool"
+                };
                 let expr_is_csharp_integral = |compiler: &Compiler, expr: &Expression| {
                     matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
                         || compiler
                             .infer_expr_type_hint(expr)
                             .as_deref()
                             .is_some_and(is_csharp_integral_type)
+                };
+                let expr_is_c_integral = |compiler: &Compiler, expr: &Expression| {
+                    matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
+                        || compiler
+                            .infer_expr_type_hint(expr)
+                            .as_deref()
+                            .is_some_and(is_c_integral_type)
                 };
 
                 // Short-circuit for And/Or — generic path for all languages.
@@ -686,10 +701,8 @@ impl Compiler {
                 if *op == BinOp::And {
                     self.compile_expr(left)?;
                     let line = self.line;
-                    let skip = common::expressions::emit_and_start(
-                        &mut self.chunks[self.current],
-                        line,
-                    );
+                    let skip =
+                        common::expressions::emit_and_start(&mut self.chunks[self.current], line);
                     self.compile_expr(right)?;
                     common::expressions::emit_short_circuit_end(
                         &mut self.chunks[self.current],
@@ -700,10 +713,8 @@ impl Compiler {
                 if *op == BinOp::Or {
                     self.compile_expr(left)?;
                     let line = self.line;
-                    let skip = common::expressions::emit_or_start(
-                        &mut self.chunks[self.current],
-                        line,
-                    );
+                    let skip =
+                        common::expressions::emit_or_start(&mut self.chunks[self.current], line);
                     self.compile_expr(right)?;
                     common::expressions::emit_short_circuit_end(
                         &mut self.chunks[self.current],
@@ -858,6 +869,16 @@ impl Compiler {
                     && *op == BinOp::Div
                     && expr_is_csharp_integral(self, left)
                     && expr_is_csharp_integral(self, right)
+                {
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    self.compile_binop(&BinOp::IDiv);
+                    return Ok(());
+                }
+                if self.profile.name == "c"
+                    && *op == BinOp::Div
+                    && expr_is_c_integral(self, left)
+                    && expr_is_c_integral(self, right)
                 {
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
@@ -2168,7 +2189,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::collections::emit_stdlib_call(
+                            common::collections::emit_runtime_helper_call(
                                 &mut self.chunks,
                                 self.current,
                                 "__vybe_slice",
@@ -2192,7 +2213,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::collections::emit_stdlib_call(
+                            common::collections::emit_runtime_helper_call(
                                 &mut self.chunks,
                                 self.current,
                                 "__vybe_slice",
@@ -2228,7 +2249,7 @@ impl Compiler {
                                 } else {
                                     self.emit(Op::NULL);
                                 }
-                                common::collections::emit_stdlib_call(
+                                common::collections::emit_runtime_helper_call(
                                     &mut self.chunks,
                                     self.current,
                                     "__vybe_slicestep",
@@ -2306,7 +2327,7 @@ impl Compiler {
                                 } else {
                                     self.emit(Op::NULL);
                                 }
-                                common::collections::emit_stdlib_call(
+                                common::collections::emit_runtime_helper_call(
                                     &mut self.chunks,
                                     self.current,
                                     "__vybe_slicestep",
@@ -2333,7 +2354,7 @@ impl Compiler {
                         } else {
                             self.emit(Op::NULL);
                         }
-                        common::collections::emit_stdlib_call(
+                        common::collections::emit_runtime_helper_call(
                             &mut self.chunks,
                             self.current,
                             "__vybe_slicestep",
@@ -2767,10 +2788,7 @@ impl Compiler {
                                         } else {
                                             flattened_canon
                                         };
-                                    self.emit_constructor_global_ref(
-                                        &ctor_global,
-                                        autoload_name,
-                                    );
+                                    self.emit_constructor_global_ref(&ctor_global, autoload_name);
                                     for a in args {
                                         self.compile_expr(&a.value)?;
                                     }
@@ -3133,6 +3151,18 @@ impl Compiler {
                     .any(|e| e.key.is_some() && !is_js_array_elision(e));
                 let has_elisions = is_js_profile && elements.iter().any(is_js_array_elision);
 
+                if self.profile.name == "c"
+                    && !has_keys
+                    && !has_elisions
+                    && elements.iter().all(|elem| !elem.spread)
+                {
+                    for elem in elements {
+                        self.compile_expr(&elem.value)?;
+                    }
+                    self.emit_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16);
+                    return Ok(());
+                }
+
                 if has_keys {
                     common::collections::emit_map_new(&mut self.chunks, self.current, line);
                     let mut next_auto_idx: i64 = 0;
@@ -3214,14 +3244,14 @@ impl Compiler {
                                 // use the common emitter (emit_drain_into_array)
                                 // which emits an inline GEN_NEXT loop — the same
                                 // opcode compile_generator_for_in uses directly.
-                                // No stdlib, no runtime dispatch, no isGenerator check.
+                                // No runtime helper, no runtime dispatch, no isGenerator check.
                                 // For unknown-shape values, fall back to the runtime
                                 // isGenerator dispatch via stdlib.
                                 // A direct call to a generator function can be
                                 // drained at compile time via the common GEN_NEXT
                                 // loop (WASM stack switching) — works for ANY
                                 // language with generators (JS, PHP), no runtime
-                                // isGenerator check, no stdlib.
+                                // isGenerator check, no runtime helper.
                                 let is_known_gen = (self.is_js_profile()
                                     || self.profile.buffered_iterator_methods)
                                     && self.is_direct_generator_call(&elem.value);
@@ -3998,6 +4028,45 @@ impl Compiler {
                                 let num = self.import("ecma:number", "Number");
                                 self.emit_host_call(num, 1);
                                 self.emit(Op::F64_TRUNC);
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if self.profile.name == "c" {
+                        match canon_type.as_str() {
+                            "double" | "float" => {
+                                self.compile_expr(inner)?;
+                                let num = self.import("ecma:number", "Number");
+                                self.emit_host_call(num, 1);
+                                return Ok(());
+                            }
+                            "char" | "uint8" | "int16" | "int" | "long" | "uint32" => {
+                                self.compile_expr(inner)?;
+                                let num = self.import("ecma:number", "Number");
+                                self.emit_host_call(num, 1);
+                                self.emit(Op::F64_TRUNC);
+                                match canon_type.as_str() {
+                                    "uint8" | "char" => {
+                                        self.emit_c_unsigned_wrap(256.0);
+                                    }
+                                    "int16" => {
+                                        self.emit_c_unsigned_wrap(65_536.0);
+                                        self.emit_c_signed_wrap_from_unsigned(32_768.0, 65_536.0);
+                                    }
+                                    "uint32" => {
+                                        self.emit_c_unsigned_wrap(4_294_967_296.0);
+                                    }
+                                    "int" => {
+                                        self.emit_c_unsigned_wrap(4_294_967_296.0);
+                                        self.emit_c_signed_wrap_from_unsigned(
+                                            2_147_483_648.0,
+                                            4_294_967_296.0,
+                                        );
+                                    }
+                                    _ => {}
+                                }
                                 return Ok(());
                             }
                             _ => {}
@@ -4826,7 +4895,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         common::collections::emit_len(&mut self.chunks, self.current, line);
                     }
-                    common::collections::emit_stdlib_call(
+                    common::collections::emit_runtime_helper_call(
                         &mut self.chunks,
                         self.current,
                         "__vybe_slice",
@@ -4852,7 +4921,7 @@ impl Compiler {
                     } else {
                         self.emit(Op::NULL);
                     }
-                    common::collections::emit_stdlib_call(
+                    common::collections::emit_runtime_helper_call(
                         &mut self.chunks,
                         self.current,
                         "__vybe_slicestep",
@@ -5515,5 +5584,26 @@ impl Compiler {
             sanitize(type_name),
             sanitize(method_name),
         )
+    }
+
+    fn emit_c_unsigned_wrap(&mut self, modulus: f64) {
+        self.emit_const(Value::F64(modulus));
+        self.compile_binop(&BinOp::Mod);
+        self.emit_const(Value::F64(modulus));
+        self.emit(Op::F64_ADD);
+        self.emit_const(Value::F64(modulus));
+        self.compile_binop(&BinOp::Mod);
+    }
+
+    fn emit_c_signed_wrap_from_unsigned(&mut self, threshold: f64, modulus: f64) {
+        self.emit(Op::DUP);
+        self.emit_const(Value::F64(threshold));
+        self.emit(Op::F64_GE);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+        self.emit_const(Value::F64(modulus));
+        self.emit(Op::F64_SUB);
+        self.chunk().emit_else(line);
+        self.chunk().emit_end(line);
     }
 }

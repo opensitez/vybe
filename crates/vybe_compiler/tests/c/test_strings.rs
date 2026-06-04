@@ -2,7 +2,8 @@ use super::helpers::*;
 
 #[test]
 fn string_length() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 #include <string.h>
 int main() {
@@ -10,13 +11,15 @@ int main() {
     printf("%d\n", strlen(s));
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn string_compare() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 #include <string.h>
 int main() {
@@ -29,13 +32,15 @@ int main() {
     else puts("not equal");
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["equal", "not equal"]);
 }
 
 #[test]
 fn string_concat() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 #include <string.h>
 int main() {
@@ -45,6 +50,7 @@ int main() {
     puts(c);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello world"]);
 }

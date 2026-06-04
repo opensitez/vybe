@@ -26,7 +26,7 @@
 
 use crate::ast::{
     Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Expression, Literal, ObjectProperty,
-    StmtKind, Statement, VarDeclarator, VarDeclKind,
+    Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
 
 pub const REF_KIND_KEY: &str = "__ref_kind";
@@ -77,7 +77,10 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
 /// `{__ref_kind: "carray", __base: base, __idx: idx}`
 pub fn make_carray_ptr(base: Expression, idx: Expression) -> Expression {
     e(ExprKind::Object(vec![
-        obj_prop(REF_KIND_KEY, e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string())))),
+        obj_prop(
+            REF_KIND_KEY,
+            e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))),
+        ),
         obj_prop(CARRAY_BASE_KEY, base),
         obj_prop(CARRAY_IDX_KEY, idx),
     ]))
@@ -114,7 +117,10 @@ pub fn carray_advance(ptr: Expression, n: Expression) -> Expression {
         right: Box::new(n),
     });
     e(ExprKind::Object(vec![
-        obj_prop(REF_KIND_KEY, e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string())))),
+        obj_prop(
+            REF_KIND_KEY,
+            e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))),
+        ),
         obj_prop(CARRAY_BASE_KEY, member(ptr, CARRAY_BASE_KEY)),
         obj_prop(CARRAY_IDX_KEY, new_idx),
     ]))

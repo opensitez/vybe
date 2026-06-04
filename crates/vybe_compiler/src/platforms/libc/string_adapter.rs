@@ -18,7 +18,11 @@ fn lit_null() -> Expression {
 }
 
 fn member(object: Expression, field: &str) -> Expression {
-    e(ExprKind::Member { object: Box::new(object), field: field.to_string(), null_safe: false })
+    e(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
@@ -52,7 +56,11 @@ pub fn strchr(s: Expression, c_code: Expression) -> Expression {
     let ch = char_code_to_string(c_code);
     let idx1 = call(member(s.clone(), "indexOf"), vec![ch.clone()]);
     let idx2 = call(member(s.clone(), "indexOf"), vec![ch]);
-    let cond = e(ExprKind::Binary { op: BinOp::GtEq, left: Box::new(idx1), right: Box::new(lit_int(0)) });
+    let cond = e(ExprKind::Binary {
+        op: BinOp::GtEq,
+        left: Box::new(idx1),
+        right: Box::new(lit_int(0)),
+    });
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(s, "slice"), vec![idx2])),
@@ -65,7 +73,11 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
     let ch = char_code_to_string(c_code);
     let idx1 = call(member(s.clone(), "lastIndexOf"), vec![ch.clone()]);
     let idx2 = call(member(s.clone(), "lastIndexOf"), vec![ch]);
-    let cond = e(ExprKind::Binary { op: BinOp::GtEq, left: Box::new(idx1), right: Box::new(lit_int(0)) });
+    let cond = e(ExprKind::Binary {
+        op: BinOp::GtEq,
+        left: Box::new(idx1),
+        right: Box::new(lit_int(0)),
+    });
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(s, "slice"), vec![idx2])),
@@ -77,7 +89,11 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
 pub fn strstr(haystack: Expression, needle: Expression) -> Expression {
     let idx1 = call(member(haystack.clone(), "indexOf"), vec![needle.clone()]);
     let idx2 = call(member(haystack.clone(), "indexOf"), vec![needle]);
-    let cond = e(ExprKind::Binary { op: BinOp::GtEq, left: Box::new(idx1), right: Box::new(lit_int(0)) });
+    let cond = e(ExprKind::Binary {
+        op: BinOp::GtEq,
+        left: Box::new(idx1),
+        right: Box::new(lit_int(0)),
+    });
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(haystack, "slice"), vec![idx2])),

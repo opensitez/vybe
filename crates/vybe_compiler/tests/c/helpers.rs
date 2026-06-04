@@ -36,10 +36,17 @@ pub fn run_prints(src: &str) -> Vec<String> {
             // C printf embeds \n in the format string; split so each line
             // becomes a separate captured entry matching test expectations.
             let mut guard = out.lock().unwrap();
-            for line in joined.split('\n') {
-                if !line.is_empty() {
-                    guard.push(line.to_string());
-                }
+            let parts: Vec<&str> = joined.split('\n').collect();
+            // Strip the trailing empty string only when it is an artifact of a
+            // trailing newline (i.e., the joined string ends with '\n').
+            // Preserve empty strings that are actual content (e.g. puts("") → "").
+            let end = if joined.ends_with('\n') {
+                parts.len().saturating_sub(1)
+            } else {
+                parts.len()
+            };
+            for line in &parts[..end] {
+                guard.push(line.to_string());
             }
             Value::Null
         }),
@@ -51,7 +58,10 @@ pub fn run_prints(src: &str) -> Vec<String> {
 
 pub fn assert_outputs(src: &str, expected: &[&str]) {
     let out = run_prints(src);
-    let expected = expected.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+    let expected = expected
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
     assert_eq!(out, expected);
 }
 

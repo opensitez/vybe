@@ -38,13 +38,25 @@ pub fn c_round(x: Expression) -> Expression {
     });
     let pos = call(
         ident("floor"),
-        vec![e(ExprKind::Binary { op: BinOp::Add, left: Box::new(x.clone()), right: Box::new(half) })],
+        vec![e(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(x.clone()),
+            right: Box::new(half),
+        })],
     );
     let neg = call(
         ident("ceil"),
-        vec![e(ExprKind::Binary { op: BinOp::Sub, left: Box::new(x), right: Box::new(neg_half) })],
+        vec![e(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(x),
+            right: Box::new(neg_half),
+        })],
     );
-    e(ExprKind::Ternary { cond: Box::new(cond), then: Box::new(pos), else_: Box::new(neg) })
+    e(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(pos),
+        else_: Box::new(neg),
+    })
 }
 
 // Profile mappings (documented, not reimplemented here):
@@ -61,4 +73,4 @@ pub fn c_round(x: Expression) -> Expression {
 //  log10  → host:ecma:math:log10
 //  exp    → host:ecma:math:exp
 //  atan2  → host:ecma:math:atan2
-//  fmod   → stdlib:fmod
+//  fmod   → host:ecma:math:fmod

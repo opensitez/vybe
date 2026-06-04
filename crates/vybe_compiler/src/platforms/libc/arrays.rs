@@ -11,7 +11,12 @@ fn e(kind: ExprKind) -> Expression {
 }
 
 fn array_elem(value: Expression) -> ArrayElement {
-    ArrayElement { value, spread: false, key: None, by_ref: false }
+    ArrayElement {
+        value,
+        spread: false,
+        key: None,
+        by_ref: false,
+    }
 }
 
 /// Create a zero-filled flat array of `count` elements: `[0, 0, ..., 0]`.
@@ -30,7 +35,8 @@ pub fn make_zero_array(count: usize) -> Expression {
 /// Enables true in-place mutation (`text[1] = 'o'`) and pointer arithmetic
 /// over the same backing store.
 pub fn carray_from_string_literal(s: &str) -> Expression {
-    let mut elems: Vec<ArrayElement> = s.chars()
+    let mut elems: Vec<ArrayElement> = s
+        .chars()
         .map(|c| array_elem(e(ExprKind::Lit(Literal::Int(c as i64)))))
         .collect();
     // null terminator
@@ -40,9 +46,7 @@ pub fn carray_from_string_literal(s: &str) -> Expression {
 
 /// Create a flat array from a list of pre-built element expressions.
 pub fn make_array(elems: Vec<Expression>) -> Expression {
-    e(ExprKind::Array(
-        elems.into_iter().map(array_elem).collect(),
-    ))
+    e(ExprKind::Array(elems.into_iter().map(array_elem).collect()))
 }
 
 /// Zero-pad an existing array literal to `count` elements.

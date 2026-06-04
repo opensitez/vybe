@@ -15,7 +15,12 @@ fn lit_float(f: f64) -> Expression {
 }
 
 fn array_elem(value: Expression) -> ArrayElement {
-    ArrayElement { value, spread: false, key: None, by_ref: false }
+    ArrayElement {
+        value,
+        spread: false,
+        key: None,
+        by_ref: false,
+    }
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {

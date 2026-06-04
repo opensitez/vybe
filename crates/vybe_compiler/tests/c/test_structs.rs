@@ -2,7 +2,8 @@ use super::helpers::*;
 
 #[test]
 fn struct_basic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 struct Point {
     int x;
@@ -16,13 +17,15 @@ int main() {
     printf("%d\n", p.y);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "4"]);
 }
 
 #[test]
 fn struct_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 struct Rect {
     int w;
@@ -33,13 +36,15 @@ int main() {
     printf("%d\n", r.w * r.h);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn typedef_struct() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 typedef struct {
     int age;
@@ -52,6 +57,7 @@ int main() {
     printf("%d %d\n", p.age, p.score);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25 100"]);
 }

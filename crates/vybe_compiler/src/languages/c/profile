@@ -92,7 +92,7 @@ uses_normalize_class = false
 "ceil"     = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
 "round"    = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
 "pow"      = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
-"fmod"     = { emit = "stdlib:fmod",       min_args = 2, max_args = 2 }
+"fmod"     = { emit = "host:ecma:math:fmod",       min_args = 2, max_args = 2 }
 "sin"      = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
 "cos"      = { emit = "host:ecma:math:cos",  min_args = 1, max_args = 1 }
 "tan"      = { emit = "host:ecma:math:tan",  min_args = 1, max_args = 1 }

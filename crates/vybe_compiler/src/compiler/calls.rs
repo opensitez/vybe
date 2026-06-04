@@ -583,8 +583,6 @@ impl Compiler {
         Ok(true)
     }
 
-
-
     fn overload_type_matches(&self, param_type: &str, arg_type: &str) -> bool {
         let normalized_param =
             Self::normalize_type_hint(strip_generic_suffix(param_type).trim_end_matches('?'));
@@ -1377,7 +1375,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot);
     }
 
-
     fn finish_member_index_call_path(
         &mut self,
         callee: &Expression,
@@ -1737,7 +1734,6 @@ impl Compiler {
         Ok(true)
     }
 
-
     fn emit_flat_call_args_array(
         &mut self,
         args: &[Argument],
@@ -1992,7 +1988,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn emit_generator_control_packet_from_stack(&mut self, op: &str) {
+    pub(crate) fn emit_generator_control_packet_from_stack(&mut self, op: &str) {
         let value_slot = self.define_local("__gen_control_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
         self.emit(Op::DROP);
@@ -3503,25 +3499,6 @@ impl Compiler {
                                                 }
                                                 let line = self.line;
                                                 match &def.emit {
-                                                    BuiltinEmit::Stdlib(name) => {
-                                                        // For stdlib: func ref must be pushed BEFORE object.
-                                                        // But object is already on stack. Save it to a temp.
-                                                        let tmp = self.define_local("__const_val");
-                                                        self.emit_u16(Op::LOCAL_SET, tmp);
-                                                        self.emit(Op::DROP);
-                                                        let global_name =
-                                                            Self::stdlib_global_name(name);
-                                                        let name_idx = self.str_const(&global_name);
-                                                        self.emit_u16(Op::GLOBAL_GET, name_idx);
-                                                        self.emit_u16(Op::LOCAL_GET, tmp);
-                                                        for a in &arg_exprs {
-                                                            self.compile_expr(a)?;
-                                                        }
-                                                        self.emit_u8(
-                                                            Op::CALL_REF,
-                                                            (arg_exprs.len() + 1) as u8,
-                                                        );
-                                                    }
                                                     BuiltinEmit::HostCall(module, func) => {
                                                         let idx = self.import(module, func);
                                                         self.emit_host_call(
@@ -4404,10 +4381,6 @@ impl Compiler {
                     .lookup_value_method(field, arg_exprs.len() as u8)
                     .cloned()
             };
-            let prefer_string_stdlib_value_method = matches!(
-                matched_value_method.as_ref().map(|d| &d.emit),
-                Some(BuiltinEmit::Stdlib(_))
-            ) && self.expr_is_known_string_receiver(object);
             let array_only_value_method_for_non_array = matches!(
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::HostCall(module, func))
@@ -4489,25 +4462,12 @@ impl Compiler {
                     field,
                     arg_exprs.len() as u8,
                 )
-                && !prefer_string_stdlib_value_method
                 && !prefer_dotnet_adapter
             {
                 // Let the generic member-call path consult the runtime type
                 // registry for shared .NET collection methods instead of
                 // intercepting them via language profile value-method tables.
             } else if let Some(def) = matched_value_method {
-                // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
-                if let BuiltinEmit::Stdlib(stdlib_name) = &def.emit {
-                    let global_name = Self::stdlib_global_name(stdlib_name);
-                    let name_idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_GET, name_idx);
-                    self.compile_expr(object)?;
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
-                    return Ok(());
-                }
                 // Object is first arg, then explicit args
                 self.compile_expr(object)?;
                 for a in &arg_exprs {
@@ -8052,14 +8012,11 @@ impl Compiler {
             // (GEN_NEXT appends `null` as the last element of the arg list it
             // builds from __bound_args, so without padding it would be placed
             // in the first missing slot rather than the control slot.)
-            if let Some(&gen_param_count) =
-                self.generator_param_counts.get(&self.canon(name))
-            {
+            if let Some(&gen_param_count) = self.generator_param_counts.get(&self.canon(name)) {
                 let line = self.line;
                 let provided = arg_slots.len();
                 for index in provided..gen_param_count {
-                    let pad_slot =
-                        self.define_local(&format!("__gen_pad_arg_{}", index));
+                    let pad_slot = self.define_local(&format!("__gen_pad_arg_{}", index));
                     self.emit(Op::UNDEFINED);
                     self.emit_u16(Op::LOCAL_SET, pad_slot);
                     self.emit(Op::DROP);

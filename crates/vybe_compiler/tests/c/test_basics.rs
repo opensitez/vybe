@@ -2,19 +2,22 @@ use super::helpers::*;
 
 #[test]
 fn hello_world() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     puts("Hello, World!");
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello, World!"]);
 }
 
 #[test]
 fn integer_arithmetic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int a = 10;
@@ -31,7 +34,8 @@ int main() {
     printf("%d\n", rem);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out[0], "13");
     assert_eq!(out[1], "7");
     assert_eq!(out[2], "30");
@@ -41,7 +45,8 @@ int main() {
 
 #[test]
 fn variables_and_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 5;
@@ -49,13 +54,15 @@ int main() {
     printf("%d\n", x);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["6"]);
 }
 
 #[test]
 fn float_arithmetic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     double a = 3.14;
@@ -64,13 +71,15 @@ int main() {
     printf("%.2f\n", result);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["6.28"]);
 }
 
 #[test]
 fn if_else() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 10;
@@ -81,13 +90,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["greater"]);
 }
 
 #[test]
 fn while_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int i = 0;
@@ -97,13 +108,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn for_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     for (int i = 0; i < 5; i++) {
@@ -111,13 +124,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2", "3", "4"]);
 }
 
 #[test]
 fn function_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int add(int a, int b) {
     return a + b;
@@ -127,13 +142,15 @@ int main() {
     printf("%d\n", result);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn recursive_factorial() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int factorial(int n) {
     if (n <= 1) return 1;
@@ -143,26 +160,30 @@ int main() {
     printf("%d\n", factorial(5));
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["120"]);
 }
 
 #[test]
 fn string_output() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     char *s = "hello";
     puts(s);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello"]);
 }
 
 #[test]
 fn ternary_operator() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 7;
@@ -170,13 +191,15 @@ int main() {
     puts(msg);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["big"]);
 }
 
 #[test]
 fn do_while() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int i = 0;
@@ -186,13 +209,15 @@ int main() {
     } while (i < 3);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn nested_if() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 5;
@@ -207,13 +232,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["big positive"]);
 }
 
 #[test]
 fn compound_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     int x = 10;
@@ -223,13 +250,15 @@ int main() {
     printf("%d\n", x);
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["39"]);
 }
 
 #[test]
 fn break_in_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     for (int i = 0; i < 10; i++) {
@@ -238,13 +267,15 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn continue_in_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 #include <stdio.h>
 int main() {
     for (int i = 0; i < 5; i++) {
@@ -253,6 +284,7 @@ int main() {
     }
     return 0;
 }
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "3", "4"]);
 }
