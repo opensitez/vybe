@@ -123,6 +123,7 @@ $token = strtok($s, ' ');
 $tokens = [];
 while ($token !== false) { $tokens[] = $token; $token = strtok(' '); }
 echo implode(',', $tokens);
+echo "\n";
 "#
         ),
         vec!["hello,world,foo"]
@@ -135,6 +136,7 @@ fn sscanf_parse_date() {
             r#"<?php
 [$y,$m,$d] = sscanf('2024-07-15', '%d-%d-%d');
 echo "$d/$m/$y";
+echo "\n";
 "#
         ),
         vec!["15/7/2024"]

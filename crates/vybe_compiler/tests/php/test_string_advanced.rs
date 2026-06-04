@@ -7,7 +7,9 @@ fn substr_count_basic() {
         run_prints(
             r#"<?php
 echo substr_count("hello world hello", "hello");
+echo "\n";
 echo substr_count("banana", "an");
+echo "\n";
 "#
         ),
         &["2", "2"]
@@ -20,7 +22,9 @@ fn substr_replace_basic() {
         run_prints(
             r#"<?php
 echo substr_replace("hello world", "PHP", 6, 5);
+echo "\n";
 echo substr_replace("abcdef", "XY", 2, 2);
+echo "\n";
 "#
         ),
         &["hello PHP", "abXYef"]
@@ -35,8 +39,10 @@ fn str_split_basic() {
             r#"<?php
 $chars = str_split("hello");
 echo implode(",", $chars);
+echo "\n";
 $chunks = str_split("abcdefgh", 3);
 echo implode("|", $chunks);
+echo "\n";
 "#
         ),
         &["h,e,l,l,o", "abc|def|gh"]
@@ -53,6 +59,7 @@ $text = "The quick brown fox jumped over the lazy dog";
 $wrapped = wordwrap($text, 15, "\n", true);
 $lines = explode("\n", $wrapped);
 echo count($lines);
+echo "\n";
 "#
         ),
         &["4"]
@@ -66,8 +73,11 @@ fn number_format_basic() {
         run_prints(
             r#"<?php
 echo number_format(1234567.891);
+echo "\n";
 echo number_format(1234567.891, 2);
+echo "\n";
 echo number_format(1234567.891, 2, ",", ".");
+echo "\n";
 "#
         ),
         &["1,234,568", "1,234,567.89", "1.234.567,89"]
@@ -80,8 +90,11 @@ fn number_format_small() {
         run_prints(
             r#"<?php
 echo number_format(0.5, 0);
+echo "\n";
 echo number_format(42, 3);
+echo "\n";
 echo number_format(1000, 0, ".", ",");
+echo "\n";
 "#
         ),
         &["1", "42.000", "1,000"]
@@ -95,7 +108,9 @@ fn similar_text_basic() {
         run_prints(
             r#"<?php
 echo similar_text("Hello", "World");
+echo "\n";
 echo similar_text("abc", "abc");
+echo "\n";
 "#
         ),
         &["2", "3"]
@@ -108,8 +123,11 @@ fn levenshtein_basic() {
         run_prints(
             r#"<?php
 echo levenshtein("kitten", "sitting");
+echo "\n";
 echo levenshtein("hello", "hello");
+echo "\n";
 echo levenshtein("", "abc");
+echo "\n";
 "#
         ),
         &["3", "0", "3"]
@@ -123,8 +141,11 @@ fn soundex_basic() {
         run_prints(
             r#"<?php
 echo soundex("Robert");
+echo "\n";
 echo soundex("Rupert");
+echo "\n";
 echo soundex("Robert") == soundex("Rupert") ? "match" : "no match";
+echo "\n";
 "#
         ),
         &["R163", "R163", "match"]
@@ -137,7 +158,9 @@ fn metaphone_basic() {
         run_prints(
             r#"<?php
 echo metaphone("Thompson");
+echo "\n";
 echo metaphone("Thomson");
+echo "\n";
 "#
         ),
         &["TMPSN", "TMSN"]
@@ -152,6 +175,7 @@ fn chunk_split_basic() {
             r#"<?php
 $result = chunk_split("abcdefgh", 3, "-");
 echo $result;
+echo "\n";
 "#
         ),
         &["abc-def-gh-"]
@@ -166,8 +190,10 @@ fn str_getcsv_basic() {
             r#"<?php
 $fields = str_getcsv("one,two,three");
 echo implode("|", $fields);
+echo "\n";
 $quoted = str_getcsv('"hello, world","test"');
 echo implode("|", $quoted);
+echo "\n";
 "#
         ),
         &["one|two|three", "hello, world|test"]
@@ -181,8 +207,11 @@ fn str_pad_all_modes() {
         run_prints(
             r#"<?php
 echo str_pad("42", 5, "0", STR_PAD_LEFT);
+echo "\n";
 echo str_pad("hi", 10, "-");
+echo "\n";
 echo str_pad("x", 5, "AB", STR_PAD_BOTH);
+echo "\n";
 "#
         ),
         &["00042", "hi--------", "ABxAB"]
@@ -196,9 +225,13 @@ fn ctype_alpha_digit() {
         run_prints(
             r#"<?php
 echo ctype_alpha("hello") ? "yes" : "no";
+echo "\n";
 echo ctype_alpha("hello123") ? "yes" : "no";
+echo "\n";
 echo ctype_digit("12345") ? "yes" : "no";
+echo "\n";
 echo ctype_digit("123a5") ? "yes" : "no";
+echo "\n";
 "#
         ),
         &["yes", "no", "yes", "no"]
@@ -213,7 +246,9 @@ fn bin2hex_hex2bin() {
             r#"<?php
 $hex = bin2hex("AB");
 echo $hex;
+echo "\n";
 echo hex2bin($hex);
+echo "\n";
 "#
         ),
         &["4142", "AB"]
@@ -227,7 +262,9 @@ fn base64_encode_decode() {
             r#"<?php
 $encoded = base64_encode("Hello PHP");
 echo $encoded;
+echo "\n";
 echo base64_decode($encoded);
+echo "\n";
 "#
         ),
         &["SGVsbG8gUEhQ", "Hello PHP"]
@@ -241,7 +278,9 @@ fn urlencode_decode() {
             r#"<?php
 $encoded = urlencode("hello world&foo=bar");
 echo $encoded;
+echo "\n";
 echo urldecode($encoded);
+echo "\n";
 "#
         ),
         &["hello+world%26foo%3Dbar", "hello world&foo=bar"]
@@ -255,7 +294,9 @@ fn strstr_basic() {
         run_prints(
             r#"<?php
 echo strstr("user@example.com", "@");
+echo "\n";
 echo strstr("user@example.com", "@", true);
+echo "\n";
 "#
         ),
         &["@example.com", "user"]
@@ -268,7 +309,9 @@ fn strrpos_basic() {
         run_prints(
             r#"<?php
 echo strrpos("hello world hello", "hello");
+echo "\n";
 echo strrpos("abcabc", "bc");
+echo "\n";
 "#
         ),
         &["12", "4"]
@@ -283,6 +326,7 @@ fn str_replace_array() {
             r#"<?php
 $result = str_replace(["a", "e", "i", "o", "u"], "*", "hello world");
 echo $result;
+echo "\n";
 "#
         ),
         &["h*ll* w*rld"]
@@ -295,6 +339,7 @@ fn str_ireplace_case_insensitive() {
         run_prints(
             r#"<?php
 echo str_ireplace("HELLO", "hi", "Hello World hello");
+echo "\n";
 "#
         ),
         &["hi World hi"]
@@ -307,7 +352,9 @@ fn string_reverse() {
         run_prints(
             r#"<?php
 echo strrev("hello");
+echo "\n";
 echo strrev("12345");
+echo "\n";
 "#
         ),
         &["olleh", "54321"]
@@ -320,7 +367,9 @@ fn string_ucwords() {
         run_prints(
             r#"<?php
 echo ucwords("hello beautiful world");
+echo "\n";
 echo ucwords("one-two-three", "-");
+echo "\n";
 "#
         ),
         &["Hello Beautiful World", "One-Two-Three"]
@@ -333,10 +382,15 @@ fn sprintf_advanced() {
         run_prints(
             r#"<?php
 echo sprintf("%05d", 42);
+echo "\n";
 echo sprintf("%.2f", 3.14159);
+echo "\n";
 echo sprintf("%s has %d items", "cart", 5);
+echo "\n";
 echo sprintf("%10s", "right");
+echo "\n";
 echo sprintf("%-10s|", "left");
+echo "\n";
 "#
         ),
         &[
@@ -356,10 +410,15 @@ fn sprintf_format_modes() {
         run_prints(
             r#"<?php
 echo sprintf("%x", 255);
+echo "\n";
 echo sprintf("%X", 255);
+echo "\n";
 echo sprintf("%o", 8);
+echo "\n";
 echo sprintf("%b", 10);
+echo "\n";
 echo sprintf("%e", 123456.789);
+echo "\n";
 "#
         ),
         &["ff", "FF", "10", "1010", "1.234568e+5"]
@@ -374,6 +433,7 @@ fn vsprintf_with_array() {
             r#"<?php
 $args = ["Alice", 30, "NYC"];
 echo vsprintf("%s is %d years old and lives in %s", $args);
+echo "\n";
 "#
         ),
         &["Alice is 30 years old and lives in NYC"]
@@ -387,8 +447,11 @@ fn str_contains_runtime() {
         run_prints(
             r#"<?php
 echo str_contains("Hello World", "World") ? "yes" : "no";
+echo "\n";
 echo str_contains("Hello World", "world") ? "yes" : "no";
+echo "\n";
 echo str_contains("", "") ? "yes" : "no";
+echo "\n";
 "#
         ),
         &["yes", "no", "yes"]
@@ -401,9 +464,13 @@ fn str_starts_ends_with_runtime() {
         run_prints(
             r#"<?php
 echo str_starts_with("Hello World", "Hello") ? "yes" : "no";
+echo "\n";
 echo str_starts_with("Hello World", "World") ? "yes" : "no";
+echo "\n";
 echo str_ends_with("Hello World", "World") ? "yes" : "no";
+echo "\n";
 echo str_ends_with("Hello World", "Hello") ? "yes" : "no";
+echo "\n";
 "#
         ),
         &["yes", "no", "yes", "no"]
@@ -418,6 +485,7 @@ fn strtr_array_map() {
             r#"<?php
 $map = ["Hello" => "Hi", "World" => "Earth"];
 echo strtr("Hello World", $map);
+echo "\n";
 "#
         ),
         &["Hi Earth"]
@@ -433,7 +501,9 @@ fn str_rot13_roundtrip() {
 $original = "Hello World";
 $rotated = str_rot13($original);
 echo $rotated;
+echo "\n";
 echo str_rot13($rotated);
+echo "\n";
 "#
         ),
         &["Uryyb Jbeyq", "Hello World"]
@@ -447,8 +517,11 @@ fn stripos_case_insensitive() {
         run_prints(
             r#"<?php
 echo stripos("Hello World", "WORLD");
+echo "\n";
 echo stripos("PHP is great", "IS");
+echo "\n";
 echo (stripos("no match", "XYZ") === false) ? "not found" : "found";
+echo "\n";
 "#
         ),
         &["6", "4", "not found"]
@@ -462,7 +535,9 @@ fn strrchr_last_occurrence() {
         run_prints(
             r#"<?php
 echo strrchr("/var/www/html/index.php", "/");
+echo "\n";
 echo strrchr("user@example.com", "@");
+echo "\n";
 "#
         ),
         &["/index.php", "@example.com"]
@@ -476,8 +551,11 @@ fn substr_negative_offset() {
         run_prints(
             r#"<?php
 echo substr("Hello World", -5);
+echo "\n";
 echo substr("Hello World", -5, 3);
+echo "\n";
 echo substr("abcdef", 0, -2);
+echo "\n";
 "#
         ),
         &["World", "Wor", "abcd"]
@@ -491,9 +569,13 @@ fn trim_custom_chars() {
         run_prints(
             r#"<?php
 echo trim("***hello***", "*");
+echo "\n";
 echo trim("/path/to/file/", "/");
+echo "\n";
 echo ltrim("000123", "0");
+echo "\n";
 echo rtrim("hello...", ".");
+echo "\n";
 "#
         ),
         &["hello", "path/to/file", "123", "hello"]
@@ -508,6 +590,7 @@ fn htmlspecialchars_decode_basic() {
             r#"<?php
 $encoded = "&lt;div class=&quot;test&quot;&gt;Hello &amp; World&lt;/div&gt;";
 echo htmlspecialchars_decode($encoded);
+echo "\n";
 "#
         ),
         &["<div class=\"test\">Hello & World</div>"]
@@ -521,7 +604,9 @@ fn strip_tags_basic() {
         run_prints(
             r#"<?php
 echo strip_tags("<p>Hello <b>World</b></p>");
+echo "\n";
 echo strip_tags("<a href='url'>click</a> here", "<a>");
+echo "\n";
 "#
         ),
         &["Hello World", "<a href='url'>click</a> here"]
@@ -537,7 +622,9 @@ fn addslashes_stripslashes() {
 $s = "It's a \"test\" with \\backslash";
 $slashed = addslashes($s);
 echo $slashed;
+echo "\n";
 echo stripslashes($slashed);
+echo "\n";
 "#
         ),
         &[
@@ -556,7 +643,9 @@ fn crc32_deterministic() {
 $a = crc32("hello");
 $b = crc32("hello");
 echo ($a === $b) ? "same" : "diff";
+echo "\n";
 echo ($a !== crc32("world")) ? "unique" : "collision";
+echo "\n";
 "#
         ),
         &["same", "unique"]
@@ -570,8 +659,11 @@ fn md5_sha1_lengths() {
         run_prints(
             r#"<?php
 echo strlen(md5("hello"));
+echo "\n";
 echo strlen(sha1("hello"));
+echo "\n";
 echo md5("hello") === md5("hello") ? "stable" : "unstable";
+echo "\n";
 "#
         ),
         &["32", "40", "stable"]
@@ -585,9 +677,13 @@ fn strcmp_strcasecmp() {
         run_prints(
             r#"<?php
 echo strcmp("abc", "abc") === 0 ? "equal" : "not equal";
+echo "\n";
 echo strcmp("abc", "abd") < 0 ? "less" : "not less";
+echo "\n";
 echo strcasecmp("Hello", "hello") === 0 ? "equal" : "not equal";
+echo "\n";
 echo strcasecmp("ABC", "xyz") < 0 ? "less" : "not less";
+echo "\n";
 "#
         ),
         &["equal", "less", "equal", "less"]
@@ -601,8 +697,11 @@ fn implode_single_element() {
         run_prints(
             r#"<?php
 echo implode(",", ["only"]);
+echo "\n";
 echo implode("|", [42]);
+echo "\n";
 echo implode("", ["x"]);
+echo "\n";
 "#
         ),
         &["only", "42", "x"]
@@ -617,8 +716,11 @@ fn explode_with_limit() {
             r#"<?php
 $parts = explode(",", "a,b,c,d,e", 3);
 echo count($parts);
+echo "\n";
 echo $parts[0];
+echo "\n";
 echo $parts[2];
+echo "\n";
 "#
         ),
         &["3", "a", "c,d,e"]
@@ -632,8 +734,11 @@ fn str_repeat_runtime_assertion() {
         run_prints(
             r#"<?php
 echo str_repeat("ab", 4);
+echo "\n";
 echo str_repeat("-", 5);
+echo "\n";
 echo strlen(str_repeat("x", 100));
+echo "\n";
 "#
         ),
         &["abababab", "-----", "100"]
@@ -648,7 +753,9 @@ fn preg_match_all_collect() {
             r#"<?php
 $count = preg_match_all('/\d+/', "abc123def456ghi789", $matches);
 echo $count;
+echo "\n";
 echo implode(",", $matches[0]);
+echo "\n";
 "#
         ),
         &["3", "123,456,789"]
@@ -663,7 +770,9 @@ fn preg_split_no_empty_flag() {
             r#"<?php
 $parts = preg_split('/[\s,]+/', "one  two,,three   four", -1, PREG_SPLIT_NO_EMPTY);
 echo count($parts);
+echo "\n";
 echo implode("|", $parts);
+echo "\n";
 "#
         ),
         &["4", "one|two|three|four"]
@@ -679,6 +788,7 @@ fn preg_quote_special_chars() {
 $pattern = preg_quote("$1.00 (today)", "/");
 $quoted = preg_match("/" . $pattern . "/", '$1.00 (today)');
 echo $quoted;
+echo "\n";
 "#
         ),
         &["1"]
@@ -697,7 +807,9 @@ $result = preg_replace_callback('/\d+/', function($m) use (&$i) {
     return $m[0] * 2;
 }, "a1 b2 c3");
 echo $result;
+echo "\n";
 echo $i;
+echo "\n";
 "#
         ),
         &["a2 b4 c6", "3"]
@@ -712,10 +824,14 @@ fn sscanf_parsing() {
             r#"<?php
 $parsed = sscanf("Age: 25", "Age: %d");
 echo $parsed[0];
+echo "\n";
 $parsed2 = sscanf("2024-01-15", "%d-%d-%d");
 echo $parsed2[0];
+echo "\n";
 echo $parsed2[1];
+echo "\n";
 echo $parsed2[2];
+echo "\n";
 "#
         ),
         &["25", "2024", "1", "15"]
@@ -729,7 +845,9 @@ fn html_entity_decode_basic() {
         run_prints(
             r#"<?php
 echo html_entity_decode("&lt;p&gt;Hello &amp; World&lt;/p&gt;");
+echo "\n";
 echo html_entity_decode("&copy; 2024 &trade;");
+echo "\n";
 "#
         ),
         &["<p>Hello & World</p>", "© 2024 ™"]
@@ -745,6 +863,7 @@ fn nl2br_multiline() {
 $text = "line1\nline2\nline3";
 $result = nl2br($text);
 echo substr_count($result, "<br />");
+echo "\n";
 "#
         ),
         &["2"]

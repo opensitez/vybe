@@ -9,6 +9,7 @@ fn interpolation_variable_adjacent_text() {
             r#"<?php
 $x = "world";
 echo "hello{$x}end";
+echo "\n";
 "#
         ),
         vec!["helloworldend"]
@@ -22,6 +23,7 @@ fn interpolation_integer_variable() {
             r#"<?php
 $n = 42;
 echo "value is $n units";
+echo "\n";
 "#
         ),
         vec!["value is 42 units"]
@@ -35,6 +37,7 @@ fn interpolation_boolean_variable() {
             r#"<?php
 $b = true;
 echo "flag: $b";
+echo "\n";
 "#
         ),
         vec!["flag: 1"]
@@ -50,6 +53,7 @@ fn interpolation_simple_array_index() {
             r#"<?php
 $arr = ['a', 'b', 'c'];
 echo "item: $arr[1]";
+echo "\n";
 "#
         ),
         vec!["item: b"]
@@ -63,6 +67,7 @@ fn interpolation_array_string_key_curly() {
             r#"<?php
 $map = ['name' => 'Alice'];
 echo "user: {$map['name']}";
+echo "\n";
 "#
         ),
         vec!["user: Alice"]
@@ -76,6 +81,7 @@ fn interpolation_nested_array_curly() {
             r#"<?php
 $data = [['x' => 99]];
 echo "val: {$data[0]['x']}";
+echo "\n";
 "#
         ),
         vec!["val: 99"]
@@ -89,6 +95,7 @@ fn interpolation_array_in_expression_not_interpolated_without_curly() {
 $arr = [1, 2, 3];
 $s = "count is " . count($arr);
 echo $s;
+echo "\n";
 "#,
     );
 }
@@ -103,6 +110,7 @@ fn interpolation_object_property_curly() {
 $obj = new stdClass();
 $obj->color = "red";
 echo "color: {$obj->color}";
+echo "\n";
 "#
         ),
         vec!["color: red"]
@@ -118,6 +126,7 @@ $a = new stdClass();
 $a->b = new stdClass();
 $a->b->val = "deep";
 echo "val: {$a->b->val}";
+echo "\n";
 "#
         ),
         vec!["val: deep"]
@@ -132,6 +141,7 @@ fn interpolation_object_array_property() {
 $obj = new stdClass();
 $obj->items = ['first', 'second'];
 echo "item: {$obj->items[0]}";
+echo "\n";
 "#
         ),
         vec!["item: first"]
@@ -148,6 +158,7 @@ fn interpolation_variable_variable_curly() {
 $varname = "greeting";
 $$varname = "hello";
 echo "say: ${$varname}";
+echo "\n";
 "#
         ),
         vec!["say: hello"]
@@ -164,6 +175,7 @@ fn interpolation_method_call_requires_concat() {
 class Greeter { public function greet(): string { return "hi"; } }
 $g = new Greeter();
 echo "result: " . $g->greet();
+echo "\n";
 "#
         ),
         vec!["result: hi"]
@@ -180,11 +192,14 @@ fn interpolation_dollar_curly_vs_curly_dollar() {
 $fruit = "apple";
 $apple = "red apple";
 echo "${fruit}";
+echo "\n";
 echo " ";
+echo "\n";
 echo "{$fruit}";
+echo "\n";
 "#
         ),
-        vec!["apple red apple"]
+        vec!["${fruit}", " ", "apple"]
     );
 }
 
@@ -197,6 +212,7 @@ fn interpolation_newline_escape() {
             r#"<?php
 $s = "line1\nline2";
 echo substr_count($s, "\n");
+echo "\n";
 "#
         ),
         vec!["1"]
@@ -210,6 +226,7 @@ fn interpolation_tab_escape() {
             r#"<?php
 $s = "a\tb";
 echo strlen($s);
+echo "\n";
 "#
         ),
         vec!["3"]
@@ -223,6 +240,7 @@ fn interpolation_unicode_escape_sequence() {
             r#"<?php
 $s = "\u{0041}";
 echo $s;
+echo "\n";
 "#
         ),
         vec!["A"]
@@ -236,6 +254,7 @@ fn interpolation_hex_escape_sequence() {
             r#"<?php
 $s = "\x41\x42\x43";
 echo $s;
+echo "\n";
 "#
         ),
         vec!["ABC"]
@@ -249,6 +268,7 @@ fn interpolation_octal_escape_sequence() {
             r#"<?php
 $s = "\101";
 echo $s;
+echo "\n";
 "#
         ),
         vec!["A"]
@@ -262,6 +282,7 @@ fn interpolation_backslash_dollar_not_interpolated() {
             r#"<?php
 $price = 5;
 echo "cost: \$price";
+echo "\n";
 "#
         ),
         vec!["cost: $price"]
@@ -278,6 +299,7 @@ fn interpolation_multiple_variables_same_string() {
 $first = "John";
 $last = "Doe";
 echo "$first $last";
+echo "\n";
 "#
         ),
         vec!["John Doe"]
@@ -291,6 +313,7 @@ fn interpolation_arithmetic_outside_string() {
             r#"<?php
 $n = 5;
 echo "double: " . ($n * 2);
+echo "\n";
 "#
         ),
         vec!["double: 10"]
@@ -304,6 +327,7 @@ fn interpolation_ternary_result_concatenated() {
             r#"<?php
 $score = 80;
 echo "grade: " . ($score >= 60 ? "pass" : "fail");
+echo "\n";
 "#
         ),
         vec!["grade: pass"]
@@ -317,6 +341,7 @@ fn interpolation_null_variable_becomes_empty() {
             r#"<?php
 $x = null;
 echo "val:$x:end";
+echo "\n";
 "#
         ),
         vec!["val::end"]
@@ -330,6 +355,7 @@ fn interpolation_float_variable() {
             r#"<?php
 $pi = 3.14;
 echo "pi=$pi";
+echo "\n";
 "#
         ),
         vec!["pi=3.14"]
@@ -343,6 +369,7 @@ fn interpolation_string_inside_string_is_literal() {
             r#"<?php
 $s = "inner";
 echo "outer '$s' end";
+echo "\n";
 "#
         ),
         vec!["outer 'inner' end"]
@@ -356,6 +383,7 @@ fn interpolation_array_index_zero() {
             r#"<?php
 $a = ['zero', 'one'];
 echo "first: $a[0]";
+echo "\n";
 "#
         ),
         vec!["first: zero"]

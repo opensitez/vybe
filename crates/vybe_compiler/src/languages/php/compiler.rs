@@ -1,6 +1,8 @@
-use super::super::ast::Expression;
-use super::super::compiler::*;
-use vybe_bytecode::Value;
+use crate::ast::{ExprKind, Expression, Literal};
+use crate::compiler::*;
+use crate::emitter as common;
+use std::sync::Arc;
+use vybe_bytecode::{Op, Value};
 
 #[derive(Clone, Copy)]
 enum BufferedGeneratorStepMode {
@@ -62,7 +64,8 @@ impl Compiler {
             (BufferedGeneratorStepMode::Valid, true) => self.emit_const(Value::Bool(true)),
             (BufferedGeneratorStepMode::Valid, false) => self.emit_const(Value::Bool(false)),
             (BufferedGeneratorStepMode::Current, false) => self.emit_const(Value::Bool(false)),
-            (BufferedGeneratorStepMode::Current, true) | (BufferedGeneratorStepMode::Value, true) => {
+            (BufferedGeneratorStepMode::Current, true)
+            | (BufferedGeneratorStepMode::Value, true) => {
                 self.emit_generator_yield_value(value_slot);
             }
             (BufferedGeneratorStepMode::Value, false) => {
@@ -92,7 +95,12 @@ impl Compiler {
         let line = self.line;
         self.chunk().emit_if(line);
 
-        self.emit_buffered_generator_store_yielded_state(obj_slot, value_slot, done_key, current_key);
+        self.emit_buffered_generator_store_yielded_state(
+            obj_slot,
+            value_slot,
+            done_key,
+            current_key,
+        );
         self.emit_buffered_generator_set_step_result(value_slot, result_slot, mode, true);
 
         self.chunk().emit_else(line);
@@ -144,7 +152,12 @@ impl Compiler {
 
         self.chunk().emit_else(line);
 
-        self.emit_buffered_generator_store_yielded_state(obj_slot, value_slot, done_key, current_key);
+        self.emit_buffered_generator_store_yielded_state(
+            obj_slot,
+            value_slot,
+            done_key,
+            current_key,
+        );
         self.emit_buffered_generator_set_step_result(
             value_slot,
             result_slot,
@@ -188,7 +201,7 @@ impl Compiler {
         );
     }
 
-    pub(super) fn maybe_define_buffered_generator_key_index_slot(
+    pub(crate) fn maybe_define_buffered_generator_key_index_slot(
         &mut self,
         key: Option<&str>,
     ) -> Option<u16> {
@@ -203,7 +216,7 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_buffered_generator_foreach_state(
+    pub(crate) fn emit_buffered_generator_foreach_state(
         &mut self,
         cont_slot: u16,
         has_more_slot: u16,
@@ -254,7 +267,7 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    pub(super) fn emit_buffered_generator_key_binding(
+    pub(crate) fn emit_buffered_generator_key_binding(
         &mut self,
         key_slot: u16,
         value_slot: u16,
@@ -265,13 +278,13 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    pub(super) fn emit_buffered_generator_value_binding(&mut self, var_slot: u16, value_slot: u16) {
+    pub(crate) fn emit_buffered_generator_value_binding(&mut self, var_slot: u16, value_slot: u16) {
         self.emit_generator_yield_value(value_slot);
         self.emit_u16(Op::LOCAL_SET, var_slot);
         self.emit(Op::DROP);
     }
 
-    pub(super) fn emit_buffered_generator_method_dispatch(
+    pub(crate) fn emit_buffered_generator_method_dispatch(
         &mut self,
         obj_tmp: u16,
         field_name: &str,
@@ -542,7 +555,7 @@ impl Compiler {
         Ok(Some(result_slot as usize))
     }
 
-    pub(super) fn emit_buffered_generator_close_ident_if_needed(&mut self, name: &str) {
+    pub(crate) fn emit_buffered_generator_close_ident_if_needed(&mut self, name: &str) {
         if !self.profile.buffered_iterator_methods {
             return;
         }
@@ -583,7 +596,7 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
     }
-    pub(super) fn emit_php_dynamic_function_name_resolution(&mut self, callee_slot: u16) {
+    pub(crate) fn emit_php_dynamic_function_name_resolution(&mut self, callee_slot: u16) {
         if !self.is_php_profile() {
             return;
         }
@@ -644,14 +657,17 @@ impl Compiler {
         }
         self.chunk().emit_end(line);
     }
-    pub(super) fn finish_buffered_generator_method_dispatch(&mut self, result_slot: usize) {
+    pub(crate) fn finish_buffered_generator_method_dispatch(&mut self, result_slot: usize) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_SET, result_slot as u16);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
     }
-    pub(super) fn compile_php_autoload_callable_ref(&mut self, expr: &Expression) -> Result<(), String> {
+    pub(crate) fn compile_php_autoload_callable_ref(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Lit(Literal::Str(function_name)) => {
                 let resolved_name = self.resolve_source_type_alias(function_name);
@@ -662,7 +678,10 @@ impl Compiler {
             _ => self.compile_expr(expr),
         }
     }
-    pub(super) fn resolve_php_autoload_callback_class_global(&self, class_name: &str) -> Option<String> {
+    pub(crate) fn resolve_php_autoload_callback_class_global(
+        &self,
+        class_name: &str,
+    ) -> Option<String> {
         let resolved_class = self.resolve_source_type_alias(class_name);
         let canon_class = self.canon(&resolved_class);
         if self.defined_classes.contains(&canon_class)
@@ -681,10 +700,10 @@ impl Compiler {
             }
         })
     }
-    pub(super) fn is_php_profile(&self) -> bool {
+    pub(crate) fn is_php_profile(&self) -> bool {
         self.profile.name == "php"
     }
-    pub(super) fn emit_php_promote_empty_array_for_string_key(
+    pub(crate) fn emit_php_promote_empty_array_for_string_key(
         &mut self,
         obj_slot: u16,
         key_slot: u16,

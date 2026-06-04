@@ -72,7 +72,7 @@ fn htmlspecialchars_decode() {
 fn html_entity_decode() {
     assert_eq!(
         run_prints(r#"<?php echo html_entity_decode('&amp;&lt;&gt;&quot;'); "#),
-        vec!["<>&\""]
+        vec!["&<>\""]
     );
 }
 #[test]

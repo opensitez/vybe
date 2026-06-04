@@ -23,6 +23,7 @@ fn preg_replace_callback_transform() {
             r#"<?php
 $r = preg_replace_callback('/\d+/', fn($m) => $m[0] * 2, 'I have 3 apples and 5 bananas');
 echo $r;
+echo "\n";
 "#
         ),
         vec!["I have 6 apples and 10 bananas"]
@@ -38,6 +39,7 @@ $r = preg_replace_callback_array([
     '/\b\d+/' => fn($m) => $m[0] * 10,
 ], 'Hello 5 World 3');
 echo $r;
+echo "\n";
 "#
         ),
         vec!["hello 50 world 30"]
@@ -60,6 +62,7 @@ fn preg_match_all_capture_groups() {
             r#"<?php
 preg_match_all('/(\w+)=(\w+)/', 'a=1 b=2 c=3', $m);
 echo implode(',', $m[1]) . ':' . implode(',', $m[2]);
+echo "\n";
 "#
         ),
         vec!["a,b,c:1,2,3"]
@@ -72,6 +75,7 @@ fn preg_match_all_set_order() {
             r#"<?php
 preg_match_all('/(\w+):(\d+)/', 'foo:1 bar:2', $m, PREG_SET_ORDER);
 echo $m[0][1] . '=' . $m[0][2] . ',' . $m[1][1] . '=' . $m[1][2];
+echo "\n";
 "#
         ),
         vec!["foo=1,bar=2"]
@@ -111,6 +115,7 @@ fn preg_grep_filters_matching() {
             r#"<?php
 $a = ['foo','bar123','baz','qux456'];
 echo implode(',', preg_grep('/\d/', $a));
+echo "\n";
 "#
         ),
         vec!["bar123,qux456"]
@@ -123,6 +128,7 @@ fn preg_grep_invert() {
             r#"<?php
 $a = ['foo','bar123','baz'];
 echo implode(',', preg_grep('/\d/', $a, PREG_GREP_INVERT));
+echo "\n";
 "#
         ),
         vec!["foo,baz"]
@@ -145,6 +151,7 @@ fn regex_multiline_anchor() {
             r#"<?php
 $n = preg_match_all('/^\d+/m', "1 foo\n2 bar\n3 baz");
 echo $n;
+echo "\n";
 "#
         ),
         vec!["3"]

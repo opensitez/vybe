@@ -7,7 +7,9 @@ fn sprintf_string() {
     compile_ok(
         r#"<?php
 echo sprintf("Hello, %s!", "World");
+echo "\n";
 echo sprintf("%s and %s", "foo", "bar");
+echo "\n";
 "#,
     );
 }
@@ -17,8 +19,11 @@ fn sprintf_integer() {
     compile_ok(
         r#"<?php
 echo sprintf("%d", 42);
+echo "\n";
 echo sprintf("%d + %d = %d", 3, 4, 7);
+echo "\n";
 echo sprintf("%d", -99);
+echo "\n";
 "#,
     );
 }
@@ -28,8 +33,11 @@ fn sprintf_float() {
     compile_ok(
         r#"<?php
 echo sprintf("%f", 3.14);
+echo "\n";
 echo sprintf("%.2f", 3.14159);
+echo "\n";
 echo sprintf("%.4f", 1.0/3.0);
+echo "\n";
 "#,
     );
 }
@@ -77,6 +85,7 @@ fn sprintf_scientific() {
 echo sprintf("%e", 123456.789);  // 1.234568e+5
 echo sprintf("%E", 0.000123);    // 1.230000E-4
 echo sprintf("%.2e", 1234.5);
+echo "\n";
 "#,
     );
 }
@@ -86,7 +95,9 @@ fn sprintf_unsigned() {
     compile_ok(
         r#"<?php
 echo sprintf("%u", 42);
+echo "\n";
 echo sprintf("%u", PHP_INT_MAX);
+echo "\n";
 "#,
     );
 }
@@ -110,7 +121,9 @@ fn sprintf_argument_swap() {
         run_prints(
             r#"<?php
 echo sprintf('%2$s %1$s', 'World', 'Hello');
+echo "\n";
 echo sprintf('%1$s has %2$d items at $%3$.2f each', 'Cart', 3, 9.99);
+echo "\n";
 "#
         ),
         vec![
@@ -126,6 +139,7 @@ fn sprintf_argument_swap_repeat() {
         run_prints(
             r#"<?php
 echo sprintf('%1$s %1$s %2$s', 'la', 'land');
+echo "\n";
 "#
         ),
         vec!["la la land".to_string()]
@@ -151,6 +165,7 @@ fn sprintf_width_dynamic() {
         r#"<?php
 echo sprintf('%*d', 5, 42);   // PHP uses %5d style; *-width is non-standard but %5d works
 echo sprintf('%5d', 42);
+echo "\n";
 "#,
     );
 }
@@ -163,6 +178,7 @@ fn printf_basic() {
         r#"<?php
 $written = printf("Name: %s, Age: %d\n", "Alice", 30);
 echo $written > 0 ? 'wrote bytes' : 'nothing written';
+echo "\n";
 "#,
     );
 }
@@ -174,6 +190,7 @@ fn vprintf_basic() {
 $args = ["Bob", 25];
 $written = vprintf("Name: %s, Age: %d\n", $args);
 echo $written > 0 ? 'wrote bytes' : 'nothing';
+echo "\n";
 "#,
     );
 }
@@ -185,6 +202,7 @@ fn vsprintf_basic() {
 $args = ['PHP', '8.3'];
 $result = vsprintf("%s version %s", $args);
 echo $result;
+echo "\n";
 "#,
     );
 }
@@ -197,6 +215,7 @@ fn sscanf_basic() {
         r#"<?php
 $result = sscanf("Age: 25", "Age: %d");
 echo $result[0];
+echo "\n";
 "#,
     );
 }
@@ -207,6 +226,7 @@ fn sscanf_multiple() {
         r#"<?php
 [$y, $m, $d] = sscanf("2024-01-15", "%d-%d-%d");
 echo "$y-$m-$d";
+echo "\n";
 "#,
     );
 }
@@ -217,6 +237,7 @@ fn sscanf_string_and_int() {
         r#"<?php
 [$name, $age] = sscanf("Alice 30", "%s %d");
 echo "$name is $age";
+echo "\n";
 "#,
     );
 }
@@ -228,7 +249,9 @@ fn number_format_basic() {
     compile_ok(
         r#"<?php
 echo number_format(1234567.891);
+echo "\n";
 echo number_format(1234567.891, 2);
+echo "\n";
 "#,
     );
 }
@@ -248,6 +271,7 @@ fn number_format_no_decimals() {
     compile_ok(
         r#"<?php
 echo number_format(9999999, 0, '.', ',');
+echo "\n";
 "#,
     );
 }
@@ -257,8 +281,11 @@ fn number_format_small_numbers() {
     compile_ok(
         r#"<?php
 echo number_format(0.005, 2);
+echo "\n";
 echo number_format(0.0,   2);
+echo "\n";
 echo number_format(-1.5,  1);
+echo "\n";
 "#,
     );
 }
@@ -272,8 +299,10 @@ fn intl_number_formatter_currency() {
 if (class_exists('NumberFormatter')) {
     $fmt = new NumberFormatter('en_US', NumberFormatter::CURRENCY);
     echo $fmt->formatCurrency(1234.56, 'USD');
+    echo "\n";
 } else {
     echo '$1,234.56';
+    echo "\n";
 }
 "#,
     );
@@ -286,7 +315,9 @@ fn str_pad_right() {
     compile_ok(
         r#"<?php
 echo str_pad("hello", 10) . "|";
+echo "\n";
 echo str_pad("hi", 8, "-") . "|";
+echo "\n";
 "#,
     );
 }
@@ -296,7 +327,9 @@ fn str_pad_left() {
     compile_ok(
         r#"<?php
 echo str_pad("42", 6, "0", STR_PAD_LEFT);
+echo "\n";
 echo str_pad("x", 5, ".", STR_PAD_LEFT);
+echo "\n";
 "#,
     );
 }
@@ -306,7 +339,9 @@ fn str_pad_both() {
     compile_ok(
         r#"<?php
 echo str_pad("hi", 8, "-", STR_PAD_BOTH) . "|";
+echo "\n";
 echo str_pad("a", 5, "*", STR_PAD_BOTH)  . "|";
+echo "\n";
 "#,
     );
 }
@@ -319,6 +354,7 @@ fn wordwrap_basic() {
         r#"<?php
 $text = "The quick brown fox jumped over the lazy dog";
 echo wordwrap($text, 15, "\n", false);
+echo "\n";
 "#,
     );
 }
@@ -329,6 +365,7 @@ fn wordwrap_cut_long_words() {
         r#"<?php
 $text = "A verylongwordthatcannotfit in normal wrapping";
 echo wordwrap($text, 10, "\n", true);
+echo "\n";
 "#,
     );
 }
@@ -340,6 +377,7 @@ fn chunk_split_basic() {
     compile_ok(
         r#"<?php
 echo chunk_split("ABCDEFGH", 2, "-");
+echo "\n";
 "#,
     );
 }
@@ -351,6 +389,7 @@ fn chunk_split_base64() {
 $data = base64_encode(str_repeat("x", 60));
 $formatted = chunk_split($data, 76, "\n");
 echo strlen($formatted) > strlen($data) ? 'has newlines' : 'no newlines';
+echo "\n";
 "#,
     );
 }
@@ -363,6 +402,7 @@ fn fprintf_to_stdout() {
         r#"<?php
 $written = fprintf(STDOUT, "Value: %d\n", 42);
 echo $written > 0 ? 'wrote' : 'nothing';
+echo "\n";
 "#,
     );
 }
@@ -378,6 +418,7 @@ function buildQuery(string $table, int $id): string {
     return sprintf("SELECT * FROM `%s` WHERE id = %d LIMIT 1", $table, $id);
 }
 echo buildQuery('users', 42);
+echo "\n";
 "#,
     );
 }
@@ -391,6 +432,7 @@ function logLine(string $level, string $msg, mixed ...$args): string {
     return sprintf("[%s] %s", strtoupper($level), $formatted);
 }
 echo logLine('info', 'User %s logged in from %s', 'Alice', '127.0.0.1');
+echo "\n";
 "#,
     );
 }

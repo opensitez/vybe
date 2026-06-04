@@ -78,8 +78,10 @@ fn mb_str_pad_right() {
             r#"<?php
 if (function_exists('mb_str_pad')) {
     echo mb_str_pad('héllo', 8, '.', STR_PAD_RIGHT);
+    echo "\n";
 } else {
     echo str_pad('hello', 8, '.');
+    echo "\n";
 }
 "#
         ),
@@ -96,6 +98,7 @@ fn mb_strlen_vs_strlen() {
             r#"<?php
 $s = 'héllo';
 echo strlen($s) . ':' . mb_strlen($s);
+echo "\n";
 "#
         ),
         vec!["6:5"]
@@ -159,6 +162,7 @@ fn mb_detect_encoding_utf8() {
             r#"<?php
 $s = 'hello';
 echo mb_check_encoding($s, 'UTF-8') ? 'utf8' : 'not';
+echo "\n";
 "#
         ),
         vec!["utf8"]

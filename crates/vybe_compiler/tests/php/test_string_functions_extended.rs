@@ -30,7 +30,7 @@ fn strtr_longer_match_wins() {
 fn wordwrap_basic() {
     assert_eq!(
         run_prints(r#"<?php echo wordwrap('The quick brown fox', 10, "\n"); "#),
-        vec!["The quick\nbrown fox"]
+        vec!["The quick", "brown fox"]
     );
 }
 #[test]
@@ -102,14 +102,14 @@ fn str_pad_shorter_than_input_unchanged() {
 fn nl2br_inserts_br_before_newline() {
     assert_eq!(
         run_prints(r#"<?php echo nl2br("line1\nline2"); "#),
-        vec!["line1<br />\nline2"]
+        vec!["line1<br />", "line2"]
     );
 }
 #[test]
 fn nl2br_xhtml_false_gives_html4() {
     assert_eq!(
         run_prints(r#"<?php echo nl2br("a\nb", false); "#),
-        vec!["a<br>\nb"]
+        vec!["a<br>", "b"]
     );
 }
 
@@ -124,7 +124,10 @@ fn str_repeat_basic() {
 }
 #[test]
 fn str_repeat_zero_times() {
-    assert_eq!(run_prints(r#"<?php echo str_repeat('x', 0); "#), vec![""]);
+    assert_eq!(
+        run_prints(r#"<?php echo strlen(str_repeat('x', 0)) === 0 ? 'empty' : 'not-empty'; "#),
+        vec!["empty"]
+    );
 }
 
 // ── number_format / money_format patterns ────────────────────

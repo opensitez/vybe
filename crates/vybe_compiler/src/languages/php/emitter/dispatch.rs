@@ -35,36 +35,25 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        name if super::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {}
         // ── PHP array helpers ──────────────────────────────────────
         // Index-based loops + ECMA array/object ops. PHP `array` ≡
         // `Map` (assoc) or `Array` (sequential).
-        "php.array_pad" => {
-            super::array_adapter::emit_array_pad(chunks, current, argc, line)
-        }
-        "php.array_map" => {
-            super::array_adapter::emit_array_map(chunks, current, argc, line)
-        }
-        "php.array_filter" => {
-            super::array_adapter::emit_array_filter(chunks, current, argc, line)
-        }
+        "php.array_pad" => super::array_adapter::emit_array_pad(chunks, current, argc, line),
+        "php.array_map" => super::array_adapter::emit_array_map(chunks, current, argc, line),
+        "php.array_filter" => super::array_adapter::emit_array_filter(chunks, current, argc, line),
         "php.array_walk_recursive" => {
             super::array_adapter::emit_array_walk_recursive(chunks, current, argc, line)
         }
-        "php.array_fill" => {
-            super::array_adapter::emit_array_fill(chunks, current, argc, line)
-        }
+        "php.array_fill" => super::array_adapter::emit_array_fill(chunks, current, argc, line),
         "php.array_fill_keys" => {
             super::array_adapter::emit_array_fill_keys(chunks, current, argc, line)
         }
-        "php.count" => {
-            super::array_adapter::emit_php_count(chunks, current, argc, line)
-        }
+        "php.count" => super::array_adapter::emit_php_count(chunks, current, argc, line),
         "php.json_encode" => {
             super::array_adapter::emit_php_json_encode(chunks, current, argc, line)
         }
-        "php.array_keys" => {
-            super::array_adapter::emit_php_array_keys(chunks, current, argc, line)
-        }
+        "php.array_keys" => super::array_adapter::emit_php_array_keys(chunks, current, argc, line),
         "php.array_values" => {
             super::array_adapter::emit_php_array_values(chunks, current, argc, line)
         }
@@ -72,27 +61,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::array_adapter::emit_php_array_is_list(chunks, current, argc, line)
         }
         "php.end" => super::array_adapter::emit_php_end(chunks, current, argc, line),
-        "php.array_chunk" => {
-            super::array_adapter::emit_array_chunk(chunks, current, argc, line)
-        }
+        "php.array_chunk" => super::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine" => {
             super::array_adapter::emit_array_combine(chunks, current, argc, line)
         }
-        "php.array_flip" => {
-            super::array_adapter::emit_array_flip(chunks, current, argc, line)
-        }
-        "php.array_diff" => {
-            super::array_adapter::emit_array_diff(chunks, current, argc, line)
-        }
+        "php.array_flip" => super::array_adapter::emit_array_flip(chunks, current, argc, line),
+        "php.array_diff" => super::array_adapter::emit_array_diff(chunks, current, argc, line),
         "php.array_intersect" => {
             super::array_adapter::emit_array_intersect(chunks, current, argc, line)
         }
         "php.array_count_values" => {
             super::array_adapter::emit_array_count_values(chunks, current, argc, line)
         }
-        "php.array_column" => {
-            super::array_adapter::emit_array_column(chunks, current, argc, line)
-        }
+        "php.array_column" => super::array_adapter::emit_array_column(chunks, current, argc, line),
         "php.array_key_first" => {
             super::array_adapter::emit_array_key_first(chunks, current, argc, line)
         }
@@ -120,24 +101,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.iterator_to_array" => {
             super::array_adapter::emit_iterator_to_array(chunks, current, argc, line)
         }
-        "php.asort" => {
-            super::array_adapter::emit_php_asort(chunks, current, argc, line)
-        }
-        "php.arsort" => {
-            super::array_adapter::emit_php_arsort(chunks, current, argc, line)
-        }
-        "php.ksort" => {
-            super::array_adapter::emit_php_ksort(chunks, current, argc, line)
-        }
-        "php.krsort" => {
-            super::array_adapter::emit_php_krsort(chunks, current, argc, line)
-        }
-        "php.uasort" => {
-            super::array_adapter::emit_php_uasort(chunks, current, argc, line)
-        }
-        "php.uksort" => {
-            super::array_adapter::emit_php_uksort(chunks, current, argc, line)
-        }
+        "php.asort" => super::array_adapter::emit_php_asort(chunks, current, argc, line),
+        "php.arsort" => super::array_adapter::emit_php_arsort(chunks, current, argc, line),
+        "php.ksort" => super::array_adapter::emit_php_ksort(chunks, current, argc, line),
+        "php.krsort" => super::array_adapter::emit_php_krsort(chunks, current, argc, line),
+        "php.uasort" => super::array_adapter::emit_php_uasort(chunks, current, argc, line),
+        "php.uksort" => super::array_adapter::emit_php_uksort(chunks, current, argc, line),
 
         "php.datetime_new" => {
             crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, line)
@@ -332,9 +301,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.explode" => {
             crate::emitter::php::string_adapter::emit_explode(chunks, current, argc, line)
         }
-        "php.sscanf" => {
-            crate::emitter::sprintf::emit_sscanf(chunks, current, argc, line)
-        }
+        "php.sscanf" => crate::emitter::sprintf::emit_sscanf(chunks, current, argc, line),
         "php.uniqid" => {
             crate::emitter::php::string_adapter::emit_php_uniqid(chunks, current, argc, line)
         }
@@ -421,6 +388,60 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.similar_text" => {
             crate::emitter::php::string_adapter::emit_similar_text(chunks, current, argc, line)
+        }
+        "php.var_export" => {
+            crate::emitter::php::string_adapter::emit_var_export(chunks, current, argc, line)
+        }
+        "php.strripos" => {
+            crate::emitter::php::string_adapter::emit_strripos(chunks, current, argc, line)
+        }
+        "php.strncmp" => {
+            crate::emitter::php::string_adapter::emit_strncmp(chunks, current, false, line)
+        }
+        "php.strncasecmp" => {
+            crate::emitter::php::string_adapter::emit_strncmp(chunks, current, true, line)
+        }
+        "php.strpbrk" => {
+            crate::emitter::php::string_adapter::emit_strpbrk(chunks, current, argc, line)
+        }
+        "php.substr_compare" => {
+            crate::emitter::php::string_adapter::emit_substr_compare(chunks, current, argc, line)
+        }
+        "php.preg_grep" => {
+            crate::emitter::php::string_adapter::emit_preg_grep(chunks, current, argc, line)
+        }
+        "php.fnmatch" => {
+            crate::emitter::php::string_adapter::emit_fnmatch(chunks, current, argc, line)
+        }
+        "php.preg_replace_limited" => {
+            crate::emitter::php::string_adapter::emit_preg_replace_limited(
+                chunks, current, argc, line,
+            )
+        }
+        "php.strtok_init" => {
+            crate::emitter::php::string_adapter::emit_strtok_init(chunks, current, argc, line)
+        }
+        "php.strtok_next" => {
+            crate::emitter::php::string_adapter::emit_strtok_next(chunks, current, argc, line)
+        }
+        "php.mb_convert_case" => {
+            crate::emitter::php::string_adapter::emit_mb_convert_case(chunks, current, argc, line)
+        }
+        "php.mb_check_enc" => {
+            let chunk = &mut chunks[current];
+            for _ in 0..argc {
+                chunk.emit_op(vybe_bytecode::Op::DROP, line);
+            }
+            chunk.emit_op(vybe_bytecode::Op::TRUE, line);
+        }
+        "php.mb_detect_enc" => {
+            let chunk = &mut chunks[current];
+            for _ in 0..argc {
+                chunk.emit_op(vybe_bytecode::Op::DROP, line);
+            }
+            let v = vybe_bytecode::Value::String(std::sync::Arc::from("UTF-8"));
+            let idx = chunk.add_constant(v);
+            chunk.emit_op_u16(vybe_bytecode::Op::CONST, idx, line);
         }
         "php.metaphone" => {
             crate::emitter::php::string_adapter::emit_metaphone(chunks, current, argc, line)
@@ -776,7 +797,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.
-
         _ => return false,
     }
     true

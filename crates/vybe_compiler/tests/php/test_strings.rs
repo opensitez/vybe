@@ -45,7 +45,9 @@ fn string_search() {
 #[test]
 fn string_collation_compare_runtime() {
     assert_eq!(
-        run_prints("<?php echo strcoll('A', 'B'); echo strcoll('B', 'A'); echo strcoll('A', 'A');"),
+        run_prints(
+            r#"<?php echo strcoll('A', 'B'); echo "\n"; echo strcoll('B', 'A'); echo "\n"; echo strcoll('A', 'A'); "#
+        ),
         vec!["-1".to_string(), "1".to_string(), "0".to_string()]
     );
 }

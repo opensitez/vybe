@@ -32,12 +32,18 @@ fn capture_log_lines(output: &Arc<Mutex<Vec<String>>>, args: &[Value]) {
 
 fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     let buffered = output.lock().unwrap().concat();
-    buffered
+    let mut result: Vec<String> = buffered
         .split('\n')
-        .map(|segment| segment.trim_end_matches('\r'))
-        .filter(|line| !line.is_empty())
-        .map(|line| line.to_string())
-        .collect()
+        .map(|s| s.trim_end_matches('\r').to_string())
+        .collect();
+    while result
+        .last()
+        .map(|s: &String| s.is_empty())
+        .unwrap_or(false)
+    {
+        result.pop();
+    }
+    result
 }
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {

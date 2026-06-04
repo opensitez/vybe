@@ -176,6 +176,7 @@ fn str_word_count_returns_array_mode_1() {
             r#"<?php
 $words = str_word_count("one two three", 1);
 echo implode(',', $words);
+echo "\n";
 "#
         ),
         vec!["one,two,three"]
@@ -189,6 +190,7 @@ fn str_word_count_returns_array_mode_2_with_positions() {
             r#"<?php
 $words = str_word_count("one two", 2);
 echo implode(',', array_keys($words));
+echo "\n";
 "#
         ),
         vec!["0,4"]
@@ -212,6 +214,7 @@ fn similar_text_with_percent() {
             r#"<?php
 similar_text("abc", "abc", $p);
 echo $p;
+echo "\n";
 "#
         ),
         vec!["100"]

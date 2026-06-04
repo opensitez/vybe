@@ -106,7 +106,8 @@ mb_strtoupper       = { emit = "opcode:str_to_upper",        min_args = 1, max_a
 # as Rust UTF-8 — code-point indexing matches mb_substr semantics).
 strrev              = { emit = "opcode:str_reverse",         min_args = 1, max_args = 1 }
 strrpos             = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
-strripos            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+strriios            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+strripos            = { emit = "common:php.strripos",         min_args = 2, max_args = 3 }
 strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
 md5                 = { emit = "common:php.md5",             min_args = 1, max_args = 1 }
 sha1                = { emit = "common:php.sha1",            min_args = 1, max_args = 1 }
@@ -147,6 +148,24 @@ str_getcsv          = { emit = "common:php.str_getcsv",      min_args = 1, max_a
 soundex             = { emit = "common:php.soundex",         min_args = 1, max_args = 1 }
 levenshtein         = { emit = "common:php.levenshtein",     min_args = 2, max_args = 5 }
 similar_text        = { emit = "common:php.similar_text",    min_args = 2, max_args = 3 }
+strncmp             = { emit = "common:php.strncmp",           min_args = 3, max_args = 3 }
+var_export          = { emit = "common:php.var_export",        min_args = 1, max_args = 2 }
+strncasecmp         = { emit = "common:php.strncasecmp",       min_args = 3, max_args = 3 }
+strpbrk             = { emit = "common:php.strpbrk",          min_args = 2, max_args = 2 }
+substr_compare      = { emit = "common:php.substr_compare",   min_args = 3, max_args = 5 }
+preg_grep           = { emit = "common:php.preg_grep",        min_args = 2, max_args = 3 }
+__vybe_fnmatch      = { emit = "common:php.fnmatch",          min_args = 2, max_args = 2 }
+__vybe_strtok       = { emit = "common:php.strtok_init",      min_args = 2, max_args = 2 }
+__vybe_preg_replace_limited = { emit = "common:php.preg_replace_limited", min_args = 4, max_args = 4 }
+__vybe_strtok_next  = { emit = "common:php.strtok_next",      min_args = 1, max_args = 1 }
+__vybe_mb_convert_case = { emit = "common:php.mb_convert_case", min_args = 2, max_args = 2 }
+mb_str_pad          = { emit = "common:php.str_pad",            min_args = 2, max_args = 4 }
+mb_strrpos          = { emit = "common:php.strripos",           min_args = 2, max_args = 3 }
+mb_check_encoding   = { emit = "common:php.mb_check_enc",       min_args = 0, max_args = 2 }
+mb_detect_encoding  = { emit = "common:php.mb_detect_enc",      min_args = 0, max_args = 3 }
+mb_str_split        = { emit = "common:php.str_split",          min_args = 1, max_args = 2 }
+mb_substr_count     = { emit = "common:php.substr_count",       min_args = 2, max_args = 3 }
+mb_convert_case     = { emit = "common:php.mb_convert_case",    min_args = 2, max_args = 3 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
 version_compare     = { emit = "intrinsic:php_version_compare", min_args = 2, max_args = 3 }
 abs                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
@@ -162,13 +181,13 @@ join                = { emit = "common:collections.join",    min_args = 1, max_a
 # value) pair. Compiled as a multi-opcode intrinsic; no host call.
 strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_args = 3 }
 # `dir($path)` returns a Directory iterator with `read()`/`close()`
-# methods. Backed by an stdlib chunk that wraps wasi:filesystem:listDir.
+# methods. Backed by an runtime helper that wraps wasi:filesystem:listDir.
 dir                 = { emit = "common:php.dir",            min_args = 1, max_args = 1 }
 __php_dir_read      = { emit = "common:php.dir_read",       min_args = 1, max_args = 1 }
 __php_dir_close     = { emit = "common:php.dir_close",      min_args = 1, max_args = 1 }
 # String split — PHP limit semantics need an adapter for the 3-arg form.
 explode             = { emit = "common:php.explode",        min_args = 2, max_args = 3 }
-# `file($path)` returns the file as an array of lines. stdlib chunk
+# `file($path)` returns the file as an array of lines. runtime helper
 # composing wasi:filesystem:readFile + STR_SPLIT on "\n".
 file                = { emit = "common:php.file",           min_args = 1, max_args = 3 }
 # `glob($pattern)` currently supports the common single-`*` filename form
@@ -189,8 +208,8 @@ glob                = { emit = "common:php.glob",           min_args = 1, max_ar
 # chunks (`__stdlib_regex_*_pat_first`) that reorder PHP's pat-first
 # args into ECMA's str-first order before calling ecma:regexp.*.
 preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
-preg_match_all      = { emit = "stdlib:regex_match_all_pat_first", min_args = 2, max_args = 5 }
-preg_replace        = { emit = "stdlib:regex_replace_pat_first", min_args = 3, max_args = 4 }
+preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
+preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
 __php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 1 }
 preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
@@ -311,7 +330,7 @@ boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max
 #     PHP distinguishes arrays from class instances; Vybe's runtime
 #     doesn't tag them differently yet, so a JS-shape rewrite would be
 #     half-correct. The intrinsic forms stay until that's resolved.
-is_numeric          = { emit = "stdlib:isnumeric",               min_args = 1, max_args = 1 }
+is_numeric          = { emit = "common:php.isnumeric",               min_args = 1, max_args = 1 }
 is_float            = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_double           = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_real             = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
@@ -333,7 +352,7 @@ array_slice         = { emit = "intrinsic:php_array_slice",        min_args = 2,
 array_merge         = { emit = "opcode:array_concat",              min_args = 1, max_args = 255 }
 range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
 array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 2 }
-zip                 = { emit = "stdlib:zip",                       min_args = 2, max_args = 255 }
+zip                 = { emit = "common:php.zip",                       min_args = 2, max_args = 255 }
 array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
 array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
 array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
@@ -369,7 +388,7 @@ array_key_exists    = { emit = "host:ecma:object:hasOwn",       min_args = 2, ma
 key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
 
 # Sort family — every variant routes through an existing shared
-# stdlib chunk. PHP arrays normalize to JS arrays/objects so these
+# runtime helper. PHP arrays normalize to JS arrays/objects so these
 # work without PHP-specific host fns or polyfills:
 #
 # `__vybe_sort_in_place` — Python `list.sort()`, JS `Array.sort` (no cb).
@@ -379,15 +398,15 @@ key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, ma
 # The walker rewrites `sort($a)` → `$a = __vybe_sort_in_place($a)` etc.
 # (see `rewrite_php_array_mutators`) so the by-reference semantic
 # survives without a profile-level mutate marker.
-sort                = { emit = "stdlib:sort_in_place",            min_args = 1, max_args = 2 }
+sort                = { emit = "common:php.sort_in_place",            min_args = 1, max_args = 2 }
 rsort               = { emit = "intrinsic:php_rsort",             min_args = 1, max_args = 2 }
-usort               = { emit = "stdlib:sort_with_comparator",     min_args = 2, max_args = 2 }
-array_unique        = { emit = "stdlib:uniq",                     min_args = 1, max_args = 2 }
+usort               = { emit = "common:php.sort_with_comparator",     min_args = 2, max_args = 2 }
+array_unique        = { emit = "common:php.uniq",                     min_args = 1, max_args = 2 }
 # `array_product` walker-rewritten to JS-shape:
 # `$arr.reduce((a,b) => a*b, 1)`.
 
-# Multi-step / assoc-only PHP helpers — bundled as JS-source stdlib
-# chunks (polyfills/php_arrays.js). Each polyfill is a few lines of JS
+# Multi-step / assoc-only PHP helpers — bundled as JS-source runtime
+# helpers (polyfills/php_arrays.js). Each polyfill is a few lines of JS
 # composing Object.* / Array.prototype.* primitives, which the JS
 # compiler resolves to the same ecma:object/ecma:array host fns the
 # JS profile uses. No PHP-specific host fns — the polyfills simply
@@ -464,7 +483,7 @@ __php_print_expr    = { emit = "intrinsic:php_print_expr",      min_args = 1, ma
 
 file_get_contents   = { emit = "common:php.file_get_contents",  min_args = 1, max_args = 5 }
 file_put_contents   = { emit = "common:php.file_put_contents", min_args = 2, max_args = 4 }
-# Backed by real WASI 0.2.8 stat-at via stdlib chunks. The shim
+# Backed by real WASI 0.2.8 stat-at via runtime helpers. The shim
 # `wasi:filesystem:exists`/`isFile`/`isDir` are deprecated and will
 # move to `vybe:fs` when the namespace truth-rename lands.
 file_exists         = { emit = "common:php.file_exists",        min_args = 1, max_args = 1 }

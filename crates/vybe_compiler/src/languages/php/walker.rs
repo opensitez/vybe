@@ -2556,9 +2556,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 name: "tryFrom".to_string(),
                 params: vec![mk_param("v")],
                 return_type: None,
-                body: build_match_chain(Statement::new(StmtKind::Return(Some(
-                    Expression::null(),
-                )))),
+                body: build_match_chain(Statement::new(StmtKind::Return(Some(Expression::null())))),
                 modifiers: static_mods(),
                 handles: Vec::new(),
                 is_async: false,
@@ -3380,11 +3378,76 @@ fn php_tostring_coerce(expr: Expression, span: &Span) -> Expression {
         },
         span.clone(),
     );
-    let body = Expression::with_span(
+    // PHP semantics:
+    //   true  → "1"
+    //   false → ""
+    //   null  → ""
+    //   object with __toString → v.__toString()
+    //   other → v (string/number pass through)
+    let str1 = || Expression::with_span(ExprKind::Lit(Literal::Str("1".to_string())), span.clone());
+    let str_empty =
+        || Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone());
+    let bool_true = Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone());
+    let null_lit = Expression::with_span(ExprKind::Lit(Literal::Null), span.clone());
+    // if v === true → "1"
+    let is_true = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(v_ident()),
+            right: Box::new(bool_true),
+        },
+        span.clone(),
+    );
+    // if v === false || v === null → ""
+    let bool_false = Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone());
+    let is_false = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(v_ident()),
+            right: Box::new(bool_false),
+        },
+        span.clone(),
+    );
+    let is_null = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(v_ident()),
+            right: Box::new(null_lit),
+        },
+        span.clone(),
+    );
+    let is_falsy_lit = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(is_false),
+            right: Box::new(is_null),
+        },
+        span.clone(),
+    );
+    // inner: if v && v.__toString → v.__toString() else v
+    let inner = Expression::with_span(
         ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(call),
             else_: Box::new(v_ident()),
+        },
+        span.clone(),
+    );
+    // if is_falsy → "" else inner
+    let level2 = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(is_falsy_lit),
+            then: Box::new(str_empty()),
+            else_: Box::new(inner),
+        },
+        span.clone(),
+    );
+    // if is_true → "1" else level2
+    let body = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(is_true),
+            then: Box::new(str1()),
+            else_: Box::new(level2),
         },
         span.clone(),
     );
@@ -7446,6 +7509,59 @@ fn decode_php_double_quoted_literal(body: &str) -> String {
             '\\' => out.push('\\'),
             '$' => out.push('$'),
             '"' => out.push('"'),
+            'x' => {
+                let mut hex = String::new();
+                for _ in 0..2 {
+                    if chars.peek().map(|c| c.is_ascii_hexdigit()).unwrap_or(false) {
+                        hex.push(chars.next().unwrap());
+                    }
+                }
+                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(n) {
+                        out.push(ch);
+                    }
+                } else {
+                    out.push_str("\\x");
+                    out.push_str(&hex);
+                }
+            }
+            'u' if chars.peek() == Some(&'{') => {
+                chars.next(); // consume {
+                let mut hex = String::new();
+                while chars.peek().map(|c| *c != '}').unwrap_or(false) {
+                    hex.push(chars.next().unwrap());
+                }
+                chars.next(); // consume }
+                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(n) {
+                        out.push(ch);
+                    }
+                } else {
+                    out.push_str("\\u{");
+                    out.push_str(&hex);
+                    out.push('}');
+                }
+            }
+            o @ '0'..='7' => {
+                let mut oct = String::from(o);
+                for _ in 0..2 {
+                    if chars
+                        .peek()
+                        .map(|c| matches!(c, '0'..='7'))
+                        .unwrap_or(false)
+                    {
+                        oct.push(chars.next().unwrap());
+                    }
+                }
+                if let Ok(n) = u32::from_str_radix(&oct, 8) {
+                    if let Some(ch) = char::from_u32(n) {
+                        out.push(ch);
+                    }
+                } else {
+                    out.push('\\');
+                    out.push_str(&oct);
+                }
+            }
             other => {
                 out.push('\\');
                 out.push(other);
@@ -7489,6 +7605,59 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
                 Some('$') => text.push('$'),
                 Some('{') => text.push('{'),
                 Some('0') => text.push('\0'),
+                Some('x') => {
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        if chars.peek().map(|c| c.is_ascii_hexdigit()).unwrap_or(false) {
+                            hex.push(chars.next().unwrap());
+                        }
+                    }
+                    if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(n) {
+                            text.push(ch);
+                        }
+                    } else {
+                        text.push_str("\\x");
+                        text.push_str(&hex);
+                    }
+                }
+                Some('u') if chars.peek() == Some(&'{') => {
+                    chars.next();
+                    let mut hex = String::new();
+                    while chars.peek().map(|c| *c != '}').unwrap_or(false) {
+                        hex.push(chars.next().unwrap());
+                    }
+                    chars.next();
+                    if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(n) {
+                            text.push(ch);
+                        }
+                    } else {
+                        text.push_str("\\u{");
+                        text.push_str(&hex);
+                        text.push('}');
+                    }
+                }
+                Some(o @ '1'..='7') => {
+                    let mut oct = String::from(o);
+                    for _ in 0..2 {
+                        if chars
+                            .peek()
+                            .map(|c| matches!(c, '0'..='7'))
+                            .unwrap_or(false)
+                        {
+                            oct.push(chars.next().unwrap());
+                        }
+                    }
+                    if let Ok(n) = u32::from_str_radix(&oct, 8) {
+                        if let Some(ch) = char::from_u32(n) {
+                            text.push(ch);
+                        }
+                    } else {
+                        text.push('\\');
+                        text.push_str(&oct);
+                    }
+                }
                 Some(other) => {
                     text.push('\\');
                     text.push(other);
@@ -8928,6 +9097,66 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 vec![lower_arg(0)?, lower_arg(1)?],
             )
         }
+        // strncmp/strncasecmp handled via profile + emitter (not walker rewrite)
+        // fnmatch($pattern, $string) — rewrite to intrinsic
+        "fnmatch" if args.len() == 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("__vybe_fnmatch".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?],
+        ),
+        // strtok($str, $delim) / strtok($delim) — stateful tokenizer
+        "strtok" if args.len() == 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("__vybe_strtok".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?],
+        ),
+        "strtok" if args.len() == 1 => mk_call(
+            Expression::with_span(
+                ExprKind::Ident("__vybe_strtok_next".to_string()),
+                span.clone(),
+            ),
+            vec![arg(0)?],
+        ),
+        // mb_strrpos → strrpos
+        "mb_strrpos" if args.len() == 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("strrpos".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?],
+        ),
+        // mb_detect_encoding → always "UTF-8"
+        "mb_detect_encoding" => ExprKind::Lit(Literal::Str("UTF-8".to_string())),
+        // mb_check_encoding → always true
+        "mb_check_encoding" => ExprKind::Lit(Literal::Bool(true)),
+        // mb_str_split($s, $n=1) → str_split($s, $n)
+        "mb_str_split" if !args.is_empty() => {
+            let n = if args.len() >= 2 {
+                arg(1)?
+            } else {
+                mk_lit_i64(1)
+            };
+            mk_call(
+                Expression::with_span(ExprKind::Ident("str_split".to_string()), span.clone()),
+                vec![arg(0)?, n],
+            )
+        }
+        // mb_substr_count → substr_count
+        "mb_substr_count" if args.len() >= 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("substr_count".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?],
+        ),
+        // mb_convert_case($s, $mode)
+        "mb_convert_case" if args.len() >= 2 => mk_call(
+            Expression::with_span(
+                ExprKind::Ident("__vybe_mb_convert_case".to_string()),
+                span.clone(),
+            ),
+            vec![arg(0)?, arg(1)?],
+        ),
+        // mb_str_pad → str_pad
+        "mb_str_pad" if !args.is_empty() => {
+            let rargs: Vec<Expression> = (0..args.len().min(4)).filter_map(|i| arg(i)).collect();
+            mk_call(
+                Expression::with_span(ExprKind::Ident("str_pad".to_string()), span.clone()),
+                rargs,
+            )
+        }
         // ── PHP higher-order array fns with PHP-specific semantics ────
         // `array_map` preserves associative keys for the 1-array form
         // and `array_filter` has PHP-only flag modes like
@@ -9248,6 +9477,45 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // expression: `($matches = __preg_match_all_groups(pat, str),
         // count_of_matches)` so both assignment side-effect AND
         // count-as-result behave like real PHP.
+        // preg_replace with limit — if limit != -1, use single-replace
+        "preg_replace" if args.len() == 4 => {
+            // (pat, repl, str, limit) — if limit is -1 use replaceAll, else use replace (first match)
+            // For limit != -1, route to __vybe_preg_replace_limited helper
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("__vybe_preg_replace_limited".to_string()),
+                    span.clone(),
+                ),
+                vec![arg(0)?, arg(1)?, arg(2)?, arg(3)?],
+            )
+        }
+        // 2-arg: just return the match count
+        "preg_match_all" if args.len() == 2 => {
+            let groups_call = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Ident("__preg_match_all_groups".to_string()),
+                        span.clone(),
+                    ),
+                    vec![arg(0)?, arg(1)?],
+                ),
+                span.clone(),
+            );
+            let zero = Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone());
+            let col0 = Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(groups_call),
+                    index: Box::new(zero),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Member {
+                object: Box::new(col0),
+                field: "length".to_string(),
+                null_safe: false,
+            }
+        }
         "preg_match_all" if args.len() == 3 => {
             let target = args[2].value.clone();
             let groups_call = mk_call(
@@ -9422,6 +9690,20 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         // ── filter flags — integer literals ──
         "ARRAY_FILTER_USE_KEY" => ExprKind::Lit(Literal::Int(2)),
         "ARRAY_FILTER_USE_BOTH" => ExprKind::Lit(Literal::Int(1)),
+        // ── preg flags ──
+        "PREG_GREP_INVERT" => ExprKind::Lit(Literal::Int(1)),
+        "PREG_SPLIT_NO_EMPTY" => ExprKind::Lit(Literal::Int(1)),
+        "PREG_SPLIT_DELIM_CAPTURE" => ExprKind::Lit(Literal::Int(2)),
+        "PREG_SET_ORDER" => ExprKind::Lit(Literal::Int(2)),
+        "PREG_OFFSET_CAPTURE" => ExprKind::Lit(Literal::Int(256)),
+        // ── mb_ case constants ──
+        "MB_CASE_UPPER" => ExprKind::Lit(Literal::Int(0)),
+        "MB_CASE_LOWER" => ExprKind::Lit(Literal::Int(1)),
+        "MB_CASE_TITLE" => ExprKind::Lit(Literal::Int(2)),
+        "MB_CASE_FOLD" => ExprKind::Lit(Literal::Int(80)),
+        "MB_CASE_UPPER_SIMPLE" => ExprKind::Lit(Literal::Int(40)),
+        "MB_CASE_LOWER_SIMPLE" => ExprKind::Lit(Literal::Int(41)),
+        "MB_CASE_FOLD_SIMPLE" => ExprKind::Lit(Literal::Int(81)),
         // ── newline / paths — string literals ──
         "PHP_EOL" => ExprKind::Lit(Literal::Str("\n".to_string())),
         "DIRECTORY_SEPARATOR" => ExprKind::Lit(Literal::Str("/".to_string())),
