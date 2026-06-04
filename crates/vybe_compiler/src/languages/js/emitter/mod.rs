@@ -6,4 +6,5 @@
 //! that compose pre-existing host fns and core WASM ops into the JS
 //! shape. No new host fns are registered. No JS-source polyfills.
 
+pub mod dispatch;
 pub mod proxy_adapter;

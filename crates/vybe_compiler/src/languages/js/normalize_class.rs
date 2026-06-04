@@ -30,10 +30,12 @@
 //! the legacy `compile_class` orchestration in `crate::compiler::classes`.
 //! Phase 2b flips the switch.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{
+    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind,
+};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -48,7 +50,7 @@ pub fn normalize_class(
     span: Span,
     name: &str,
     parents: &[String],
-    _interfaces: &[String],   // JS has no interface concept
+    _interfaces: &[String], // JS has no interface concept
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
@@ -63,7 +65,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -82,7 +91,10 @@ pub fn normalize_class(
             ClassMember::Method(stmt) => {
                 if let Some(nm) = method_from_funcdecl(span.clone(), stmt) {
                     let (canon, kind) = canonicalize_method(ClassLang::Js, &nm.source_name);
-                    let nm = NormalMethod { canonical_name: canon.clone(), ..nm };
+                    let nm = NormalMethod {
+                        canonical_name: canon.clone(),
+                        ..nm
+                    };
                     if let Some(k) = kind {
                         special_methods.push(SpecialMethod {
                             kind: k,
@@ -97,14 +109,21 @@ pub fn normalize_class(
                     }
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // JS: subclass without explicit `super()` is a
                         // runtime TypeError in the spec, but JS's grammar
@@ -115,20 +134,49 @@ pub fn normalize_class(
                     named_name: None, // JS has no named constructors
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers,
+                ..
+            } => {
                 let (canon, _kind) = canonicalize_method(ClassLang::Js, pname);
                 let mut prop_mods = Modifiers::default();
                 prop_mods.is_override = modifiers.is_override;
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canon, pname, Vec::new(),
-                    vec![], None, body.clone(),
-                    access_for_js(pname), false, false, false, prop_mods.clone(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canon, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
-                    access_for_js(pname), false, false, false, prop_mods.clone(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canon,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        body.clone(),
+                        access_for_js(pname),
+                        false,
+                        false,
+                        false,
+                        prop_mods.clone(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canon,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        access_for_js(pname),
+                        false,
+                        false,
+                        false,
+                        prop_mods.clone(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canon,
@@ -143,7 +191,9 @@ pub fn normalize_class(
             // (those are VB / C# / Pascal constructs). Keep the match
             // exhaustive so future ClassMember additions force a
             // conscious choice here.
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            other @ (ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }
@@ -167,7 +217,7 @@ pub fn normalize_class(
         properties,
         constructors: Vec::new(),
         constructor,
-        destructor: None,   // JS has no destructor syntax
+        destructor: None, // JS has no destructor syntax
         auto_init_methods: Vec::new(),
         special_methods,
         event_bindings: Vec::new(),
@@ -209,12 +259,19 @@ fn access_for_js(name: &str) -> Access {
 mod tests {
     use super::*;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     #[test]
     fn empty_class_produces_empty_normal_class() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.name, "Foo");
         assert!(nc.parent.is_none());
@@ -224,7 +281,7 @@ mod tests {
 
     #[test]
     fn toString_method_gets_canonical_name_and_special_kind() {
-        use crate::ast::{Statement, StmtKind, Modifiers};
+        use crate::ast::{Modifiers, Statement, StmtKind};
         let method = Statement::new(StmtKind::FunctionDecl {
             name: "toString".into(),
             params: vec![],
@@ -238,7 +295,12 @@ mod tests {
         });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &members, &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &members,
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods.len(), 1);
         assert_eq!(nc.instance_methods[0].canonical_name, "tostring");
@@ -249,7 +311,7 @@ mod tests {
 
     #[test]
     fn hash_prefixed_member_is_private() {
-        use crate::ast::{Statement, StmtKind, Modifiers};
+        use crate::ast::{Modifiers, Statement, StmtKind};
         let method = Statement::new(StmtKind::FunctionDecl {
             name: "#secret".into(),
             params: vec![],
@@ -263,20 +325,28 @@ mod tests {
         });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &members, &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &members,
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].access, Access::Private);
     }
 
     #[test]
     fn static_method_lands_in_static_list() {
-        use crate::ast::{Statement, StmtKind, Modifiers};
+        use crate::ast::{Modifiers, Statement, StmtKind};
         let method = Statement::new(StmtKind::FunctionDecl {
             name: "create".into(),
             params: vec![],
             return_type: None,
             body: vec![],
-            modifiers: Modifiers { is_static: true, ..Default::default() },
+            modifiers: Modifiers {
+                is_static: true,
+                ..Default::default()
+            },
             handles: vec![],
             is_async: false,
             is_generator: false,
@@ -284,7 +354,12 @@ mod tests {
         });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &members, &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &members,
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.static_methods.len(), 1);
         assert!(nc.instance_methods.is_empty());
@@ -292,7 +367,7 @@ mod tests {
 
     #[test]
     fn constructor_with_super_call_records_explicit_base_call() {
-        use crate::ast::{Expression, ExprKind};
+        use crate::ast::{ExprKind, Expression};
         let base_arg = Expression::new(ExprKind::Ident("x".into()));
         let member = ClassMember::Constructor {
             params: vec![],
@@ -302,10 +377,17 @@ mod tests {
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(
-            dummy_span(), "Dog", &["Animal".to_string()], &[], &[member],
+            dummy_span(),
+            "Dog",
+            &["Animal".to_string()],
+            &[],
+            &[member],
             &ClassModifiers::default(),
         );
-        assert!(matches!(nc.constructor.as_ref().unwrap().base_call, BaseCall::Explicit(_)));
+        assert!(matches!(
+            nc.constructor.as_ref().unwrap().base_call,
+            BaseCall::Explicit(_)
+        ));
         assert_eq!(nc.parent.as_deref(), Some("Animal"));
     }
 
@@ -323,10 +405,17 @@ mod tests {
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(
-            dummy_span(), "Dog", &["Animal".to_string()], &[], &[member],
+            dummy_span(),
+            "Dog",
+            &["Animal".to_string()],
+            &[],
+            &[member],
             &ClassModifiers::default(),
         );
-        assert!(matches!(nc.constructor.as_ref().unwrap().base_call, BaseCall::None));
+        assert!(matches!(
+            nc.constructor.as_ref().unwrap().base_call,
+            BaseCall::None
+        ));
     }
 
     #[test]
@@ -339,8 +428,16 @@ mod tests {
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(
-            dummy_span(), "Animal", &[], &[], &[member], &ClassModifiers::default(),
+            dummy_span(),
+            "Animal",
+            &[],
+            &[],
+            &[member],
+            &ClassModifiers::default(),
         );
-        assert!(matches!(nc.constructor.as_ref().unwrap().base_call, BaseCall::None));
+        assert!(matches!(
+            nc.constructor.as_ref().unwrap().base_call,
+            BaseCall::None
+        ));
     }
 }

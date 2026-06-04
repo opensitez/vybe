@@ -29,8 +29,8 @@
 //! `Compiler::uses_proxy` for the routing decision.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const HANDLER_KEY: &str = "__vybe_proxy_handler";
 const TARGET_KEY: &str = "__vybe_proxy_target";
@@ -55,11 +55,14 @@ pub fn emit_proxy_create(chunks: &mut [Chunk], current: usize, line: u32) {
     let handler_local = alloc_local(chunk);
     let wrapper_local = alloc_local(chunk);
 
-    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);  chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, wrapper_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, wrapper_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, wrapper_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
@@ -93,17 +96,21 @@ pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let func_str = chunk.add_constant(Value::String(Arc::from("function")));
     let js_this = chunk.add_constant(Value::String(Arc::from("__js_this")));
 
-    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op(Op::UNDEFINED, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let exit_block = chunk.emit_block(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, handler_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
@@ -113,17 +120,21 @@ pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_handler);
+    chunk.emit_end(line);
+    chunk.patch_block(no_handler);
 
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, get_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, target_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_trap = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
@@ -134,26 +145,33 @@ pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_trap);
+    chunk.emit_end(line);
+    chunk.patch_block(no_trap);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, js_this, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u8(Op::CALL_REF, 3, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, saved_this_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_end(line); chunk.patch_block(exit_block);
+    chunk.emit_end(line);
+    chunk.patch_block(exit_block);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
 }
@@ -175,15 +193,19 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let func_str = chunk.add_constant(Value::String(Arc::from("function")));
     let js_this = chunk.add_constant(Value::String(Arc::from("__js_this")));
 
-    chunk.emit_op_u16(Op::LOCAL_SET, value_local, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line);   chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line);   chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let exit_block = chunk.emit_block(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, handler_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
@@ -196,15 +218,18 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_handler);
+    chunk.emit_end(line);
+    chunk.patch_block(no_handler);
 
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, set_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, target_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_trap = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
@@ -218,12 +243,15 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_trap);
+    chunk.emit_end(line);
+    chunk.patch_block(no_trap);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, js_this, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
@@ -234,9 +262,11 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, saved_this_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_end(line); chunk.patch_block(exit_block);
+    chunk.emit_end(line);
+    chunk.patch_block(exit_block);
 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, value_local, line);
@@ -260,17 +290,21 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let func_str = chunk.add_constant(Value::String(Arc::from("function")));
     let js_this = chunk.add_constant(Value::String(Arc::from("__js_this")));
 
-    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op(Op::FALSE, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let exit_block = chunk.emit_block(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, handler_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, handler_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
@@ -281,17 +315,21 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, has_in_idx, line);
     chunk.emit(2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_handler);
+    chunk.emit_end(line);
+    chunk.patch_block(no_handler);
 
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, has_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, trap_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, target_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     let no_trap = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
@@ -303,26 +341,33 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, has_in_idx, line);
     chunk.emit(2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(no_trap);
+    chunk.emit_end(line);
+    chunk.patch_block(no_trap);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, js_this, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, saved_this_local, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, saved_this_local, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_end(line); chunk.patch_block(exit_block);
+    chunk.emit_end(line);
+    chunk.patch_block(exit_block);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
 }
