@@ -1,7 +1,6 @@
-/// Tests for Component Model: canon_lift, canon_lower, type_import, type_export.
-
-use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef};
 use std::sync::Arc;
+/// Tests for Component Model: canon_lift, canon_lower, type_import, type_export.
+use vybe_bytecode::{Chunk, Op, TypeDef, VM, Value};
 
 #[test]
 fn canon_lift_stamps_type_id() {
@@ -62,7 +61,9 @@ fn type_import_resolves_registered_type() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.type_imports.push(("ui".to_string(), "Widget".to_string()));
+    chunk
+        .type_imports
+        .push(("ui".to_string(), "Widget".to_string()));
 
     // type_import 0 → should push Widget's type_id
     chunk.emit_op_u16(Op::TYPE_IMPORT, 0, 0);
@@ -78,7 +79,9 @@ fn type_import_unknown_returns_null() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.type_imports.push(("pkg".to_string(), "NonExistent".to_string()));
+    chunk
+        .type_imports
+        .push(("pkg".to_string(), "NonExistent".to_string()));
 
     chunk.emit_op_u16(Op::TYPE_IMPORT, 0, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -109,8 +112,8 @@ fn type_export_is_noop() {
 
 #[test]
 fn linker_resolves_type_exports() {
-    use vybe_bytecode::component::*;
     use std::collections::HashMap;
+    use vybe_bytecode::component::*;
 
     let mut td = TypeDef::new("Dog");
     td.add_field("name");
@@ -146,26 +149,38 @@ fn linker_resolves_type_exports() {
 
     let result = linker.link().expect("linking should succeed");
     // Type export should be in the result
-    assert!(result.type_exports.contains_key(&("animals:api".into(), "Dog".into())));
+    assert!(
+        result
+            .type_exports
+            .contains_key(&("animals:api".into(), "Dog".into()))
+    );
 }
 
 #[test]
 fn linker_register_host_from_vm_uses_module_records() {
     use std::collections::HashMap;
+    use vybe_bytecode::ImportTarget;
     use vybe_bytecode::chunk::Import;
     use vybe_bytecode::component::{Component, Language, Linker};
-    use vybe_bytecode::ImportTarget;
 
     let mut vm = VM::new();
     vm.register_host_fn("ecma:test", "alpha", Box::new(|_ctx, _args| Value::I32(1)));
     vm.register_host_fn("wasi:test", "beta", Box::new(|_ctx, _args| Value::I32(2)));
 
-    vm.host_registry.remove(&("ecma:test".to_string(), "alpha".to_string()));
-    vm.host_registry.remove(&("wasi:test".to_string(), "beta".to_string()));
+    vm.host_registry
+        .remove(&("ecma:test".to_string(), "alpha".to_string()));
+    vm.host_registry
+        .remove(&("wasi:test".to_string(), "beta".to_string()));
 
     let mut script = Chunk::new("<script>");
-    script.imports.push(Import { module: "ecma:test".into(), name: "alpha".into() });
-    script.imports.push(Import { module: "wasi:test".into(), name: "beta".into() });
+    script.imports.push(Import {
+        module: "ecma:test".into(),
+        name: "alpha".into(),
+    });
+    script.imports.push(Import {
+        module: "wasi:test".into(),
+        name: "beta".into(),
+    });
 
     let component = Component {
         name: "app".into(),
@@ -184,9 +199,17 @@ fn linker_register_host_from_vm_uses_module_records() {
     linker.register_host_from_vm(&vm);
     linker.add_component(component);
 
-    let result = linker.link().expect("host imports should resolve from module records");
-    assert!(matches!(result.resolved_imports.first(), Some(ImportTarget::Host(_))));
-    assert!(matches!(result.resolved_imports.get(1), Some(ImportTarget::Host(_))));
+    let result = linker
+        .link()
+        .expect("host imports should resolve from module records");
+    assert!(matches!(
+        result.resolved_imports.first(),
+        Some(ImportTarget::Host(_))
+    ));
+    assert!(matches!(
+        result.resolved_imports.get(1),
+        Some(ImportTarget::Host(_))
+    ));
 }
 
 #[test]
@@ -215,7 +238,9 @@ fn linker_register_host_from_vm_includes_host_type_exports() {
     linker.register_host_from_vm(&vm);
     linker.add_component(component);
 
-    let result = linker.link().expect("host type imports should resolve from module records");
+    let result = linker
+        .link()
+        .expect("host type imports should resolve from module records");
     let exported = result
         .type_exports
         .get(&("wasi:filesystem/types".into(), "descriptor".into()))
@@ -227,12 +252,17 @@ fn linker_register_host_from_vm_includes_host_type_exports() {
 #[test]
 fn esm_and_component_linker_share_canonical_host_subinterface_aliases() {
     use std::collections::HashMap;
-    use vybe_bytecode::component::{Component, Language, Linker};
     use vybe_bytecode::ImportTarget;
+    use vybe_bytecode::component::{Component, Language, Linker};
 
     let mut vm = VM::new();
-    vm.register_host_fn("node:util", "types.isArray", Box::new(|_ctx, _args| Value::I32(7)));
-    vm.host_registry.remove(&("node:util".to_string(), "types.isArray".to_string()));
+    vm.register_host_fn(
+        "node:util",
+        "types.isArray",
+        Box::new(|_ctx, _args| Value::I32(7)),
+    );
+    vm.host_registry
+        .remove(&("node:util".to_string(), "types.isArray".to_string()));
 
     let mut script = Chunk::new("<script>");
     script.local_count = 0;
@@ -241,7 +271,9 @@ fn esm_and_component_linker_share_canonical_host_subinterface_aliases() {
     script.emit(0, 0);
     script.emit_op(Op::HALT, 0);
 
-    let vm_result = vm.run(vec![script.clone()]).expect("VM should resolve the canonical host subinterface alias");
+    let vm_result = vm
+        .run(vec![script.clone()])
+        .expect("VM should resolve the canonical host subinterface alias");
     assert_eq!(vm_result.as_i32(), 7);
 
     let component = Component {
@@ -258,12 +290,23 @@ fn esm_and_component_linker_share_canonical_host_subinterface_aliases() {
     linker.register_host_from_vm(&vm);
     linker.add_component(component);
 
-    let link_result = linker.link().expect("Component linker should resolve the same canonical host subinterface alias");
-    assert!(matches!(link_result.resolved_imports.first(), Some(ImportTarget::Host(_))));
+    let link_result = linker
+        .link()
+        .expect("Component linker should resolve the same canonical host subinterface alias");
+    assert!(matches!(
+        link_result.resolved_imports.first(),
+        Some(ImportTarget::Host(_))
+    ));
 
     let mut linked_vm = VM::new();
-    linked_vm.register_host_fn("node:util", "types.isArray", Box::new(|_ctx, _args| Value::I32(7)));
-    linked_vm.host_registry.remove(&("node:util".to_string(), "types.isArray".to_string()));
+    linked_vm.register_host_fn(
+        "node:util",
+        "types.isArray",
+        Box::new(|_ctx, _args| Value::I32(7)),
+    );
+    linked_vm
+        .host_registry
+        .remove(&("node:util".to_string(), "types.isArray".to_string()));
 
     let linked_result = linked_vm
         .run_linked(link_result.chunks, link_result.resolved_imports)

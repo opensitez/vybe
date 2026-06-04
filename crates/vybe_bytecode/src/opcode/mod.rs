@@ -24,8 +24,8 @@
 mod core_ops;
 mod gc;
 mod misc;
-mod simd;
 pub mod relaxed_simd;
+mod simd;
 mod threads;
 mod vm_internal;
 
@@ -43,23 +43,33 @@ impl Op {
 
     /// Prefix byte (0x00=core, 0xFB=GC, 0xFC=misc, 0xFD=SIMD, 0xFE=threads, 0xFF=VM-internal).
     #[inline]
-    pub const fn prefix(self) -> u8 { (self.0 >> 8) as u8 }
+    pub const fn prefix(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
 
     /// Sub-opcode byte within the prefix group.
     #[inline]
-    pub const fn sub(self) -> u8 { (self.0 & 0xFF) as u8 }
+    pub const fn sub(self) -> u8 {
+        (self.0 & 0xFF) as u8
+    }
 
     /// Encode to 2 bytes: [prefix, sub_opcode]. Uniform encoding.
     #[inline]
-    pub const fn encode(self) -> (u8, u8) { (self.prefix(), self.sub()) }
+    pub const fn encode(self) -> (u8, u8) {
+        (self.prefix(), self.sub())
+    }
 
     /// All opcodes are uniformly 2 bytes.
     #[inline]
-    pub const fn encoded_len(self) -> usize { 2 }
+    pub const fn encoded_len(self) -> usize {
+        2
+    }
 
     /// True if this is a VM-internal opcode (0xFF prefix), not standard WASM.
     #[inline]
-    pub const fn is_vm_internal(self) -> bool { self.prefix() == 0xFF }
+    pub const fn is_vm_internal(self) -> bool {
+        self.prefix() == 0xFF
+    }
 
     /// Decode 2 bytes into a validated opcode.
     /// Returns None if the prefix/sub combination is not a defined opcode.
@@ -188,8 +198,12 @@ pub fn leb_u32_size(code: &[u8], start: usize) -> usize {
     let mut len = 0usize;
     while let Some(byte) = code.get(start + len) {
         len += 1;
-        if byte & 0x80 == 0 { break; }
-        if len >= 5 { break; }
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if len >= 5 {
+            break;
+        }
     }
     len
 }
@@ -201,9 +215,13 @@ pub fn read_leb_u32(code: &[u8], ip: &mut usize) -> u32 {
         let byte = code.get(*ip).copied().unwrap_or(0);
         *ip += 1;
         result |= ((byte & 0x7f) as u32) << shift;
-        if byte & 0x80 == 0 { break; }
+        if byte & 0x80 == 0 {
+            break;
+        }
         shift += 7;
-        if shift >= 35 { break; }
+        if shift >= 35 {
+            break;
+        }
     }
     result
 }

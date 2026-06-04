@@ -46,7 +46,8 @@ pub fn write_wat(chunks: &[Chunk]) -> String {
                 let _ = writeln!(
                     out,
                     "  (import \"{}\" \"{}\" (func ${}__{}))",
-                    imp.module, imp.name,
+                    imp.module,
+                    imp.name,
                     sanitize_ident(&imp.module),
                     sanitize_ident(&imp.name),
                 );
@@ -63,15 +64,21 @@ pub fn write_wat(chunks: &[Chunk]) -> String {
         }
         let result_arity = chunk.result_arity.max(1);
         let _ = write!(out, " (result");
-        for _ in 0..result_arity { out.push_str(" externref"); }
+        for _ in 0..result_arity {
+            out.push_str(" externref");
+        }
         out.push(')');
-        if chunk.is_async { out.push_str(" (; async ;)"); }
+        if chunk.is_async {
+            out.push_str(" (; async ;)");
+        }
         out.push('\n');
 
         let extras = (chunk.local_count as u32).saturating_sub(chunk.arity as u32);
         if extras > 0 {
             let _ = write!(out, "    (local");
-            for _ in 0..extras { out.push_str(" externref"); }
+            for _ in 0..extras {
+                out.push_str(" externref");
+            }
             out.push_str(")\n");
         }
 
@@ -89,10 +96,14 @@ pub fn write_wat(chunks: &[Chunk]) -> String {
 pub fn write_wat_chunk(chunk: &Chunk) -> String {
     let mut out = String::new();
     let _ = write!(out, "(func ${}", sanitize_ident(&chunk.name));
-    for p in 0..chunk.arity { let _ = write!(out, " (param $p{p} externref)"); }
+    for p in 0..chunk.arity {
+        let _ = write!(out, " (param $p{p} externref)");
+    }
     let result_arity = chunk.result_arity.max(1);
     out.push_str(" (result");
-    for _ in 0..result_arity { out.push_str(" externref"); }
+    for _ in 0..result_arity {
+        out.push_str(" externref");
+    }
     out.push_str(")\n");
     render_body(&mut out, chunk, 2);
     out.push_str(")\n");
@@ -103,11 +114,17 @@ fn render_body(out: &mut String, chunk: &Chunk, base_indent: usize) {
     let mut ip = 0;
     let mut depth = base_indent;
     while ip < chunk.code.len() {
-        if ip + 1 >= chunk.code.len() { break; }
+        if ip + 1 >= chunk.code.len() {
+            break;
+        }
         let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
             let _ = writeln!(
-                out, "{:indent$};; unknown 0x{:02X} 0x{:02X}", "",
-                chunk.code[ip], chunk.code[ip + 1], indent = depth,
+                out,
+                "{:indent$};; unknown 0x{:02X} 0x{:02X}",
+                "",
+                chunk.code[ip],
+                chunk.code[ip + 1],
+                indent = depth,
             );
             ip += 2;
             continue;
@@ -208,6 +225,12 @@ fn format_value(v: &Value) -> String {
 
 fn sanitize_ident(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

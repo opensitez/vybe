@@ -8,7 +8,7 @@
 //! Each test runs through the VM dispatch AND round-trips through the
 //! WASM binary writer to confirm both sides stay in sync.
 
-use vybe_bytecode::{VM, Value, Chunk, Op};
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ── table.get / table.set ──────────────────────────────────────────────
 
@@ -67,8 +67,11 @@ fn table_set_traps_on_out_of_bounds() {
     chunk.emit_op(Op::RETURN, 0);
 
     let err = vm.run(vec![chunk]).unwrap_err();
-    assert!(err.message.contains("out of bounds"),
-        "expected OOB trap, got: {}", err.message);
+    assert!(
+        err.message.contains("out of bounds"),
+        "expected OOB trap, got: {}",
+        err.message
+    );
 }
 
 // ── select_t (typed select) ────────────────────────────────────────────
@@ -147,13 +150,13 @@ fn null_variants_emit_correct_heaptypes_in_wasm() {
     // appears in the code section body.
     let needle = [0xD0u8, 0x6F];
     let has_extern = wasm.windows(2).any(|w| w == needle);
-    let has_func   = wasm.windows(2).any(|w| w == [0xD0u8, 0x70]);
-    let has_any    = wasm.windows(2).any(|w| w == [0xD0u8, 0x6E]);
-    let has_none   = wasm.windows(2).any(|w| w == [0xD0u8, 0x71]);
+    let has_func = wasm.windows(2).any(|w| w == [0xD0u8, 0x70]);
+    let has_any = wasm.windows(2).any(|w| w == [0xD0u8, 0x6E]);
+    let has_none = wasm.windows(2).any(|w| w == [0xD0u8, 0x71]);
     assert!(has_extern, "ref.null extern byte pair missing");
-    assert!(has_func,   "ref.null func byte pair missing");
-    assert!(has_any,    "ref.null any byte pair missing");
-    assert!(has_none,   "ref.null none byte pair missing");
+    assert!(has_func, "ref.null func byte pair missing");
+    assert!(has_any, "ref.null any byte pair missing");
+    assert!(has_none, "ref.null none byte pair missing");
 }
 
 // ── Multi-table routing ────────────────────────────────────────────────
@@ -173,11 +176,13 @@ fn multi_table_routes_by_tableidx() {
     let zero = chunk.add_constant(Value::I32(0));
     chunk.emit_op_u16(Op::CONST, zero, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0); // tableidx = 0
-    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0); chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::CONST, zero, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 1, 0); // tableidx = 1
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -185,8 +190,11 @@ fn multi_table_routes_by_tableidx() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 3333,
-        "table 0 + table 1 contents should route independently");
+    assert_eq!(
+        result.as_i32(),
+        3333,
+        "table 0 + table 1 contents should route independently"
+    );
 }
 
 #[test]
@@ -275,7 +283,10 @@ fn ref_as_non_null_traps_on_null() {
     c.emit_op(Op::REF_AS_NON_NULL, 0);
     c.emit_op(Op::RETURN, 0);
     let err = VM::new().run(vec![c]).unwrap_err().to_string();
-    assert!(err.contains("null") || err.contains("trap"), "expected trap, got: {err}");
+    assert!(
+        err.contains("null") || err.contains("trap"),
+        "expected trap, got: {err}"
+    );
 }
 
 // Note: br_on_null and br_on_non_null use byte-offset encoding (not label depth)

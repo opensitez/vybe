@@ -1,7 +1,6 @@
-/// Tests for shared-everything threads: shared GC object access.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use std::sync::Arc;
+/// Tests for shared-everything threads: shared GC object access.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 #[test]
 fn shared_new_creates_typed_object() {
@@ -171,5 +170,9 @@ fn shared_struct_cas_failure() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 10, "field should be unchanged after failed CAS");
+    assert_eq!(
+        result.as_i32(),
+        10,
+        "field should be unchanged after failed CAS"
+    );
 }

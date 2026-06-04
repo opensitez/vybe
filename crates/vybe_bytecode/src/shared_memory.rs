@@ -9,20 +9,27 @@
 //! Atomic operations use std::sync::atomic with SeqCst ordering.
 //! This matches real WASM engines (V8, SpiderMonkey).
 
-use std::sync::{Arc, Mutex, Condvar};
 use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// WASM trap on out-of-bounds memory access.
 #[derive(Debug, Clone)]
 pub enum MemoryTrap {
-    OutOfBounds { addr: usize, size: usize, limit: usize },
+    OutOfBounds {
+        addr: usize,
+        size: usize,
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for MemoryTrap {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            MemoryTrap::OutOfBounds { addr, size, limit } =>
-                write!(f, "memory access out of bounds: addr={} size={} limit={}", addr, size, limit),
+            MemoryTrap::OutOfBounds { addr, size, limit } => write!(
+                f,
+                "memory access out of bounds: addr={} size={} limit={}",
+                addr, size, limit
+            ),
         }
     }
 }
@@ -105,52 +112,100 @@ impl SharedMemory {
 
     pub fn load_i32(&self, addr: usize) -> Result<i32, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 4, limit: buf.len() }); }
-        Ok(i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap()))
+        if addr + 4 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 4,
+                limit: buf.len(),
+            });
+        }
+        Ok(i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap()))
     }
 
     pub fn store_i32(&self, addr: usize, val: i32) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 4, limit: buf.len() }); }
-        buf[addr..addr+4].copy_from_slice(&val.to_le_bytes());
+        if addr + 4 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 4,
+                limit: buf.len(),
+            });
+        }
+        buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
         Ok(())
     }
 
     pub fn load_i64(&self, addr: usize) -> Result<i64, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
-        Ok(i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap()))
+        if addr + 8 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 8,
+                limit: buf.len(),
+            });
+        }
+        Ok(i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
 
     pub fn store_i64(&self, addr: usize, val: i64) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
-        buf[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        if addr + 8 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 8,
+                limit: buf.len(),
+            });
+        }
+        buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
     }
 
     pub fn load_f64(&self, addr: usize) -> Result<f64, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
-        Ok(f64::from_le_bytes(buf[addr..addr+8].try_into().unwrap()))
+        if addr + 8 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 8,
+                limit: buf.len(),
+            });
+        }
+        Ok(f64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
 
     pub fn store_f64(&self, addr: usize, val: f64) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 8, limit: buf.len() }); }
-        buf[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        if addr + 8 > buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 8,
+                limit: buf.len(),
+            });
+        }
+        buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
     }
 
     pub fn load_u8(&self, addr: usize) -> Result<u8, MemoryTrap> {
         let buf = self.buffer.lock().unwrap();
-        if addr >= buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 1, limit: buf.len() }); }
+        if addr >= buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 1,
+                limit: buf.len(),
+            });
+        }
         Ok(buf[addr])
     }
 
     pub fn store_u8(&self, addr: usize, val: u8) -> Result<(), MemoryTrap> {
         let mut buf = self.buffer.lock().unwrap();
-        if addr >= buf.len() { return Err(MemoryTrap::OutOfBounds { addr, size: 1, limit: buf.len() }); }
+        if addr >= buf.len() {
+            return Err(MemoryTrap::OutOfBounds {
+                addr,
+                size: 1,
+                limit: buf.len(),
+            });
+        }
         buf[addr] = val;
         Ok(())
     }
@@ -159,7 +214,9 @@ impl SharedMemory {
     pub fn read_bytes(&self, addr: usize, dst: &mut [u8]) -> usize {
         let buf = self.buffer.lock().unwrap();
         let end = (addr + dst.len()).min(buf.len());
-        if addr >= buf.len() { return 0; }
+        if addr >= buf.len() {
+            return 0;
+        }
         let n = end - addr;
         dst[..n].copy_from_slice(&buf[addr..end]);
         n
@@ -169,7 +226,9 @@ impl SharedMemory {
     pub fn write_bytes(&self, addr: usize, src: &[u8]) {
         let mut buf = self.buffer.lock().unwrap();
         let end = (addr + src.len()).min(buf.len());
-        if addr >= buf.len() { return; }
+        if addr >= buf.len() {
+            return;
+        }
         let n = end - addr;
         buf[addr..end].copy_from_slice(&src[..n]);
     }
@@ -197,70 +256,88 @@ impl SharedMemory {
 
     pub fn atomic_load_i32(&self, addr: usize) -> i32 {
         let buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap())
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap())
     }
 
     pub fn atomic_store_i32(&self, addr: usize, val: i32) {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return; }
-        buf[addr..addr+4].copy_from_slice(&val.to_le_bytes());
+        if addr + 4 > buf.len() {
+            return;
+        }
+        buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
     }
 
     pub fn atomic_rmw_add_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&old.wrapping_add(val).to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&old.wrapping_add(val).to_le_bytes());
         old
     }
 
     pub fn atomic_rmw_sub_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&old.wrapping_sub(val).to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&old.wrapping_sub(val).to_le_bytes());
         old
     }
 
     pub fn atomic_rmw_and_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&(old & val).to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&(old & val).to_le_bytes());
         old
     }
 
     pub fn atomic_rmw_or_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&(old | val).to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&(old | val).to_le_bytes());
         old
     }
 
     pub fn atomic_rmw_xor_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&(old ^ val).to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&(old ^ val).to_le_bytes());
         old
     }
 
     pub fn atomic_xchg_i32(&self, addr: usize, val: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
-        buf[addr..addr+4].copy_from_slice(&val.to_le_bytes());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
+        buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
         old
     }
 
     pub fn atomic_cmpxchg_i32(&self, addr: usize, expected: i32, replacement: i32) -> i32 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 4 > buf.len() { return 0; }
-        let old = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
+        if addr + 4 > buf.len() {
+            return 0;
+        }
+        let old = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
         if old == expected {
-            buf[addr..addr+4].copy_from_slice(&replacement.to_le_bytes());
+            buf[addr..addr + 4].copy_from_slice(&replacement.to_le_bytes());
         }
         old
     }
@@ -269,38 +346,48 @@ impl SharedMemory {
 
     pub fn atomic_load_i64(&self, addr: usize) -> i64 {
         let buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0; }
-        i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap())
+        if addr + 8 > buf.len() {
+            return 0;
+        }
+        i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap())
     }
 
     pub fn atomic_store_i64(&self, addr: usize, val: i64) {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return; }
-        buf[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        if addr + 8 > buf.len() {
+            return;
+        }
+        buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
     }
 
     pub fn atomic_rmw_add_i64(&self, addr: usize, val: i64) -> i64 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0; }
-        let old = i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap());
-        buf[addr..addr+8].copy_from_slice(&old.wrapping_add(val).to_le_bytes());
+        if addr + 8 > buf.len() {
+            return 0;
+        }
+        let old = i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap());
+        buf[addr..addr + 8].copy_from_slice(&old.wrapping_add(val).to_le_bytes());
         old
     }
 
     pub fn atomic_rmw_sub_i64(&self, addr: usize, val: i64) -> i64 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0; }
-        let old = i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap());
-        buf[addr..addr+8].copy_from_slice(&old.wrapping_sub(val).to_le_bytes());
+        if addr + 8 > buf.len() {
+            return 0;
+        }
+        let old = i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap());
+        buf[addr..addr + 8].copy_from_slice(&old.wrapping_sub(val).to_le_bytes());
         old
     }
 
     pub fn atomic_cmpxchg_i64(&self, addr: usize, expected: i64, replacement: i64) -> i64 {
         let mut buf = self.buffer.lock().unwrap();
-        if addr + 8 > buf.len() { return 0; }
-        let old = i64::from_le_bytes(buf[addr..addr+8].try_into().unwrap());
+        if addr + 8 > buf.len() {
+            return 0;
+        }
+        let old = i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap());
         if old == expected {
-            buf[addr..addr+8].copy_from_slice(&replacement.to_le_bytes());
+            buf[addr..addr + 8].copy_from_slice(&replacement.to_le_bytes());
         }
         old
     }
@@ -323,8 +410,10 @@ impl SharedMemory {
         // Check condition under buffer lock
         {
             let buf = self.buffer.lock().unwrap();
-            if addr + 4 > buf.len() { return 1; }
-            let current = i32::from_le_bytes(buf[addr..addr+4].try_into().unwrap());
+            if addr + 4 > buf.len() {
+                return 1;
+            }
+            let current = i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap());
             if current != expected {
                 return 1; // not-equal
             }
@@ -337,7 +426,10 @@ impl SharedMemory {
         // Get or create condvar for this address
         let condvar = {
             let mut waiters = self.waiters.lock().unwrap();
-            waiters.entry(addr).or_insert_with(|| Arc::new(Condvar::new())).clone()
+            waiters
+                .entry(addr)
+                .or_insert_with(|| Arc::new(Condvar::new()))
+                .clone()
         };
 
         // Block on condvar

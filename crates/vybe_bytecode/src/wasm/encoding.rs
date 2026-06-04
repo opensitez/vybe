@@ -18,7 +18,7 @@ pub const SECTION_MEMORY: u8 = 5;
 pub const SECTION_GLOBAL: u8 = 6;
 pub const SECTION_EXPORT: u8 = 7;
 pub const SECTION_CODE: u8 = 10;
-pub const SECTION_TAG: u8 = 13;   // exception-handling proposal
+pub const SECTION_TAG: u8 = 13; // exception-handling proposal
 
 // Value types
 pub const TYPE_FUNC: u8 = 0x60;
@@ -31,32 +31,32 @@ pub const TYPE_FUNCREF: u8 = 0x70;
 pub const TYPE_VOID: u8 = 0x40;
 
 // GC type encoding
-pub const GC_STRUCT: u8 = 0x5F;     // -0x21: struct composite type
-pub const GC_ARRAY: u8 = 0x5E;      // -0x22: array composite type
-pub const GC_SUB_FINAL: u8 = 0x4F;  // -0x31: sub final
-pub const GC_REC: u8 = 0x4E;        // -0x32: recursive type group
-pub const GC_MUT: u8 = 0x01;        // mutable field
-pub const GC_IMMUT: u8 = 0x00;      // immutable field
+pub const GC_STRUCT: u8 = 0x5F; // -0x21: struct composite type
+pub const GC_ARRAY: u8 = 0x5E; // -0x22: array composite type
+pub const GC_SUB_FINAL: u8 = 0x4F; // -0x31: sub final
+pub const GC_REC: u8 = 0x4E; // -0x32: recursive type group
+pub const GC_MUT: u8 = 0x01; // mutable field
+pub const GC_IMMUT: u8 = 0x00; // immutable field
 
 // Packed types — valid only as array/struct field storage type, not
 // as a top-level value type. Per WASM GC proposal.
-pub const PACKED_I8: u8  = 0x78;    // -0x08
-pub const PACKED_I16: u8 = 0x77;    // -0x09
+pub const PACKED_I8: u8 = 0x78; // -0x08
+pub const PACKED_I16: u8 = 0x77; // -0x09
 
 // Abstract heap types (GC proposal). Used as the heaptype operand of
 // `ref.test`, `ref.cast`, `br_on_cast` — single-byte encodings when
 // the target is an abstract type (rather than a concrete typeidx).
 // See `proposals/gc/proposals/gc/MVP.md` §Reference types.
-pub const HT_NOFUNC: u8    = 0x73;  // -0x0D
-pub const HT_NOEXTERN: u8  = 0x72;  // -0x0E
-pub const HT_NONE: u8      = 0x71;  // -0x0F (nullref)
-pub const HT_FUNC: u8      = 0x70;  // -0x10 (funcref)
-pub const HT_EXTERN: u8    = 0x6F;  // -0x11 (externref)
-pub const HT_ANY: u8       = 0x6E;  // -0x12 (anyref)
-pub const HT_EQ: u8        = 0x6D;  // -0x13 (eqref)
-pub const HT_I31: u8       = 0x6C;  // -0x14 (i31ref)
-pub const HT_STRUCT: u8    = 0x6B;  // -0x15 (structref)
-pub const HT_ARRAY: u8     = 0x6A;  // -0x16 (arrayref)
+pub const HT_NOFUNC: u8 = 0x73; // -0x0D
+pub const HT_NOEXTERN: u8 = 0x72; // -0x0E
+pub const HT_NONE: u8 = 0x71; // -0x0F (nullref)
+pub const HT_FUNC: u8 = 0x70; // -0x10 (funcref)
+pub const HT_EXTERN: u8 = 0x6F; // -0x11 (externref)
+pub const HT_ANY: u8 = 0x6E; // -0x12 (anyref)
+pub const HT_EQ: u8 = 0x6D; // -0x13 (eqref)
+pub const HT_I31: u8 = 0x6C; // -0x14 (i31ref)
+pub const HT_STRUCT: u8 = 0x6B; // -0x15 (structref)
+pub const HT_ARRAY: u8 = 0x6A; // -0x16 (arrayref)
 
 // ── Section writing ─────────────────────────────────────────────────────
 
@@ -77,9 +77,13 @@ pub fn write_leb128_u32(out: &mut Vec<u8>, mut value: u32) {
     loop {
         let mut byte = (value & 0x7f) as u8;
         value >>= 7;
-        if value != 0 { byte |= 0x80; }
+        if value != 0 {
+            byte |= 0x80;
+        }
         out.push(byte);
-        if value == 0 { break; }
+        if value == 0 {
+            break;
+        }
     }
 }
 
@@ -88,7 +92,12 @@ pub fn write_leb128_i32(out: &mut Vec<u8>, mut value: i32) {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
         let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
-        if !done { out.push(byte | 0x80); } else { out.push(byte); break; }
+        if !done {
+            out.push(byte | 0x80);
+        } else {
+            out.push(byte);
+            break;
+        }
     }
 }
 
@@ -97,7 +106,12 @@ pub fn write_leb128_i64(out: &mut Vec<u8>, mut value: i64) {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
         let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
-        if !done { out.push(byte | 0x80); } else { out.push(byte); break; }
+        if !done {
+            out.push(byte | 0x80);
+        } else {
+            out.push(byte);
+            break;
+        }
     }
 }
 
@@ -108,11 +122,15 @@ pub fn read_leb128_u32(data: &[u8]) -> (u32, usize) {
     let mut shift = 0;
     let mut pos = 0;
     loop {
-        if pos >= data.len() { break; }
+        if pos >= data.len() {
+            break;
+        }
         let byte = data[pos];
         pos += 1;
         result |= ((byte & 0x7f) as u32) << shift;
-        if byte & 0x80 == 0 { break; }
+        if byte & 0x80 == 0 {
+            break;
+        }
         shift += 7;
     }
     (result, pos)
@@ -123,7 +141,9 @@ pub fn read_leb128_i32(data: &[u8]) -> (i32, usize) {
     let mut shift = 0;
     let mut pos = 0;
     loop {
-        if pos >= data.len() { break; }
+        if pos >= data.len() {
+            break;
+        }
         let byte = data[pos] as i64;
         pos += 1;
         result |= (byte & 0x7f) << shift;
@@ -143,7 +163,9 @@ pub fn read_leb128_i64(data: &[u8]) -> (i64, usize) {
     let mut shift = 0;
     let mut pos = 0;
     loop {
-        if pos >= data.len() { break; }
+        if pos >= data.len() {
+            break;
+        }
         let byte = data[pos] as i64;
         pos += 1;
         result |= (byte & 0x7f) << shift;
@@ -162,7 +184,9 @@ pub fn skip_leb128(data: &[u8], pos: &mut usize) {
     while *pos < data.len() {
         let byte = data[*pos];
         *pos += 1;
-        if byte & 0x80 == 0 { break; }
+        if byte & 0x80 == 0 {
+            break;
+        }
     }
 }
 
@@ -184,10 +208,22 @@ pub fn read_i16(code: &[u8], ip: &mut usize) -> i16 {
 pub fn encode_value(out: &mut Vec<u8>, val: &Value) {
     match val {
         Value::Null | Value::Undefined => out.push(0),
-        Value::Bool(b) => { out.push(1); out.push(if *b { 1 } else { 0 }); }
-        Value::I32(n) => { out.push(2); out.extend_from_slice(&n.to_le_bytes()); }
-        Value::I64(n) => { out.push(3); out.extend_from_slice(&n.to_le_bytes()); }
-        Value::F64(n) => { out.push(4); out.extend_from_slice(&n.to_le_bytes()); }
+        Value::Bool(b) => {
+            out.push(1);
+            out.push(if *b { 1 } else { 0 });
+        }
+        Value::I32(n) => {
+            out.push(2);
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+        Value::I64(n) => {
+            out.push(3);
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+        Value::F64(n) => {
+            out.push(4);
+            out.extend_from_slice(&n.to_le_bytes());
+        }
         Value::String(s) => {
             out.push(5);
             write_leb128_u32(out, s.len() as u32);
@@ -198,22 +234,32 @@ pub fn encode_value(out: &mut Vec<u8>, val: &Value) {
 }
 
 pub fn decode_value(data: &[u8], pos: &mut usize) -> Value {
-    if *pos >= data.len() { return Value::Null; }
-    let tag = data[*pos]; *pos += 1;
+    if *pos >= data.len() {
+        return Value::Null;
+    }
+    let tag = data[*pos];
+    *pos += 1;
     match tag {
         0 => Value::Null,
-        1 => { let b = data[*pos]; *pos += 1; Value::Bool(b != 0) }
+        1 => {
+            let b = data[*pos];
+            *pos += 1;
+            Value::Bool(b != 0)
+        }
         2 => {
-            let bytes: [u8; 4] = data[*pos..*pos+4].try_into().unwrap_or([0;4]);
-            *pos += 4; Value::I32(i32::from_le_bytes(bytes))
+            let bytes: [u8; 4] = data[*pos..*pos + 4].try_into().unwrap_or([0; 4]);
+            *pos += 4;
+            Value::I32(i32::from_le_bytes(bytes))
         }
         3 => {
-            let bytes: [u8; 8] = data[*pos..*pos+8].try_into().unwrap_or([0;8]);
-            *pos += 8; Value::I64(i64::from_le_bytes(bytes))
+            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap_or([0; 8]);
+            *pos += 8;
+            Value::I64(i64::from_le_bytes(bytes))
         }
         4 => {
-            let bytes: [u8; 8] = data[*pos..*pos+8].try_into().unwrap_or([0;8]);
-            *pos += 8; Value::F64(f64::from_le_bytes(bytes))
+            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap_or([0; 8]);
+            *pos += 8;
+            Value::F64(f64::from_le_bytes(bytes))
         }
         5 => {
             let (len, n) = read_leb128_u32(&data[*pos..]);

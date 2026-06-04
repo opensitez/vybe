@@ -1,9 +1,8 @@
-/// Tests for weak references, finalizers, and GC post-MVP features.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
+/// Tests for weak references, finalizers, and GC post-MVP features.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 #[test]
 fn make_weak_ref() {
@@ -13,8 +12,8 @@ fn make_weak_ref() {
 
     // Create an object, make a weak ref
     let name = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, name, 0);   // push string
-    chunk.emit_op(Op::REF_MAKE_WEAK, 0);        // make weak ref (strings → null)
+    chunk.emit_op_u16(Op::CONST, name, 0); // push string
+    chunk.emit_op(Op::REF_MAKE_WEAK, 0); // make weak ref (strings → null)
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();

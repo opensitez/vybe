@@ -15,192 +15,245 @@ use crate::vm::VM;
 
 impl VM {
     pub(crate) fn simd_i32x4_binop(&mut self, f: impl Fn(i32, i32) -> i32) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = i32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
-                let lb = i32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
-                out[i*4..i*4+4].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = i32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
+                let lb = i32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
+                out[i * 4..i * 4 + 4].copy_from_slice(&f(la, lb).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f64x2_binop(&mut self, f: impl Fn(f64, f64) -> f64) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
-                let lb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
-                out[i*8..i*8+8].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = f64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
+                let lb = f64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
+                out[i * 8..i * 8 + 8].copy_from_slice(&f(la, lb).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f64x2_cmp(&mut self, f: impl Fn(f64, f64) -> bool) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = f64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
-                let lb = f64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                let la = f64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
+                let lb = f64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
-                out[i*8..i*8+8].copy_from_slice(&mask.to_le_bytes());
+                out[i * 8..i * 8 + 8].copy_from_slice(&mask.to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f32x4_binop(&mut self, f: impl Fn(f32, f32) -> f32) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = f32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
-                let lb = f32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
-                out[i*4..i*4+4].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = f32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
+                let lb = f32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
+                out[i * 4..i * 4 + 4].copy_from_slice(&f(la, lb).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i8x16_binop(&mut self, f: impl Fn(u8, u8) -> u8) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
-            for i in 0..16 { out[i] = f(va[i], vb[i]); }
+            for i in 0..16 {
+                out[i] = f(va[i], vb[i]);
+            }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i16x8_binop(&mut self, f: impl Fn(i16, i16) -> i16) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..8 {
-                let la = i16::from_le_bytes([va[i*2], va[i*2+1]]);
-                let lb = i16::from_le_bytes([vb[i*2], vb[i*2+1]]);
-                out[i*2..i*2+2].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = i16::from_le_bytes([va[i * 2], va[i * 2 + 1]]);
+                let lb = i16::from_le_bytes([vb[i * 2], vb[i * 2 + 1]]);
+                out[i * 2..i * 2 + 2].copy_from_slice(&f(la, lb).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i8x16_unop(&mut self, f: impl Fn(u8) -> u8) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
-            for i in 0..16 { out[i] = f(a[i]); }
+            for i in 0..16 {
+                out[i] = f(a[i]);
+            }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i16x8_unop(&mut self, f: impl Fn(i16) -> i16) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
             for i in 0..8 {
-                let v = i16::from_le_bytes([a[i*2], a[i*2+1]]);
-                out[i*2..i*2+2].copy_from_slice(&f(v).to_le_bytes());
+                let v = i16::from_le_bytes([a[i * 2], a[i * 2 + 1]]);
+                out[i * 2..i * 2 + 2].copy_from_slice(&f(v).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i32x4_unop(&mut self, f: impl Fn(i32) -> i32) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap());
-                out[i*4..i*4+4].copy_from_slice(&f(v).to_le_bytes());
+                let v = i32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap());
+                out[i * 4..i * 4 + 4].copy_from_slice(&f(v).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i64x2_unop(&mut self, f: impl Fn(i64) -> i64) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = i64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
-                out[i*8..i*8+8].copy_from_slice(&f(v).to_le_bytes());
+                let v = i64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap());
+                out[i * 8..i * 8 + 8].copy_from_slice(&f(v).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f32x4_unop(&mut self, f: impl Fn(f32) -> f32) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = f32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap());
-                out[i*4..i*4+4].copy_from_slice(&f(v).to_le_bytes());
+                let v = f32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap());
+                out[i * 4..i * 4 + 4].copy_from_slice(&f(v).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f64x2_unop(&mut self, f: impl Fn(f64) -> f64) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
-                out[i*8..i*8+8].copy_from_slice(&f(v).to_le_bytes());
+                let v = f64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap());
+                out[i * 8..i * 8 + 8].copy_from_slice(&f(v).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i64x2_binop(&mut self, f: impl Fn(i64, i64) -> i64) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = i64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
-                let lb = i64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
-                out[i*8..i*8+8].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = i64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
+                let lb = i64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
+                out[i * 8..i * 8 + 8].copy_from_slice(&f(la, lb).to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_f32x4_cmp(&mut self, f: impl Fn(f32, f32) -> bool) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = f32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap());
-                let lb = f32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap());
+                let la = f32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
+                let lb = f32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
                 let mask: u32 = if f(la, lb) { u32::MAX } else { 0 };
-                out[i*4..i*4+4].copy_from_slice(&mask.to_le_bytes());
+                out[i * 4..i * 4 + 4].copy_from_slice(&mask.to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i64x2_cmp(&mut self, f: impl Fn(i64, i64) -> bool) -> Result<(), VMError> {
-        let b = self.pop(); let a = self.pop();
+        let b = self.pop();
+        let a = self.pop();
         if let (Value::V128(va), Value::V128(vb)) = (a, b) {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = i64::from_le_bytes(va[i*8..i*8+8].try_into().unwrap());
-                let lb = i64::from_le_bytes(vb[i*8..i*8+8].try_into().unwrap());
+                let la = i64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
+                let lb = i64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
-                out[i*8..i*8+8].copy_from_slice(&mask.to_le_bytes());
+                out[i * 8..i * 8 + 8].copy_from_slice(&mask.to_le_bytes());
             }
             self.push(Value::V128(out))
-        } else { self.push(Value::V128([0; 16])) }
+        } else {
+            self.push(Value::V128([0; 16]))
+        }
     }
     pub(crate) fn simd_i8x16_testop(&mut self, f: impl Fn(u8) -> bool) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
             let result = a.iter().all(|&b| f(b));
             self.push(Value::I32(if result { 1 } else { 0 }))
-        } else { self.push(Value::I32(0)) }
+        } else {
+            self.push(Value::I32(0))
+        }
     }
     pub(crate) fn simd_i16x8_testop(&mut self, f: impl Fn(i16) -> bool) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
-            let result = (0..8).all(|i| f(i16::from_le_bytes([a[i*2], a[i*2+1]])));
+            let result = (0..8).all(|i| f(i16::from_le_bytes([a[i * 2], a[i * 2 + 1]])));
             self.push(Value::I32(if result { 1 } else { 0 }))
-        } else { self.push(Value::I32(0)) }
+        } else {
+            self.push(Value::I32(0))
+        }
     }
     pub(crate) fn simd_i32x4_testop(&mut self, f: impl Fn(i32) -> bool) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
-            let result = (0..4).all(|i| f(i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap())));
+            let result =
+                (0..4).all(|i| f(i32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap())));
             self.push(Value::I32(if result { 1 } else { 0 }))
-        } else { self.push(Value::I32(0)) }
+        } else {
+            self.push(Value::I32(0))
+        }
     }
     pub(crate) fn simd_i64x2_testop(&mut self, f: impl Fn(i64) -> bool) -> Result<(), VMError> {
         if let Value::V128(a) = self.pop() {
-            let result = (0..2).all(|i| f(i64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap())));
+            let result =
+                (0..2).all(|i| f(i64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap())));
             self.push(Value::I32(if result { 1 } else { 0 }))
-        } else { self.push(Value::I32(0)) }
+        } else {
+            self.push(Value::I32(0))
+        }
     }
 
     /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
@@ -224,14 +277,21 @@ impl VM {
                 // for case-insensitive languages, preserved for case-
                 // sensitive). No forced transform here — let collisions
                 // surface as the language semantics dictate.
-                let obj_type = ob.properties.get("__type")
+                let obj_type = ob
+                    .properties
+                    .get("__type")
                     .map(|v| format!("{}", v))
-                    .or_else(|| ob.properties.get("__control_type")
-                        .map(|v| format!("{}", v)))
+                    .or_else(|| {
+                        ob.properties
+                            .get("__control_type")
+                            .map(|v| format!("{}", v))
+                    })
                     .unwrap_or_default();
 
                 // Direct name match
-                if obj_type == target_name { return true; }
+                if obj_type == target_name {
+                    return true;
+                }
 
                 // Check via type registry (subtype relationship)
                 if let Some(tid) = self.type_registry.get_id(&obj_type) {
@@ -246,7 +306,10 @@ impl VM {
                 if let Some(Value::Object(types)) = ob.properties.get("__types") {
                     let t = types.lock().unwrap();
                     if let crate::value::ObjectKind::Array(ref elems) = t.kind {
-                        if elems.iter().any(|e| format!("{}", e).eq_ignore_ascii_case(target_name)) {
+                        if elems
+                            .iter()
+                            .any(|e| format!("{}", e).eq_ignore_ascii_case(target_name))
+                        {
                             return true;
                         }
                     }
@@ -259,7 +322,10 @@ impl VM {
             }
             Value::String(_) => target_name == "string" || target_name == "object",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => {
-                target_name == "integer" || target_name == "double" || target_name == "number" || target_name == "object"
+                target_name == "integer"
+                    || target_name == "double"
+                    || target_name == "number"
+                    || target_name == "object"
             }
             Value::Bool(_) => target_name == "boolean" || target_name == "object",
             Value::V128(_) => target_name == "v128",
@@ -273,9 +339,7 @@ impl VM {
             Value::Null | Value::Undefined => false,
             // Symbols and BigInts never participate in GC-type / inheritance
             // type tests — they're JS primitives.
-            Value::Symbol(_) | Value::BigInt(_) => {
-                target_name.eq_ignore_ascii_case(val.type_tag())
-            }
+            Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()),
         }
     }
 
@@ -296,22 +360,30 @@ impl VM {
                 // Check __exception_type property (set by language-specific throw)
                 if let Some(et) = ob.properties.get("__exception_type") {
                     let et_str = format!("{}", et).to_lowercase();
-                    if et_str == tag_lower { return true; }
+                    if et_str == tag_lower {
+                        return true;
+                    }
                 }
                 // Check __type property
                 if let Some(t) = ob.properties.get("__type") {
                     let t_str = format!("{}", t).to_lowercase();
-                    if t_str == tag_lower { return true; }
+                    if t_str == tag_lower {
+                        return true;
+                    }
                 }
                 // Check "name" property (JS Error convention)
                 if let Some(n) = ob.properties.get("name") {
                     let n_str = format!("{}", n).to_lowercase();
-                    if n_str == tag_lower { return true; }
+                    if n_str == tag_lower {
+                        return true;
+                    }
                 }
                 // Check "message" property as fallback
                 if let Some(m) = ob.properties.get("message") {
                     let m_str = format!("{}", m).to_lowercase();
-                    if m_str.starts_with(&tag_lower) { return true; }
+                    if m_str.starts_with(&tag_lower) {
+                        return true;
+                    }
                 }
                 false
             }
@@ -320,5 +392,4 @@ impl VM {
     }
 
     // -- Execute --
-
 }

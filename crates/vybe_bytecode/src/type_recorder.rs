@@ -36,8 +36,12 @@ impl SlotObservations {
     pub fn monomorphic_tag(&self) -> Option<ValueTag> {
         let mut found: Option<ValueTag> = None;
         for (i, &c) in self.counts.iter().enumerate() {
-            if c == 0 { continue; }
-            if found.is_some() { return None; }
+            if c == 0 {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
             found = Some(index_to_tag(i));
         }
         found
@@ -70,19 +74,27 @@ pub struct TypeRecorder {
 }
 
 impl TypeRecorder {
-    pub fn new() -> Self { Self { slots: Vec::new() } }
+    pub fn new() -> Self {
+        Self { slots: Vec::new() }
+    }
 
     /// Increment the counter for a value observed at `(chunk_index, slot)`.
     #[inline]
     pub fn record(&mut self, chunk_index: usize, slot: usize, value: &Value) {
-        while self.slots.len() <= chunk_index { self.slots.push(Vec::new()); }
+        while self.slots.len() <= chunk_index {
+            self.slots.push(Vec::new());
+        }
         let row = &mut self.slots[chunk_index];
-        while row.len() <= slot { row.push(SlotObservations::default()); }
+        while row.len() <= slot {
+            row.push(SlotObservations::default());
+        }
         row[slot].counts[value.tag().as_usize()] += 1;
     }
 
     /// Immutable view of the full observation bank.
-    pub fn slots(&self) -> &[Vec<SlotObservations>] { &self.slots }
+    pub fn slots(&self) -> &[Vec<SlotObservations>] {
+        &self.slots
+    }
 
     /// Aggregate stats across every observed slot.
     pub fn summary(&self) -> TypeRecordSummary {
@@ -92,16 +104,26 @@ impl TypeRecorder {
         let mut by_tag = [0u64; ValueTag::COUNT];
         for chunk in &self.slots {
             for slot in chunk {
-                if slot.total() == 0 { continue; }
+                if slot.total() == 0 {
+                    continue;
+                }
                 total += 1;
-                if slot.distinct_variants() == 1 { monomorphic += 1; }
-                else { polymorphic += 1; }
+                if slot.distinct_variants() == 1 {
+                    monomorphic += 1;
+                } else {
+                    polymorphic += 1;
+                }
                 for (i, &c) in slot.counts.iter().enumerate() {
                     by_tag[i] = by_tag[i].saturating_add(c);
                 }
             }
         }
-        TypeRecordSummary { observed_slots: total, monomorphic, polymorphic, by_tag }
+        TypeRecordSummary {
+            observed_slots: total,
+            monomorphic,
+            polymorphic,
+            by_tag,
+        }
     }
 
     /// Human-readable summary — useful to paste into an issue or
@@ -111,16 +133,24 @@ impl TypeRecorder {
         use std::fmt::Write;
         let mut out = String::new();
         for (ci, chunk_slots) in self.slots.iter().enumerate() {
-            if chunk_slots.iter().all(|s| s.total() == 0) { continue; }
+            if chunk_slots.iter().all(|s| s.total() == 0) {
+                continue;
+            }
             let name = chunk_names.get(ci).map(String::as_str).unwrap_or("?");
             let _ = writeln!(&mut out, "\nchunk #{ci} ({name})");
             for (si, slot) in chunk_slots.iter().enumerate() {
-                if slot.total() == 0 { continue; }
+                if slot.total() == 0 {
+                    continue;
+                }
                 let _ = write!(&mut out, "  slot {si:3}: ");
                 let mut first = true;
                 for (i, &c) in slot.counts.iter().enumerate() {
-                    if c == 0 { continue; }
-                    if !first { let _ = write!(&mut out, ", "); }
+                    if c == 0 {
+                        continue;
+                    }
+                    if !first {
+                        let _ = write!(&mut out, ", ");
+                    }
                     first = false;
                     let _ = write!(&mut out, "{}={c}", index_to_tag(i).name());
                 }
@@ -156,7 +186,10 @@ pub struct TypeRecordSummary {
 
 impl TypeRecordSummary {
     pub fn mono_percent(&self) -> f64 {
-        if self.observed_slots == 0 { 0.0 }
-        else { 100.0 * self.monomorphic as f64 / self.observed_slots as f64 }
+        if self.observed_slots == 0 {
+            0.0
+        } else {
+            100.0 * self.monomorphic as f64 / self.observed_slots as f64
+        }
     }
 }

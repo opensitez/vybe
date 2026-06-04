@@ -2,28 +2,39 @@
 //! round-trip read/write, and opcode byte-value compliance per the spec.
 //! Binary I/O compliance — not execution semantics (those live in per-opcode files).
 
-use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::value::Value;
 use vybe_bytecode::wasm;
+use vybe_bytecode::{Chunk, Op, VM};
 
 // ── WASM binary magic and version ─────────────────────────────────────────
 
 #[test]
 fn wasm_magic_bytes_are_correct() {
     let bytes = wasm::write_wasm(&[Chunk::new("<script>")]);
-    assert_eq!(&bytes[0..4], b"\0asm", "WASM magic must be 0x00 0x61 0x73 0x6D");
+    assert_eq!(
+        &bytes[0..4],
+        b"\0asm",
+        "WASM magic must be 0x00 0x61 0x73 0x6D"
+    );
 }
 
 #[test]
 fn wasm_version_is_one() {
     let bytes = wasm::write_wasm(&[Chunk::new("<script>")]);
-    assert_eq!(&bytes[4..8], &[1, 0, 0, 0], "WASM version must be 0x01 0x00 0x00 0x00");
+    assert_eq!(
+        &bytes[4..8],
+        &[1, 0, 0, 0],
+        "WASM version must be 0x01 0x00 0x00 0x00"
+    );
 }
 
 #[test]
 fn wasm_output_is_at_least_8_bytes() {
     let bytes = wasm::write_wasm(&[Chunk::new("<script>")]);
-    assert!(bytes.len() >= 8, "minimum WASM module is 8 bytes (magic + version)");
+    assert!(
+        bytes.len() >= 8,
+        "minimum WASM module is 8 bytes (magic + version)"
+    );
 }
 
 // ── Round-trip: write → read → execute ────────────────────────────────────
@@ -78,11 +89,11 @@ fn roundtrip_f64_arithmetic() {
 #[test]
 fn roundtrip_structured_control_if_else() {
     let mut chunk = Chunk::new("<script>");
-    let one  = chunk.add_constant(Value::I32(1));
-    let ten  = chunk.add_constant(Value::I32(10));
+    let one = chunk.add_constant(Value::I32(1));
+    let ten = chunk.add_constant(Value::I32(10));
     let nine = chunk.add_constant(Value::I32(9));
 
-    chunk.emit_op_u16(Op::CONST, one, 0);  // condition = 1 (true)
+    chunk.emit_op_u16(Op::CONST, one, 0); // condition = 1 (true)
     let _if_pos = chunk.emit_if(0);
     chunk.emit_op_u16(Op::CONST, ten, 0);
     chunk.emit_else(0);
@@ -208,12 +219,12 @@ fn core_conversion_opcodes_have_spec_byte_values() {
     assert_eq!(Op::I32_WRAP_I64.sub(), 0xA7);
     assert_eq!(Op::I32_TRUNC_F32_S.sub(), 0xA8);
     assert_eq!(Op::I32_TRUNC_F32_U.sub(), 0xA9);
-    assert_eq!(Op::I32_FROM_F64.sub(), 0xAA);   // i32.trunc_f64_s
+    assert_eq!(Op::I32_FROM_F64.sub(), 0xAA); // i32.trunc_f64_s
     assert_eq!(Op::I32_TRUNC_F64_U.sub(), 0xAB);
     assert_eq!(Op::I64_EXTEND_I32_S.sub(), 0xAC);
     assert_eq!(Op::I64_EXTEND_I32_U.sub(), 0xAD);
     assert_eq!(Op::F32_DEMOTE_F64.sub(), 0xB6);
-    assert_eq!(Op::F64_FROM_I32.sub(), 0xB7);   // f64.convert_i32_s
+    assert_eq!(Op::F64_FROM_I32.sub(), 0xB7); // f64.convert_i32_s
     assert_eq!(Op::F64_PROMOTE_F32.sub(), 0xBB);
     assert_eq!(Op::I32_REINTERPRET_F32.sub(), 0xBC);
     assert_eq!(Op::I64_REINTERPRET_F64.sub(), 0xBD);
@@ -255,8 +266,8 @@ fn threads_prefix_is_fe() {
 
 #[test]
 fn roundtrip_multiple_functions() {
-    use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
     use std::sync::Arc;
+    use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
 
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;
@@ -300,70 +311,144 @@ fn rt_run(emit: impl FnOnce(&mut Chunk)) -> Value {
     VM::new().run(chunks).expect("run failed")
 }
 
-fn push_i32_rt(c: &mut Chunk, v: i32) { let k = c.add_constant(Value::I32(v)); c.emit_op_u16(Op::CONST, k, 0); }
-fn push_i64_rt(c: &mut Chunk, v: i64) { let k = c.add_constant(Value::I64(v)); c.emit_op_u16(Op::CONST, k, 0); }
-fn push_f64_rt(c: &mut Chunk, v: f64) { let k = c.add_constant(Value::F64(v)); c.emit_op_u16(Op::CONST, k, 0); }
+fn push_i32_rt(c: &mut Chunk, v: i32) {
+    let k = c.add_constant(Value::I32(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
+fn push_i64_rt(c: &mut Chunk, v: i64) {
+    let k = c.add_constant(Value::I64(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
+fn push_f64_rt(c: &mut Chunk, v: f64) {
+    let k = c.add_constant(Value::F64(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
 
 // 0xA8 i32.trunc_f32_s — was collapsed to I32_FROM_F64 (no trapping)
 #[test]
 fn reader_i32_trunc_f32_s_roundtrip() {
-    assert_eq!(rt_run(|c| { push_f64_rt(c, 3.7); c.emit_op(Op::I32_TRUNC_F32_S, 0); }).as_i32(), 3);
+    assert_eq!(
+        rt_run(|c| {
+            push_f64_rt(c, 3.7);
+            c.emit_op(Op::I32_TRUNC_F32_S, 0);
+        })
+        .as_i32(),
+        3
+    );
 }
 
 // 0xA9 i32.trunc_f32_u — was collapsed to I32_FROM_F64
 #[test]
 fn reader_i32_trunc_f32_u_roundtrip() {
-    assert_eq!(rt_run(|c| { push_f64_rt(c, 200.9); c.emit_op(Op::I32_TRUNC_F32_U, 0); }).as_i32() as u32, 200);
+    assert_eq!(
+        rt_run(|c| {
+            push_f64_rt(c, 200.9);
+            c.emit_op(Op::I32_TRUNC_F32_U, 0);
+        })
+        .as_i32() as u32,
+        200
+    );
 }
 
 // 0xAE i32.trunc_f32_s → i64 — was mapped to I64_TRUNC_F64_S losing the F32 distinction
 #[test]
 fn reader_i64_trunc_f32_s_roundtrip() {
-    assert_eq!(rt_run(|c| { push_f64_rt(c, -99.9); c.emit_op(Op::I64_TRUNC_F32_S, 0); }).as_i64(), -99);
+    assert_eq!(
+        rt_run(|c| {
+            push_f64_rt(c, -99.9);
+            c.emit_op(Op::I64_TRUNC_F32_S, 0);
+        })
+        .as_i64(),
+        -99
+    );
 }
 
 // 0xB2 f32.convert_i32_s — was collapsed to F64_FROM_I32
 #[test]
 fn reader_f32_convert_i32_s_roundtrip() {
-    assert_eq!(rt_run(|c| { push_i32_rt(c, -7); c.emit_op(Op::F32_CONVERT_I32_S, 0); }).as_f64() as f32, -7.0f32);
+    assert_eq!(
+        rt_run(|c| {
+            push_i32_rt(c, -7);
+            c.emit_op(Op::F32_CONVERT_I32_S, 0);
+        })
+        .as_f64() as f32,
+        -7.0f32
+    );
 }
 
 // 0xB4 f32.convert_i64_s — was collapsed to F64_FROM_I32
 #[test]
 fn reader_f32_convert_i64_s_roundtrip() {
-    assert_eq!(rt_run(|c| { push_i64_rt(c, -1_000); c.emit_op(Op::F32_CONVERT_I64_S, 0); }).as_f64() as f32, -1_000.0f32);
+    assert_eq!(
+        rt_run(|c| {
+            push_i64_rt(c, -1_000);
+            c.emit_op(Op::F32_CONVERT_I64_S, 0);
+        })
+        .as_f64() as f32,
+        -1_000.0f32
+    );
 }
 
 // 0xB8 f64.convert_i32_u — was collapsed to F64_FROM_I32 (losing unsigned semantics)
 #[test]
 fn reader_f64_convert_i32_u_roundtrip() {
-    assert_eq!(rt_run(|c| { push_i32_rt(c, -1); c.emit_op(Op::F64_CONVERT_I32_U, 0); }).as_f64(), 4_294_967_295.0);
+    assert_eq!(
+        rt_run(|c| {
+            push_i32_rt(c, -1);
+            c.emit_op(Op::F64_CONVERT_I32_U, 0);
+        })
+        .as_f64(),
+        4_294_967_295.0
+    );
 }
 
 // 0xB9 f64.convert_i64_s — was WRONG: mapped to F64_PROMOTE_F32
 #[test]
 fn reader_f64_convert_i64_s_roundtrip() {
-    assert_eq!(rt_run(|c| { push_i64_rt(c, -42); c.emit_op(Op::F64_CONVERT_I64_S, 0); }).as_f64(), -42.0);
+    assert_eq!(
+        rt_run(|c| {
+            push_i64_rt(c, -42);
+            c.emit_op(Op::F64_CONVERT_I64_S, 0);
+        })
+        .as_f64(),
+        -42.0
+    );
 }
 
 // 0xBA f64.convert_i64_u — was WRONG: mapped to F32_REINTERPRET_I32
 #[test]
 fn reader_f64_convert_i64_u_roundtrip() {
-    let r = rt_run(|c| { push_i64_rt(c, 1_000_000_000); c.emit_op(Op::F64_CONVERT_I64_U, 0); }).as_f64();
+    let r = rt_run(|c| {
+        push_i64_rt(c, 1_000_000_000);
+        c.emit_op(Op::F64_CONVERT_I64_U, 0);
+    })
+    .as_f64();
     assert!((r - 1_000_000_000.0).abs() < 1.0);
 }
 
 // 0xBB f64.promote_f32 — was WRONG: mapped to F64_REINTERPRET_I64
 #[test]
 fn reader_f64_promote_f32_roundtrip() {
-    assert!((rt_run(|c| { push_f64_rt(c, 1.5f32 as f64); c.emit_op(Op::F64_PROMOTE_F32, 0); }).as_f64() - 1.5).abs() < 1e-6);
+    assert!(
+        (rt_run(|c| {
+            push_f64_rt(c, 1.5f32 as f64);
+            c.emit_op(Op::F64_PROMOTE_F32, 0);
+        })
+        .as_f64()
+            - 1.5)
+            .abs()
+            < 1e-6
+    );
 }
 
 // 0xBE f32.reinterpret_i32 — was MISSING from reader
 #[test]
 fn reader_f32_reinterpret_i32_roundtrip() {
     // 0x3F800000 = 1.0f32 bit pattern
-    let r = rt_run(|c| { push_i32_rt(c, 0x3F800000u32 as i32); c.emit_op(Op::F32_REINTERPRET_I32, 0); });
+    let r = rt_run(|c| {
+        push_i32_rt(c, 0x3F800000u32 as i32);
+        c.emit_op(Op::F32_REINTERPRET_I32, 0);
+    });
     assert_eq!(r.as_f64() as f32, 1.0f32);
 }
 
@@ -371,6 +456,9 @@ fn reader_f32_reinterpret_i32_roundtrip() {
 #[test]
 fn reader_f64_reinterpret_i64_roundtrip() {
     // 0x3FF0000000000000 = 1.0f64 bit pattern
-    let r = rt_run(|c| { push_i64_rt(c, 0x3FF0000000000000u64 as i64); c.emit_op(Op::F64_REINTERPRET_I64, 0); });
+    let r = rt_run(|c| {
+        push_i64_rt(c, 0x3FF0000000000000u64 as i64);
+        c.emit_op(Op::F64_REINTERPRET_I64, 0);
+    });
     assert!((r.as_f64() - 1.0).abs() < 1e-10);
 }

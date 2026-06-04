@@ -13,15 +13,15 @@ use crate::error::VMError;
 use crate::event_loop::Task;
 use crate::fiber::{Fiber, SavedFrame};
 use crate::value::Value;
-use crate::vm::{
-    VM, CallFrame, ExecResult,
-};
+use crate::vm::{CallFrame, ExecResult, VM};
 
 impl VM {
     pub(crate) fn run_event_loop(&mut self) -> Result<(), VMError> {
         loop {
             let has_pending = self.event_loop.borrow().has_pending();
-            if !has_pending { break; }
+            if !has_pending {
+                break;
+            }
 
             // 1. Drain all microtasks
             let microtasks: Vec<Task> = {
@@ -65,20 +65,29 @@ impl VM {
     /// continues executing from the restored `ip`. If `push_value` is
     /// `Some`, it's pushed onto the restored stack — that's the
     /// yielded value the caller of RESUME sees.
-    pub fn resume_fiber_with(&mut self, fiber: Fiber, push_value: Option<Value>)
-        -> Result<(), VMError>
-    {
+    pub fn resume_fiber_with(
+        &mut self,
+        fiber: Fiber,
+        push_value: Option<Value>,
+    ) -> Result<(), VMError> {
         self.stack = fiber.stack;
-        self.frames = fiber.frames.into_iter().map(|f| CallFrame {
-            chunk_index: f.chunk_index,
-            ip: f.ip,
-            base: f.base,
-            upvalues: f.upvalues,
-        }).collect();
+        self.frames = fiber
+            .frames
+            .into_iter()
+            .map(|f| CallFrame {
+                chunk_index: f.chunk_index,
+                ip: f.ip,
+                base: f.base,
+                label_base: f.label_base,
+                upvalues: f.upvalues,
+            })
+            .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
         self.active_continuations = fiber.active_continuations;
-        if let Some(val) = push_value { self.push(val)?; }
+        if let Some(val) = push_value {
+            self.push(val)?;
+        }
         Ok(())
     }
 
@@ -86,12 +95,17 @@ impl VM {
     pub(crate) fn resume_fiber(&mut self, fiber: Fiber) -> Result<Value, VMError> {
         // Restore state from fiber
         self.stack = fiber.stack;
-        self.frames = fiber.frames.into_iter().map(|f| CallFrame {
-            chunk_index: f.chunk_index,
-            ip: f.ip,
-            base: f.base,
-            upvalues: f.upvalues,
-        }).collect();
+        self.frames = fiber
+            .frames
+            .into_iter()
+            .map(|f| CallFrame {
+                chunk_index: f.chunk_index,
+                ip: f.ip,
+                base: f.base,
+                label_base: f.label_base,
+                upvalues: f.upvalues,
+            })
+            .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
         self.active_continuations = fiber.active_continuations;
@@ -113,7 +127,10 @@ impl VM {
     /// `promise_id` identifies which suspension to resume.
     /// `value` is the resolved value that becomes the return of the host call.
     pub fn jspi_resolve(&mut self, promise_id: u64, value: Value) -> Result<Value, VMError> {
-        let fiber = self.event_loop.borrow_mut().resolve_promise(promise_id, value);
+        let fiber = self
+            .event_loop
+            .borrow_mut()
+            .resolve_promise(promise_id, value);
         if let Some(fiber) = fiber {
             self.resume_fiber(fiber)
         } else {
@@ -128,12 +145,17 @@ impl VM {
 
     /// Save the current execution state to a Fiber.
     pub fn save_fiber(&mut self) -> Fiber {
-        let frames = self.frames.drain(..).map(|f| SavedFrame {
-            chunk_index: f.chunk_index,
-            ip: f.ip,
-            base: f.base,
-            upvalues: f.upvalues,
-        }).collect();
+        let frames = self
+            .frames
+            .drain(..)
+            .map(|f| SavedFrame {
+                chunk_index: f.chunk_index,
+                ip: f.ip,
+                base: f.base,
+                label_base: f.label_base,
+                upvalues: f.upvalues,
+            })
+            .collect();
         let stack = self.stack.drain(..).collect();
         let upvalues = self.open_upvalues.drain(..).collect();
         let labels = self.label_stack.drain(..).collect();

@@ -52,7 +52,9 @@ pub enum ValueTag {
 
 impl ValueTag {
     pub const COUNT: usize = 12;
-    pub fn as_usize(self) -> usize { self as usize }
+    pub fn as_usize(self) -> usize {
+        self as usize
+    }
     pub fn name(self) -> &'static str {
         match self {
             ValueTag::Null => "Null",
@@ -101,7 +103,13 @@ impl Value {
             Value::F64(n) => *n,
             Value::I32(n) => *n as f64,
             Value::I64(n) => *n as f64,
-            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+            Value::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
             Value::Null => 0.0,
             _ => f64::NAN,
@@ -113,7 +121,13 @@ impl Value {
             Value::I32(n) => *n,
             Value::I64(n) => *n as i32,
             Value::F64(n) => *n as i32,
-            Value::Bool(b) => if *b { 1 } else { 0 },
+            Value::Bool(b) => {
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            }
             Value::String(s) => s.trim().parse::<f64>().map(|f| f as i32).unwrap_or(0),
             _ => 0,
         }
@@ -124,7 +138,9 @@ impl Value {
     /// matching the semantics required by JS bitwise operators.
     pub fn to_ecma_int32(&self) -> i32 {
         let n = self.as_f64();
-        if n.is_nan() || n.is_infinite() { return 0; }
+        if n.is_nan() || n.is_infinite() {
+            return 0;
+        }
         n.trunc().rem_euclid(4_294_967_296.0) as u64 as u32 as i32
     }
 
@@ -139,7 +155,13 @@ impl Value {
             Value::BigInt(n) => *n,
             Value::I32(n) => *n as i64,
             Value::F64(n) => *n as i64,
-            Value::Bool(b) => if *b { 1 } else { 0 },
+            Value::Bool(b) => {
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }
@@ -193,8 +215,8 @@ impl Value {
     pub fn as_bigint(&self) -> i64 {
         match self {
             Value::BigInt(n) => *n,
-            Value::I64(n)    => *n,
-            Value::I32(n)    => *n as i64,
+            Value::I64(n) => *n,
+            Value::I32(n) => *n as i64,
             _ => 0,
         }
     }
@@ -211,7 +233,11 @@ impl Value {
             (Value::I32(a), Value::I32(b)) => a == b,
             (Value::I64(a), Value::I64(b)) => a == b,
             (Value::F64(a), Value::F64(b)) => {
-                if a.is_nan() || b.is_nan() { false } else { a == b }
+                if a.is_nan() || b.is_nan() {
+                    false
+                } else {
+                    a == b
+                }
             }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => {
@@ -253,7 +279,9 @@ impl Value {
             (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (Value::BigInt(a), Value::I64(b)) | (Value::I64(b), Value::BigInt(a)) => *a == *b,
-            (Value::BigInt(a), Value::I32(b)) | (Value::I32(b), Value::BigInt(a)) => *a == (*b as i64),
+            (Value::BigInt(a), Value::I32(b)) | (Value::I32(b), Value::BigInt(a)) => {
+                *a == (*b as i64)
+            }
             // Cross-type numeric equality: I32(0) == F64(0.0), etc.
             (Value::I32(a), Value::F64(b)) => (*a as f64) == *b,
             (Value::F64(a), Value::I32(b)) => *a == (*b as f64),
@@ -313,7 +341,11 @@ impl Value {
             (Value::I32(x), Value::I64(y)) => (*x as i64) == *y,
             (Value::I64(x), Value::I32(y)) => *x == (*y as i64),
             (Value::F64(x), Value::F64(y)) => {
-                if x.is_nan() && y.is_nan() { true } else { x == y }
+                if x.is_nan() && y.is_nan() {
+                    true
+                } else {
+                    x == y
+                }
             }
             (Value::I32(x), Value::F64(y)) => !y.is_nan() && (*x as f64) == *y,
             (Value::F64(x), Value::I32(y)) => !x.is_nan() && *x == (*y as f64),
@@ -365,10 +397,7 @@ impl Hash for Value {
                 } else if *n == 0.0 {
                     // -0.0 / +0.0 collapse to same bucket.
                     0i64.hash(state);
-                } else if n.fract() == 0.0
-                    && *n >= i64::MIN as f64
-                    && *n <= i64::MAX as f64
-                {
+                } else if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
                     // Integral float — hash as the i64 it equals,
                     // so F64(5.0) and I32(5) share a bucket.
                     (*n as i64).hash(state);
@@ -465,7 +494,11 @@ impl fmt::Display for Value {
                         write!(f, "[object TypedArray]")
                     }
                     ObjectKind::Function(func) => {
-                        write!(f, "[function {}]", func.name.as_deref().unwrap_or("anonymous"))
+                        write!(
+                            f,
+                            "[function {}]",
+                            func.name.as_deref().unwrap_or("anonymous")
+                        )
                     }
                     ObjectKind::HostFunction(idx) => write!(f, "[host function {}]", idx),
                     // Per ECMA-262 §10.4.6 the `Symbol.toStringTag`
@@ -488,7 +521,7 @@ impl fmt::Display for Value {
                 write!(f, "v128[{}]", vals.join(""))
             }
             Value::Symbol(d) => write!(f, "Symbol({})", d),
-            Value::BigInt(n)  => write!(f, "{}n", n),
+            Value::BigInt(n) => write!(f, "{}n", n),
         }
     }
 }
@@ -695,11 +728,21 @@ impl Clone for ContinuationState {
 
 impl Object {
     pub fn new() -> Self {
-        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id: 0, fields: Vec::new() }
+        Object {
+            properties: HashMap::new(),
+            kind: ObjectKind::Ordinary,
+            type_id: 0,
+            fields: Vec::new(),
+        }
     }
 
     pub fn new_typed(type_id: usize) -> Self {
-        Object { properties: HashMap::new(), kind: ObjectKind::Ordinary, type_id, fields: Vec::new() }
+        Object {
+            properties: HashMap::new(),
+            kind: ObjectKind::Ordinary,
+            type_id,
+            fields: Vec::new(),
+        }
     }
 
     /// Create a typed object with pre-allocated indexed fields.
@@ -720,7 +763,8 @@ impl Object {
             type_id: 0,
             fields: Vec::new(),
         };
-        obj.properties.insert("length".into(), Value::F64(len as f64));
+        obj.properties
+            .insert("length".into(), Value::F64(len as f64));
         obj
     }
 
@@ -745,7 +789,8 @@ impl Object {
                     elems.resize(idx + 1, Value::Null);
                 }
                 elems[idx] = value.clone();
-                self.properties.insert("length".into(), Value::F64(elems.len() as f64));
+                self.properties
+                    .insert("length".into(), Value::F64(elems.len() as f64));
                 return;
             }
         }

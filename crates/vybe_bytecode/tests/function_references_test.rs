@@ -1,10 +1,10 @@
 //! Tests for the function-references proposal: ref.func (0xD2), call_ref (0x14).
 //! Covers global-init ConstExpr::RefFunc, runtime REF_FUNC opcode, and call_ref dispatch.
 
-use vybe_bytecode::*;
+use std::sync::Arc;
 use vybe_bytecode::chunk::*;
 use vybe_bytecode::value::ObjectKind;
-use std::sync::Arc;
+use vybe_bytecode::*;
 
 // ── GlobalInit ConstExpr::RefFunc ─────────────────────────────────────────
 
@@ -45,7 +45,7 @@ fn call_ref_invokes_referenced_function() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__identity")));
-    let arg_c  = script.add_constant(Value::I32(7));
+    let arg_c = script.add_constant(Value::I32(7));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_op_u16(opcode::Op::CONST, arg_c, 0);
     script.emit_op_u8(opcode::Op::CALL_REF, 1, 0);
@@ -95,8 +95,8 @@ fn call_ref_with_multiple_args() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__add")));
-    let a_c    = script.add_constant(Value::I32(10));
-    let b_c    = script.add_constant(Value::I32(32));
+    let a_c = script.add_constant(Value::I32(10));
+    let b_c = script.add_constant(Value::I32(32));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_op_u16(opcode::Op::CONST, a_c, 0);
     script.emit_op_u16(opcode::Op::CONST, b_c, 0);

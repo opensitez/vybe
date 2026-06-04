@@ -7,13 +7,11 @@
 //! - `resolve_property` / `method_to_value` — WASM GC-style method
 //!   resolution: getter → instance → vtable → Object universals.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use crate::error::VMError;
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Value};
-use crate::vm::{
-    VM, CallFrame, MAX_FRAMES,
-};
+use crate::vm::{CallFrame, MAX_FRAMES, VM};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub(crate) fn attach_continuation_protocols(
     properties: &mut HashMap<String, Value>,
@@ -98,7 +96,9 @@ impl VM {
                 break;
             }
             let tag_idx = handler.tag as usize;
-            let tag_name = self.chunks.get(0)
+            let tag_name = self
+                .chunks
+                .get(0)
                 .and_then(|c| c.exception_tags.get(tag_idx))
                 .cloned()
                 .unwrap_or_default();
@@ -132,7 +132,12 @@ impl VM {
         }
     }
 
-    pub(crate) fn try_dunder_binary(&mut self, obj: &Arc<Mutex<crate::value::Object>>, arg: &Value, dunder: &str) -> Option<Value> {
+    pub(crate) fn try_dunder_binary(
+        &mut self,
+        obj: &Arc<Mutex<crate::value::Object>>,
+        arg: &Value,
+        dunder: &str,
+    ) -> Option<Value> {
         let method = {
             let o = obj.lock().unwrap();
             o.properties.get(dunder).cloned()
@@ -195,7 +200,9 @@ impl VM {
                                 let a = arr.lock().unwrap();
                                 if let ObjectKind::Array(ref elems) = a.kind {
                                     elems.clone()
-                                } else { Vec::new() }
+                                } else {
+                                    Vec::new()
+                                }
                             }
                             _ => Vec::new(),
                         };
@@ -203,7 +210,9 @@ impl VM {
                         let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc);
                         args.extend(bound);
                         args.extend(self.stack[self.stack.len() - argc..].iter().cloned());
-                        for _ in 0..argc { self.stack.pop(); }
+                        for _ in 0..argc {
+                            self.stack.pop();
+                        }
                         self.stack.pop();
                         let host_fn = self.host_fns[idx].clone();
                         let result = {
@@ -221,13 +230,17 @@ impl VM {
                         drop(o);
 
                         let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
-                        for _ in 0..argc { self.stack.pop(); }
+                        for _ in 0..argc {
+                            self.stack.pop();
+                        }
                         self.stack.pop();
 
                         let mut last = Value::Null;
                         for handler in handlers {
                             self.push(handler)?;
-                            for arg in &args { self.push(arg.clone())?; }
+                            for arg in &args {
+                                self.push(arg.clone())?;
+                            }
                             let depth = self.frames.len();
                             self.call_value(args.len())?;
                             // Some handlers (host/callable shims) complete without
@@ -252,15 +265,24 @@ impl VM {
                         }
                         let chunk_name = if !self.frames.is_empty() {
                             self.chunks[self.frame().chunk_index].name.clone()
-                        } else { "?".into() };
-                        return Err(VMError::new(format!("Not a function in chunk '{}' (kind: {})",
-                            chunk_name, kind_name)));
+                        } else {
+                            "?".into()
+                        };
+                        return Err(VMError::new(format!(
+                            "Not a function in chunk '{}' (kind: {})",
+                            chunk_name, kind_name
+                        )));
                     }
                 }
             }
             _ => {
                 let stack = self.capture_call_stack();
-                return Err(VMError::new(format!("{} is not callable (type: {})", callee.type_tag(), callee)).with_stack(stack));
+                return Err(VMError::new(format!(
+                    "{} is not callable (type: {})",
+                    callee.type_tag(),
+                    callee
+                ))
+                .with_stack(stack));
             }
         }
         Ok(())
@@ -274,11 +296,20 @@ impl VM {
     /// intercept — used from `RESUME` / `GEN_NEXT` when we want the
     /// generator's body to execute (rather than re-wrap as a nested
     /// continuation).
-    pub(crate) fn call_function_direct(&mut self, func: &Function, argc: usize) -> Result<(), VMError> {
+    pub(crate) fn call_function_direct(
+        &mut self,
+        func: &Function,
+        argc: usize,
+    ) -> Result<(), VMError> {
         self.call_function_inner(func, argc, true)
     }
 
-    fn call_function_inner(&mut self, func: &Function, argc: usize, bypass_generator: bool) -> Result<(), VMError> {
+    fn call_function_inner(
+        &mut self,
+        func: &Function,
+        argc: usize,
+        bypass_generator: bool,
+    ) -> Result<(), VMError> {
         if self.frames.len() >= MAX_FRAMES {
             return Err(VMError::new("Stack overflow"));
         }
@@ -290,10 +321,12 @@ impl VM {
         // passed-through args, push it on the stack, and return. The
         // caller drives the generator by RESUMEing the continuation.
         if !bypass_generator && self.chunks[chunk_index].is_generator {
-            use crate::value::{ContinuationState, ContinuationPhase};
+            use crate::value::{ContinuationPhase, ContinuationState};
             // Collect args — they'll be bound into the continuation.
             let mut args: Vec<Value> = Vec::with_capacity(argc);
-            for _ in 0..argc { args.push(self.pop()); }
+            for _ in 0..argc {
+                args.push(self.pop());
+            }
             args.reverse();
             // Re-wrap the Function value so entry can re-call it later.
             let fn_obj = Object {
@@ -363,7 +396,13 @@ impl VM {
         }
 
         let upvalues = func.upvalues.clone();
-        self.frames.push(CallFrame { chunk_index, ip: 0, base, upvalues });
+        self.frames.push(CallFrame {
+            chunk_index,
+            ip: 0,
+            base,
+            label_base: self.label_stack.len(),
+            upvalues,
+        });
         Ok(())
     }
 
@@ -393,10 +432,13 @@ impl VM {
                         "length" => return Ok(Value::I32(typed_array_live_length(ta) as i32)),
                         "byteOffset" => return Ok(Value::I32(ta.byte_offset as i32)),
                         "byteLength" => {
-                            let byte_length = typed_array_live_length(ta) * ta.elem.bytes_per_element();
+                            let byte_length =
+                                typed_array_live_length(ta) * ta.elem.bytes_per_element();
                             return Ok(Value::I32(byte_length as i32));
                         }
-                        "BYTES_PER_ELEMENT" => return Ok(Value::I32(ta.elem.bytes_per_element() as i32)),
+                        "BYTES_PER_ELEMENT" => {
+                            return Ok(Value::I32(ta.elem.bytes_per_element() as i32));
+                        }
                         _ => {}
                     }
                 }
@@ -433,7 +475,9 @@ impl VM {
 
                 // Also try inferring type from ObjectKind or __type property
                 let ob = o.lock().unwrap();
-                let inferred_type = ob.properties.get("__type")
+                let inferred_type = ob
+                    .properties
+                    .get("__type")
                     .map(|v| format!("{}", v).to_lowercase())
                     .unwrap_or_else(|| match &ob.kind {
                         ObjectKind::Array(_) => "list".into(),
@@ -490,7 +534,9 @@ impl VM {
                     if let Value::Object(func_obj) = &self.func_table[*idx] {
                         let mut wrapped = Object::new();
                         wrapped.kind = func_obj.lock().unwrap().kind.clone();
-                        wrapped.properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
+                        wrapped
+                            .properties
+                            .insert(RECEIVER_MARKER.into(), Value::Bool(true));
                         Value::Object(Arc::new(Mutex::new(wrapped)))
                     } else {
                         self.func_table[*idx].clone()
@@ -499,7 +545,8 @@ impl VM {
                     // Fallback: create new (shouldn't happen if registered properly)
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::HostFunction(*idx);
-                    obj.properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
+                    obj.properties
+                        .insert(RECEIVER_MARKER.into(), Value::Bool(true));
                     Value::Object(Arc::new(Mutex::new(obj)))
                 }
             }
@@ -513,7 +560,12 @@ impl VM {
                 };
                 let mut properties = HashMap::new();
                 properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
-                let obj = Object { properties, kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
+                let obj = Object {
+                    properties,
+                    kind: ObjectKind::Function(func),
+                    type_id: 0,
+                    fields: Vec::new(),
+                };
                 Value::Object(Arc::new(Mutex::new(obj)))
             }
         }

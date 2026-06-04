@@ -1,7 +1,6 @@
-/// Tests for multi-memory support.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use std::sync::Arc;
+/// Tests for multi-memory support.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 #[test]
 fn memory_init_creates_new_memory() {
@@ -18,7 +17,11 @@ fn memory_init_creates_new_memory() {
 
     let result = vm.run(vec![chunk]).unwrap();
     let mem_idx = result.as_i32();
-    assert!(mem_idx >= 1, "new memory index should be >= 1, got {}", mem_idx);
+    assert!(
+        mem_idx >= 1,
+        "new memory index should be >= 1, got {}",
+        mem_idx
+    );
 }
 
 #[test]
@@ -102,11 +105,11 @@ fn memory_copy_cross_between_memories() {
     let mem1 = chunk.add_constant(Value::I32(1));
 
     // Stack order: dst_mem, dst_addr, src_mem, src_addr, len
-    chunk.emit_op_u16(Op::CONST, mem1, 0);   // dst_mem = 1
-    chunk.emit_op_u16(Op::CONST, zero, 0);   // dst_addr = 0
-    chunk.emit_op_u16(Op::CONST, mem0, 0);   // src_mem = 0
-    chunk.emit_op_u16(Op::CONST, zero, 0);   // src_addr = 0
-    chunk.emit_op_u16(Op::CONST, four, 0);   // len = 4
+    chunk.emit_op_u16(Op::CONST, mem1, 0); // dst_mem = 1
+    chunk.emit_op_u16(Op::CONST, zero, 0); // dst_addr = 0
+    chunk.emit_op_u16(Op::CONST, mem0, 0); // src_mem = 0
+    chunk.emit_op_u16(Op::CONST, zero, 0); // src_addr = 0
+    chunk.emit_op_u16(Op::CONST, four, 0); // len = 4
     chunk.emit_op(Op::MEMORY_COPY_CROSS, 0);
 
     // Switch to memory 1 and read
@@ -117,7 +120,11 @@ fn memory_copy_cross_between_memories() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 99, "data should have been copied to memory 1");
+    assert_eq!(
+        result.as_i32(),
+        99,
+        "data should have been copied to memory 1"
+    );
 }
 
 #[test]
@@ -152,7 +159,7 @@ fn memory_fill_in_memory_zero() {
     vm.memory.resize(65536, 0);
     let mut chunk = Chunk::new("<script>");
     let start = chunk.add_constant(Value::I32(8));
-    let byte  = chunk.add_constant(Value::I32(0xAB));
+    let byte = chunk.add_constant(Value::I32(0xAB));
     let count = chunk.add_constant(Value::I32(4));
     chunk.emit_op_u16(Op::CONST, start, 0);
     chunk.emit_op_u16(Op::CONST, byte, 0);

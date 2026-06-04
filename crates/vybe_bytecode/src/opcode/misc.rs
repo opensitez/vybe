@@ -19,15 +19,15 @@ impl Op {
 
     pub const MEMORY_INIT: Op = Op::new(0xFC, 0x08);
     // Reference-types table operations (reference-types proposal, 0xFC prefix).
-    pub const DATA_DROP: Op   = Op::new(0xFC, 0x09);
+    pub const DATA_DROP: Op = Op::new(0xFC, 0x09);
     pub const MEMORY_COPY: Op = Op::new(0xFC, 0x0A);
     pub const MEMORY_FILL: Op = Op::new(0xFC, 0x0B);
-    pub const TABLE_INIT: Op  = Op::new(0xFC, 0x0C);
-    pub const ELEM_DROP: Op   = Op::new(0xFC, 0x0D);
-    pub const TABLE_COPY: Op  = Op::new(0xFC, 0x0E);
-    pub const TABLE_GROW: Op  = Op::new(0xFC, 0x0F);
-    pub const TABLE_SIZE: Op  = Op::new(0xFC, 0x10);
-    pub const TABLE_FILL: Op  = Op::new(0xFC, 0x11);
+    pub const TABLE_INIT: Op = Op::new(0xFC, 0x0C);
+    pub const ELEM_DROP: Op = Op::new(0xFC, 0x0D);
+    pub const TABLE_COPY: Op = Op::new(0xFC, 0x0E);
+    pub const TABLE_GROW: Op = Op::new(0xFC, 0x0F);
+    pub const TABLE_SIZE: Op = Op::new(0xFC, 0x10);
+    pub const TABLE_FILL: Op = Op::new(0xFC, 0x11);
 }
 
 opcode_category! {

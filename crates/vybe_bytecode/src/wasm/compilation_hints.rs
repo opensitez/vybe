@@ -55,14 +55,14 @@
 //! function (no outgoing `CALL*` instructions) is marked eligible. See
 //! `is_leaf_function`.
 
-use super::encoding::*;
 use super::code;
+use super::encoding::*;
 use crate::{Chunk, Op};
 
 /// The canonical section names — exported so the writer can use them.
 pub const COMPILATION_ORDER_SECTION_NAME: &str = "metadata.code.compilation_order";
-pub const BRANCH_HINT_SECTION_NAME:       &str = "metadata.code.branch_hint";
-pub const INLINING_SECTION_NAME:          &str = "metadata.code.inlining";
+pub const BRANCH_HINT_SECTION_NAME: &str = "metadata.code.branch_hint";
+pub const INLINING_SECTION_NAME: &str = "metadata.code.inlining";
 
 /// Produce the payload of the `metadata.code.compilation_order` custom
 /// section. Returns `None` when there are no hints to emit (allowing the
@@ -71,7 +71,9 @@ pub fn encode_compilation_order_payload(
     chunks: &[Chunk],
     rt_imports_len: usize,
 ) -> Option<Vec<u8>> {
-    if chunks.is_empty() { return None; }
+    if chunks.is_empty() {
+        return None;
+    }
 
     let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let func_base = host_imports_len + rt_imports_len;
@@ -89,13 +91,15 @@ pub fn encode_compilation_order_payload(
             hints.push((func_idx, 0));
         }
     }
-    if hints.is_empty() { return None; }
+    if hints.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::new();
     write_leb128_u32(&mut out, hints.len() as u32);
     for (func_idx, priority) in hints {
         write_leb128_u32(&mut out, func_idx);
-        write_leb128_u32(&mut out, 0);             // function-level hint (offset 0)
+        write_leb128_u32(&mut out, 0); // function-level hint (offset 0)
         // hint payload: one u32 (priority). length is LEB so max ~5 bytes.
         let mut payload = Vec::new();
         write_leb128_u32(&mut payload, priority);
@@ -110,10 +114,7 @@ pub fn encode_compilation_order_payload(
 /// The section must appear **before the code section** in the binary
 /// (spec requirement). The caller (`wasm/mod.rs`) is responsible for
 /// emitting this section at the correct position.
-pub fn encode_branch_hint_payload(
-    chunks: &[Chunk],
-    rt_imports_len: usize,
-) -> Option<Vec<u8>> {
+pub fn encode_branch_hint_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>> {
     let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let func_base = host_imports_len + rt_imports_len;
 
@@ -128,7 +129,9 @@ pub fn encode_branch_hint_payload(
             per_func.push(((func_base + ci) as u32, hints));
         }
     }
-    if per_func.is_empty() { return None; }
+    if per_func.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::new();
     write_leb128_u32(&mut out, per_func.len() as u32);
@@ -137,7 +140,7 @@ pub fn encode_branch_hint_payload(
         write_leb128_u32(&mut out, hints.len() as u32);
         for (offset, hint_byte) in hints {
             write_leb128_u32(&mut out, offset);
-            write_leb128_u32(&mut out, 1);   // hint length = 1 byte
+            write_leb128_u32(&mut out, 1); // hint length = 1 byte
             out.push(hint_byte);
         }
     }
@@ -147,10 +150,7 @@ pub fn encode_branch_hint_payload(
 /// Encode `metadata.code.inlining`. Mark **leaf functions** (no outgoing
 /// `CALL`/`CALL_REF`/`CALL_INDIRECT`) as "inline eligible" so engines
 /// can inline them aggressively. Priority 0 = strongly inline.
-pub fn encode_inlining_payload(
-    chunks: &[Chunk],
-    rt_imports_len: usize,
-) -> Option<Vec<u8>> {
+pub fn encode_inlining_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>> {
     let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let func_base = host_imports_len + rt_imports_len;
 
@@ -160,14 +160,16 @@ pub fn encode_inlining_payload(
             hints.push(((func_base + ci) as u32, 0));
         }
     }
-    if hints.is_empty() { return None; }
+    if hints.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::new();
     write_leb128_u32(&mut out, hints.len() as u32);
     for (fn_idx, priority) in hints {
         write_leb128_u32(&mut out, fn_idx);
-        write_leb128_u32(&mut out, 0);       // function-level hint
-        write_leb128_u32(&mut out, 1);       // 1 byte payload
+        write_leb128_u32(&mut out, 0); // function-level hint
+        write_leb128_u32(&mut out, 1); // 1 byte payload
         out.push(priority);
     }
     Some(out)
@@ -195,14 +197,25 @@ fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
         let sub = code[ip + 1];
         let op = match Op::decode(prefix, sub) {
             Some(op) => op,
-            None => { ip += 2; continue; }
+            None => {
+                ip += 2;
+                continue;
+            }
         };
         ip += 2;
 
-        if op == Op::LOOP       { in_loop    += 1; }
-        if op == Op::TRY_START  { in_handler += 1; }
-        if op == Op::END && in_loop > 0    { in_loop    -= 1; }
-        if op == Op::TRY_END   && in_handler > 0 { in_handler -= 1; }
+        if op == Op::LOOP {
+            in_loop += 1;
+        }
+        if op == Op::TRY_START {
+            in_handler += 1;
+        }
+        if op == Op::END && in_loop > 0 {
+            in_loop -= 1;
+        }
+        if op == Op::TRY_END && in_handler > 0 {
+            in_handler -= 1;
+        }
 
         let is_cond_branch = op == Op::BR_IF;
 
@@ -233,7 +246,10 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
         let sub = code[ip + 1];
         let op = match Op::decode(prefix, sub) {
             Some(op) => op,
-            None => { ip += 2; continue; }
+            None => {
+                ip += 2;
+                continue;
+            }
         };
         ip += 2;
         if op == Op::CALL
@@ -242,7 +258,8 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
             || op == Op::CALL_IMPORT
             || op == Op::RETURN_CALL
             || op == Op::RETURN_CALL_REF
-            || op == Op::RETURN_CALL_INDIRECT {
+            || op == Op::RETURN_CALL_INDIRECT
+        {
             return false;
         }
         ip += op.operand_format().size_in(code, ip);

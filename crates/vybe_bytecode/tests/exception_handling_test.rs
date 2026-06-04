@@ -5,9 +5,9 @@
 //!   ip after operands = start of body.
 //!   catch_ip = ip + offset  (big-endian u16 offset from body start).
 
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::value::Value;
 use std::sync::Arc;
+use vybe_bytecode::value::Value;
+use vybe_bytecode::{Chunk, Op, VM};
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     run_locals(0, emit)
@@ -30,10 +30,10 @@ fn run_err(emit: impl FnOnce(&mut Chunk)) -> String {
 
 /// Emit TRY_TABLE with one catch-all handler pointing `body_bytes` ahead.
 fn emit_try_table_catch_all(c: &mut Chunk, body_bytes: u16) {
-    c.emit_op(Op::TRY_TABLE, 0);          // 2 bytes
-    c.emit(1, 0);                          // handler_count = 1
-    c.emit(0, 0);                          // tag = 0 (catch-all)
-    c.emit((body_bytes >> 8) as u8, 0);   // offset hi
+    c.emit_op(Op::TRY_TABLE, 0); // 2 bytes
+    c.emit(1, 0); // handler_count = 1
+    c.emit(0, 0); // tag = 0 (catch-all)
+    c.emit((body_bytes >> 8) as u8, 0); // offset hi
     c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
 }
 
@@ -71,14 +71,14 @@ fn try_table_catch_all_intercepts_throw() {
     //   [DROP: 2][CONST 99: 4]
     //   [RETURN: 2] ← added by run()
     let r = run(|c| {
-        let err  = c.add_constant(Value::String(Arc::from("oops")));
-        let ok   = c.add_constant(Value::I32(99));
+        let err = c.add_constant(Value::String(Arc::from("oops")));
+        let ok = c.add_constant(Value::I32(99));
 
         emit_try_table_catch_all(c, 6); // body is 6 bytes
 
         // body: push + throw (6 bytes)
         c.emit_op_u16(Op::CONST, err, 0); // 4
-        c.emit_op(Op::THROW, 0);           // 2
+        c.emit_op(Op::THROW, 0); // 2
 
         // catch handler: drop thrown value, push result
         c.emit_op(Op::DROP, 0);
@@ -126,7 +126,7 @@ fn try_table_no_throw_falls_through() {
 fn throw_ref_caught_by_try_table() {
     let r = run(|c| {
         let err = c.add_constant(Value::I32(55));
-        let ok  = c.add_constant(Value::I32(55));
+        let ok = c.add_constant(Value::I32(55));
 
         emit_try_table_catch_all(c, 6);
 
@@ -150,10 +150,10 @@ fn throw_ref_caught_by_try_table() {
 /// `body_bytes` = byte count of the body following operands.
 fn emit_try_table_typed(c: &mut Chunk, tag_byte: u8, body_bytes: u16) {
     c.emit_op(Op::TRY_TABLE, 0);
-    c.emit(1, 0);                              // handler_count
-    c.emit(tag_byte, 0);                       // tag
-    c.emit((body_bytes >> 8) as u8, 0);        // offset hi
-    c.emit((body_bytes & 0xFF) as u8, 0);      // offset lo
+    c.emit(1, 0); // handler_count
+    c.emit(tag_byte, 0); // tag
+    c.emit((body_bytes >> 8) as u8, 0); // offset hi
+    c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
 }
 
 #[test]
@@ -161,10 +161,10 @@ fn typed_catch_matches_when_exception_type_matches() {
     // Register tag "ValueError" = tag index 1 (0 is catch-all sentinel).
     // Throw a string starting with "ValueError:" — typed handler should catch it.
     let r = run(|c| {
-        let tag_idx  = c.add_exception_tag("ValueError");
-        let err_str  = c.add_constant(Value::String(Arc::from("ValueError: bad")));
-        let caught   = c.add_constant(Value::I32(1));
-        let missed   = c.add_constant(Value::I32(0));
+        let tag_idx = c.add_exception_tag("ValueError");
+        let err_str = c.add_constant(Value::String(Arc::from("ValueError: bad")));
+        let caught = c.add_constant(Value::I32(1));
+        let missed = c.add_constant(Value::I32(0));
 
         // body = CONST(err_str)[4] + THROW[2] = 6 bytes
         emit_try_table_typed(c, tag_idx, 6);
@@ -200,7 +200,10 @@ fn typed_catch_does_not_match_different_exception_type() {
     chunk.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
-    assert!(err.contains("ValueError"), "uncaught error should contain the thrown value");
+    assert!(
+        err.contains("ValueError"),
+        "uncaught error should contain the thrown value"
+    );
 }
 
 #[test]
@@ -208,10 +211,10 @@ fn typed_catch_with_object_exception_type() {
     // Throw an object with __exception_type = "RangeError".
     // A handler tagged "RangeError" should catch it.
     let r = run_locals(1, |c| {
-        let tag_idx  = c.add_exception_tag("RangeError");
+        let tag_idx = c.add_exception_tag("RangeError");
         let type_key = c.add_constant(Value::String(Arc::from("__exception_type")));
         let type_val = c.add_constant(Value::String(Arc::from("RangeError")));
-        let caught   = c.add_constant(Value::I32(42));
+        let caught = c.add_constant(Value::I32(42));
 
         // Build an object with __exception_type = "RangeError"
         // body: STRUCT_NEW(4)+LOCAL_SET(4)+DROP(2)+LOCAL_GET(4)+CONST(4)+STRUCT_SET(4)+LOCAL_GET(4)+THROW(2) = 28
@@ -219,9 +222,9 @@ fn typed_catch_with_object_exception_type() {
         emit_try_table_typed(c, tag_idx, body_bytes);
 
         // Build exception object
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);   // [obj]
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0);     // store (peek)
-        c.emit_op(Op::DROP, 0);                  // drop stack copy
+        c.emit_op_u16(Op::STRUCT_NEW, 0, 0); // [obj]
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0); // store (peek)
+        c.emit_op(Op::DROP, 0); // drop stack copy
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, type_val, 0);
         c.emit_op_u16(Op::STRUCT_SET, type_key, 0);

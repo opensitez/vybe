@@ -2,10 +2,10 @@
 //! local.get (0x20), local.set (0x21), local.tee (0x22),
 //! global.get (0x23), global.set (0x24).
 
-use vybe_bytecode::{Chunk, Op, VM};
+use std::sync::Arc;
 use vybe_bytecode::chunk::GlobalInit;
 use vybe_bytecode::value::Value;
-use std::sync::Arc;
+use vybe_bytecode::{Chunk, Op, VM};
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut c = Chunk::new("<script>");
@@ -15,7 +15,10 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     VM::new().run(vec![c]).expect("run failed")
 }
 
-fn push_i32(c: &mut Chunk, v: i32) { let k = c.add_constant(Value::I32(v)); c.emit_op_u16(Op::CONST, k, 0); }
+fn push_i32(c: &mut Chunk, v: i32) {
+    let k = c.add_constant(Value::I32(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
 
 // ── local.get / local.set ────────────────────────────────────────────────
 
@@ -85,7 +88,7 @@ fn local_tee_slot_holds_value_after_pop() {
         c.emit_op(Op::DROP, 0);
         push_i32(c, 55);
         c.emit_op_u16(Op::LOCAL_TEE, 0, 0);
-        c.emit_op(Op::DROP, 0);          // drop the stack copy
+        c.emit_op(Op::DROP, 0); // drop the stack copy
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // retrieve from slot
     });
     assert_eq!(r.as_i32(), 55);

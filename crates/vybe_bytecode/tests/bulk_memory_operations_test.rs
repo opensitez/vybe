@@ -86,9 +86,9 @@ fn memory_copy_non_overlapping() {
         push_i32(c, 4);
         c.emit_op(Op::MEMORY_FILL, 0);
         // Copy to dst [0..4]
-        push_i32(c, 0);  // dst
+        push_i32(c, 0); // dst
         push_i32(c, 20); // src
-        push_i32(c, 4);  // count
+        push_i32(c, 4); // count
         c.emit_op(Op::MEMORY_COPY, 0);
     });
     for addr in 0..4 {
@@ -121,9 +121,9 @@ fn memory_copy_overlapping_forward() {
         push_i32(c, 0x77);
         push_i32(c, 4);
         c.emit_op(Op::MEMORY_FILL, 0);
-        push_i32(c, 2);  // dst
-        push_i32(c, 0);  // src
-        push_i32(c, 4);  // count
+        push_i32(c, 2); // dst
+        push_i32(c, 0); // src
+        push_i32(c, 4); // count
         c.emit_op(Op::MEMORY_COPY, 0);
     });
     assert_eq!(read_byte(&vm, 2), 0x77);
@@ -179,7 +179,8 @@ fn table_copy_overlapping_backward() {
     push_i32(&mut chunk, 4); // count
     chunk.emit_op_u8(Op::TABLE_COPY, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
-    vm.run(vec![chunk]).expect("table.copy overlapping should not trap");
+    vm.run(vec![chunk])
+        .expect("table.copy overlapping should not trap");
 
     assert_eq!(vm.func_table[1].as_i32(), 0);
     assert_eq!(vm.func_table[2].as_i32(), 1);

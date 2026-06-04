@@ -10,8 +10,8 @@
 //!
 //! See `esmhostplan.md` at the project root for the full migration plan.
 
-use std::collections::{BTreeMap, HashMap};
 use crate::value::Value;
+use std::collections::{BTreeMap, HashMap};
 
 /// A registered module — Synthetic (Rust-backed), Wasm (loaded `.wasm`),
 /// or Adapter (source-language file re-exporting from Synthetic modules).

@@ -6,12 +6,12 @@ use super::opcode_category;
 
 impl Op {
     // Struct ops (0x00..=0x05)
-    pub const STRUCT_NEW: Op         = Op::new(0xFB, 0x00);
+    pub const STRUCT_NEW: Op = Op::new(0xFB, 0x00);
     pub const STRUCT_NEW_DEFAULT: Op = Op::new(0xFB, 0x01);
-    pub const STRUCT_GET: Op         = Op::new(0xFB, 0x02);
-    pub const STRUCT_GET_S: Op       = Op::new(0xFB, 0x03);
-    pub const STRUCT_GET_U: Op       = Op::new(0xFB, 0x04);
-    pub const STRUCT_SET: Op         = Op::new(0xFB, 0x05);
+    pub const STRUCT_GET: Op = Op::new(0xFB, 0x02);
+    pub const STRUCT_GET_S: Op = Op::new(0xFB, 0x03);
+    pub const STRUCT_GET_U: Op = Op::new(0xFB, 0x04);
+    pub const STRUCT_SET: Op = Op::new(0xFB, 0x05);
     // Array ops (0x06..=0x13)
     //
     // Spec splits array construction three ways:
@@ -24,38 +24,38 @@ impl Op {
     // The previous `Op::ARRAY_NEW` constant was at 0x06 but semantically
     // performed 0x08 and was named "array.new_fixed" in the category —
     // double-wrong. Fixed by moving to 0x08 and renaming the constant.
-    pub const ARRAY_NEW: Op          = Op::new(0xFB, 0x06);
-    pub const ARRAY_NEW_DEFAULT: Op  = Op::new(0xFB, 0x07);
-    pub const ARRAY_NEW_FIXED: Op    = Op::new(0xFB, 0x08);
-    pub const ARRAY_NEW_DATA: Op     = Op::new(0xFB, 0x09);
-    pub const ARRAY_NEW_ELEM: Op     = Op::new(0xFB, 0x0A);
-    pub const ARRAY_GET: Op          = Op::new(0xFB, 0x0B);
-    pub const ARRAY_GET_S: Op        = Op::new(0xFB, 0x0C);
-    pub const ARRAY_GET_U: Op        = Op::new(0xFB, 0x0D);
-    pub const ARRAY_SET: Op          = Op::new(0xFB, 0x0E);
-    pub const ARRAY_LENGTH: Op       = Op::new(0xFB, 0x0F);
-    pub const ARRAY_FILL: Op         = Op::new(0xFB, 0x10);
-    pub const ARRAY_COPY: Op         = Op::new(0xFB, 0x11);
-    pub const ARRAY_INIT_DATA: Op    = Op::new(0xFB, 0x12);
-    pub const ARRAY_INIT_ELEM: Op    = Op::new(0xFB, 0x13);
+    pub const ARRAY_NEW: Op = Op::new(0xFB, 0x06);
+    pub const ARRAY_NEW_DEFAULT: Op = Op::new(0xFB, 0x07);
+    pub const ARRAY_NEW_FIXED: Op = Op::new(0xFB, 0x08);
+    pub const ARRAY_NEW_DATA: Op = Op::new(0xFB, 0x09);
+    pub const ARRAY_NEW_ELEM: Op = Op::new(0xFB, 0x0A);
+    pub const ARRAY_GET: Op = Op::new(0xFB, 0x0B);
+    pub const ARRAY_GET_S: Op = Op::new(0xFB, 0x0C);
+    pub const ARRAY_GET_U: Op = Op::new(0xFB, 0x0D);
+    pub const ARRAY_SET: Op = Op::new(0xFB, 0x0E);
+    pub const ARRAY_LENGTH: Op = Op::new(0xFB, 0x0F);
+    pub const ARRAY_FILL: Op = Op::new(0xFB, 0x10);
+    pub const ARRAY_COPY: Op = Op::new(0xFB, 0x11);
+    pub const ARRAY_INIT_DATA: Op = Op::new(0xFB, 0x12);
+    pub const ARRAY_INIT_ELEM: Op = Op::new(0xFB, 0x13);
     // Reference tests / casts (0x14..=0x17)
-    pub const REF_TEST: Op           = Op::new(0xFB, 0x14);
-    pub const REF_TEST_NULL: Op      = Op::new(0xFB, 0x15);
-    pub const REF_CAST: Op           = Op::new(0xFB, 0x16);
-    pub const REF_CAST_NULL: Op      = Op::new(0xFB, 0x17);
-    pub const BR_ON_CAST: Op         = Op::new(0xFB, 0x18);
-    pub const BR_ON_CAST_FAIL: Op    = Op::new(0xFB, 0x19);
+    pub const REF_TEST: Op = Op::new(0xFB, 0x14);
+    pub const REF_TEST_NULL: Op = Op::new(0xFB, 0x15);
+    pub const REF_CAST: Op = Op::new(0xFB, 0x16);
+    pub const REF_CAST_NULL: Op = Op::new(0xFB, 0x17);
+    pub const BR_ON_CAST: Op = Op::new(0xFB, 0x18);
+    pub const BR_ON_CAST_FAIL: Op = Op::new(0xFB, 0x19);
     // Extern <-> any conversion (0x1A, 0x1B)
     pub const ANY_CONVERT_EXTERN: Op = Op::new(0xFB, 0x1A);
     pub const EXTERN_CONVERT_ANY: Op = Op::new(0xFB, 0x1B);
     // i31 ops (0x1C..=0x1E)
-    pub const I31_NEW: Op            = Op::new(0xFB, 0x1C);
-    pub const I31_GET_S: Op          = Op::new(0xFB, 0x1D);
-    pub const I31_GET_U: Op          = Op::new(0xFB, 0x1E);
+    pub const I31_NEW: Op = Op::new(0xFB, 0x1C);
+    pub const I31_GET_S: Op = Op::new(0xFB, 0x1D);
+    pub const I31_GET_U: Op = Op::new(0xFB, 0x1E);
     // Custom Descriptors proposal (extension, post-MVP).
-    pub const STRUCT_NEW_DESC: Op        = Op::new(0xFB, 0x20); // struct.new_desc $typeidx
+    pub const STRUCT_NEW_DESC: Op = Op::new(0xFB, 0x20); // struct.new_desc $typeidx
     pub const STRUCT_NEW_DEFAULT_DESC: Op = Op::new(0xFB, 0x21); // struct.new_default_desc $typeidx
-    pub const REF_GET_DESC: Op           = Op::new(0xFB, 0x22); // ref.get_desc $typeidx
+    pub const REF_GET_DESC: Op = Op::new(0xFB, 0x22); // ref.get_desc $typeidx
 }
 
 opcode_category! {

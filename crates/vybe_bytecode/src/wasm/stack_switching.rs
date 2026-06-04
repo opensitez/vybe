@@ -50,16 +50,22 @@
 use crate::Chunk;
 
 /// Reference-types declares no globals.
-pub fn declare_imports() -> &'static [(&'static str, &'static str)] { &[] }
-pub fn declare_globals() -> &'static [(&'static str, &'static str)] { &[] }
-pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec::new() }
+pub fn declare_imports() -> &'static [(&'static str, &'static str)] {
+    &[]
+}
+pub fn declare_globals() -> &'static [(&'static str, &'static str)] {
+    &[]
+}
+pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
+    Vec::new()
+}
 
 // ── Binary encoding constants ───────────────────────────────────────
 
 pub const CONT_TYPE_PREFIX: u8 = 0x5D; // (cont $ft) in the type section
-pub const OP_CONT_NEW: u8      = 0xE0;
-pub const OP_CONT_BIND: u8     = 0xE1;
-pub const OP_SUSPEND: u8       = 0xE2;
-pub const OP_RESUME: u8        = 0xE3;
-pub const OP_RESUME_THROW: u8  = 0xE4;
-pub const OP_SWITCH: u8        = 0xE5;
+pub const OP_CONT_NEW: u8 = 0xE0;
+pub const OP_CONT_BIND: u8 = 0xE1;
+pub const OP_SUSPEND: u8 = 0xE2;
+pub const OP_RESUME: u8 = 0xE3;
+pub const OP_RESUME_THROW: u8 = 0xE4;
+pub const OP_SWITCH: u8 = 0xE5;

@@ -59,4 +59,6 @@ pub const IMPORTS: &[(&str, &str)] = &[];
 /// No globals either.
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];
 
-pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec::new() }
+pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
+    Vec::new()
+}

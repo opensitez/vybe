@@ -1,8 +1,8 @@
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use vybe_bytecode::value::{Object, ObjectKind, Function};
-use std::sync::Arc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
+use vybe_bytecode::value::{Function, Object, ObjectKind};
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
 // Helpers
@@ -10,7 +10,12 @@ use std::collections::HashMap;
 
 fn assert_f64(val: &Value, expected: f64) {
     match val {
-        Value::F64(v) => assert!((v - expected).abs() < 1e-10, "Expected F64({}), got F64({})", expected, v),
+        Value::F64(v) => assert!(
+            (v - expected).abs() < 1e-10,
+            "Expected F64({}), got F64({})",
+            expected,
+            v
+        ),
         _ => panic!("Expected F64({}), got {:?}", expected, val),
     }
 }
@@ -24,7 +29,13 @@ fn assert_i32(val: &Value, expected: i32) {
 
 fn assert_string(val: &Value, expected: &str) {
     match val {
-        Value::String(s) => assert_eq!(s.as_ref(), expected, "Expected String({:?}), got String({:?})", expected, s.as_ref()),
+        Value::String(s) => assert_eq!(
+            s.as_ref(),
+            expected,
+            "Expected String({:?}), got String({:?})",
+            expected,
+            s.as_ref()
+        ),
         _ => panic!("Expected String({:?}), got {:?}", expected, val),
     }
 }
@@ -46,10 +57,16 @@ fn host_call_zero_args() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "noop", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "noop",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -68,10 +85,16 @@ fn host_call_one_arg() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "one", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "one",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -94,10 +117,16 @@ fn host_call_three_args_order() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "three", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "three",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -123,9 +152,11 @@ fn host_call_three_args_order() {
 #[test]
 fn host_return_value_on_stack() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "answer", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::F64(99.0)
-    }));
+    vm.register_host_fn(
+        "test",
+        "answer",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::F64(99.0)),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -141,9 +172,11 @@ fn host_return_value_on_stack() {
 #[test]
 fn host_return_value_in_operation() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "five", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::F64(5.0)
-    }));
+    vm.register_host_fn(
+        "test",
+        "five",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::F64(5.0)),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -165,10 +198,16 @@ fn host_modifies_external_state() {
     let cnt = counter.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "increment", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        *cnt.lock().unwrap() += 1;
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "increment",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+                *cnt.lock().unwrap() += 1;
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -188,15 +227,27 @@ fn host_modifies_external_state() {
 #[test]
 fn multiple_host_fns_correct_dispatch() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "alpha", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::String(Arc::from("alpha"))
-    }));
-    vm.register_host_fn("test", "beta", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::String(Arc::from("beta"))
-    }));
-    vm.register_host_fn("test", "gamma", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::String(Arc::from("gamma"))
-    }));
+    vm.register_host_fn(
+        "test",
+        "alpha",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            Value::String(Arc::from("alpha"))
+        }),
+    );
+    vm.register_host_fn(
+        "test",
+        "beta",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            Value::String(Arc::from("beta"))
+        }),
+    );
+    vm.register_host_fn(
+        "test",
+        "gamma",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            Value::String(Arc::from("gamma"))
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -215,10 +266,16 @@ fn host_receives_string_args() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "greet", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "greet",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -244,10 +301,16 @@ fn host_receives_object_args() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "take_obj", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "take_obj",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -280,10 +343,16 @@ fn host_receives_mixed_types() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "mixed", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "mixed",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -320,18 +389,22 @@ fn host_receives_mixed_types() {
 #[test]
 fn vm_object_to_host_read_properties() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "read_obj", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        match &args[0] {
-            Value::Object(obj) => {
-                let o = obj.lock().unwrap();
-                let _name = o.properties.get("name").cloned().unwrap_or(Value::Null);
-                let age = o.properties.get("age").cloned().unwrap_or(Value::Null);
-                // Return age as a check value
-                age
+    vm.register_host_fn(
+        "test",
+        "read_obj",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            match &args[0] {
+                Value::Object(obj) => {
+                    let o = obj.lock().unwrap();
+                    let _name = o.properties.get("name").cloned().unwrap_or(Value::Null);
+                    let age = o.properties.get("age").cloned().unwrap_or(Value::Null);
+                    // Return age as a check value
+                    age
+                }
+                _ => Value::Null,
             }
-            _ => Value::Null,
-        }
-    }));
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -357,12 +430,16 @@ fn vm_object_to_host_read_properties() {
 #[test]
 fn host_creates_object_vm_reads() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "make_obj", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        let mut obj = Object::new();
-        obj.set("color".to_string(), Value::String(Arc::from("blue")));
-        obj.set("size".to_string(), Value::I32(42));
-        Value::Object(Arc::new(std::sync::Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "test",
+        "make_obj",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            let mut obj = Object::new();
+            obj.set("color".to_string(), Value::String(Arc::from("blue")));
+            obj.set("size".to_string(), Value::I32(42));
+            Value::Object(Arc::new(std::sync::Mutex::new(obj)))
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -380,13 +457,20 @@ fn host_creates_object_vm_reads() {
 #[test]
 fn host_nested_object_vm_navigates() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "nested", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        let mut inner = Object::new();
-        inner.set("value".to_string(), Value::I32(777));
-        let mut outer = Object::new();
-        outer.set("child".to_string(), Value::Object(Arc::new(std::sync::Mutex::new(inner))));
-        Value::Object(Arc::new(std::sync::Mutex::new(outer)))
-    }));
+    vm.register_host_fn(
+        "test",
+        "nested",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            let mut inner = Object::new();
+            inner.set("value".to_string(), Value::I32(777));
+            let mut outer = Object::new();
+            outer.set(
+                "child".to_string(),
+                Value::Object(Arc::new(std::sync::Mutex::new(inner))),
+            );
+            Value::Object(Arc::new(std::sync::Mutex::new(outer)))
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -409,10 +493,16 @@ fn vm_modifies_object_host_sees() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "check", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "check",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 2; // local 0 = script, local 1 = obj
@@ -455,12 +545,16 @@ fn vm_modifies_object_host_sees() {
 #[test]
 fn host_modifies_object_vm_sees() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "mutate", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        if let Value::Object(obj) = &args[0] {
-            obj.lock().unwrap().set("y".to_string(), Value::I32(999));
-        }
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "mutate",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            if let Value::Object(obj) = &args[0] {
+                obj.lock().unwrap().set("y".to_string(), Value::I32(999));
+            }
+            Value::Null
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 2; // local 0 = script, local 1 = obj
@@ -497,10 +591,16 @@ fn object_with_array_property_host_reads() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "read_arr", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "read_arr",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -561,20 +661,28 @@ fn host_returns_object_with_function_vm_calls() {
     let mut vm = VM::new();
     // Host fn returns an object with a "compute" property that is a host function
     // We'll use a second host fn for the compute
-    vm.register_host_fn("test", "compute_impl", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        // Returns arg * 2
-        match &args[0] {
-            Value::I32(n) => Value::I32(n * 2),
-            _ => Value::Null,
-        }
-    }));
-    vm.register_host_fn("test", "make_service", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        // Returns object — but we can't easily embed HostFunction from here
-        // because we don't know the index. Return a plain object.
-        let mut obj = Object::new();
-        obj.set("name".to_string(), Value::String(Arc::from("service")));
-        Value::Object(Arc::new(std::sync::Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "test",
+        "compute_impl",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            // Returns arg * 2
+            match &args[0] {
+                Value::I32(n) => Value::I32(n * 2),
+                _ => Value::Null,
+            }
+        }),
+    );
+    vm.register_host_fn(
+        "test",
+        "make_service",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            // Returns object — but we can't easily embed HostFunction from here
+            // because we don't know the index. Return a plain object.
+            let mut obj = Object::new();
+            obj.set("name".to_string(), Value::String(Arc::from("service")));
+            Value::Object(Arc::new(std::sync::Mutex::new(obj)))
+        }),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -598,10 +706,16 @@ fn host_receives_array_reads_elements() {
     let recv = received.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "take_arr", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *recv.lock().unwrap() = args.to_vec();
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "take_arr",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::Null
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -640,18 +754,22 @@ fn host_receives_array_reads_elements() {
 #[test]
 fn vm_array_to_host_returns_length() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "arr_len", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        match &args[0] {
-            Value::Object(obj) => {
-                let o = obj.lock().unwrap();
-                match &o.kind {
-                    ObjectKind::Array(elems) => Value::I32(elems.len() as i32),
-                    _ => Value::I32(-1),
+    vm.register_host_fn(
+        "test",
+        "arr_len",
+        Box::new(
+            |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| match &args[0] {
+                Value::Object(obj) => {
+                    let o = obj.lock().unwrap();
+                    match &o.kind {
+                        ObjectKind::Array(elems) => Value::I32(elems.len() as i32),
+                        _ => Value::I32(-1),
+                    }
                 }
-            }
-            _ => Value::I32(-1),
-        }
-    }));
+                _ => Value::I32(-1),
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -682,13 +800,25 @@ fn roundtrip_object_through_host() {
     let store_get = store.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "store_obj", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *store_put.lock().unwrap() = Some(args[0].clone());
-        Value::Null
-    }));
-    vm.register_host_fn("test", "load_obj", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        store_get.lock().unwrap().clone().unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "test",
+        "store_obj",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *store_put.lock().unwrap() = Some(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
+    vm.register_host_fn(
+        "test",
+        "load_obj",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+                store_get.lock().unwrap().clone().unwrap_or(Value::Null)
+            },
+        ),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -748,7 +878,8 @@ fn invoke_chunk_function_returns_value() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_val, &[]).unwrap();
@@ -784,10 +915,13 @@ fn invoke_with_args_as_locals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
-    let result = vm.invoke(&func_val, &[Value::F64(3.0), Value::F64(7.0)]).unwrap();
+    let result = vm
+        .invoke(&func_val, &[Value::F64(3.0), Value::F64(7.0)])
+        .unwrap();
     assert_f64(&result, 10.0);
 }
 
@@ -821,7 +955,8 @@ fn invoke_clears_stack_between_calls() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[Value::F64(5.0)]).unwrap();
@@ -870,7 +1005,8 @@ fn invoke_preserves_globals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[]).unwrap();
@@ -885,12 +1021,16 @@ fn invoke_preserves_globals() {
 #[test]
 fn invoke_function_calls_host() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "square", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        match &args[0] {
-            Value::F64(n) => Value::F64(n * n),
-            _ => Value::Null,
-        }
-    }));
+    vm.register_host_fn(
+        "test",
+        "square",
+        Box::new(
+            |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| match &args[0] {
+                Value::F64(n) => Value::F64(n * n),
+                _ => Value::Null,
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -920,7 +1060,8 @@ fn invoke_function_calls_host() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_val, &[Value::F64(7.0)]).unwrap();
@@ -970,7 +1111,8 @@ fn invoke_modifies_global() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let read_fn = Value::Object(Arc::new(std::sync::Mutex::new(Object {
@@ -981,7 +1123,8 @@ fn invoke_modifies_global() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     vm.invoke(&set_fn, &[]).unwrap();
@@ -993,12 +1136,16 @@ fn invoke_modifies_global() {
 #[test]
 fn invoke_host_function_object() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        match &args[0] {
-            Value::String(s) => Value::String(Arc::from(format!("Hello, {}!", s))),
-            _ => Value::Null,
-        }
-    }));
+    vm.register_host_fn(
+        "test",
+        "greet",
+        Box::new(
+            |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| match &args[0] {
+                Value::String(s) => Value::String(Arc::from(format!("Hello, {}!", s))),
+                _ => Value::Null,
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -1011,10 +1158,13 @@ fn invoke_host_function_object() {
     let host_fn_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: HashMap::new(),
         kind: ObjectKind::HostFunction(0),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
-    let result = vm.invoke(&host_fn_val, &[Value::String(Arc::from("World"))]).unwrap();
+    let result = vm
+        .invoke(&host_fn_val, &[Value::String(Arc::from("World"))])
+        .unwrap();
     assert_string(&result, "Hello, World!");
 }
 
@@ -1055,7 +1205,11 @@ fn invoke_closure_with_upvalue() {
     vm.run(vec![main_chunk, closure]).unwrap();
 
     // Retrieve the closure from globals
-    let closure_val = vm.globals.get("closure").cloned().expect("closure global should exist");
+    let closure_val = vm
+        .globals
+        .get("closure")
+        .cloned()
+        .expect("closure global should exist");
 
     let result = vm.invoke(&closure_val, &[Value::I32(23)]).unwrap();
     assert_i32(&result, 123); // 100 + 23
@@ -1098,7 +1252,8 @@ fn invoke_twice_globals_updated() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_val, &[Value::I32(10)]).unwrap();
@@ -1152,7 +1307,8 @@ fn invoke_function_calls_another_vm_function() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&outer_val, &[Value::I32(5)]).unwrap();
@@ -1166,14 +1322,21 @@ fn invoke_function_calls_another_vm_function() {
 // 31. Host fn receives a Function value, stores it; later invoke() calls it
 #[test]
 fn callback_store_and_invoke() {
-    let callback_store: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+    let callback_store: Arc<std::sync::Mutex<Option<Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let store = callback_store.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "register_cb", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *store.lock().unwrap() = Some(args[0].clone());
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "register_cb",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *store.lock().unwrap() = Some(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -1199,7 +1362,11 @@ fn callback_store_and_invoke() {
 
     vm.run(vec![main_chunk, cb]).unwrap();
 
-    let cb_val = callback_store.lock().unwrap().clone().expect("callback should be stored");
+    let cb_val = callback_store
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("callback should be stored");
     let result = vm.invoke(&cb_val, &[Value::I32(42)]).unwrap();
     assert_i32(&result, 142);
 }
@@ -1207,14 +1374,21 @@ fn callback_store_and_invoke() {
 // 32. Host fn receives closure, invoke() with captured state
 #[test]
 fn callback_closure_with_captured_state() {
-    let callback_store: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+    let callback_store: Arc<std::sync::Mutex<Option<Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let store = callback_store.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "register_cb", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *store.lock().unwrap() = Some(args[0].clone());
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "register_cb",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *store.lock().unwrap() = Some(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 2; // local 0 = script, local 1 = captured
@@ -1248,7 +1422,11 @@ fn callback_closure_with_captured_state() {
 
     vm.run(vec![main_chunk, closure]).unwrap();
 
-    let cb_val = callback_store.lock().unwrap().clone().expect("callback should be stored");
+    let cb_val = callback_store
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("callback should be stored");
     let result = vm.invoke(&cb_val, &[Value::I32(7)]).unwrap();
     assert_i32(&result, 507); // 500 + 7
 }
@@ -1256,14 +1434,21 @@ fn callback_closure_with_captured_state() {
 // 33. Host fn receives class method, invoke() with Me arg
 #[test]
 fn callback_method_with_me_arg() {
-    let callback_store: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+    let callback_store: Arc<std::sync::Mutex<Option<Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let store = callback_store.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "register_method", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *store.lock().unwrap() = Some(args[0].clone());
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "register_method",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *store.lock().unwrap() = Some(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -1297,7 +1482,11 @@ fn callback_method_with_me_arg() {
     me_obj.set("value".to_string(), Value::I32(21));
     let me_val = Value::Object(Arc::new(std::sync::Mutex::new(me_obj)));
 
-    let method_val = callback_store.lock().unwrap().clone().expect("method should be stored");
+    let method_val = callback_store
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("method should be stored");
     let result = vm.invoke(&method_val, &[me_val]).unwrap();
     assert_i32(&result, 42); // 21 * 2
 }
@@ -1309,10 +1498,16 @@ fn multiple_callbacks_invoke_correct() {
     let cbs = callbacks.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "register_cb", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        cbs.lock().unwrap().push(args[0].clone());
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "register_cb",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                cbs.lock().unwrap().push(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -1363,14 +1558,21 @@ fn multiple_callbacks_invoke_correct() {
 // 35. Callback modifies global, subsequent code reads updated global
 #[test]
 fn callback_modifies_global_subsequent_reads() {
-    let callback_store: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+    let callback_store: Arc<std::sync::Mutex<Option<Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let store = callback_store.clone();
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "register_cb", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        *store.lock().unwrap() = Some(args[0].clone());
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "test",
+        "register_cb",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                *store.lock().unwrap() = Some(args[0].clone());
+                Value::Null
+            },
+        ),
+    );
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
@@ -1419,7 +1621,8 @@ fn callback_modifies_global_subsequent_reads() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     // Before callback
@@ -1427,7 +1630,11 @@ fn callback_modifies_global_subsequent_reads() {
     assert_string(&r1, "initial");
 
     // Invoke callback
-    let cb_val = callback_store.lock().unwrap().clone().expect("callback stored");
+    let cb_val = callback_store
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("callback stored");
     vm.invoke(&cb_val, &[]).unwrap();
 
     // After callback
@@ -1444,7 +1651,11 @@ fn callback_modifies_global_subsequent_reads() {
 fn call_import_unresolved_index() {
     let mut vm = VM::new();
     // Register one host fn so index 0 exists
-    vm.register_host_fn("test", "exists", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::Null));
+    vm.register_host_fn(
+        "test",
+        "exists",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::Null),
+    );
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
@@ -1461,7 +1672,11 @@ fn call_import_unresolved_index() {
     let result = vm.run(vec![main2]);
     assert!(result.is_err(), "Expected error for unresolved import");
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("Unresolved import"), "Error should mention unresolved import, got: {}", err_msg);
+    assert!(
+        err_msg.contains("Unresolved import"),
+        "Error should mention unresolved import, got: {}",
+        err_msg
+    );
 }
 
 // 37. call_value on non-callable (e.g. number) — error with message
@@ -1480,7 +1695,11 @@ fn call_value_on_number_errors() {
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling a number");
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("not callable"), "Error should say not callable, got: {}", err_msg);
+    assert!(
+        err_msg.contains("not callable"),
+        "Error should say not callable, got: {}",
+        err_msg
+    );
 }
 
 // 38. call_value on Null — error
@@ -1497,7 +1716,11 @@ fn call_value_on_null_errors() {
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling Null");
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("not callable"), "Error should say not callable, got: {}", err_msg);
+    assert!(
+        err_msg.contains("not callable"),
+        "Error should say not callable, got: {}",
+        err_msg
+    );
 }
 
 // 39. call_value on Undefined — error
@@ -1507,14 +1730,21 @@ fn call_value_on_undefined_errors() {
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    { let c = main.add_constant(Value::Undefined); main.emit_op_u16(Op::CONST, c, 0); }
+    {
+        let c = main.add_constant(Value::Undefined);
+        main.emit_op_u16(Op::CONST, c, 0);
+    }
     main.emit_op_u8(Op::CALL, 0, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling Undefined");
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("not callable"), "Error should say not callable, got: {}", err_msg);
+    assert!(
+        err_msg.contains("not callable"),
+        "Error should say not callable, got: {}",
+        err_msg
+    );
 }
 
 // 40. invoke() on non-function — error
@@ -1532,5 +1762,9 @@ fn invoke_on_non_function_errors() {
     let result = vm.invoke(&Value::I32(42), &[]);
     assert!(result.is_err(), "Expected error invoking a number");
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("not callable"), "Error should say not callable, got: {}", err_msg);
+    assert!(
+        err_msg.contains("not callable"),
+        "Error should say not callable, got: {}",
+        err_msg
+    );
 }

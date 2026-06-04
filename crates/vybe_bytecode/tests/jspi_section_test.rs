@@ -2,9 +2,9 @@
 //! `is_async = true` show up in the `vybe.jspi` custom section of the
 //! emitted `.wasm`, and chunks without the flag don't.
 
-use vybe_bytecode::{Chunk, Op};
 use vybe_bytecode::value::Value;
 use vybe_bytecode::wasm::write_wasm;
+use vybe_bytecode::{Chunk, Op};
 
 /// Minimal LEB128-decoding walk of the resulting wasm. Finds the
 /// `vybe.jspi` custom section, returns the decoded
@@ -16,24 +16,32 @@ fn extract_jspi_section(wasm: &[u8]) -> Option<(Vec<u32>, Vec<u32>)> {
     }
     let mut i = 8;
     while i < wasm.len() {
-        let sid = wasm[i]; i += 1;
-        let (sz, read) = read_leb(wasm, i); i += read;
+        let sid = wasm[i];
+        i += 1;
+        let (sz, read) = read_leb(wasm, i);
+        i += read;
         let end = i + sz;
         if sid == 0 {
             // Custom section — name length + name + payload
-            let (nl, r) = read_leb(wasm, i); let mut p = i + r;
-            let name = std::str::from_utf8(&wasm[p..p + nl]).unwrap_or(""); p += nl;
+            let (nl, r) = read_leb(wasm, i);
+            let mut p = i + r;
+            let name = std::str::from_utf8(&wasm[p..p + nl]).unwrap_or("");
+            p += nl;
             if name == "vybe.jspi" {
-                let (pc, r) = read_leb(wasm, p); p += r;
+                let (pc, r) = read_leb(wasm, p);
+                p += r;
                 let mut promising = Vec::with_capacity(pc);
                 for _ in 0..pc {
-                    let (idx, r) = read_leb(wasm, p); p += r;
+                    let (idx, r) = read_leb(wasm, p);
+                    p += r;
                     promising.push(idx as u32);
                 }
-                let (sc, r) = read_leb(wasm, p); p += r;
+                let (sc, r) = read_leb(wasm, p);
+                p += r;
                 let mut suspending = Vec::with_capacity(sc);
                 for _ in 0..sc {
-                    let (idx, r) = read_leb(wasm, p); p += r;
+                    let (idx, r) = read_leb(wasm, p);
+                    p += r;
                     suspending.push(idx as u32);
                 }
                 return Some((promising, suspending));
@@ -45,11 +53,16 @@ fn extract_jspi_section(wasm: &[u8]) -> Option<(Vec<u32>, Vec<u32>)> {
 }
 
 fn read_leb(buf: &[u8], mut i: usize) -> (usize, usize) {
-    let mut v = 0usize; let mut shift = 0; let start = i;
+    let mut v = 0usize;
+    let mut shift = 0;
+    let start = i;
     loop {
-        let b = buf[i]; i += 1;
+        let b = buf[i];
+        i += 1;
         v |= ((b & 0x7f) as usize) << shift;
-        if b & 0x80 == 0 { break; }
+        if b & 0x80 == 0 {
+            break;
+        }
         shift += 7;
     }
     (v, i - start)
@@ -87,8 +100,16 @@ fn jspi_section_lists_async_chunk() {
     let wasm = write_wasm(&[script, async_fn]);
     let (promising, suspending) = extract_jspi_section(&wasm)
         .expect("vybe.jspi section must be present when a chunk is async");
-    assert_eq!(promising.len(), 1, "exactly one promising export expected, got {:?}", promising);
-    assert!(suspending.is_empty(), "no suspending imports expected in this first cut");
+    assert_eq!(
+        promising.len(),
+        1,
+        "exactly one promising export expected, got {:?}",
+        promising
+    );
+    assert!(
+        suspending.is_empty(),
+        "no suspending imports expected in this first cut"
+    );
 }
 
 #[test]
@@ -104,9 +125,16 @@ fn jspi_section_lists_multiple_async_chunks() {
     c.is_async = true;
     c.emit_op(Op::RETURN, 0);
     let wasm = write_wasm(&[script, a, b, c]);
-    let (promising, _) = extract_jspi_section(&wasm)
-        .expect("vybe.jspi section must be present");
-    assert_eq!(promising.len(), 2, "exactly two async chunks expected, got {:?}", promising);
+    let (promising, _) = extract_jspi_section(&wasm).expect("vybe.jspi section must be present");
+    assert_eq!(
+        promising.len(),
+        2,
+        "exactly two async chunks expected, got {:?}",
+        promising
+    );
     // Indices must be strictly increasing (chunk order preserved).
-    assert!(promising[0] < promising[1], "promising indices must come out in chunk order");
+    assert!(
+        promising[0] < promising[1],
+        "promising indices must come out in chunk order"
+    );
 }

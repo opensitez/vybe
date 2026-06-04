@@ -24,25 +24,25 @@ use super::opcode_category;
 
 impl Op {
     // Internal prefix: 0xDD. Sub values map 1:1 to spec sub minus 0x100.
-    pub const I8X16_RELAXED_SWIZZLE: Op               = Op::new(0xDD, 0x00);
-    pub const I32X4_RELAXED_TRUNC_F32X4_S: Op         = Op::new(0xDD, 0x01);
-    pub const I32X4_RELAXED_TRUNC_F32X4_U: Op         = Op::new(0xDD, 0x02);
-    pub const I32X4_RELAXED_TRUNC_F64X2_S_ZERO: Op    = Op::new(0xDD, 0x03);
-    pub const I32X4_RELAXED_TRUNC_F64X2_U_ZERO: Op    = Op::new(0xDD, 0x04);
-    pub const F32X4_RELAXED_MADD: Op                  = Op::new(0xDD, 0x05);
-    pub const F32X4_RELAXED_NMADD: Op                 = Op::new(0xDD, 0x06);
-    pub const F64X2_RELAXED_MADD: Op                  = Op::new(0xDD, 0x07);
-    pub const F64X2_RELAXED_NMADD: Op                 = Op::new(0xDD, 0x08);
-    pub const I8X16_RELAXED_LANESELECT: Op            = Op::new(0xDD, 0x09);
-    pub const I16X8_RELAXED_LANESELECT: Op            = Op::new(0xDD, 0x0A);
-    pub const I32X4_RELAXED_LANESELECT: Op            = Op::new(0xDD, 0x0B);
-    pub const I64X2_RELAXED_LANESELECT: Op            = Op::new(0xDD, 0x0C);
-    pub const F32X4_RELAXED_MIN: Op                   = Op::new(0xDD, 0x0D);
-    pub const F32X4_RELAXED_MAX: Op                   = Op::new(0xDD, 0x0E);
-    pub const F64X2_RELAXED_MIN: Op                   = Op::new(0xDD, 0x0F);
-    pub const F64X2_RELAXED_MAX: Op                   = Op::new(0xDD, 0x10);
-    pub const I16X8_RELAXED_Q15MULR_S: Op             = Op::new(0xDD, 0x11);
-    pub const I16X8_RELAXED_DOT_I8X16_I7X16_S: Op     = Op::new(0xDD, 0x12);
+    pub const I8X16_RELAXED_SWIZZLE: Op = Op::new(0xDD, 0x00);
+    pub const I32X4_RELAXED_TRUNC_F32X4_S: Op = Op::new(0xDD, 0x01);
+    pub const I32X4_RELAXED_TRUNC_F32X4_U: Op = Op::new(0xDD, 0x02);
+    pub const I32X4_RELAXED_TRUNC_F64X2_S_ZERO: Op = Op::new(0xDD, 0x03);
+    pub const I32X4_RELAXED_TRUNC_F64X2_U_ZERO: Op = Op::new(0xDD, 0x04);
+    pub const F32X4_RELAXED_MADD: Op = Op::new(0xDD, 0x05);
+    pub const F32X4_RELAXED_NMADD: Op = Op::new(0xDD, 0x06);
+    pub const F64X2_RELAXED_MADD: Op = Op::new(0xDD, 0x07);
+    pub const F64X2_RELAXED_NMADD: Op = Op::new(0xDD, 0x08);
+    pub const I8X16_RELAXED_LANESELECT: Op = Op::new(0xDD, 0x09);
+    pub const I16X8_RELAXED_LANESELECT: Op = Op::new(0xDD, 0x0A);
+    pub const I32X4_RELAXED_LANESELECT: Op = Op::new(0xDD, 0x0B);
+    pub const I64X2_RELAXED_LANESELECT: Op = Op::new(0xDD, 0x0C);
+    pub const F32X4_RELAXED_MIN: Op = Op::new(0xDD, 0x0D);
+    pub const F32X4_RELAXED_MAX: Op = Op::new(0xDD, 0x0E);
+    pub const F64X2_RELAXED_MIN: Op = Op::new(0xDD, 0x0F);
+    pub const F64X2_RELAXED_MAX: Op = Op::new(0xDD, 0x10);
+    pub const I16X8_RELAXED_Q15MULR_S: Op = Op::new(0xDD, 0x11);
+    pub const I16X8_RELAXED_DOT_I8X16_I7X16_S: Op = Op::new(0xDD, 0x12);
     pub const I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S: Op = Op::new(0xDD, 0x13);
 }
 

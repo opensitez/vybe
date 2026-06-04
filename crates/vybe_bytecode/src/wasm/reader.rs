@@ -1,8 +1,8 @@
 //! WASM binary reader — decodes .wasm files into Chunk arrays.
 
 use super::encoding::*;
-use crate::{Chunk, Op};
 use crate::value::Value;
+use crate::{Chunk, Op};
 use std::sync::Arc;
 
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
@@ -18,8 +18,11 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     let mut code_section: Vec<u8> = Vec::new();
 
     while pos < data.len() {
-        if pos >= data.len() { break; }
-        let section_id = data[pos]; pos += 1;
+        if pos >= data.len() {
+            break;
+        }
+        let section_id = data[pos];
+        pos += 1;
         let (size, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let section_end = (pos + size as usize).min(data.len());
@@ -29,7 +32,7 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
             SECTION_CUSTOM => {
                 // Check if it's our "vybe" custom section
                 let (nlen, nr) = read_leb128_u32(&section_data);
-                if nlen == 4 && section_data.get(nr..nr+4) == Some(b"vybe") {
+                if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"vybe") {
                     custom_data = Some(section_data);
                 }
             }
@@ -52,13 +55,22 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     if code_section.is_empty() {
         return Err("No code section in WASM module".into());
     }
-    decode_standard_wasm(&type_section, &import_section, &func_section, &export_section, &code_section)
+    decode_standard_wasm(
+        &type_section,
+        &import_section,
+        &func_section,
+        &export_section,
+        &code_section,
+    )
 }
 
 /// Decode a standard WASM module (e.g. from Rust/C compiler)
 fn decode_standard_wasm(
-    type_sec: &[u8], import_sec: &[u8], func_sec: &[u8],
-    export_sec: &[u8], code_sec: &[u8],
+    type_sec: &[u8],
+    import_sec: &[u8],
+    func_sec: &[u8],
+    export_sec: &[u8],
+    code_sec: &[u8],
 ) -> Result<Vec<Chunk>, String> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
@@ -101,20 +113,23 @@ fn decode_standard_wasm(
 
         // Get function name from exports
         let func_idx = import_func_count + i;
-        let name = exports.iter()
+        let name = exports
+            .iter()
             .find(|(_, idx)| *idx == func_idx)
             .map(|(n, _)| n.clone())
             .unwrap_or_else(|| format!("func_{}", i));
 
         // Get arity + result arity from the function's type signature.
         let type_idx = func_type_indices.get(i).copied().unwrap_or(func_idx as u32) as usize;
-        let (arity, result_arity) = types.get(type_idx)
+        let (arity, result_arity) = types
+            .get(type_idx)
             .map(|(params, results)| (params.len() as u8, (results.len() as u8).max(1)))
             .unwrap_or((0, 1));
 
         // Translate WASM opcodes to our Chunk format
         let wasm_code = &code_sec[cpos..body_end.saturating_sub(1)]; // -1 for trailing 'end'
-        let mut chunk = translate_wasm_to_chunk(wasm_code, &name, arity, local_count, import_func_count);
+        let mut chunk =
+            translate_wasm_to_chunk(wasm_code, &name, arity, local_count, import_func_count);
         chunk.result_arity = result_arity;
         chunk.emit_op(Op::RETURN, 0);
         chunks.push(chunk);
@@ -135,7 +150,13 @@ fn decode_standard_wasm(
 
 /// Translate WASM opcodes to our internal Chunk format.
 /// Builds a proper constant pool and adjusts local indices.
-fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, _import_count: usize) -> Chunk {
+fn translate_wasm_to_chunk(
+    wasm: &[u8],
+    name: &str,
+    arity: u8,
+    wasm_local_count: u32,
+    _import_count: usize,
+) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
     chunk.local_count = arity as u16 + wasm_local_count as u16;
@@ -144,7 +165,8 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
     let mut label_stack: Vec<()> = Vec::new();
 
     while pos < wasm.len() {
-        let byte = wasm[pos]; pos += 1;
+        let byte = wasm[pos];
+        pos += 1;
 
         match byte {
             0x00 => chunk.emit_op(Op::HALT, 0),
@@ -263,8 +285,14 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x44 => {
                 if pos + 8 <= wasm.len() {
                     let val = f64::from_le_bytes([
-                        wasm[pos], wasm[pos+1], wasm[pos+2], wasm[pos+3],
-                        wasm[pos+4], wasm[pos+5], wasm[pos+6], wasm[pos+7],
+                        wasm[pos],
+                        wasm[pos + 1],
+                        wasm[pos + 2],
+                        wasm[pos + 3],
+                        wasm[pos + 4],
+                        wasm[pos + 5],
+                        wasm[pos + 6],
+                        wasm[pos + 7],
                     ]);
                     pos += 8;
                     let ci = chunk.add_constant(Value::F64(val));
@@ -275,7 +303,12 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             // f32.const
             0x43 => {
                 if pos + 4 <= wasm.len() {
-                    let val = f32::from_le_bytes([wasm[pos], wasm[pos+1], wasm[pos+2], wasm[pos+3]]);
+                    let val = f32::from_le_bytes([
+                        wasm[pos],
+                        wasm[pos + 1],
+                        wasm[pos + 2],
+                        wasm[pos + 3],
+                    ]);
                     pos += 4;
                     let ci = chunk.add_constant(Value::F64(val as f64));
                     chunk.emit_op_u16(Op::CONST, ci, 0);
@@ -374,31 +407,129 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x66 => chunk.emit_op(Op::F64_GE, 0),
 
             // Memory — ALL load/store opcodes
-            0x28 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD, 0); }
-            0x29 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD, 0); }
-            0x2A => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::F32_LOAD, 0); }
-            0x2B => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::F64_LOAD, 0); }
-            0x2C => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD8_S, 0); }
-            0x2D => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD8_U, 0); }
-            0x2E => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD16_S, 0); }
-            0x2F => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD16_U, 0); }
-            0x30 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD8_S, 0); }
-            0x31 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD8_U, 0); }
-            0x32 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD16_S, 0); }
-            0x33 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD16_U, 0); }
-            0x34 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD32_S, 0); }
-            0x35 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_LOAD32_U, 0); }
-            0x36 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_STORE, 0); }
-            0x37 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_STORE, 0); }
-            0x38 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::F32_STORE, 0); }
-            0x39 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::F64_STORE, 0); }
-            0x3A => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_STORE8, 0); }
-            0x3B => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_STORE16, 0); }
-            0x3C => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_STORE8, 0); }
-            0x3D => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_STORE16, 0); }
-            0x3E => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I64_STORE32, 0); }
-            0x3F => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::MEMORY_SIZE, 0); }
-            0x40 => { skip_leb128(wasm, &mut pos); chunk.emit_op(Op::MEMORY_GROW, 0); }
+            0x28 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_LOAD, 0);
+            }
+            0x29 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD, 0);
+            }
+            0x2A => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::F32_LOAD, 0);
+            }
+            0x2B => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::F64_LOAD, 0);
+            }
+            0x2C => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_LOAD8_S, 0);
+            }
+            0x2D => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_LOAD8_U, 0);
+            }
+            0x2E => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_LOAD16_S, 0);
+            }
+            0x2F => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_LOAD16_U, 0);
+            }
+            0x30 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD8_S, 0);
+            }
+            0x31 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD8_U, 0);
+            }
+            0x32 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD16_S, 0);
+            }
+            0x33 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD16_U, 0);
+            }
+            0x34 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD32_S, 0);
+            }
+            0x35 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_LOAD32_U, 0);
+            }
+            0x36 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_STORE, 0);
+            }
+            0x37 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_STORE, 0);
+            }
+            0x38 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::F32_STORE, 0);
+            }
+            0x39 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::F64_STORE, 0);
+            }
+            0x3A => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_STORE8, 0);
+            }
+            0x3B => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I32_STORE16, 0);
+            }
+            0x3C => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_STORE8, 0);
+            }
+            0x3D => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_STORE16, 0);
+            }
+            0x3E => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::I64_STORE32, 0);
+            }
+            0x3F => {
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::MEMORY_SIZE, 0);
+            }
+            0x40 => {
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op(Op::MEMORY_GROW, 0);
+            }
 
             // f32 arithmetic — ALL opcodes
             0x8B => chunk.emit_op(Op::F32_ABS, 0),
@@ -408,10 +539,10 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x8F => chunk.emit_op(Op::F32_TRUNC, 0),
             0x90 => chunk.emit_op(Op::F32_NEAREST, 0),
             0x91 => chunk.emit_op(Op::F32_SQRT, 0),
-            0x92 => chunk.emit_op(Op::F64_ADD, 0),   // f32.add (promoted)
-            0x93 => chunk.emit_op(Op::F64_SUB, 0),   // f32.sub (promoted)
-            0x94 => chunk.emit_op(Op::F64_MUL, 0),   // f32.mul (promoted)
-            0x95 => chunk.emit_op(Op::F64_DIV, 0),   // f32.div (promoted)
+            0x92 => chunk.emit_op(Op::F64_ADD, 0), // f32.add (promoted)
+            0x93 => chunk.emit_op(Op::F64_SUB, 0), // f32.sub (promoted)
+            0x94 => chunk.emit_op(Op::F64_MUL, 0), // f32.mul (promoted)
+            0x95 => chunk.emit_op(Op::F64_DIV, 0), // f32.div (promoted)
             0x96 => chunk.emit_op(Op::F32_MIN, 0),
             0x97 => chunk.emit_op(Op::F32_MAX, 0),
             0x98 => chunk.emit_op(Op::F32_COPYSIGN, 0),
@@ -426,31 +557,31 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x9F => chunk.emit_op(Op::F64_SQRT, 0),
 
             // Conversions (WASM spec §5.3-binary.instructions 0xA7–0xBF)
-            0xA7 => chunk.emit_op(Op::I32_WRAP_I64, 0),         // i32.wrap_i64
-            0xA8 => chunk.emit_op(Op::I32_TRUNC_F32_S, 0),      // i32.trunc_f32_s
-            0xA9 => chunk.emit_op(Op::I32_TRUNC_F32_U, 0),      // i32.trunc_f32_u
-            0xAA => chunk.emit_op(Op::I32_FROM_F64, 0),         // i32.trunc_f64_s
-            0xAB => chunk.emit_op(Op::I32_TRUNC_F64_U, 0),      // i32.trunc_f64_u
-            0xAC => chunk.emit_op(Op::I64_EXTEND_I32_S, 0),     // i64.extend_i32_s
-            0xAD => chunk.emit_op(Op::I64_EXTEND_I32_U, 0),     // i64.extend_i32_u
-            0xAE => chunk.emit_op(Op::I64_TRUNC_F32_S, 0),      // i64.trunc_f32_s
-            0xAF => chunk.emit_op(Op::I64_TRUNC_F32_U, 0),      // i64.trunc_f32_u
-            0xB0 => chunk.emit_op(Op::I64_TRUNC_F64_S, 0),      // i64.trunc_f64_s
-            0xB1 => chunk.emit_op(Op::I64_TRUNC_F64_U, 0),      // i64.trunc_f64_u
-            0xB2 => chunk.emit_op(Op::F32_CONVERT_I32_S, 0),    // f32.convert_i32_s
-            0xB3 => chunk.emit_op(Op::F32_CONVERT_I32_U, 0),    // f32.convert_i32_u
-            0xB4 => chunk.emit_op(Op::F32_CONVERT_I64_S, 0),    // f32.convert_i64_s
-            0xB5 => chunk.emit_op(Op::F32_CONVERT_I64_U, 0),    // f32.convert_i64_u
-            0xB6 => chunk.emit_op(Op::F32_DEMOTE_F64, 0),       // f32.demote_f64
-            0xB7 => chunk.emit_op(Op::F64_FROM_I32, 0),         // f64.convert_i32_s
-            0xB8 => chunk.emit_op(Op::F64_CONVERT_I32_U, 0),    // f64.convert_i32_u
-            0xB9 => chunk.emit_op(Op::F64_CONVERT_I64_S, 0),    // f64.convert_i64_s
-            0xBA => chunk.emit_op(Op::F64_CONVERT_I64_U, 0),    // f64.convert_i64_u
-            0xBB => chunk.emit_op(Op::F64_PROMOTE_F32, 0),      // f64.promote_f32
-            0xBC => chunk.emit_op(Op::I32_REINTERPRET_F32, 0),  // i32.reinterpret_f32
-            0xBD => chunk.emit_op(Op::I64_REINTERPRET_F64, 0),  // i64.reinterpret_f64
-            0xBE => chunk.emit_op(Op::F32_REINTERPRET_I32, 0),  // f32.reinterpret_i32
-            0xBF => chunk.emit_op(Op::F64_REINTERPRET_I64, 0),  // f64.reinterpret_i64
+            0xA7 => chunk.emit_op(Op::I32_WRAP_I64, 0), // i32.wrap_i64
+            0xA8 => chunk.emit_op(Op::I32_TRUNC_F32_S, 0), // i32.trunc_f32_s
+            0xA9 => chunk.emit_op(Op::I32_TRUNC_F32_U, 0), // i32.trunc_f32_u
+            0xAA => chunk.emit_op(Op::I32_FROM_F64, 0), // i32.trunc_f64_s
+            0xAB => chunk.emit_op(Op::I32_TRUNC_F64_U, 0), // i32.trunc_f64_u
+            0xAC => chunk.emit_op(Op::I64_EXTEND_I32_S, 0), // i64.extend_i32_s
+            0xAD => chunk.emit_op(Op::I64_EXTEND_I32_U, 0), // i64.extend_i32_u
+            0xAE => chunk.emit_op(Op::I64_TRUNC_F32_S, 0), // i64.trunc_f32_s
+            0xAF => chunk.emit_op(Op::I64_TRUNC_F32_U, 0), // i64.trunc_f32_u
+            0xB0 => chunk.emit_op(Op::I64_TRUNC_F64_S, 0), // i64.trunc_f64_s
+            0xB1 => chunk.emit_op(Op::I64_TRUNC_F64_U, 0), // i64.trunc_f64_u
+            0xB2 => chunk.emit_op(Op::F32_CONVERT_I32_S, 0), // f32.convert_i32_s
+            0xB3 => chunk.emit_op(Op::F32_CONVERT_I32_U, 0), // f32.convert_i32_u
+            0xB4 => chunk.emit_op(Op::F32_CONVERT_I64_S, 0), // f32.convert_i64_s
+            0xB5 => chunk.emit_op(Op::F32_CONVERT_I64_U, 0), // f32.convert_i64_u
+            0xB6 => chunk.emit_op(Op::F32_DEMOTE_F64, 0), // f32.demote_f64
+            0xB7 => chunk.emit_op(Op::F64_FROM_I32, 0), // f64.convert_i32_s
+            0xB8 => chunk.emit_op(Op::F64_CONVERT_I32_U, 0), // f64.convert_i32_u
+            0xB9 => chunk.emit_op(Op::F64_CONVERT_I64_S, 0), // f64.convert_i64_s
+            0xBA => chunk.emit_op(Op::F64_CONVERT_I64_U, 0), // f64.convert_i64_u
+            0xBB => chunk.emit_op(Op::F64_PROMOTE_F32, 0), // f64.promote_f32
+            0xBC => chunk.emit_op(Op::I32_REINTERPRET_F32, 0), // i32.reinterpret_f32
+            0xBD => chunk.emit_op(Op::I64_REINTERPRET_F64, 0), // i64.reinterpret_f64
+            0xBE => chunk.emit_op(Op::F32_REINTERPRET_I32, 0), // f32.reinterpret_i32
+            0xBF => chunk.emit_op(Op::F64_REINTERPRET_I64, 0), // f64.reinterpret_i64
 
             // Sign extension
             0xC0 => chunk.emit_op(Op::I32_EXTEND8_S, 0),
@@ -476,7 +607,10 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             }
 
             // call_indirect
-            0x11 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); }
+            0x11 => {
+                skip_leb128(wasm, &mut pos);
+                skip_leb128(wasm, &mut pos);
+            }
 
             // 0xFC prefix — nontrapping-float-to-int (0x00–0x07) + bulk-memory/table ops
             0xFC => {
@@ -492,7 +626,9 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                     0x06 => chunk.emit_op(Op::I64_TRUNC_SAT_F64_S, 0),
                     0x07 => chunk.emit_op(Op::I64_TRUNC_SAT_F64_U, 0),
                     // bulk-memory / table ops have immediates — skip them
-                    _ => { skip_leb128(wasm, &mut pos); }
+                    _ => {
+                        skip_leb128(wasm, &mut pos);
+                    }
                 }
             }
 
@@ -543,7 +679,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             || op == Op::ARRAY_GET_U
             || op == Op::ARRAY_SET
             || op == Op::ARRAY_LENGTH
-            || op == Op::ARRAY_FILL => {
+            || op == Op::ARRAY_FILL =>
+        {
             let (idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             match op.operand_format() {
@@ -555,7 +692,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             || op == Op::ARRAY_NEW_DATA
             || op == Op::ARRAY_NEW_ELEM
             || op == Op::ARRAY_INIT_DATA
-            || op == Op::ARRAY_INIT_ELEM => {
+            || op == Op::ARRAY_INIT_ELEM =>
+        {
             let (_type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             let (extra, read) = read_leb128_u32(&wasm[*pos..]);
@@ -570,7 +708,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if op == Op::REF_TEST
             || op == Op::REF_TEST_NULL
             || op == Op::REF_CAST
-            || op == Op::REF_CAST_NULL => {
+            || op == Op::REF_CAST_NULL =>
+        {
             skip_heaptype(wasm, pos);
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             chunk.emit_op_u16(op, idx, 0);
@@ -655,8 +794,11 @@ fn read_leb128_i64(data: &[u8]) -> (i64, usize) {
     let mut shift = 0;
     let mut pos = 0;
     loop {
-        if pos >= data.len() { break; }
-        let byte = data[pos]; pos += 1;
+        if pos >= data.len() {
+            break;
+        }
+        let byte = data[pos];
+        pos += 1;
         result |= ((byte & 0x7F) as i64) << shift;
         shift += 7;
         if byte & 0x80 == 0 {
@@ -670,13 +812,18 @@ fn read_leb128_i64(data: &[u8]) -> (i64, usize) {
 }
 
 fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    if data.is_empty() { return vec![]; }
+    if data.is_empty() {
+        return vec![];
+    }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
     let mut types = Vec::new();
     for _ in 0..count {
-        if pos >= data.len() || data[pos] != TYPE_FUNC { pos += 1; continue; }
+        if pos >= data.len() || data[pos] != TYPE_FUNC {
+            pos += 1;
+            continue;
+        }
         pos += 1; // skip 0x60
         let (param_count, read) = read_leb128_u32(&data[pos..]);
         pos += read;
@@ -692,7 +839,9 @@ fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
 }
 
 fn parse_function_section(data: &[u8]) -> Vec<u32> {
-    if data.is_empty() { return vec![]; }
+    if data.is_empty() {
+        return vec![];
+    }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
@@ -706,19 +855,28 @@ fn parse_function_section(data: &[u8]) -> Vec<u32> {
 }
 
 fn parse_import_section(data: &[u8]) -> Vec<(String, String, u8)> {
-    if data.is_empty() { return vec![]; }
+    if data.is_empty() {
+        return vec![];
+    }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
     let mut imports = Vec::new();
     for _ in 0..count {
-        let (mlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-        let module = std::str::from_utf8(&data[pos..pos + mlen as usize]).unwrap_or("").to_string();
+        let (mlen, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let module = std::str::from_utf8(&data[pos..pos + mlen as usize])
+            .unwrap_or("")
+            .to_string();
         pos += mlen as usize;
-        let (nlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-        let name = std::str::from_utf8(&data[pos..pos + nlen as usize]).unwrap_or("").to_string();
+        let (nlen, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+            .unwrap_or("")
+            .to_string();
         pos += nlen as usize;
-        let kind = data[pos]; pos += 1;
+        let kind = data[pos];
+        pos += 1;
         skip_leb128(&data, &mut pos); // type index or other descriptor
         imports.push((module, name, kind));
     }
@@ -726,18 +884,26 @@ fn parse_import_section(data: &[u8]) -> Vec<(String, String, u8)> {
 }
 
 fn parse_export_section(data: &[u8]) -> Vec<(String, usize)> {
-    if data.is_empty() { return vec![]; }
+    if data.is_empty() {
+        return vec![];
+    }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
     let mut exports = Vec::new();
     for _ in 0..count {
-        let (nlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-        let name = std::str::from_utf8(&data[pos..pos + nlen as usize]).unwrap_or("").to_string();
+        let (nlen, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+            .unwrap_or("")
+            .to_string();
         pos += nlen as usize;
-        let kind = data[pos]; pos += 1;
-        let (idx, read) = read_leb128_u32(&data[pos..]); pos += read;
-        if kind == 0 { // function export
+        let kind = data[pos];
+        pos += 1;
+        let (idx, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        if kind == 0 {
+            // function export
             exports.push((name, idx as usize));
         }
     }
@@ -746,8 +912,11 @@ fn parse_export_section(data: &[u8]) -> Vec<(String, usize)> {
 
 fn skip_leb128(data: &[u8], pos: &mut usize) {
     while *pos < data.len() {
-        let byte = data[*pos]; *pos += 1;
-        if byte & 0x80 == 0 { break; }
+        let byte = data[*pos];
+        *pos += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
     }
 }
 
@@ -771,8 +940,11 @@ fn read_leb128_i32(data: &[u8]) -> (i32, usize) {
     let mut shift = 0;
     let mut pos = 0;
     loop {
-        if pos >= data.len() { break; }
-        let byte = data[pos]; pos += 1;
+        if pos >= data.len() {
+            break;
+        }
+        let byte = data[pos];
+        pos += 1;
         result |= ((byte & 0x7F) as i32) << shift;
         shift += 7;
         if byte & 0x80 == 0 {
@@ -793,47 +965,69 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
     pos += name_len as usize;
 
     // Version byte
-    let _version = data[pos]; pos += 1;
+    let _version = data[pos];
+    pos += 1;
 
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
 
     let mut chunks = Vec::new();
     for _ in 0..count {
-        let (nlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-        let name = std::str::from_utf8(&data[pos..pos + nlen as usize]).unwrap_or("").to_string();
+        let (nlen, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+            .unwrap_or("")
+            .to_string();
         pos += nlen as usize;
-        let arity = data[pos]; pos += 1;
-        let (lc, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let arity = data[pos];
+        pos += 1;
+        let (lc, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
 
         // Constants
-        let (cc, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let (cc, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
         let mut constants = Vec::new();
-        for _ in 0..cc { constants.push(decode_value(data, &mut pos)); }
+        for _ in 0..cc {
+            constants.push(decode_value(data, &mut pos));
+        }
 
         // Imports
-        let (ic, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let (ic, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
         let mut imports = Vec::new();
         for _ in 0..ic {
-            let (mlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-            let module = std::str::from_utf8(&data[pos..pos + mlen as usize]).unwrap_or("").to_string();
+            let (mlen, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            let module = std::str::from_utf8(&data[pos..pos + mlen as usize])
+                .unwrap_or("")
+                .to_string();
             pos += mlen as usize;
-            let (nlen, read) = read_leb128_u32(&data[pos..]); pos += read;
-            let iname = std::str::from_utf8(&data[pos..pos + nlen as usize]).unwrap_or("").to_string();
+            let (nlen, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            let iname = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                .unwrap_or("")
+                .to_string();
             pos += nlen as usize;
-            imports.push(crate::chunk::Import { module, name: iname });
+            imports.push(crate::chunk::Import {
+                module,
+                name: iname,
+            });
         }
 
         // Bytecode
-        let (code_len, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let (code_len, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
         let code = data[pos..pos + code_len as usize].to_vec();
         pos += code_len as usize;
 
         // Line info
-        let (line_count, read) = read_leb128_u32(&data[pos..]); pos += read;
+        let (line_count, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
         let mut lines = Vec::with_capacity(line_count as usize);
         for _ in 0..line_count {
-            let (line, read) = read_leb128_u32(&data[pos..]); pos += read;
+            let (line, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
             lines.push(line);
         }
 

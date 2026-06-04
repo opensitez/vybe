@@ -11,9 +11,9 @@ use super::encoding::*;
 use crate::Chunk;
 
 // Custom Descriptors binary encoding
-const CD_DESCRIPTOR: u8 = 0x4D;  // (descriptor $x) prefix
-const CD_DESCRIBES: u8 = 0x4C;   // (describes $x) prefix
-const CD_SUB_FINAL: u8 = 0x4F;   // sub final
+const CD_DESCRIPTOR: u8 = 0x4D; // (descriptor $x) prefix
+const CD_DESCRIBES: u8 = 0x4C; // (describes $x) prefix
+const CD_SUB_FINAL: u8 = 0x4F; // sub final
 
 /// Context for .wasm emission — maps internal types to WASM type indices.
 pub struct WasmTypeContext {
@@ -74,13 +74,20 @@ impl WasmTypeContext {
     /// Look up the field index for a field name within a struct type.
     pub fn field_index(&self, type_name: &str, field_name: &str) -> Option<u32> {
         let fields = self.struct_fields.get(&type_name.to_lowercase())?;
-        fields.iter().position(|f| f == &field_name.to_lowercase()).map(|i| i as u32)
+        fields
+            .iter()
+            .position(|f| f == &field_name.to_lowercase())
+            .map(|i| i as u32)
     }
 }
 
 /// Build the type context and encode the type section.
 /// Layout: [rec group: (described struct + descriptor struct) per TypeEntry] [array type] [function types]
-pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(&str, &str)]) -> (Vec<u8>, WasmTypeContext) {
+pub fn build_type_context(
+    chunks: &[Chunk],
+    import_count: usize,
+    rt_imports: &[(&str, &str)],
+) -> (Vec<u8>, WasmTypeContext) {
     let mut out = Vec::new();
     let mut ctx = WasmTypeContext {
         struct_type_indices: std::collections::HashMap::new(),
@@ -100,7 +107,8 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     };
 
     // Collect TypeEntry definitions from chunk 0
-    let type_entries: Vec<&crate::chunk::TypeEntry> = chunks.first()
+    let type_entries: Vec<&crate::chunk::TypeEntry> = chunks
+        .first()
         .map(|c| c.types.iter().collect())
         .unwrap_or_default();
 
@@ -117,27 +125,30 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     let func_count = (import_count + chunks.len()) as u32;
     let gc_type_count = gc_struct_pairs * 2 + array_count;
     ctx.gc_type_count = gc_type_count;
-    ctx.array_type_idx         = gc_struct_pairs * 2;
-    ctx.string_array_type_idx  = gc_struct_pairs * 2 + 1;
-    ctx.byte_array_type_idx    = gc_struct_pairs * 2 + 2;
+    ctx.array_type_idx = gc_struct_pairs * 2;
+    ctx.string_array_type_idx = gc_struct_pairs * 2 + 1;
+    ctx.byte_array_type_idx = gc_struct_pairs * 2 + 2;
     ctx.func_type_base = gc_type_count;
 
     // Pre-scan chunks for BLOCK/LOOP result counts >= 2. Each distinct
     // count gets its own `() -> externref^N` function type, which the
     // block/loop emission references as a typeidx blocktype.
-    let mut block_result_counts: std::collections::BTreeSet<u8> =
-        std::collections::BTreeSet::new();
+    let mut block_result_counts: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
     for chunk in chunks {
         let code = &chunk.code;
         let mut bip = 0;
         while bip + 1 < code.len() {
             if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
-                if op == crate::opcode::Op::BLOCK || op == crate::opcode::Op::LOOP
-                    || op == crate::opcode::Op::IF {
+                if op == crate::opcode::Op::BLOCK
+                    || op == crate::opcode::Op::LOOP
+                    || op == crate::opcode::Op::IF
+                {
                     // New layout: prefix (1) + sub (1) + result_count (1) = 3 bytes total.
                     if bip + 2 < code.len() {
                         let count = code[bip + 2];
-                        if count >= 2 { block_result_counts.insert(count); }
+                        if count >= 2 {
+                            block_result_counts.insert(count);
+                        }
                     }
                 }
                 bip += super::code::opcode_size(op, code, bip);
@@ -196,15 +207,16 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         let described_idx = (i as u32) * 2;
         let descriptor_idx = (i as u32) * 2 + 1;
         let name_lower = te.name.to_lowercase();
-        ctx.struct_type_indices.insert(name_lower.clone(), described_idx);
-        ctx.desc_type_indices.insert(name_lower.clone(), descriptor_idx);
+        ctx.struct_type_indices
+            .insert(name_lower.clone(), described_idx);
+        ctx.desc_type_indices
+            .insert(name_lower.clone(), descriptor_idx);
         ctx.struct_fields.insert(name_lower, te.fields.clone());
     }
 
     // Types with children must be left "open" (`sub`) rather than
     // `sub final` so their subtypes can extend them.
-    let mut has_children: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut has_children: std::collections::HashSet<String> = std::collections::HashSet::new();
     for te in &type_entries {
         if !te.parent.is_empty() {
             has_children.insert(te.parent.to_lowercase());
@@ -219,7 +231,12 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // for the suspend/resume tag, one continuation type wrapping it.
     let ss_extra_types = stack_switching_type_count;
     let rec_group_count = if gc_struct_pairs > 0 { 1u32 } else { 0u32 };
-    let total = rec_group_count + array_count + func_count + block_type_count + ss_extra_types + exception_type_count;
+    let total = rec_group_count
+        + array_count
+        + func_count
+        + block_type_count
+        + ss_extra_types
+        + exception_type_count;
     write_leb128_u32(&mut out, total);
 
     // ── GC struct types: one rec group of (described, descriptor) pairs ──
@@ -289,9 +306,15 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // Packed types (i8 / i16) are only valid as array/struct field storage
     // types, not as top-level value types — they're emitted with the
     // `PACKED_*` byte tags per the GC proposal.
-    out.push(GC_ARRAY); out.push(TYPE_EXTERNREF); out.push(GC_MUT);
-    out.push(GC_ARRAY); out.push(PACKED_I16);     out.push(GC_MUT);
-    out.push(GC_ARRAY); out.push(PACKED_I8);      out.push(GC_MUT);
+    out.push(GC_ARRAY);
+    out.push(TYPE_EXTERNREF);
+    out.push(GC_MUT);
+    out.push(GC_ARRAY);
+    out.push(PACKED_I16);
+    out.push(GC_MUT);
+    out.push(GC_ARRAY);
+    out.push(PACKED_I8);
+    out.push(GC_MUT);
 
     // ── Function types ──
     // ── Function types with proper signatures ──
@@ -313,7 +336,9 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     for chunk in chunks {
         let mut ip = 0;
         while ip < chunk.code.len() {
-            if ip + 1 >= chunk.code.len() { break; }
+            if ip + 1 >= chunk.code.len() {
+                break;
+            }
             if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
                 if op == crate::opcode::Op::CALL_IMPORT {
                     let import_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
@@ -332,7 +357,9 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         let argc = host_arity[i];
         out.push(TYPE_FUNC);
         write_leb128_u32(&mut out, argc as u32);
-        for _ in 0..argc { out.push(TYPE_EXTERNREF); }
+        for _ in 0..argc {
+            out.push(TYPE_EXTERNREF);
+        }
         write_leb128_u32(&mut out, 1);
         out.push(TYPE_EXTERNREF);
     }
@@ -354,20 +381,25 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         }
     }
 
-
     for (i, chunk) in chunks.iter().enumerate() {
         let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
         out.push(TYPE_FUNC);
         // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
         let param_count = chunk.arity as u32;
         write_leb128_u32(&mut out, param_count);
-        for _ in 0..param_count { out.push(TYPE_EXTERNREF); }
+        for _ in 0..param_count {
+            out.push(TYPE_EXTERNREF);
+        }
         // Multi-value proposal: chunks may return more than one externref.
         let result_count = (chunk.result_arity as u32).max(1);
         write_leb128_u32(&mut out, result_count);
-        for _ in 0..result_count { out.push(TYPE_EXTERNREF); }
+        for _ in 0..result_count {
+            out.push(TYPE_EXTERNREF);
+        }
         // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
-        ctx.func_type_by_arity.entry(chunk.arity).or_insert(type_idx);
+        ctx.func_type_by_arity
+            .entry(chunk.arity)
+            .or_insert(type_idx);
     }
 
     // Block multi-value types: one `() -> externref^N` per distinct
@@ -379,9 +411,11 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         let tidx = block_type_base + i as u32;
         ctx.block_type_by_results.insert(count, tidx);
         out.push(TYPE_FUNC);
-        write_leb128_u32(&mut out, 0);            // 0 params
+        write_leb128_u32(&mut out, 0); // 0 params
         write_leb128_u32(&mut out, count as u32); // N results
-        for _ in 0..count { out.push(TYPE_EXTERNREF); }
+        for _ in 0..count {
+            out.push(TYPE_EXTERNREF);
+        }
     }
 
     // Stack-switching: suspend/resume tag func type + continuation type.
@@ -403,9 +437,9 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // Exception tag type — `(externref) -> ()` per the exception-handling
     // proposal. The tag section references this type index.
     out.push(TYPE_FUNC);
-    write_leb128_u32(&mut out, 1);        // 1 param
+    write_leb128_u32(&mut out, 1); // 1 param
     out.push(TYPE_EXTERNREF);
-    write_leb128_u32(&mut out, 0);        // 0 results
+    write_leb128_u32(&mut out, 0); // 0 results
 
     (out, ctx)
 }

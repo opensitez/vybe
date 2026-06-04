@@ -5,9 +5,9 @@
 //! that the callee is in the VM's func_table before execution starts — the
 //! same pattern used by vm_reffunc_callref_test.rs.
 
-use vybe_bytecode::*;
-use vybe_bytecode::chunk::*;
 use std::sync::Arc;
+use vybe_bytecode::chunk::*;
+use vybe_bytecode::*;
 
 // ── RETURN_CALL_REF ───────────────────────────────────────────────────────
 
@@ -34,10 +34,10 @@ fn return_call_ref_delivers_callee_result() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__double")));
-        let arg     = main.add_constant(Value::I32(21));
+        let arg = main.add_constant(Value::I32(21));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0); // push func ref
-        main.emit_op_u16(opcode::Op::CONST, arg, 0);           // push arg 21
-        main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0);   // tail-call, argc=1
+        main.emit_op_u16(opcode::Op::CONST, arg, 0); // push arg 21
+        main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0); // tail-call, argc=1
     }
 
     let r = VM::new().run(vec![main, double_fn]).expect("run failed");
@@ -69,7 +69,7 @@ fn return_call_delivers_callee_result() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__add_one")));
-        let arg     = main.add_constant(Value::I32(41));
+        let arg = main.add_constant(Value::I32(41));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
         main.emit_op_u16(opcode::Op::CONST, arg, 0);
         main.emit_op_u8(opcode::Op::RETURN_CALL, 1, 0);
@@ -104,7 +104,7 @@ fn return_call_indirect_via_function_table() {
     main.local_count = 0;
     {
         let tidx_key = main.add_constant(Value::String(Arc::from("__table_idx")));
-        let arg      = main.add_constant(Value::I32(14));
+        let arg = main.add_constant(Value::I32(14));
 
         // REF_FUNC 1 (triple_fn) with 0 upvalues → pushes func object, registers in func_table
         main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
@@ -135,8 +135,8 @@ fn return_call_chain_does_not_overflow() {
     countdown.local_count = 1;
     {
         let fn_name = countdown.add_constant(Value::String(Arc::from("__countdown")));
-        let zero    = countdown.add_constant(Value::I32(0));
-        let one     = countdown.add_constant(Value::I32(1));
+        let zero = countdown.add_constant(Value::I32(0));
+        let one = countdown.add_constant(Value::I32(1));
 
         countdown.global_inits.push(GlobalInit {
             name: "__countdown".to_string(),
@@ -169,12 +169,14 @@ fn return_call_chain_does_not_overflow() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__countdown")));
-        let n       = main.add_constant(Value::I32(10_000));
+        let n = main.add_constant(Value::I32(10_000));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
         main.emit_op_u16(opcode::Op::CONST, n, 0);
         main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0);
     }
 
-    let r = VM::new().run(vec![main, countdown]).expect("should not stack overflow");
+    let r = VM::new()
+        .run(vec![main, countdown])
+        .expect("should not stack overflow");
     assert_eq!(r.as_i32(), 0);
 }

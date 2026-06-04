@@ -1,8 +1,8 @@
 //! Stack-switching proposal coverage: spec-byte emission +
 //! fiber-based coroutine semantics.
 
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use vybe_bytecode::wasm::write_wasm;
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ── Binary emission ────────────────────────────────────────────────
 
@@ -34,14 +34,22 @@ fn stack_switching_opcodes_emit_spec_bytes() {
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
-    assert!(find_byte_seq(&wasm, &[0xE0]),
-        "CONT_NEW should emit 0xE0 (cont.new)");
-    assert!(find_byte_seq(&wasm, &[0xE2]),
-        "SUSPEND should emit 0xE2 (suspend)");
-    assert!(find_byte_seq(&wasm, &[0xE3]),
-        "RESUME should emit 0xE3 (resume)");
-    assert!(find_byte_seq(&wasm, &[0xE5]),
-        "SWITCH should emit 0xE5 (switch)");
+    assert!(
+        find_byte_seq(&wasm, &[0xE0]),
+        "CONT_NEW should emit 0xE0 (cont.new)"
+    );
+    assert!(
+        find_byte_seq(&wasm, &[0xE2]),
+        "SUSPEND should emit 0xE2 (suspend)"
+    );
+    assert!(
+        find_byte_seq(&wasm, &[0xE3]),
+        "RESUME should emit 0xE3 (resume)"
+    );
+    assert!(
+        find_byte_seq(&wasm, &[0xE5]),
+        "SWITCH should emit 0xE5 (switch)"
+    );
 }
 
 #[test]
@@ -84,20 +92,26 @@ fn stack_switching_tag_section_declares_suspend_tag() {
     // Section id 13 = tag section. Find it and verify the tag count.
     let mut pos = 8; // skip magic + version
     while pos < wasm.len() {
-        let id = wasm[pos]; pos += 1;
+        let id = wasm[pos];
+        pos += 1;
         let mut size = 0u32;
         let mut shift = 0;
         loop {
-            let b = wasm[pos]; pos += 1;
+            let b = wasm[pos];
+            pos += 1;
             size |= ((b & 0x7f) as u32) << shift;
-            if b & 0x80 == 0 { break; }
+            if b & 0x80 == 0 {
+                break;
+            }
             shift += 7;
         }
         if id == 13 {
             // First byte of the tag section is the tag count (LEB128).
             let tag_count = wasm[pos];
-            assert!(tag_count >= 1,
-                "tag section should have at least 1 tag when stack-switching is used");
+            assert!(
+                tag_count >= 1,
+                "tag section should have at least 1 tag when stack-switching is used"
+            );
             return;
         }
         pos += size as usize;
@@ -148,8 +162,10 @@ fn cont_bind_emits_spec_byte() {
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
-    assert!(find_byte_seq(&wasm, &[0xE1]),
-        "CONT_BIND should emit 0xE1 (cont.bind)");
+    assert!(
+        find_byte_seq(&wasm, &[0xE1]),
+        "CONT_BIND should emit 0xE1 (cont.bind)"
+    );
 }
 
 #[test]
@@ -164,8 +180,10 @@ fn resume_throw_emits_spec_byte() {
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
-    assert!(find_byte_seq(&wasm, &[0xE4]),
-        "RESUME_THROW should emit 0xE4 (resume_throw)");
+    assert!(
+        find_byte_seq(&wasm, &[0xE4]),
+        "RESUME_THROW should emit 0xE4 (resume_throw)"
+    );
 }
 
 #[test]
@@ -193,7 +211,9 @@ fn cont_bind_produces_continuation_with_bound_args() {
         vybe_bytecode::value::ObjectKind::Continuation(_) => {}
         other => panic!("expected Continuation kind, got {other:?}"),
     }
-    let bound = o.properties.get("__bound_args")
+    let bound = o
+        .properties
+        .get("__bound_args")
         .expect("CONT_BIND should stash bound args on the new cont");
     if let Value::Object(bo) = bound {
         let b = bo.lock().unwrap();
@@ -258,8 +278,14 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     // the exact shape it was captured at.
     use vybe_bytecode::vm::LabelEntry;
     let mut vm = VM::new();
-    vm.label_stack.push(LabelEntry { target: 123, is_loop: false });
-    vm.label_stack.push(LabelEntry { target: 456, is_loop: true });
+    vm.label_stack.push(LabelEntry {
+        target: 123,
+        is_loop: false,
+    });
+    vm.label_stack.push(LabelEntry {
+        target: 456,
+        is_loop: true,
+    });
     // Build a dummy Continuation object so we have a Value to stash
     // in active_continuations (field is pub(crate); constructed via
     // a round-trip through CONT_NEW).
@@ -270,15 +296,16 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     let cont = vm.run(vec![chunk]).unwrap();
     // Re-set VM state for the fiber test.
     let mut vm = VM::new();
-    vm.label_stack.push(LabelEntry { target: 42, is_loop: true });
-    vm.active_continuations.push(
-        vybe_bytecode::vm::ActiveContinuation {
+    vm.label_stack.push(LabelEntry {
+        target: 42,
+        is_loop: true,
+    });
+    vm.active_continuations
+        .push(vybe_bytecode::vm::ActiveContinuation {
             cont,
-            caller_fiber: vybe_bytecode::fiber::Fiber::new(
-                Vec::new(), Vec::new(), Vec::new()),
+            caller_fiber: vybe_bytecode::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new()),
             mode: vybe_bytecode::vm::ResumeMode::Iterator,
-        }
-    );
+        });
 
     let fiber = vm.save_fiber();
     assert_eq!(fiber.label_stack.len(), 1);
@@ -290,6 +317,71 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     assert_eq!(vm.label_stack.len(), 1);
     assert_eq!(vm.active_continuations.len(), 1);
     assert_eq!(vm.label_stack[0].target, 42);
+}
+
+#[test]
+fn generator_resume_preserves_loop_label_stack() {
+    // Regression for structured control + stack switching: a generator
+    // suspended inside a loop must resume with the loop label stack intact
+    // so the `br 0` backedge still targets the loop header.
+    let mut gen_body = Chunk::new("counter");
+    gen_body.arity = 1;
+    gen_body.local_count = 2; // slot 0 = resume/control, slot 1 = i
+    gen_body.is_generator = true;
+
+    gen_body.emit_op(Op::I32_CONST_0, 0);
+    gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    gen_body.emit_op(Op::DROP, 0);
+
+    let block = gen_body.emit_block(0);
+    let (loop_patch, _) = gen_body.emit_loop_s(0);
+    gen_body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let three = gen_body.add_constant(Value::I32(3));
+    gen_body.emit_op_u16(Op::CONST, three, 0);
+    gen_body.emit_op(Op::I32_LT_S, 0);
+    gen_body.emit_op(Op::I32_EQZ, 0);
+    gen_body.emit_br_if(1, 0);
+
+    gen_body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
+    gen_body.emit_op(Op::DROP, 0);
+
+    gen_body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let one = gen_body.add_constant(Value::I32(1));
+    gen_body.emit_op_u16(Op::CONST, one, 0);
+    gen_body.emit_op(Op::I32_ADD, 0);
+    gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    gen_body.emit_op(Op::DROP, 0);
+    gen_body.emit_br(0, 0);
+    gen_body.emit_end(0);
+    gen_body.patch_loop(loop_patch);
+    gen_body.emit_end(0);
+    gen_body.patch_block(block);
+    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_op(Op::RETURN, 0);
+
+    let mut script = Chunk::new("<script>");
+    script.local_count = 3; // cont, value, has_more
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    script.emit_op(Op::DROP, 0);
+
+    for _ in 0..2 {
+        script.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        script.emit_op(Op::GEN_NEXT, 0);
+        script.emit_op_u16(Op::LOCAL_SET, 2, 0);
+        script.emit_op(Op::DROP, 0);
+        script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+        script.emit_op(Op::DROP, 0);
+    }
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, gen_body]).unwrap();
+    assert_eq!(result, Value::I32(1));
 }
 
 #[test]

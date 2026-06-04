@@ -5,9 +5,9 @@
 //!         br_on_null/br_on_non_null/ref.as_non_null,
 //!         br_on_cast/br_on_cast_fail.
 
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::value::Value;
 use std::sync::Arc;
+use vybe_bytecode::value::Value;
+use vybe_bytecode::{Chunk, Op, VM};
 
 /// Run without appending RETURN — caller is responsible for the full layout.
 fn run_raw(emit: impl FnOnce(&mut Chunk)) -> Value {
@@ -36,14 +36,14 @@ fn br_on_null_branches_when_null() {
     //   [16-17] RETURN
     let r = run_raw(|c| {
         let zero = c.add_constant(Value::I32(0));
-        let one  = c.add_constant(Value::I32(1));
+        let one = c.add_constant(Value::I32(1));
 
-        c.emit_op(Op::NULL, 0);                  // [0-1]
+        c.emit_op(Op::NULL, 0); // [0-1]
         c.emit_op_u16(Op::BR_ON_NULL, 6u16, 0); // [2-5] offset=6 → ip(6)+6=12
-        c.emit_op_u16(Op::CONST, zero, 0);       // [6-9]  not reached
-        c.emit_op(Op::RETURN, 0);                // [10-11] not reached
-        c.emit_op_u16(Op::CONST, one, 0);        // [12-15] null path lands here
-        c.emit_op(Op::RETURN, 0);                // [16-17]
+        c.emit_op_u16(Op::CONST, zero, 0); // [6-9]  not reached
+        c.emit_op(Op::RETURN, 0); // [10-11] not reached
+        c.emit_op_u16(Op::CONST, one, 0); // [12-15] null path lands here
+        c.emit_op(Op::RETURN, 0); // [16-17]
     });
     assert_eq!(r.as_i32(), 1);
 }
@@ -52,16 +52,16 @@ fn br_on_null_branches_when_null() {
 fn br_on_null_skips_branch_on_non_null() {
     // Non-null value → fall through to CONST(0), return 0
     let r = run_raw(|c| {
-        let val  = c.add_constant(Value::I32(42));
+        let val = c.add_constant(Value::I32(42));
         let zero = c.add_constant(Value::I32(0));
-        let one  = c.add_constant(Value::I32(1));
+        let one = c.add_constant(Value::I32(1));
 
-        c.emit_op_u16(Op::CONST, val, 0);        // push non-null i32
+        c.emit_op_u16(Op::CONST, val, 0); // push non-null i32
         c.emit_op_u16(Op::BR_ON_NULL, 6u16, 0); // not null → fall through
-        c.emit_op(Op::DROP, 0);                  // drop i32 42
-        c.emit_op_u16(Op::CONST, zero, 0);       // push 0
+        c.emit_op(Op::DROP, 0); // drop i32 42
+        c.emit_op_u16(Op::CONST, zero, 0); // push 0
         c.emit_op(Op::RETURN, 0);
-        c.emit_op_u16(Op::CONST, one, 0);        // null path (not reached)
+        c.emit_op_u16(Op::CONST, one, 0); // null path (not reached)
         c.emit_op(Op::RETURN, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -79,15 +79,15 @@ fn br_on_non_null_branches_on_non_null() {
     //   [14-15] RETURN
     //   [16-17] RETURN   ← non-null path lands at ip=12... wait
     let r = run_raw(|c| {
-        let val     = c.add_constant(Value::I32(7));
-        let zero    = c.add_constant(Value::I32(0));
+        let val = c.add_constant(Value::I32(7));
+        let zero = c.add_constant(Value::I32(0));
 
-        c.emit_op_u16(Op::CONST, val, 0);              // [0-3]
-        c.emit_op_u16(Op::BR_ON_NON_NULL, 6u16, 0);   // [4-7] offset=6 → ip(8)+6=14
+        c.emit_op_u16(Op::CONST, val, 0); // [0-3]
+        c.emit_op_u16(Op::BR_ON_NON_NULL, 6u16, 0); // [4-7] offset=6 → ip(8)+6=14
         // null fall-through:
-        c.emit_op(Op::DROP, 0);                         // [8-9]
-        c.emit_op_u16(Op::CONST, zero, 0);              // [10-13]
-        c.emit_op(Op::RETURN, 0);                       // [14-15]
+        c.emit_op(Op::DROP, 0); // [8-9]
+        c.emit_op_u16(Op::CONST, zero, 0); // [10-13]
+        c.emit_op(Op::RETURN, 0); // [14-15]
         // non-null path at [14]? Wait, 8+6=14, which is RETURN. Let me recalculate.
         // offset=6: ip=8+6=14 → RETURN at [14-15] (returns what? the value (7))
         // Because BR_ON_NON_NULL leaves value on stack when branching.
@@ -101,14 +101,14 @@ fn br_on_non_null_skips_on_null() {
     // Push null → BR_ON_NON_NULL should NOT branch → pops null, falls through
     let r = run_raw(|c| {
         let fallback = c.add_constant(Value::I32(99));
-        let other    = c.add_constant(Value::I32(0));
+        let other = c.add_constant(Value::I32(0));
 
-        c.emit_op(Op::NULL, 0);                         // [0-1]
-        c.emit_op_u16(Op::BR_ON_NON_NULL, 4u16, 0);   // [2-5] null → no branch, pop
-        c.emit_op_u16(Op::CONST, fallback, 0);          // [6-9]
-        c.emit_op(Op::RETURN, 0);                       // [10-11]
-        c.emit_op_u16(Op::CONST, other, 0);             // [12-15] not reached
-        c.emit_op(Op::RETURN, 0);                       // [16-17]
+        c.emit_op(Op::NULL, 0); // [0-1]
+        c.emit_op_u16(Op::BR_ON_NON_NULL, 4u16, 0); // [2-5] null → no branch, pop
+        c.emit_op_u16(Op::CONST, fallback, 0); // [6-9]
+        c.emit_op(Op::RETURN, 0); // [10-11]
+        c.emit_op_u16(Op::CONST, other, 0); // [12-15] not reached
+        c.emit_op(Op::RETURN, 0); // [16-17]
     });
     assert_eq!(r.as_i32(), 99);
 }
@@ -141,7 +141,7 @@ fn ref_as_non_null_traps_on_null() {
 fn ref_cast_traps_on_type_mismatch() {
     // Push a string, cast to "dog" — won't match → trap
     let e = run_err(|c| {
-        let val  = c.add_constant(Value::String(Arc::from("not-a-dog")));
+        let val = c.add_constant(Value::String(Arc::from("not-a-dog")));
         let cast = c.add_constant(Value::String(Arc::from("dog")));
         c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op_u16(Op::REF_CAST, cast, 0);
@@ -168,8 +168,8 @@ fn br_on_cast_branches_on_type_match() {
     // struct with __type "foo" → br_on_cast "foo" at depth 0 → exits block
     let mut chunk = Chunk::new("<script>");
     let type_str = chunk.add_constant(Value::String(Arc::from("foo")));
-    let matched  = chunk.add_constant(Value::I32(1));
-    let missed   = chunk.add_constant(Value::I32(0));
+    let matched = chunk.add_constant(Value::I32(1));
+    let missed = chunk.add_constant(Value::I32(0));
 
     let _blk = chunk.emit_block(0);
 
@@ -200,9 +200,9 @@ fn br_on_cast_branches_on_type_match() {
 fn br_on_cast_fail_branches_on_type_mismatch() {
     let mut chunk = Chunk::new("<script>");
     let type_str = chunk.add_constant(Value::String(Arc::from("bar")));
-    let wrong    = chunk.add_constant(Value::String(Arc::from("not-bar")));
+    let wrong = chunk.add_constant(Value::String(Arc::from("not-bar")));
     let fallback = chunk.add_constant(Value::I32(99));
-    let other    = chunk.add_constant(Value::I32(0));
+    let other = chunk.add_constant(Value::I32(0));
 
     let _blk = chunk.emit_block(0);
     chunk.emit_op_u16(Op::CONST, type_str, 0); // "bar" value
@@ -258,16 +258,16 @@ fn struct_set_and_get_roundtrip() {
 
         // create empty struct, store in slot 0, drop stack copy
         c.emit_op_u16(Op::STRUCT_NEW, 0, 0); // stack: [obj]
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0);   // stack: [obj] (peek)
-        c.emit_op(Op::DROP, 0);                // stack: []
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0); // stack: [obj] (peek)
+        c.emit_op(Op::DROP, 0); // stack: []
 
         // obj.x = 42
-        c.emit_op_u16(Op::LOCAL_GET, 0, 0);   // stack: [obj]
-        c.emit_op_u16(Op::CONST, val, 0);      // stack: [obj, 42]
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
+        c.emit_op_u16(Op::CONST, val, 0); // stack: [obj, 42]
         c.emit_op_u16(Op::STRUCT_SET, key, 0); // stack: []
 
         // read obj.x
-        c.emit_op_u16(Op::LOCAL_GET, 0, 0);   // stack: [obj]
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
         c.emit_op_u16(Op::STRUCT_GET, key, 0); // stack: [42]
     });
     assert_eq!(r.as_i32(), 42);
@@ -277,8 +277,8 @@ fn struct_set_and_get_roundtrip() {
 fn struct_set_overwrites_field() {
     let r = run_locals(1, |c| {
         let key = c.add_constant(Value::String(Arc::from("v")));
-        let v1  = c.add_constant(Value::I32(1));
-        let v2  = c.add_constant(Value::I32(99));
+        let v1 = c.add_constant(Value::I32(1));
+        let v2 = c.add_constant(Value::I32(99));
 
         c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
@@ -323,9 +323,9 @@ fn array_new_fixed_and_get() {
 #[test]
 fn array_set_updates_element() {
     let r = run_locals(1, |c| {
-        let zero    = c.add_constant(Value::I32(0));
+        let zero = c.add_constant(Value::I32(0));
         let new_val = c.add_constant(Value::I32(77));
-        let idx     = c.add_constant(Value::I32(1));
+        let idx = c.add_constant(Value::I32(1));
 
         // create [0,0,0], store in slot 0
         c.emit_op_u16(Op::CONST, zero, 0);
@@ -370,18 +370,20 @@ fn array_fill_sets_range() {
         let fill = c.add_constant(Value::I32(99));
 
         // [0,0,0,0,0]
-        for _ in 0..5 { c.emit_op_u16(Op::CONST, zero, 0); }
+        for _ in 0..5 {
+            c.emit_op_u16(Op::CONST, zero, 0);
+        }
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_op(Op::DROP, 0);
 
         // array.fill: pops (count, start, val, arr) → push arr, val, start, count
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        let one   = c.add_constant(Value::I32(1));
+        let one = c.add_constant(Value::I32(1));
         let three = c.add_constant(Value::I32(3));
-        c.emit_op_u16(Op::CONST, fill, 0);   // val
-        c.emit_op_u16(Op::CONST, one, 0);    // start
-        c.emit_op_u16(Op::CONST, three, 0);  // count
+        c.emit_op_u16(Op::CONST, fill, 0); // val
+        c.emit_op_u16(Op::CONST, one, 0); // start
+        c.emit_op_u16(Op::CONST, three, 0); // count
         c.emit_op(Op::ARRAY_FILL, 0);
 
         // check arr[2] = 99
@@ -419,9 +421,9 @@ fn array_copy_copies_range() {
         let zero = c.add_constant(Value::I32(0));
         let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::LOCAL_GET, 1, 0); // dst
-        c.emit_op_u16(Op::CONST, zero, 0);  // dst offset
+        c.emit_op_u16(Op::CONST, zero, 0); // dst offset
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // src
-        c.emit_op_u16(Op::CONST, zero, 0);  // src offset
+        c.emit_op_u16(Op::CONST, zero, 0); // src offset
         c.emit_op_u16(Op::CONST, three, 0); // count
         c.emit_op(Op::ARRAY_COPY, 0);
 
@@ -484,7 +486,7 @@ fn any_convert_extern_is_identity() {
 #[test]
 fn ref_test_on_string_value() {
     let r = run(|c| {
-        let val  = c.add_constant(Value::String(Arc::from("hello")));
+        let val = c.add_constant(Value::String(Arc::from("hello")));
         let type_name = c.add_constant(Value::String(Arc::from("string")));
         c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op_u16(Op::REF_TEST, type_name, 0);
@@ -501,8 +503,8 @@ fn ref_test_on_string_value() {
 fn array_new_fills_all_lanes_with_value() {
     // array.new $t: pops [value, len] → array of len copies of value
     let r = run(|c| {
-        let val  = c.add_constant(Value::I32(7));
-        let len  = c.add_constant(Value::I32(4));
+        let val = c.add_constant(Value::I32(7));
+        let len = c.add_constant(Value::I32(4));
         c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op_u16(Op::CONST, len, 0);
         c.emit_op_u16(Op::ARRAY_NEW, 0, 0); // typeidx=0, reads u16
@@ -563,7 +565,7 @@ fn array_new_default_length_is_correct() {
 fn array_new_data_produces_empty_array() {
     // VM stubs: produces an empty array (no data segment support yet)
     let r = run(|c| {
-        let size   = c.add_constant(Value::I32(4));
+        let size = c.add_constant(Value::I32(4));
         let offset = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, offset, 0);
         c.emit_op_u16(Op::CONST, size, 0);
@@ -576,7 +578,7 @@ fn array_new_data_produces_empty_array() {
 #[test]
 fn array_new_elem_produces_empty_array() {
     let r = run(|c| {
-        let size   = c.add_constant(Value::I32(2));
+        let size = c.add_constant(Value::I32(2));
         let offset = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, offset, 0);
         c.emit_op_u16(Op::CONST, size, 0);
@@ -626,7 +628,7 @@ fn array_init_data_is_noop() {
     // Stub: pops [arr, dst_off, src_off, size], no return, array unchanged
     let r = run_locals(1, |c| {
         let zero = c.add_constant(Value::I32(0));
-        let v    = c.add_constant(Value::I32(55));
+        let v = c.add_constant(Value::I32(55));
         // Create [55]
         c.emit_op_u16(Op::CONST, v, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
@@ -638,9 +640,11 @@ fn array_init_data_is_noop() {
         c.emit_op_u16(Op::CONST, zero, 0); // dst_offset
         c.emit_op_u16(Op::CONST, zero, 0); // src_offset
         c.emit_op_u16(Op::CONST, zero, 0); // size
-        c.emit_op(Op::ARRAY_INIT_DATA, 0);  // opcode (2 bytes)
-        c.emit(0, 0); c.emit(0, 0);         // typeidx = 0
-        c.emit(0, 0); c.emit(0, 0);         // dataidx = 0
+        c.emit_op(Op::ARRAY_INIT_DATA, 0); // opcode (2 bytes)
+        c.emit(0, 0);
+        c.emit(0, 0); // typeidx = 0
+        c.emit(0, 0);
+        c.emit(0, 0); // dataidx = 0
 
         // array unchanged — element 0 is still 55
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);

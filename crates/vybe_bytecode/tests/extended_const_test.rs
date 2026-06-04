@@ -1,8 +1,7 @@
-/// Tests for Extended Const Expressions, Typed Continuations, and String References.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use vybe_bytecode::chunk::ConstExpr;
 use std::sync::Arc;
+use vybe_bytecode::chunk::ConstExpr;
+/// Tests for Extended Const Expressions, Typed Continuations, and String References.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ── Extended Const Expressions ──────────────────────────────
 
@@ -30,10 +29,13 @@ fn global_init_add() {
 
     // BASE = 100, OFFSET = BASE + 50
     chunk.add_global_init("BASE", ConstExpr::Value(Value::I32(100)));
-    chunk.add_global_init("OFFSET", ConstExpr::Add(
-        Box::new(ConstExpr::GlobalGet("BASE".into())),
-        Box::new(ConstExpr::Value(Value::I32(50))),
-    ));
+    chunk.add_global_init(
+        "OFFSET",
+        ConstExpr::Add(
+            Box::new(ConstExpr::GlobalGet("BASE".into())),
+            Box::new(ConstExpr::Value(Value::I32(50))),
+        ),
+    );
 
     let name = chunk.add_constant(Value::String(Arc::from("OFFSET")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
@@ -51,10 +53,13 @@ fn global_init_mul() {
 
     // SIZE = 4, TABLE = SIZE * 256
     chunk.add_global_init("SIZE", ConstExpr::Value(Value::I32(4)));
-    chunk.add_global_init("TABLE", ConstExpr::Mul(
-        Box::new(ConstExpr::GlobalGet("SIZE".into())),
-        Box::new(ConstExpr::Value(Value::I32(256))),
-    ));
+    chunk.add_global_init(
+        "TABLE",
+        ConstExpr::Mul(
+            Box::new(ConstExpr::GlobalGet("SIZE".into())),
+            Box::new(ConstExpr::Value(Value::I32(256))),
+        ),
+    );
 
     let name = chunk.add_constant(Value::String(Arc::from("TABLE")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
@@ -72,14 +77,20 @@ fn global_init_chain() {
 
     // A = 10, B = A + 20, C = B + A → 40
     chunk.add_global_init("A", ConstExpr::Value(Value::I32(10)));
-    chunk.add_global_init("B", ConstExpr::Add(
-        Box::new(ConstExpr::GlobalGet("A".into())),
-        Box::new(ConstExpr::Value(Value::I32(20))),
-    ));
-    chunk.add_global_init("C", ConstExpr::Add(
-        Box::new(ConstExpr::GlobalGet("B".into())),
-        Box::new(ConstExpr::GlobalGet("A".into())),
-    ));
+    chunk.add_global_init(
+        "B",
+        ConstExpr::Add(
+            Box::new(ConstExpr::GlobalGet("A".into())),
+            Box::new(ConstExpr::Value(Value::I32(20))),
+        ),
+    );
+    chunk.add_global_init(
+        "C",
+        ConstExpr::Add(
+            Box::new(ConstExpr::GlobalGet("B".into())),
+            Box::new(ConstExpr::GlobalGet("A".into())),
+        ),
+    );
 
     let name = chunk.add_constant(Value::String(Arc::from("C")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
@@ -138,10 +149,21 @@ fn cont_new_typed_stores_tag() {
     match &result {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
-            assert_eq!(o.properties.get("__cont_tag").unwrap().as_i32(), tag_idx as i32);
-            let yt = o.properties.get("__cont_yield_type").map(|v| format!("{}", v)).unwrap_or_default();
+            assert_eq!(
+                o.properties.get("__cont_tag").unwrap().as_i32(),
+                tag_idx as i32
+            );
+            let yt = o
+                .properties
+                .get("__cont_yield_type")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
             assert_eq!(yt, "i32");
-            let rt = o.properties.get("__cont_resume_type").map(|v| format!("{}", v)).unwrap_or_default();
+            let rt = o
+                .properties
+                .get("__cont_resume_type")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
             assert_eq!(rt, "i32");
         }
         other => panic!("expected Object, got {:?}", other),

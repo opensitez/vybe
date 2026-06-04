@@ -123,7 +123,10 @@ impl TypeDef {
     pub fn add_field(&mut self, name: &str) -> usize {
         let idx = self.field_defs.len();
         let key = name.to_lowercase();
-        self.field_defs.push(FieldDef { name: key.clone(), index: idx });
+        self.field_defs.push(FieldDef {
+            name: key.clone(),
+            index: idx,
+        });
         self.field_map.insert(key, idx);
         idx
     }
@@ -144,7 +147,8 @@ impl TypeDef {
     }
 
     pub fn host_method(mut self, name: &str, host_fn_idx: usize) -> Self {
-        self.methods.insert(name.to_lowercase(), Method::HostFn(host_fn_idx));
+        self.methods
+            .insert(name.to_lowercase(), Method::HostFn(host_fn_idx));
         self
     }
 
@@ -164,7 +168,8 @@ impl TypeDef {
     }
 
     pub fn with_required_method(mut self, name: &str, param_count: u8) -> Self {
-        self.required_methods.push((name.to_lowercase(), param_count));
+        self.required_methods
+            .push((name.to_lowercase(), param_count));
         self
     }
 
@@ -330,7 +335,9 @@ impl TypeRegistry {
         for (i, td) in self.types.iter().enumerate() {
             if td.name.to_lowercase() == key {
                 if let Some(ref iface) = td.interface {
-                    if iface == interface { return Some(i); }
+                    if iface == interface {
+                        return Some(i);
+                    }
                 }
                 // Also match by name alone if no interface specified
                 return Some(i);
@@ -349,7 +356,9 @@ impl TypeRegistry {
 
     /// Get all types exported by a given component.
     pub fn get_component_exports(&self, component: &str) -> Vec<(usize, &TypeDef)> {
-        self.types.iter().enumerate()
+        self.types
+            .iter()
+            .enumerate()
             .filter(|(_, td)| td.source_component.as_deref() == Some(component))
             .collect()
     }
@@ -391,7 +400,9 @@ impl TypeRegistry {
     /// Check if type_id is a subtype of target_id.
     /// Walks parent chain AND checks interface implementations.
     pub fn is_subtype(&self, type_id: usize, target_id: usize) -> bool {
-        if type_id == target_id { return true; }
+        if type_id == target_id {
+            return true;
+        }
 
         // Check interface implementations
         if let Some(typedef) = self.types.get(type_id) {
@@ -405,7 +416,9 @@ impl TypeRegistry {
         loop {
             if let Some(typedef) = self.types.get(tid) {
                 if let Some(parent) = typedef.parent {
-                    if parent == target_id { return true; }
+                    if parent == target_id {
+                        return true;
+                    }
                     // Also check parent's interface implementations
                     if let Some(parent_td) = self.types.get(parent) {
                         if parent_td.implements.contains(&target_id) {
@@ -435,7 +448,8 @@ impl TypeRegistry {
     pub fn register_interface(&mut self, name: &str, methods: &[(&str, u8)]) -> usize {
         let mut td = TypeDef::new(name).as_interface();
         for (method_name, param_count) in methods {
-            td.required_methods.push((method_name.to_lowercase(), *param_count));
+            td.required_methods
+                .push((method_name.to_lowercase(), *param_count));
         }
         self.register(td)
     }
@@ -514,13 +528,17 @@ impl TypeRegistry {
                     typedef.is_interface = true;
                     // For interfaces, methods are required method signatures
                     for (method_name, _) in &entry.methods {
-                        typedef.required_methods.push((method_name.to_lowercase(), 0));
+                        typedef
+                            .required_methods
+                            .push((method_name.to_lowercase(), 0));
                     }
                 }
 
                 // Add vtable methods (ChunkFn)
                 for (method_name, chunk_idx) in &entry.methods {
-                    typedef.methods.insert(method_name.to_lowercase(), Method::ChunkFn(*chunk_idx));
+                    typedef
+                        .methods
+                        .insert(method_name.to_lowercase(), Method::ChunkFn(*chunk_idx));
                 }
 
                 // Set constructor
@@ -564,35 +582,57 @@ struct ResourceEntry {
 
 impl ResourceTable {
     pub fn new() -> Self {
-        ResourceTable { entries: HashMap::new(), next_handle: 1 }
+        ResourceTable {
+            entries: HashMap::new(),
+            next_handle: 1,
+        }
     }
 
     pub fn create(&mut self, type_id: usize, data: super::Value) -> u32 {
         let handle = self.next_handle;
         self.next_handle += 1;
-        self.entries.insert(handle, ResourceEntry { type_id, data, borrow_count: 0, dropped: false });
+        self.entries.insert(
+            handle,
+            ResourceEntry {
+                type_id,
+                data,
+                borrow_count: 0,
+                dropped: false,
+            },
+        );
         handle
     }
 
     pub fn borrow(&mut self, handle: u32) -> Option<super::Value> {
         let entry = self.entries.get_mut(&handle)?;
-        if entry.dropped { return None; }
+        if entry.dropped {
+            return None;
+        }
         entry.borrow_count += 1;
         Some(entry.data.clone())
     }
 
     pub fn release_borrow(&mut self, handle: u32) {
         if let Some(entry) = self.entries.get_mut(&handle) {
-            if entry.borrow_count > 0 { entry.borrow_count -= 1; }
+            if entry.borrow_count > 0 {
+                entry.borrow_count -= 1;
+            }
         }
     }
 
     pub fn drop_resource(&mut self, handle: u32) -> Result<super::Value, String> {
-        let entry = self.entries.get_mut(&handle)
+        let entry = self
+            .entries
+            .get_mut(&handle)
             .ok_or_else(|| format!("Invalid resource handle: {}", handle))?;
-        if entry.dropped { return Err(format!("Resource {} already dropped", handle)); }
+        if entry.dropped {
+            return Err(format!("Resource {} already dropped", handle));
+        }
         if entry.borrow_count > 0 {
-            return Err(format!("Cannot drop resource {}: {} active borrows", handle, entry.borrow_count));
+            return Err(format!(
+                "Cannot drop resource {}: {} active borrows",
+                handle, entry.borrow_count
+            ));
         }
         entry.dropped = true;
         Ok(entry.data.clone())
@@ -603,6 +643,9 @@ impl ResourceTable {
     }
 
     pub fn is_valid(&self, handle: u32) -> bool {
-        self.entries.get(&handle).map(|e| !e.dropped).unwrap_or(false)
+        self.entries
+            .get(&handle)
+            .map(|e| !e.dropped)
+            .unwrap_or(false)
     }
 }

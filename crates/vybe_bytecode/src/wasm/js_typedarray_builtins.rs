@@ -53,23 +53,29 @@ impl TypedElem {
     /// Returns (module_name, bytes_per_element, value_wasm_type).
     pub fn info(self) -> (&'static str, u32, u8) {
         match self {
-            TypedElem::I8       => ("ecma:int8array",     1, TYPE_I32),
-            TypedElem::U8       => ("ecma:uint8array",    1, TYPE_I32),
-            TypedElem::U8Clamped=> ("ecma:uint8clamped",  1, TYPE_I32),
-            TypedElem::I16      => ("ecma:int16array",    2, TYPE_I32),
-            TypedElem::U16      => ("ecma:uint16array",   2, TYPE_I32),
-            TypedElem::I32      => ("ecma:int32array",    4, TYPE_I32),
-            TypedElem::U32      => ("ecma:uint32array",   4, TYPE_I32),
-            TypedElem::F32      => ("ecma:float32array",  4, TYPE_F32),
-            TypedElem::F64      => ("ecma:float64array",  8, TYPE_F64),
-            TypedElem::BigI64   => ("wasm:js-bigint64array", 8, TYPE_I64),
-            TypedElem::BigU64   => ("ecma:biguint64array",8, TYPE_I64),
+            TypedElem::I8 => ("ecma:int8array", 1, TYPE_I32),
+            TypedElem::U8 => ("ecma:uint8array", 1, TYPE_I32),
+            TypedElem::U8Clamped => ("ecma:uint8clamped", 1, TYPE_I32),
+            TypedElem::I16 => ("ecma:int16array", 2, TYPE_I32),
+            TypedElem::U16 => ("ecma:uint16array", 2, TYPE_I32),
+            TypedElem::I32 => ("ecma:int32array", 4, TYPE_I32),
+            TypedElem::U32 => ("ecma:uint32array", 4, TYPE_I32),
+            TypedElem::F32 => ("ecma:float32array", 4, TYPE_F32),
+            TypedElem::F64 => ("ecma:float64array", 8, TYPE_F64),
+            TypedElem::BigI64 => ("wasm:js-bigint64array", 8, TYPE_I64),
+            TypedElem::BigU64 => ("ecma:biguint64array", 8, TYPE_I64),
         }
     }
 
-    pub fn module(self) -> &'static str { self.info().0 }
-    pub fn bytes_per_element(self) -> u32 { self.info().1 }
-    pub fn value_type(self) -> u8 { self.info().2 }
+    pub fn module(self) -> &'static str {
+        self.info().0
+    }
+    pub fn bytes_per_element(self) -> u32 {
+        self.info().1
+    }
+    pub fn value_type(self) -> u8 {
+        self.info().2
+    }
 }
 
 /// Ordered list of all 11 typed-array variants.
@@ -91,36 +97,31 @@ pub const VARIANTS: &[TypedElem] = &[
 /// Matches ECMA-262 §23.2.3 (TypedArray prototype).
 pub const IMPORTS: &[&str] = &[
     // ── Construction ────────────────────────────────────────────────
-    "newWithLength",             // new TypedArray(length)
-    "newFromBuffer",             // new TypedArray(buffer, byteOffset?, length?)
-    "newFromIterable",           // new TypedArray(iterable)
-    "newFromTypedArray",         // new TypedArray(otherTypedArray) — copies
-
+    "newWithLength",     // new TypedArray(length)
+    "newFromBuffer",     // new TypedArray(buffer, byteOffset?, length?)
+    "newFromIterable",   // new TypedArray(iterable)
+    "newFromTypedArray", // new TypedArray(otherTypedArray) — copies
     // ── Statics ─────────────────────────────────────────────────────
-    "from",                      // TypedArray.from(source, mapFn?)
-    "of",                        // TypedArray.of(...values)
-
+    "from", // TypedArray.from(source, mapFn?)
+    "of",   // TypedArray.of(...values)
     // ── Properties ──────────────────────────────────────────────────
-    "buffer",                    // arr.buffer
-    "byteOffset",                // arr.byteOffset
-    "byteLength",                // arr.byteLength
-    "length",                    // arr.length
-
+    "buffer",     // arr.buffer
+    "byteOffset", // arr.byteOffset
+    "byteLength", // arr.byteLength
+    "length",     // arr.length
     // ── Element access ──────────────────────────────────────────────
-    "get",                       // arr[i]
-    "set",                       // arr[i] = v
-    "at",                        // arr.at(i)
-
+    "get", // arr[i]
+    "set", // arr[i] = v
+    "at",  // arr.at(i)
     // ── Mutating ────────────────────────────────────────────────────
-    "setArray",                  // arr.set(sourceArray, offset?)
+    "setArray", // arr.set(sourceArray, offset?)
     "copyWithin",
     "fill",
     "reverse",
     "sort",
-
     // ── Non-mutating ────────────────────────────────────────────────
     "slice",
-    "subarray",                  // view over same buffer, no copy
+    "subarray", // view over same buffer, no copy
     "indexOf",
     "lastIndexOf",
     "includes",
@@ -131,7 +132,6 @@ pub const IMPORTS: &[&str] = &[
     "join",
     "toString",
     "toLocaleString",
-
     // ── Iteration / higher-order ────────────────────────────────────
     "forEach",
     "map",
@@ -143,7 +143,6 @@ pub const IMPORTS: &[&str] = &[
     "keys",
     "values",
     "entries",
-
     // ── ES2023 non-mutating variants ────────────────────────────────
     "toReversed",
     "toSorted",
@@ -156,126 +155,185 @@ pub fn write_signature(out: &mut Vec<u8>, variant: TypedElem, name: &str) -> boo
     let value_t = variant.value_type();
     match name {
         "newWithLength" => {
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "newFromBuffer" => {
             // (buffer, byteOffset, length) — pass -1 for omitted
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "newFromIterable" | "newFromTypedArray" | "from" | "of" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "buffer" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "byteOffset" | "byteLength" | "length" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "get" | "at" => {
             // (arr, index) -> element_value
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(value_t);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(value_t);
         }
         "set" => {
             // (arr, index, value) -> ()
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32); out.push(value_t);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            out.push(value_t);
             write_leb128_u32(out, 0);
         }
         "setArray" => {
             // (arr, source, offset) -> ()
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF); out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
             write_leb128_u32(out, 0);
         }
         "copyWithin" => {
             write_leb128_u32(out, 4);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32); out.push(TYPE_I32); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "fill" => {
             write_leb128_u32(out, 4);
-            out.push(TYPE_EXTERNREF); out.push(value_t); out.push(TYPE_I32); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(value_t);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "reverse" | "toReversed" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "sort" | "toSorted" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "slice" | "subarray" => {
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "indexOf" | "lastIndexOf" => {
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(value_t); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            out.push(value_t);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "includes" => {
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(value_t); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            out.push(value_t);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "find" | "findLast" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(value_t);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(value_t);
         }
         "findIndex" | "findLastIndex" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "join" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "toString" | "toLocaleString" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "forEach" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 0);
         }
         "map" | "filter" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "reduce" | "reduceRight" => {
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "some" | "every" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "keys" | "values" | "entries" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "with" => {
             write_leb128_u32(out, 3);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32); out.push(value_t);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            out.push(value_t);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         _ => return false,
     }

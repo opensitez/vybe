@@ -1,7 +1,7 @@
-use vybe_bytecode::*;
-use vybe_bytecode::value::*;
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
+use vybe_bytecode::value::*;
+use vybe_bytecode::*;
 
 // ============================================================
 // Helper: build chunks, write to WASM, read back
@@ -174,7 +174,10 @@ fn i32_div_and_rem() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+    match result {
+        Value::I32(5) => {}
+        _ => panic!("Expected I32(5), got {:?}", result),
+    }
 }
 
 #[test]
@@ -190,7 +193,11 @@ fn i32_div_by_zero() {
 
     let mut vm = VM::new();
     let err = vm.run(vec![chunk]).expect_err("expected trap");
-    assert!(err.message.contains("divide by zero"), "got: {}", err.message);
+    assert!(
+        err.message.contains("divide by zero"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -205,7 +212,10 @@ fn i32_rotate() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+    match result {
+        Value::I32(3) => {}
+        _ => panic!("Expected I32(3), got {:?}", result),
+    }
 }
 
 #[test]
@@ -230,7 +240,10 @@ fn i32_clz_ctz_popcnt() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(46) => {} _ => panic!("Expected I32(46), got {:?}", result) }
+    match result {
+        Value::I32(46) => {}
+        _ => panic!("Expected I32(46), got {:?}", result),
+    }
 }
 
 #[test]
@@ -261,7 +274,10 @@ fn i64_arithmetic() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I64(3_000_000_000_000) => {} _ => panic!("Expected I64(3T), got {:?}", result) }
+    match result {
+        Value::I64(3_000_000_000_000) => {}
+        _ => panic!("Expected I64(3T), got {:?}", result),
+    }
 }
 
 #[test]
@@ -276,7 +292,10 @@ fn i64_bitwise() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I64(0x0F00) => {} _ => panic!("Expected I64(0x0F00), got {:?}", result) }
+    match result {
+        Value::I64(0x0F00) => {}
+        _ => panic!("Expected I64(0x0F00), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -293,7 +312,10 @@ fn f64_math_ops() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 4.0 => {} _ => panic!("Expected F64(4.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 4.0 => {}
+        _ => panic!("Expected F64(4.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -305,7 +327,10 @@ fn f64_floor() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 3.0 => {} _ => panic!("Expected F64(3.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 3.0 => {}
+        _ => panic!("Expected F64(3.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -317,7 +342,10 @@ fn f64_sqrt() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 12.0 => {} _ => panic!("Expected F64(12.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 12.0 => {}
+        _ => panic!("Expected F64(12.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -329,7 +357,10 @@ fn f64_abs_neg() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 7.5 => {} _ => panic!("Expected F64(7.5), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 7.5 => {}
+        _ => panic!("Expected F64(7.5), got {:?}", result),
+    }
 }
 
 #[test]
@@ -350,7 +381,10 @@ fn f64_min_max() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 10.0 => {} _ => panic!("Expected F64(10.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 10.0 => {}
+        _ => panic!("Expected F64(10.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -370,7 +404,10 @@ fn f64_trunc_nearest() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 5.0 => {} _ => panic!("Expected F64(5.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 5.0 => {}
+        _ => panic!("Expected F64(5.0), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -383,14 +420,17 @@ fn select_true() {
     let a = chunk.add_constant(Value::F64(10.0));
     let b = chunk.add_constant(Value::F64(20.0));
     let cond = chunk.add_constant(Value::I32(1)); // true
-    chunk.emit_op_u16(Op::CONST, a, 0);     // val1
-    chunk.emit_op_u16(Op::CONST, b, 0);     // val2
-    chunk.emit_op_u16(Op::CONST, cond, 0);  // condition
+    chunk.emit_op_u16(Op::CONST, a, 0); // val1
+    chunk.emit_op_u16(Op::CONST, b, 0); // val2
+    chunk.emit_op_u16(Op::CONST, cond, 0); // condition
     chunk.emit_op(Op::SELECT, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 10.0 => {} _ => panic!("Expected F64(10.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 10.0 => {}
+        _ => panic!("Expected F64(10.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -406,7 +446,10 @@ fn select_false() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 20.0 => {} _ => panic!("Expected F64(20.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 20.0 => {}
+        _ => panic!("Expected F64(20.0), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -422,7 +465,10 @@ fn i32_wrap_i64_test() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+    match result {
+        Value::I32(42) => {}
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 #[test]
@@ -435,7 +481,10 @@ fn i64_extend_i32() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I64(-1) => {} _ => panic!("Expected I64(-1), got {:?}", result) }
+    match result {
+        Value::I64(-1) => {}
+        _ => panic!("Expected I64(-1), got {:?}", result),
+    }
 }
 
 #[test]
@@ -448,7 +497,10 @@ fn i64_extend_i32_unsigned() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I64(v) if v == 0xFFFF_FFFF => {} _ => panic!("Expected I64(0xFFFFFFFF), got {:?}", result) }
+    match result {
+        Value::I64(v) if v == 0xFFFF_FFFF => {}
+        _ => panic!("Expected I64(0xFFFFFFFF), got {:?}", result),
+    }
 }
 
 #[test]
@@ -461,7 +513,10 @@ fn sign_extension_i32() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(-128) => {} _ => panic!("Expected I32(-128), got {:?}", result) }
+    match result {
+        Value::I32(-128) => {}
+        _ => panic!("Expected I32(-128), got {:?}", result),
+    }
 }
 
 #[test]
@@ -476,7 +531,10 @@ fn reinterpret_f64_i64() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 1.0 => {} _ => panic!("Expected F64(1.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 1.0 => {}
+        _ => panic!("Expected F64(1.0), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -511,7 +569,10 @@ fn memory_i32_load8_signed() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(254) => {} _ => panic!("Expected I32(254), got {:?}", result) }
+    match result {
+        Value::I32(254) => {}
+        _ => panic!("Expected I32(254), got {:?}", result),
+    }
 }
 
 #[test]
@@ -542,7 +603,10 @@ fn memory_i32_load16() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(2) => {} _ => panic!("Expected I32(2), got {:?}", result) }
+    match result {
+        Value::I32(2) => {}
+        _ => panic!("Expected I32(2), got {:?}", result),
+    }
 }
 
 #[test]
@@ -594,7 +658,10 @@ fn bool_in_arithmetic() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(10) => {} _ => panic!("Expected I32(10), got {:?}", result) }
+    match result {
+        Value::I32(10) => {}
+        _ => panic!("Expected I32(10), got {:?}", result),
+    }
 }
 
 #[test]
@@ -613,7 +680,10 @@ fn bool_true_as_one() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(11) => {} _ => panic!("Expected I32(11), got {:?}", result) }
+    match result {
+        Value::I32(11) => {}
+        _ => panic!("Expected I32(11), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -679,7 +749,10 @@ fn roundtrip_i32_ops() {
 
     let restored = roundtrip(vec![chunk]);
     let result = run_chunks(restored);
-    match result { Value::I32(7) => {} _ => panic!("Expected I32(7), got {:?}", result) }
+    match result {
+        Value::I32(7) => {}
+        _ => panic!("Expected I32(7), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -706,7 +779,10 @@ fn str_length_op() {
     chunk.emit_op(Op::STR_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+    match result {
+        Value::I32(5) => {}
+        _ => panic!("Expected I32(5), got {:?}", result),
+    }
 }
 
 #[test]
@@ -717,7 +793,10 @@ fn str_to_upper_lower() {
     chunk.emit_op(Op::STR_TO_UPPER, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match &result { Value::String(s) if s.as_ref() == "HELLO" => {} _ => panic!("Expected HELLO, got {:?}", result) }
+    match &result {
+        Value::String(s) if s.as_ref() == "HELLO" => {}
+        _ => panic!("Expected HELLO, got {:?}", result),
+    }
 }
 
 #[test]
@@ -732,7 +811,10 @@ fn str_char_code_and_from() {
     chunk.emit_op(Op::STR_CHAR_CODE_AT, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(65) => {} _ => panic!("Expected I32(65), got {:?}", result) }
+    match result {
+        Value::I32(65) => {}
+        _ => panic!("Expected I32(65), got {:?}", result),
+    }
 }
 
 #[test]
@@ -745,7 +827,10 @@ fn str_index_of_op() {
     chunk.emit_op(Op::STR_INDEX_OF, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(6) => {} _ => panic!("Expected I32(6), got {:?}", result) }
+    match result {
+        Value::I32(6) => {}
+        _ => panic!("Expected I32(6), got {:?}", result),
+    }
 }
 
 #[test]
@@ -760,7 +845,10 @@ fn str_substring_op() {
     chunk.emit_op(Op::STR_SUBSTRING, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match &result { Value::String(s) if s.as_ref() == "hello" => {} _ => panic!("Expected hello, got {:?}", result) }
+    match &result {
+        Value::String(s) if s.as_ref() == "hello" => {}
+        _ => panic!("Expected hello, got {:?}", result),
+    }
 }
 
 #[test]
@@ -775,7 +863,10 @@ fn str_replace_op() {
     chunk.emit_op(Op::STR_REPLACE, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match &result { Value::String(s) if s.as_ref() == "hello rust" => {} _ => panic!("Expected 'hello rust', got {:?}", result) }
+    match &result {
+        Value::String(s) if s.as_ref() == "hello rust" => {}
+        _ => panic!("Expected 'hello rust', got {:?}", result),
+    }
 }
 
 #[test]
@@ -789,7 +880,10 @@ fn str_split_op() {
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+    match result {
+        Value::I32(3) => {}
+        _ => panic!("Expected I32(3), got {:?}", result),
+    }
 }
 
 #[test]
@@ -801,7 +895,10 @@ fn str_trim_op() {
     chunk.emit_op(Op::STR_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+    match result {
+        Value::I32(5) => {}
+        _ => panic!("Expected I32(5), got {:?}", result),
+    }
 }
 
 #[test]
@@ -814,7 +911,10 @@ fn str_starts_ends_contains() {
     chunk.emit_op(Op::STR_STARTS_WITH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::Bool(true) => {} _ => panic!("Expected Bool(true), got {:?}", result) }
+    match result {
+        Value::Bool(true) => {}
+        _ => panic!("Expected Bool(true), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -834,9 +934,11 @@ fn array_length_op() {
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
+    match result {
+        Value::I32(3) => {}
+        _ => panic!("Expected I32(3), got {:?}", result),
+    }
 }
-
 
 #[test]
 fn array_new_default_op() {
@@ -848,9 +950,11 @@ fn array_new_default_op() {
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+    match result {
+        Value::I32(5) => {}
+        _ => panic!("Expected I32(5), got {:?}", result),
+    }
 }
-
 
 // ============================================================
 // SIMD (i32x4)
@@ -873,7 +977,10 @@ fn simd_i32x4_add() {
     chunk.emit_op_u8(Op::I32X4_EXTRACT_LANE, 0, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(15) => {} _ => panic!("Expected I32(15), got {:?}", result) }
+    match result {
+        Value::I32(15) => {}
+        _ => panic!("Expected I32(15), got {:?}", result),
+    }
 }
 
 #[test]
@@ -889,7 +996,10 @@ fn simd_f64x2_mul() {
     chunk.emit_op_u8(Op::F64X2_EXTRACT_LANE, 0, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::F64(v) if v == 21.0 => {} _ => panic!("Expected F64(21.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 21.0 => {}
+        _ => panic!("Expected F64(21.0), got {:?}", result),
+    }
 }
 
 #[test]
@@ -906,7 +1016,10 @@ fn simd_v128_bitwise() {
     chunk.emit_op_u8(Op::I8X16_EXTRACT_LANE_U, 0, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(0x0F) => {} _ => panic!("Expected I32(0x0F), got {:?}", result) }
+    match result {
+        Value::I32(0x0F) => {}
+        _ => panic!("Expected I32(0x0F), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -935,7 +1048,10 @@ fn atomic_rmw_add() {
     // Returns old value (100)
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(100) => {} _ => panic!("Expected I32(100), got {:?}", result) }
+    match result {
+        Value::I32(100) => {}
+        _ => panic!("Expected I32(100), got {:?}", result),
+    }
 }
 
 #[test]
@@ -963,7 +1079,10 @@ fn atomic_cmpxchg() {
     chunk.emit_op(Op::I32_ATOMIC_LOAD, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(99) => {} _ => panic!("Expected I32(99), got {:?}", result) }
+    match result {
+        Value::I32(99) => {}
+        _ => panic!("Expected I32(99), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -979,7 +1098,10 @@ fn i31ref_roundtrip() {
     chunk.emit_op(Op::I31_GET_S, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+    match result {
+        Value::I32(42) => {}
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 #[test]
@@ -992,7 +1114,10 @@ fn i31ref_negative() {
     chunk.emit_op(Op::I31_GET_S, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(-1) => {} _ => panic!("Expected I32(-1), got {:?}", result) }
+    match result {
+        Value::I32(-1) => {}
+        _ => panic!("Expected I32(-1), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -1010,7 +1135,10 @@ fn ref_cast_success() {
     chunk.emit_op(Op::STR_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
+    match result {
+        Value::I32(5) => {}
+        _ => panic!("Expected I32(5), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -1040,7 +1168,10 @@ fn call_ref_basic() {
     script.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![script, double_chunk]);
-    match result { Value::F64(v) if v == 42.0 => {} _ => panic!("Expected F64(42.0), got {:?}", result) }
+    match result {
+        Value::F64(v) if v == 42.0 => {}
+        _ => panic!("Expected F64(42.0), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -1066,7 +1197,10 @@ fn memory64_grow_and_load() {
     chunk.emit_op(Op::I32_LOAD_64, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+    match result {
+        Value::I32(42) => {}
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -1075,9 +1209,11 @@ fn memory64_grow_and_load() {
 
 fn make_promise(id: u64, state: &str, value: Value) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Promise")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Promise")));
     obj.properties.insert("__id".into(), Value::F64(id as f64));
-    obj.properties.insert("__state".into(), Value::String(Arc::from(state)));
+    obj.properties
+        .insert("__state".into(), Value::String(Arc::from(state)));
     obj.properties.insert("__value".into(), value);
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
@@ -1087,9 +1223,13 @@ fn jspi_resolved_promise_returns_immediately() {
     // Host function returns an already-resolved promise.
     // JSPI should extract the value without suspending.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "fetch_sync", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        make_promise(1, "fulfilled", Value::String(Arc::from("data from server")))
-    }));
+    vm.register_host_fn(
+        "test",
+        "fetch_sync",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            make_promise(1, "fulfilled", Value::String(Arc::from("data from server")))
+        }),
+    );
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "fetch_sync");
@@ -1114,9 +1254,11 @@ fn jspi_non_promise_passes_through() {
     // Host function returns a plain value (not a promise).
     // JSPI should pass it through unchanged.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "compute", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::I32(42)
-    }));
+    vm.register_host_fn(
+        "test",
+        "compute",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::I32(42)),
+    );
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "compute");
@@ -1125,7 +1267,10 @@ fn jspi_non_promise_passes_through() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+    match result {
+        Value::I32(42) => {}
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 #[test]
@@ -1133,9 +1278,13 @@ fn jspi_pending_promise_suspends() {
     // Host function returns a pending promise.
     // JSPI should suspend the fiber and return a special error.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "slow_fetch", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        make_promise(99, "pending", Value::Null)
-    }));
+    vm.register_host_fn(
+        "test",
+        "slow_fetch",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            make_promise(99, "pending", Value::Null)
+        }),
+    );
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "slow_fetch");
@@ -1149,7 +1298,11 @@ fn jspi_pending_promise_suspends() {
     match result {
         Err(e) => {
             let msg = format!("{}", e);
-            assert!(msg.contains("__jspi__:99"), "Expected JSPI suspension, got: {}", msg);
+            assert!(
+                msg.contains("__jspi__:99"),
+                "Expected JSPI suspension, got: {}",
+                msg
+            );
         }
         Ok(v) => panic!("Expected JSPI suspension, got Ok({:?})", v),
     }
@@ -1162,13 +1315,25 @@ fn jspi_suspend_then_resume() {
     let output: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let out = output.clone();
 
-    vm.register_host_fn("test", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        out.lock().unwrap().push(format!("{}", args.first().unwrap_or(&Value::Null)));
-        Value::Null
-    }));
-    vm.register_host_fn("test", "async_load", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        make_promise(42, "pending", Value::Null)
-    }));
+    vm.register_host_fn(
+        "test",
+        "log",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                out.lock()
+                    .unwrap()
+                    .push(format!("{}", args.first().unwrap_or(&Value::Null)));
+                Value::Null
+            },
+        ),
+    );
+    vm.register_host_fn(
+        "test",
+        "async_load",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            make_promise(42, "pending", Value::Null)
+        }),
+    );
 
     let mut chunk = Chunk::new("<test>");
 
@@ -1206,10 +1371,14 @@ fn jspi_suspend_then_resume() {
     assert!(vm.has_pending_jspi());
 
     // Resolve the promise — this resumes execution
-    vm.jspi_resolve(42, Value::String(Arc::from("loaded data"))).unwrap();
+    vm.jspi_resolve(42, Value::String(Arc::from("loaded data")))
+        .unwrap();
 
     // Now "after" should have been logged
-    assert_eq!(*output.lock().unwrap(), vec!["before", "loaded data", "after"]);
+    assert_eq!(
+        *output.lock().unwrap(),
+        vec!["before", "loaded data", "after"]
+    );
     assert!(!vm.has_pending_jspi());
 }
 
@@ -1239,5 +1408,8 @@ fn jspi_promise_suspend_opcode() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::I32(99) => {} _ => panic!("Expected I32(99), got {:?}", result) }
+    match result {
+        Value::I32(99) => {}
+        _ => panic!("Expected I32(99), got {:?}", result),
+    }
 }

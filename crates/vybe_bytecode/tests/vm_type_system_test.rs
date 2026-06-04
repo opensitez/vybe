@@ -7,10 +7,10 @@
 //! - ref_test opcode with registered types
 //! - Cross-language instanceof using __type and __types properties
 
-use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef, Method};
-use vybe_bytecode::value::{Object, ObjectKind};
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
+use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::{Chunk, Method, Op, TypeDef, VM, Value};
 
 // ============================================================
 // TypeRegistry unit tests
@@ -25,8 +25,12 @@ fn test_type_registration_and_lookup() {
     assert_eq!(vm.type_registry.get_id("object"), Some(0)); // case-insensitive
 
     // Register new types
-    let list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
-    let dict_id = vm.type_registry.register(TypeDef::new("Dictionary").with_parent(0));
+    let list_id = vm
+        .type_registry
+        .register(TypeDef::new("List").with_parent(0));
+    let dict_id = vm
+        .type_registry
+        .register(TypeDef::new("Dictionary").with_parent(0));
 
     assert!(list_id > 0);
     assert!(dict_id > 0);
@@ -45,8 +49,12 @@ fn test_type_registration_and_lookup() {
 fn test_subtype_checking_direct_parent() {
     let mut vm = VM::new();
 
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
-    let button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
+    let button_id = vm
+        .type_registry
+        .register(TypeDef::new("Button").with_parent(control_id));
 
     // Button is a subtype of Control
     assert!(vm.type_registry.is_subtype(button_id, control_id));
@@ -68,10 +76,18 @@ fn test_subtype_checking_deep_chain() {
     let mut vm = VM::new();
 
     // Object -> Control -> TextBoxBase -> TextBox -> RichTextBox
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
-    let textbox_base_id = vm.type_registry.register(TypeDef::new("TextBoxBase").with_parent(control_id));
-    let textbox_id = vm.type_registry.register(TypeDef::new("TextBox").with_parent(textbox_base_id));
-    let rich_id = vm.type_registry.register(TypeDef::new("RichTextBox").with_parent(textbox_id));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
+    let textbox_base_id = vm
+        .type_registry
+        .register(TypeDef::new("TextBoxBase").with_parent(control_id));
+    let textbox_id = vm
+        .type_registry
+        .register(TypeDef::new("TextBox").with_parent(textbox_base_id));
+    let rich_id = vm
+        .type_registry
+        .register(TypeDef::new("RichTextBox").with_parent(textbox_id));
 
     // RichTextBox is a subtype of everything above it
     assert!(vm.type_registry.is_subtype(rich_id, textbox_id));
@@ -80,7 +96,9 @@ fn test_subtype_checking_deep_chain() {
     assert!(vm.type_registry.is_subtype(rich_id, 0)); // Object
 
     // Siblings are not subtypes of each other
-    let label_id = vm.type_registry.register(TypeDef::new("Label").with_parent(control_id));
+    let label_id = vm
+        .type_registry
+        .register(TypeDef::new("Label").with_parent(control_id));
     assert!(!vm.type_registry.is_subtype(label_id, textbox_id));
     assert!(!vm.type_registry.is_subtype(textbox_id, label_id));
     // But both are subtypes of Control
@@ -94,11 +112,16 @@ fn test_method_resolution_own_type() {
 
     // Register a host function
     vm.register_host_fn("test", "listAdd", Box::new(|_, _| Value::Null));
-    let host_idx = *vm.host_registry.get(&("test".to_string(), "listAdd".to_string())).unwrap();
+    let host_idx = *vm
+        .host_registry
+        .get(&("test".to_string(), "listAdd".to_string()))
+        .unwrap();
 
     // Register List type with an "add" method
     let list_id = vm.type_registry.register(
-        TypeDef::new("List").with_parent(0).host_method("add", host_idx)
+        TypeDef::new("List")
+            .with_parent(0)
+            .host_method("add", host_idx),
     );
 
     // Resolve method on List
@@ -114,14 +137,24 @@ fn test_method_resolution_own_type() {
 fn test_method_resolution_inherited() {
     let mut vm = VM::new();
 
-    vm.register_host_fn("test", "toString", Box::new(|_, _| Value::String(Arc::from("str"))));
-    let to_string_idx = *vm.host_registry.get(&("test".to_string(), "toString".to_string())).unwrap();
+    vm.register_host_fn(
+        "test",
+        "toString",
+        Box::new(|_, _| Value::String(Arc::from("str"))),
+    );
+    let to_string_idx = *vm
+        .host_registry
+        .get(&("test".to_string(), "toString".to_string()))
+        .unwrap();
 
     // Add toString to Object (type 0)
-    vm.type_registry.add_host_method(0, "tostring", to_string_idx);
+    vm.type_registry
+        .add_host_method(0, "tostring", to_string_idx);
 
     // Register List inheriting from Object
-    let list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
+    let list_id = vm
+        .type_registry
+        .register(TypeDef::new("List").with_parent(0));
 
     // List should inherit toString from Object
     let method = vm.type_registry.resolve_method(list_id, "tostring");
@@ -137,16 +170,24 @@ fn test_method_resolution_override() {
     let mut vm = VM::new();
 
     vm.register_host_fn("test", "base_count", Box::new(|_, _| Value::F64(0.0)));
-    let base_fn = *vm.host_registry.get(&("test".to_string(), "base_count".to_string())).unwrap();
+    let base_fn = *vm
+        .host_registry
+        .get(&("test".to_string(), "base_count".to_string()))
+        .unwrap();
     vm.register_host_fn("test", "list_count", Box::new(|_, _| Value::F64(42.0)));
-    let override_fn = *vm.host_registry.get(&("test".to_string(), "list_count".to_string())).unwrap();
+    let override_fn = *vm
+        .host_registry
+        .get(&("test".to_string(), "list_count".to_string()))
+        .unwrap();
 
     // Object has a count method
     vm.type_registry.add_host_method(0, "count", base_fn);
 
     // List overrides count
     let list_id = vm.type_registry.register(
-        TypeDef::new("List").with_parent(0).host_method("count", override_fn)
+        TypeDef::new("List")
+            .with_parent(0)
+            .host_method("count", override_fn),
     );
 
     // List.count should resolve to the override
@@ -170,13 +211,15 @@ fn test_method_resolution_override() {
 
 fn make_typed_object(type_name: &str) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from(type_name)));
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 fn make_typed_object_with_id(type_id: usize, type_name: &str) -> Value {
     let mut obj = Object::new_typed(type_id);
-    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from(type_name)));
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
@@ -184,8 +227,12 @@ fn make_typed_object_with_id(type_id: usize, type_name: &str) -> Value {
 fn test_ref_test_opcode_with_type_string() {
     // Create a VM with types registered
     let mut vm = VM::new();
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
-    let _button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
+    let _button_id = vm
+        .type_registry
+        .register(TypeDef::new("Button").with_parent(control_id));
 
     // Build a chunk that: push a Button object, ref_test "control"
     let mut chunk = Chunk::new("<test>");
@@ -199,14 +246,22 @@ fn test_ref_test_opcode_with_type_string() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Button should be a subtype of Control, got {:?}", result);
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Button should be a subtype of Control, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn test_ref_test_opcode_with_type_id() {
     let mut vm = VM::new();
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
-    let button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
+    let button_id = vm
+        .type_registry
+        .register(TypeDef::new("Button").with_parent(control_id));
 
     // Build chunk with a typed object (type_id set)
     let mut chunk = Chunk::new("<test>");
@@ -218,15 +273,25 @@ fn test_ref_test_opcode_with_type_id() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Button (type_id) should be a subtype of Control, got {:?}", result);
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Button (type_id) should be a subtype of Control, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn test_ref_test_opcode_negative() {
     let mut vm = VM::new();
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
-    let _button_id = vm.type_registry.register(TypeDef::new("Button").with_parent(control_id));
-    let _list_id = vm.type_registry.register(TypeDef::new("List").with_parent(0));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
+    let _button_id = vm
+        .type_registry
+        .register(TypeDef::new("Button").with_parent(control_id));
+    let _list_id = vm
+        .type_registry
+        .register(TypeDef::new("List").with_parent(0));
 
     // A List is NOT a Button
     let mut chunk = Chunk::new("<test>");
@@ -238,7 +303,11 @@ fn test_ref_test_opcode_negative() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(false)), "List should NOT be a subtype of Button, got {:?}", result);
+    assert!(
+        matches!(result, Value::Bool(false)),
+        "List should NOT be a subtype of Button, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -253,8 +322,12 @@ fn test_ref_test_with_js_types_array() {
         Value::String(Arc::from("Animal")),
         Value::String(Arc::from("Dog")),
     ]);
-    obj.properties.insert("__types".into(), Value::Object(Arc::new(std::sync::Mutex::new(types_arr))));
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Dog")));
+    obj.properties.insert(
+        "__types".into(),
+        Value::Object(Arc::new(std::sync::Mutex::new(types_arr))),
+    );
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Dog")));
 
     let const_idx = chunk.add_constant(Value::Object(Arc::new(std::sync::Mutex::new(obj))));
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
@@ -263,7 +336,11 @@ fn test_ref_test_with_js_types_array() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Dog (via __types) should match Animal, got {:?}", result);
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Dog (via __types) should match Animal, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -279,7 +356,11 @@ fn test_ref_test_primitives() {
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "String should match 'string', got {:?}", result);
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "String should match 'string', got {:?}",
+        result
+    );
 }
 
 // ============================================================
@@ -322,7 +403,9 @@ fn test_resource_table_borrow_prevents_drop() {
 #[test]
 fn test_register_resource_in_type_registry() {
     let mut vm = VM::new();
-    let control_id = vm.type_registry.register(TypeDef::new("Control").with_parent(0));
+    let control_id = vm
+        .type_registry
+        .register(TypeDef::new("Control").with_parent(0));
 
     // Register a resource type with parent
     let mut td = TypeDef::new("FileHandle");

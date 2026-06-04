@@ -20,7 +20,11 @@ pub struct StackFrame {
 
 impl VMError {
     pub fn new(msg: impl Into<String>) -> Self {
-        VMError { message: msg.into(), line: None, call_stack: Vec::new() }
+        VMError {
+            message: msg.into(),
+            line: None,
+            call_stack: Vec::new(),
+        }
     }
 
     pub fn with_line(mut self, line: u32) -> Self {
@@ -43,8 +47,7 @@ impl fmt::Display for VMError {
         if !self.call_stack.is_empty() {
             write!(f, "\n  Call stack:")?;
             for frame in &self.call_stack {
-                write!(f, "\n    at {} (offset {}",
-                    frame.chunk_name, frame.offset)?;
+                write!(f, "\n    at {} (offset {}", frame.chunk_name, frame.offset)?;
                 if let Some(line) = frame.line {
                     write!(f, ", line {}", line)?;
                 }

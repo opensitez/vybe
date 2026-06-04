@@ -114,10 +114,8 @@ impl Linker {
     /// Register all host functions from a VM as exports.
     pub fn register_host_from_vm(&mut self, vm: &crate::VM) {
         for (module, name, idx) in vm.iter_host_function_exports() {
-            self.host_exports.insert(
-                (module, name),
-                ExportImpl::HostFn(idx),
-            );
+            self.host_exports
+                .insert((module, name), ExportImpl::HostFn(idx));
         }
         for (module, name, typedef) in vm.iter_host_type_exports() {
             self.host_type_exports.insert((module, name), typedef);
@@ -166,7 +164,10 @@ impl Linker {
                 if all_exports.contains_key(&(iface.clone(), func.clone())) {
                     continue; // resolved from component exports
                 }
-                if self.host_exports.contains_key(&(iface.clone(), func.clone())) {
+                if self
+                    .host_exports
+                    .contains_key(&(iface.clone(), func.clone()))
+                {
                     continue; // resolved from host
                 }
                 // Non-"*" imports (e.g. "wasi:cli", "vybe:math") are host imports
@@ -180,14 +181,16 @@ impl Linker {
         }
 
         if !unresolved.is_empty() {
-            let msgs: Vec<String> = unresolved.iter()
+            let msgs: Vec<String> = unresolved
+                .iter()
                 .map(|(c, i, f)| format!("  {}: {}:{}", c, i, f))
                 .collect();
             return Err(format!("Unresolved imports:\n{}", msgs.join("\n")));
         }
 
         // 4. Resolve type imports/exports across components
-        let mut all_type_exports: HashMap<(String, String), crate::TypeDef> = self.host_type_exports.clone();
+        let mut all_type_exports: HashMap<(String, String), crate::TypeDef> =
+            self.host_type_exports.clone();
         for comp in &self.components {
             for ((iface, name), typedef) in &comp.type_exports {
                 all_type_exports.insert((iface.clone(), name.clone()), typedef.clone());
@@ -220,25 +223,34 @@ impl Linker {
             // Collect canonical casing from case-sensitive components
             for comp in &self.components {
                 // Skip case-insensitive languages — they're the ones we're fixing
-                if comp.language == Language::VB || comp.language == Language::Cobol { continue; }
+                if comp.language == Language::VB || comp.language == Language::Cobol {
+                    continue;
+                }
                 for chunk in &comp.chunks {
                     for entry in &chunk.types {
                         // Type name
-                        case_map.entry(entry.name.to_lowercase()).or_insert_with(|| entry.name.clone());
+                        case_map
+                            .entry(entry.name.to_lowercase())
+                            .or_insert_with(|| entry.name.clone());
                         // Fields
                         for field in &entry.fields {
-                            case_map.entry(field.to_lowercase()).or_insert_with(|| field.clone());
+                            case_map
+                                .entry(field.to_lowercase())
+                                .or_insert_with(|| field.clone());
                         }
                         // Methods
                         for (method, _) in &entry.methods {
-                            case_map.entry(method.to_lowercase()).or_insert_with(|| method.clone());
+                            case_map
+                                .entry(method.to_lowercase())
+                                .or_insert_with(|| method.clone());
                         }
                     }
                     // Also scan constant pools for string constants (property names used in code)
                     for val in &chunk.constants {
                         if let crate::Value::String(s) = val {
                             let lower = s.to_lowercase();
-                            if lower != s.as_ref() { // only if it HAS uppercase
+                            if lower != s.as_ref() {
+                                // only if it HAS uppercase
                                 case_map.entry(lower).or_insert_with(|| s.to_string());
                             }
                         }
@@ -248,7 +260,9 @@ impl Linker {
 
             // Rewrite constant pools in case-insensitive component chunks (VB, COBOL)
             for (i, comp) in self.components.iter().enumerate() {
-                if comp.language != Language::VB && comp.language != Language::Cobol { continue; }
+                if comp.language != Language::VB && comp.language != Language::Cobol {
+                    continue;
+                }
                 let offset = component_offsets[i];
                 for (ci, _chunk) in comp.chunks.iter().enumerate() {
                     let merged_ci = offset + ci;
@@ -256,10 +270,13 @@ impl Linker {
                     for val in constants.iter_mut() {
                         if let crate::Value::String(s) = val {
                             let lower = s.to_lowercase();
-                            if lower == s.as_ref() { // already lowercase (VB convention)
+                            if lower == s.as_ref() {
+                                // already lowercase (VB convention)
                                 if let Some(canonical) = case_map.get(&lower) {
                                     if canonical.as_str() != s.as_ref() {
-                                        *val = crate::Value::String(std::sync::Arc::from(canonical.as_str()));
+                                        *val = crate::Value::String(std::sync::Arc::from(
+                                            canonical.as_str(),
+                                        ));
                                     }
                                 }
                             }
@@ -288,7 +305,9 @@ impl Linker {
                 };
                 for imp in comp_imports {
                     // Find or insert in unified table
-                    let existing = unified_imports.iter().position(|u| u.module == imp.module && u.name == imp.name);
+                    let existing = unified_imports
+                        .iter()
+                        .position(|u| u.module == imp.module && u.name == imp.name);
                     let new_idx = if let Some(idx) = existing {
                         idx as u16
                     } else {
@@ -310,12 +329,15 @@ impl Linker {
                     let code = &mut all_chunks[merged_ci].code;
                     let mut ip = 0;
                     while ip < code.len() {
-                        if ip + 1 >= code.len() { break; }
+                        if ip + 1 >= code.len() {
+                            break;
+                        }
                         if let Some(op) = crate::opcode::Op::decode(code[ip], code[ip + 1]) {
                             if op == crate::opcode::Op::CALL_IMPORT {
                                 // Remap import index: operand u16 is at ip+2..ip+3
                                 if ip + 3 < code.len() {
-                                    let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                                    let old_idx =
+                                        ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
                                     if (old_idx as usize) < remap.len() {
                                         let new_idx = remap[old_idx as usize];
                                         code[ip + 2] = (new_idx >> 8) as u8;
@@ -350,7 +372,11 @@ impl Linker {
                 if let Some(export) = resolved_exports.get(&key) {
                     match export {
                         ExportImpl::ChunkFn(ci) => {
-                            let arity = if *ci < all_chunks.len() { all_chunks[*ci].arity } else { 0 };
+                            let arity = if *ci < all_chunks.len() {
+                                all_chunks[*ci].arity
+                            } else {
+                                0
+                            };
                             resolved_imports.push(crate::vm::ImportTarget::ChunkFn {
                                 chunk_index: *ci,
                                 arity,
@@ -367,12 +393,14 @@ impl Linker {
                         }
                         _ => {
                             // Unresolved — will be resolved at runtime by the VM
-                            resolved_imports.push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
+                            resolved_imports
+                                .push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
                         }
                     }
                 } else {
                     // Not resolved at link time — VM will resolve at runtime
-                    resolved_imports.push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
+                    resolved_imports
+                        .push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
                 }
             }
         }
@@ -490,12 +518,18 @@ impl ImportPolicy {
     fn check(&self, resolved_path: &str, source: &str) -> Result<(), String> {
         // Check absolute paths
         if !self.allow_absolute_paths && (source.starts_with('/') || source.contains(":\\")) {
-            return Err(format!("Import policy: absolute paths not allowed: {}", source));
+            return Err(format!(
+                "Import policy: absolute paths not allowed: {}",
+                source
+            ));
         }
 
         // Check parent traversal
         if !self.allow_parent_traversal && source.contains("..") {
-            return Err(format!("Import policy: parent directory traversal not allowed: {}", source));
+            return Err(format!(
+                "Import policy: parent directory traversal not allowed: {}",
+                source
+            ));
         }
 
         // Check extension
@@ -505,14 +539,23 @@ impl ImportPolicy {
             .unwrap_or("")
             .to_lowercase();
         if !self.allowed_extensions.iter().any(|e| *e == ext) {
-            return Err(format!("Import policy: extension '.{}' not allowed (allowed: {:?})", ext, self.allowed_extensions));
+            return Err(format!(
+                "Import policy: extension '.{}' not allowed (allowed: {:?})",
+                ext, self.allowed_extensions
+            ));
         }
 
         // Check allowed directories
         if !self.allowed_dirs.is_empty() {
-            let in_allowed = self.allowed_dirs.iter().any(|d| resolved_path.starts_with(d.as_str()));
+            let in_allowed = self
+                .allowed_dirs
+                .iter()
+                .any(|d| resolved_path.starts_with(d.as_str()));
             if !in_allowed {
-                return Err(format!("Import policy: path outside allowed directories: {}", resolved_path));
+                return Err(format!(
+                    "Import policy: path outside allowed directories: {}",
+                    resolved_path
+                ));
             }
         }
 
@@ -566,7 +609,10 @@ impl ModuleResolver {
     pub fn resolve(&mut self, source: &str) -> Result<&ResolvedModule, String> {
         // Check module count limit
         if self.policy.max_modules > 0 && self.cache.len() >= self.policy.max_modules {
-            return Err(format!("Import policy: maximum module count ({}) reached", self.policy.max_modules));
+            return Err(format!(
+                "Import policy: maximum module count ({}) reached",
+                self.policy.max_modules
+            ));
         }
 
         let abs_path = self.resolve_path(source);
@@ -586,8 +632,18 @@ impl ModuleResolver {
 
         let module = match ext.as_str() {
             "wasm" => self.resolve_wasm(&abs_path)?,
-            "js" => return Err(format!("JS module resolution requires vybe_compiler_js (use .vybe project for cross-language): {}", source)),
-            "vb" => return Err(format!("VB module resolution requires vybe_compiler_vb (use .vybe project for cross-language): {}", source)),
+            "js" => {
+                return Err(format!(
+                    "JS module resolution requires vybe_compiler_js (use .vybe project for cross-language): {}",
+                    source
+                ));
+            }
+            "vb" => {
+                return Err(format!(
+                    "VB module resolution requires vybe_compiler_vb (use .vybe project for cross-language): {}",
+                    source
+                ));
+            }
             _ => return Err(format!("Unknown module type: {}", source)),
         };
 
@@ -597,17 +653,19 @@ impl ModuleResolver {
 
     /// Resolve a .wasm module — read binary, extract exports.
     fn resolve_wasm(&self, path: &str) -> Result<ResolvedModule, String> {
-        let data = std::fs::read(path)
-            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+        let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
         let chunks = crate::wasm::read_wasm(&data)?;
 
         let mut exports = HashMap::new();
         for (i, chunk) in chunks.iter().enumerate() {
             if chunk.name != "<script>" && !chunk.name.starts_with("func_") {
-                exports.insert(chunk.name.clone(), ModuleExport::Function {
-                    chunk_index: i,
-                    arity: chunk.arity,
-                });
+                exports.insert(
+                    chunk.name.clone(),
+                    ModuleExport::Function {
+                        chunk_index: i,
+                        arity: chunk.arity,
+                    },
+                );
             }
         }
 

@@ -1,9 +1,8 @@
-/// Tests for cross-language interface sharing and constructor chaining.
-
-use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef};
-use vybe_bytecode::typedef::Method;
-use vybe_bytecode::chunk::TypeEntry;
 use std::sync::Arc;
+use vybe_bytecode::chunk::TypeEntry;
+use vybe_bytecode::typedef::Method;
+/// Tests for cross-language interface sharing and constructor chaining.
+use vybe_bytecode::{Chunk, Op, TypeDef, VM, Value};
 
 // ── Interface Registration ──────────────────────────────────
 
@@ -62,7 +61,9 @@ fn does_not_satisfy_missing_method() {
     let iface_id = reg.register_interface("ISerializable", &[("serialize", 1), ("deserialize", 1)]);
 
     let mut partial = TypeDef::new("Partial");
-    partial.methods.insert("serialize".into(), Method::ChunkFn(0));
+    partial
+        .methods
+        .insert("serialize".into(), Method::ChunkFn(0));
     // Missing "deserialize"
     let partial_id = reg.register(partial);
 
@@ -132,7 +133,10 @@ fn resolve_constructor_walks_parent() {
     let child_id = reg.register(child);
 
     // resolve_constructor should find parent's constructor
-    assert!(matches!(reg.resolve_constructor(child_id), Some(Method::ChunkFn(10))));
+    assert!(matches!(
+        reg.resolve_constructor(child_id),
+        Some(Method::ChunkFn(10))
+    ));
 }
 
 #[test]
@@ -149,7 +153,10 @@ fn child_constructor_overrides_parent() {
     let child_id = reg.register(child);
 
     // Child's own constructor takes precedence
-    assert!(matches!(reg.resolve_constructor(child_id), Some(Method::ChunkFn(20))));
+    assert!(matches!(
+        reg.resolve_constructor(child_id),
+        Some(Method::ChunkFn(20))
+    ));
 }
 
 // ── load_type_table with interfaces ─────────────────────────
@@ -186,7 +193,10 @@ fn load_type_table_interface() {
 
     assert!(reg.get(iface_id).unwrap().is_interface);
     assert!(reg.is_subtype(dog_id, iface_id));
-    assert!(matches!(reg.get_constructor(dog_id), Some(Method::ChunkFn(3))));
+    assert!(matches!(
+        reg.get_constructor(dog_id),
+        Some(Method::ChunkFn(3))
+    ));
 }
 
 #[test]
@@ -230,11 +240,17 @@ fn load_type_table_cross_language_inheritance() {
     assert_eq!(dog_td.parent, Some(animal_id));
 
     // Dog overrides speak
-    assert!(matches!(reg.resolve_method(dog_id, "speak"), Some(Method::ChunkFn(6))));
+    assert!(matches!(
+        reg.resolve_method(dog_id, "speak"),
+        Some(Method::ChunkFn(6))
+    ));
 
     // Dog inherits... but Animal's speak is overridden, so check a non-overridden case
     let animal_td = reg.get(animal_id).unwrap();
-    assert!(matches!(animal_td.constructor.as_ref(), Some(Method::ChunkFn(1))));
+    assert!(matches!(
+        animal_td.constructor.as_ref(),
+        Some(Method::ChunkFn(1))
+    ));
 }
 
 // ── ref_test with interfaces in VM ──────────────────────────
@@ -244,7 +260,9 @@ fn ref_test_interface_in_vm() {
     let mut vm = VM::new();
 
     // Register interface
-    let iface_id = vm.type_registry.register_interface("IAnimal", &[("speak", 1)]);
+    let iface_id = vm
+        .type_registry
+        .register_interface("IAnimal", &[("speak", 1)]);
 
     // Register Dog implementing IAnimal
     let mut dog_td = TypeDef::new("Dog");
@@ -267,5 +285,8 @@ fn ref_test_interface_in_vm() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Dog should pass ref_test for IAnimal");
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Dog should pass ref_test for IAnimal"
+    );
 }

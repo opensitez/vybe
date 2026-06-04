@@ -13,7 +13,7 @@ use super::encoding::*;
 pub const MODULE: &str = "ecma:structured-clone";
 
 pub const IMPORTS: &[&str] = &[
-    "clone",   // structuredClone(value, options?)
+    "clone", // structuredClone(value, options?)
 ];
 
 pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {

@@ -7,48 +7,48 @@
 //! - `code.rs` — code section (opcode translation)
 //! - `reader.rs` — .wasm binary reader
 
-pub mod encoding;
-pub mod types;
-pub mod sections;
 pub mod code;
+pub mod encoding;
 pub mod reader;
+pub mod sections;
+pub mod types;
 pub mod wat;
 // ── Per-proposal modules ────────────────────────────────────────────────
 // Each file implements one WebAssembly proposal end-to-end: the imports
 // it declares, the opcodes it emits, the custom sections it produces.
+pub mod compilation_hints;
+pub mod extended_name_section;
+pub mod js_primitive_builtins;
+pub mod js_string_builtins;
+pub mod jspi;
 pub mod reference_types;
 pub mod stack_switching;
-pub mod extended_name_section;
-pub mod compilation_hints;
-pub mod jspi;
-pub mod js_string_builtins;
-pub mod js_primitive_builtins;
 // JS standard collection surface — Phase B of the dynamic-runtime
 // migration. Each module declares the `wasm:js-*` imports Vybe uses
 // to expose JS-canonical collections (Array / Object / Map / Set /
 // WeakMap / WeakSet / ArrayBuffer / DataView / 11 typed-arrays).
 // Marshaling contract pinned in `JS_BUILTIN_CONVENTIONS.md`.
-pub mod js_array_builtins;
-pub mod js_object_builtins;
-pub mod js_map_builtins;
-pub mod js_set_builtins;
-pub mod js_weakmap_builtins;
-pub mod js_arraybuffer_builtins;
-pub mod js_typedarray_builtins;
-pub mod js_json_builtins;
-pub mod js_structured_clone;
-pub mod js_fixedarray_builtins;
-pub mod esm_integration;
-pub mod gc;
-pub mod simd;
-pub mod threads;
 pub mod bulk_memory;
+pub mod esm_integration;
 pub mod exception_handling;
-pub mod tail_call;
+pub mod gc;
+pub mod js_array_builtins;
+pub mod js_arraybuffer_builtins;
+pub mod js_fixedarray_builtins;
+pub mod js_json_builtins;
+pub mod js_map_builtins;
+pub mod js_object_builtins;
+pub mod js_set_builtins;
+pub mod js_structured_clone;
+pub mod js_typedarray_builtins;
+pub mod js_weakmap_builtins;
 pub mod multi_value;
+pub mod simd;
+pub mod tail_call;
+pub mod threads;
 
-use encoding::*;
 use crate::Chunk;
+use encoding::*;
 
 // ── Writer ──────────────────────────────────────────────────────────────
 
@@ -69,17 +69,30 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     let (globals, global_map) = sections::collect_globals(chunks);
 
     // Type section: GC struct types + array type + function types
-    let (type_section_data, type_ctx) = types::build_type_context(chunks, total_imports, &rt_imports);
+    let (type_section_data, type_ctx) =
+        types::build_type_context(chunks, total_imports, &rt_imports);
     write_section(&mut out, SECTION_TYPE, &type_section_data);
 
     // Import section
-    write_section(&mut out, SECTION_IMPORT, &sections::encode_import_section(chunks, &rt_imports, type_ctx.func_type_base));
+    write_section(
+        &mut out,
+        SECTION_IMPORT,
+        &sections::encode_import_section(chunks, &rt_imports, type_ctx.func_type_base),
+    );
 
     // Function section
-    write_section(&mut out, SECTION_FUNCTION, &sections::encode_func_section(chunks, total_imports, type_ctx.func_type_base));
+    write_section(
+        &mut out,
+        SECTION_FUNCTION,
+        &sections::encode_func_section(chunks, total_imports, type_ctx.func_type_base),
+    );
 
     // Table section — funcref table for call_indirect
-    write_section(&mut out, 4, &sections::encode_table_section(chunks, total_imports));
+    write_section(
+        &mut out,
+        4,
+        &sections::encode_table_section(chunks, total_imports),
+    );
 
     // Memory section
     write_section(&mut out, SECTION_MEMORY, &sections::encode_memory_section());
@@ -93,26 +106,44 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     if emit_exception_tag || type_ctx.uses_stack_switching {
         let suspend_idx = if type_ctx.uses_stack_switching {
             Some(type_ctx.suspend_tag_type_idx)
-        } else { None };
-        write_section(&mut out, SECTION_TAG,
-            &exception_handling::encode_tag_section_with(
-                type_ctx.exception_type_idx, suspend_idx));
+        } else {
+            None
+        };
+        write_section(
+            &mut out,
+            SECTION_TAG,
+            &exception_handling::encode_tag_section_with(type_ctx.exception_type_idx, suspend_idx),
+        );
     }
 
     // Global section — indexed externref globals
     if !globals.is_empty() {
-        write_section(&mut out, SECTION_GLOBAL, &sections::encode_global_section(&globals));
+        write_section(
+            &mut out,
+            SECTION_GLOBAL,
+            &sections::encode_global_section(&globals),
+        );
     }
 
     // Export section
-    write_section(&mut out, SECTION_EXPORT, &sections::encode_export_section(chunks, total_imports));
+    write_section(
+        &mut out,
+        SECTION_EXPORT,
+        &sections::encode_export_section(chunks, total_imports),
+    );
 
     // Element section — populate funcref table with chunk functions
-    write_section(&mut out, 9, &sections::encode_element_section(chunks, total_imports));
+    write_section(
+        &mut out,
+        9,
+        &sections::encode_element_section(chunks, total_imports),
+    );
 
     // branch_hint custom section — spec §branch-hinting requires this to
     // appear BEFORE the code section (not as a trailing custom section).
-    if let Some(bh_payload) = compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len()) {
+    if let Some(bh_payload) =
+        compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len())
+    {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
         sec.extend_from_slice(&bh_payload);
@@ -120,12 +151,17 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     }
 
     // Code section
-    write_section(&mut out, SECTION_CODE, &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map));
+    write_section(
+        &mut out,
+        SECTION_CODE,
+        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map),
+    );
 
     // ── Trailing custom sections ─────────────────────────────────────
     // The standard `"name"` custom section (extended-name-section proposal) —
     // gives DevTools / profilers readable identifiers.
-    let name_payload = extended_name_section::encode_name_section_payload(chunks, &rt_imports, &type_ctx);
+    let name_payload =
+        extended_name_section::encode_name_section_payload(chunks, &rt_imports, &type_ctx);
     if !name_payload.is_empty() {
         let mut sec = Vec::new();
         write_name(&mut sec, "name");
@@ -135,7 +171,9 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
 
     // Compilation-hints proposal — tell the engine which functions to
     // optimize first. Skip the section when no hints apply.
-    if let Some(co_payload) = compilation_hints::encode_compilation_order_payload(chunks, rt_imports.len()) {
+    if let Some(co_payload) =
+        compilation_hints::encode_compilation_order_payload(chunks, rt_imports.len())
+    {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::COMPILATION_ORDER_SECTION_NAME);
         sec.extend_from_slice(&co_payload);

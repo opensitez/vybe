@@ -45,9 +45,9 @@
 //! module. It's the only entry point the writer pipeline needs.
 
 use super::encoding::*;
-use crate::Chunk;
 use super::sections::rt_globals;
 use super::types::WasmTypeContext;
+use crate::Chunk;
 use crate::Op;
 
 /// Produce the payload of the `"name"` custom section for the given
@@ -189,9 +189,14 @@ pub fn encode_name_section_payload(
     // DevTools as e.g. `Button.x` instead of `struct_7.field_0`.
     {
         // Build (struct_type_idx, fields) pairs sorted by type index.
-        let mut entries: Vec<(u32, Vec<String>)> = type_ctx.struct_fields.iter()
+        let mut entries: Vec<(u32, Vec<String>)> = type_ctx
+            .struct_fields
+            .iter()
             .filter_map(|(name_lc, fields)| {
-                type_ctx.struct_type_indices.get(name_lc).map(|idx| (*idx, fields.clone()))
+                type_ctx
+                    .struct_type_indices
+                    .get(name_lc)
+                    .map(|idx| (*idx, fields.clone()))
             })
             .collect();
         entries.sort_by_key(|(i, _)| *i);
@@ -214,8 +219,8 @@ pub fn encode_name_section_payload(
     // call_indirect dispatch.
     {
         let mut sub = Vec::new();
-        write_leb128_u32(&mut sub, 1);           // count
-        write_leb128_u32(&mut sub, 0);           // table index 0
+        write_leb128_u32(&mut sub, 1); // count
+        write_leb128_u32(&mut sub, 0); // table index 0
         write_name(&mut sub, "funcref_table");
         write_subsection(&mut out, 5, &sub);
     }
@@ -293,14 +298,21 @@ fn collect_label_names(chunk: &Chunk) -> Vec<String> {
         let sub = code[ip + 1];
         let op = match Op::decode(prefix, sub) {
             Some(op) => op,
-            None => { ip += 2; continue; }
+            None => {
+                ip += 2;
+                continue;
+            }
         };
         ip += 2;
         // Structured control ops introduce a new label index.
         if op == Op::BLOCK || op == Op::LOOP || op == Op::TRY_TABLE {
-            let tag = if op == Op::BLOCK { "block" }
-                   else if op == Op::LOOP  { "loop"  }
-                   else                      { "try"   };
+            let tag = if op == Op::BLOCK {
+                "block"
+            } else if op == Op::LOOP {
+                "loop"
+            } else {
+                "try"
+            };
             names.push(format!("label{}_{}", names.len(), tag));
         }
         ip += op.operand_format().size_in(code, ip);

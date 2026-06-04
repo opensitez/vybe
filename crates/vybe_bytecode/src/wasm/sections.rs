@@ -15,11 +15,15 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
     // per-proposal modules directly under `wasm/`).
     for name in super::js_string_builtins::IMPORTS {
         let key = (super::js_string_builtins::MODULE, *name);
-        if seen.insert(key) { needed.push(key); }
+        if seen.insert(key) {
+            needed.push(key);
+        }
     }
     for &(module, name) in super::js_primitive_builtins::FUNC_IMPORTS {
         let key = (module, name);
-        if seen.insert(key) { needed.push(key); }
+        if seen.insert(key) {
+            needed.push(key);
+        }
     }
 
     // No vybe:rt imports — all ops lower to inline WASM + standard wasm:js-* builtins
@@ -34,8 +38,8 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
 /// indices) and must match the order globals are emitted in the import
 /// section.
 pub const JS_GLOBAL_UNDEFINED: u32 = 0;
-pub const JS_GLOBAL_TRUE:      u32 = 1;
-pub const JS_GLOBAL_FALSE:     u32 = 2;
+pub const JS_GLOBAL_TRUE: u32 = 1;
+pub const JS_GLOBAL_FALSE: u32 = 2;
 
 pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
     // Sourced from the js-primitive-builtins proposal module so the
@@ -44,7 +48,11 @@ pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
     super::js_primitive_builtins::GLOBAL_IMPORTS
 }
 
-pub fn encode_import_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], func_type_base: u32) -> Vec<u8> {
+pub fn encode_import_section(
+    chunks: &[Chunk],
+    rt_imports: &[(&str, &str)],
+    func_type_base: u32,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let host_imports = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let globals = rt_globals();
@@ -74,9 +82,9 @@ pub fn encode_import_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], func
     for (module, name) in globals {
         write_name(&mut out, module);
         write_name(&mut out, name);
-        out.push(0x03);       // global import
+        out.push(0x03); // global import
         out.push(TYPE_EXTERNREF);
-        out.push(0x00);       // immutable (mut = 0)
+        out.push(0x00); // immutable (mut = 0)
     }
 
     out
@@ -104,8 +112,7 @@ pub fn encode_memory_section_with(min_pages: u32, max_pages: Option<u32>, shared
     write_leb128_u32(&mut out, 1); // one memory
     // Limits flags: bit 0 = has max, bit 1 = shared.
     let has_max = max_pages.is_some() || shared;
-    let flags: u8 = (if has_max { 0x01 } else { 0x00 })
-                  | (if shared  { 0x02 } else { 0x00 });
+    let flags: u8 = (if has_max { 0x01 } else { 0x00 }) | (if shared { 0x02 } else { 0x00 });
     out.push(flags);
     write_leb128_u32(&mut out, min_pages);
     if has_max {
@@ -137,11 +144,15 @@ pub fn collect_globals(chunks: &[Chunk]) -> (Vec<String>, std::collections::Hash
     for chunk in chunks {
         let mut ip = 0;
         while ip < chunk.code.len() {
-            if ip + 1 >= chunk.code.len() { break; }
+            if ip + 1 >= chunk.code.len() {
+                break;
+            }
             if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
                 if op == Op::GLOBAL_GET || op == Op::GLOBAL_SET {
                     let name_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-                    if let Some(crate::value::Value::String(name)) = chunk.constants.get(name_idx as usize) {
+                    if let Some(crate::value::Value::String(name)) =
+                        chunk.constants.get(name_idx as usize)
+                    {
                         let name_str = name.to_string();
                         if !global_map.contains_key(&name_str) {
                             let idx = globals.len() as u32;
@@ -167,7 +178,8 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
         out.push(0x6F); // externref
         out.push(0x01); // mutable
         // Init expr: ref.null extern
-        out.push(0xD0); out.push(0x6F); // ref.null extern
+        out.push(0xD0);
+        out.push(0x6F); // ref.null extern
         out.push(0x0B); // end
     }
     out
@@ -181,9 +193,9 @@ pub fn encode_table_section(chunks: &[Chunk], _import_count: usize) -> Vec<u8> {
     // chunk actually wants an extra externref table.
     let mut out = Vec::new();
     let table_size = chunks.len() as u32;
-    write_leb128_u32(&mut out, 1);         // 1 table
-    out.push(0x70);                        // funcref
-    out.push(0x00);                        // no max
+    write_leb128_u32(&mut out, 1); // 1 table
+    out.push(0x70); // funcref
+    out.push(0x00); // no max
     write_leb128_u32(&mut out, table_size);
     out
 }
@@ -197,9 +209,13 @@ pub fn encode_table_section_with(chunks: &[Chunk], extra_externref: u32) -> Vec<
     let table_size = chunks.len() as u32;
     let total = 1u32 + extra_externref;
     write_leb128_u32(&mut out, total);
-    out.push(0x70); out.push(0x00); write_leb128_u32(&mut out, table_size);
+    out.push(0x70);
+    out.push(0x00);
+    write_leb128_u32(&mut out, table_size);
     for _ in 0..extra_externref {
-        out.push(0x6F); out.push(0x00); write_leb128_u32(&mut out, 0);
+        out.push(0x6F);
+        out.push(0x00);
+        write_leb128_u32(&mut out, 0);
     }
     out
 }
@@ -209,7 +225,8 @@ pub fn encode_element_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> 
     write_leb128_u32(&mut out, 1); // 1 element segment
     // Active segment for table 0, offset 0
     out.push(0x00); // flags: active, table 0, funcref
-    out.push(0x41); write_leb128_i32(&mut out, 0); // i32.const 0 (offset)
+    out.push(0x41);
+    write_leb128_i32(&mut out, 0); // i32.const 0 (offset)
     out.push(0x0B); // end init expr
     // Function indices
     write_leb128_u32(&mut out, chunks.len() as u32);
@@ -220,7 +237,12 @@ pub fn encode_element_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> 
 }
 
 /// Emit a call to an imported function by (module, name) key.
-pub fn emit_import_call(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>, module: &str, name: &str) {
+pub fn emit_import_call(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    module: &str,
+    name: &str,
+) {
     if let Some(&idx) = rt_idx.get(&(module, name)) {
         body.push(0x10); // call
         write_leb128_u32(body, idx as u32);
@@ -230,7 +252,11 @@ pub fn emit_import_call(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(
 }
 
 /// Emit a call to vybe:rt runtime function (convenience).
-pub fn emit_rt_call(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>, name: &str) {
+pub fn emit_rt_call(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    name: &str,
+) {
     emit_import_call(body, rt_idx, "vybe:rt", name);
 }
 
@@ -279,34 +305,52 @@ pub fn emit_test_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&st
 
 /// Unbox externref to i32 via `wasm:js-boolean.cast`. Valid only when
 /// the value has already tested as a JS boolean — host traps otherwise.
-pub fn emit_unbox_bool(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_unbox_bool(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-boolean", "cast");
 }
 
 /// String format of an i32 via `wasm:js-string.fromI32`. Consumes i32,
 /// produces externref (a JS string). Mirrors `String(n)` in JS.
-pub fn emit_str_from_i32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_str_from_i32(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-string", "fromI32");
 }
 
 /// Unsigned-i32 → string via `wasm:js-string.fromU32`.
-pub fn emit_str_from_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_str_from_u32(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-string", "fromU32");
 }
 
 /// i64 → string via `wasm:js-string.fromI64`.
-pub fn emit_str_from_i64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_str_from_i64(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-string", "fromI64");
 }
 
 /// Unsigned-i64 → string via `wasm:js-string.fromU64`.
-pub fn emit_str_from_u64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_str_from_u64(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-string", "fromU64");
 }
 
 /// f64 → string via `wasm:js-string.fromF64`. Matches `String(n)` when
 /// `n` is a finite JS Number.
-pub fn emit_str_from_f64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_str_from_f64(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-string", "fromF64");
 }
 
@@ -319,6 +363,9 @@ pub fn emit_str_cast(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&st
 /// Symbol identity check — `wasm:js-symbol.equals`. Consumes two
 /// externrefs, produces i32 (1 if same symbol, 0 otherwise). Traps if
 /// either operand isn't a symbol.
-pub fn emit_symbol_equals(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+pub fn emit_symbol_equals(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+) {
     emit_import_call(body, rt_idx, "wasm:js-symbol", "equals");
 }

@@ -26,50 +26,66 @@ use super::encoding::*;
 pub const MODULE: &str = "ecma:fixedarray";
 
 pub const IMPORTS: &[&str] = &[
-    "newWithLength",     // FixedArray(n) — n null elements
-    "fromArray",         // FixedArray from growable Array (snapshot)
-    "toArray",           // Convert FixedArray → growable Array
-    "length",            // Read length (same shape as Array.length)
-    "get",               // Element access by index
-    "isFixedArray",      // Tagged check (distinguishes from growable Array)
-    "freeze",            // Tag an Array as fixed — mutations trap
-    "isFrozen",          // Check whether frozen
+    "newWithLength", // FixedArray(n) — n null elements
+    "fromArray",     // FixedArray from growable Array (snapshot)
+    "toArray",       // Convert FixedArray → growable Array
+    "length",        // Read length (same shape as Array.length)
+    "get",           // Element access by index
+    "isFixedArray",  // Tagged check (distinguishes from growable Array)
+    "freeze",        // Tag an Array as fixed — mutations trap
+    "isFrozen",      // Check whether frozen
 ];
 
 pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
     match name {
         "newWithLength" => {
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "fromArray" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "toArray" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "length" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "get" => {
             write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF); out.push(TYPE_I32);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "isFixedArray" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         "freeze" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "isFrozen" => {
-            write_leb128_u32(out, 1); out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1); out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_I32);
         }
         _ => return false,
     }

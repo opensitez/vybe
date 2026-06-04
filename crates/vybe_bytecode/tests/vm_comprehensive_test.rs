@@ -1,5 +1,5 @@
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use std::sync::Arc;
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
 // Helpers
@@ -32,7 +32,12 @@ fn run_vm(chunks: Vec<Chunk>) -> VM {
 
 fn assert_f64(val: &Value, expected: f64) {
     match val {
-        Value::F64(v) => assert!((v - expected).abs() < 1e-10, "Expected F64({}), got F64({})", expected, v),
+        Value::F64(v) => assert!(
+            (v - expected).abs() < 1e-10,
+            "Expected F64({}), got F64({})",
+            expected,
+            v
+        ),
         _ => panic!("Expected F64({}), got {:?}", expected, val),
     }
 }
@@ -47,14 +52,26 @@ fn assert_i32(val: &Value, expected: i32) {
 fn assert_bool(val: &Value, expected: bool) {
     match val {
         Value::Bool(v) => assert_eq!(*v, expected),
-        Value::I32(v) => assert_eq!(*v != 0, expected, "Expected WASM bool i32({}), got I32({})", expected as i32, v),
+        Value::I32(v) => assert_eq!(
+            *v != 0,
+            expected,
+            "Expected WASM bool i32({}), got I32({})",
+            expected as i32,
+            v
+        ),
         _ => panic!("Expected Bool/i32({}), got {:?}", expected, val),
     }
 }
 
 fn assert_string(val: &Value, expected: &str) {
     match val {
-        Value::String(s) => assert_eq!(s.as_ref(), expected, "Expected String({:?}), got String({:?})", expected, s.as_ref()),
+        Value::String(s) => assert_eq!(
+            s.as_ref(),
+            expected,
+            "Expected String({:?}), got String({:?})",
+            expected,
+            s.as_ref()
+        ),
         _ => panic!("Expected String({:?}), got {:?}", expected, val),
     }
 }
@@ -228,8 +245,8 @@ fn recursive_call_factorial() {
 
     // if n <= 1, branch to return 1
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
-    fact.emit_op_u16(Op::CONST, c1, 0);  // 1
-    fact.emit_op(Op::I32_LE_S, 0);          // n <= 1 ?
+    fact.emit_op_u16(Op::CONST, c1, 0); // 1
+    fact.emit_op(Op::I32_LE_S, 0); // n <= 1 ?
     fact.emit_if(0);
     fact.emit_op_u16(Op::CONST, c1, 0);
     fact.emit_op(Op::RETURN, 0);
@@ -237,13 +254,13 @@ fn recursive_call_factorial() {
 
     // recursive case: n * fact(n-1)
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
-    fact.emit_op_u16(Op::REF_FUNC, 1, 0);  // fact
+    fact.emit_op_u16(Op::REF_FUNC, 1, 0); // fact
     fact.emit(0, 0); // 0 upvalues
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
-    fact.emit_op_u16(Op::CONST, c1, 0);  // 1
-    fact.emit_op(Op::I32_SUB, 0);          // n-1
-    fact.emit_op_u8(Op::CALL, 1, 0);       // fact(n-1)
-    fact.emit_op(Op::I32_MUL, 0);          // n * fact(n-1)
+    fact.emit_op_u16(Op::CONST, c1, 0); // 1
+    fact.emit_op(Op::I32_SUB, 0); // n-1
+    fact.emit_op_u8(Op::CALL, 1, 0); // fact(n-1)
+    fact.emit_op(Op::I32_MUL, 0); // n * fact(n-1)
     fact.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fact]);
@@ -263,9 +280,13 @@ fn call_import_host_function() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "double", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() * 2)
-    }));
+    vm.register_host_fn(
+        "test",
+        "double",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() * 2)
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 14);
 }
@@ -437,7 +458,11 @@ fn i32_div_by_zero_traps() {
     chunk.emit_op(Op::HALT, 0);
     let mut vm = VM::new();
     let err = vm.run(vec![chunk]).expect_err("expected trap");
-    assert!(err.message.contains("divide by zero"), "got: {}", err.message);
+    assert!(
+        err.message.contains("divide by zero"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -542,7 +567,7 @@ fn f64_mod_operation() {
     let b = chunk.add_constant(Value::F64(3.0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::F64_DIV, 0);  // 10/3 = 3.333
+    chunk.emit_op(Op::F64_DIV, 0); // 10/3 = 3.333
     chunk.emit_op(Op::F64_TRUNC, 0); // trunc(3.333) = 3.0
     chunk.emit_op(Op::HALT, 0);
     assert_f64(&run_chunks(vec![chunk]), 3.0);
@@ -825,8 +850,8 @@ fn dyn_to_bool_empty_string() {
     let c = chunk.add_constant(Value::String(Arc::from("")));
     chunk.emit_op_u16(Op::CONST, c, 0);
     chunk.emit_op(Op::STR_LENGTH, 0); // 0
-    chunk.emit_op(Op::I32_EQZ, 0);   // is zero? → Bool(true)
-    chunk.emit_op(Op::I32_EQZ, 0);   // not zero? → Bool(false)
+    chunk.emit_op(Op::I32_EQZ, 0); // is zero? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0); // not zero? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -848,9 +873,12 @@ fn dyn_to_bool_undefined() {
     // undefined is falsy: REF_IS_UNDEFINED(undefined) = true, then invert = false
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::CONST, c, 0); }
+    {
+        let c = chunk.add_constant(Value::Undefined);
+        chunk.emit_op_u16(Op::CONST, c, 0);
+    }
     chunk.emit_op(Op::REF_IS_UNDEFINED, 0); // is undefined? → Bool(true)
-    chunk.emit_op(Op::I32_EQZ, 0);          // not undefined? → Bool(false)
+    chunk.emit_op(Op::I32_EQZ, 0); // not undefined? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -875,8 +903,8 @@ fn dyn_to_bool_truthy_string() {
     let c = chunk.add_constant(Value::String(Arc::from("x")));
     chunk.emit_op_u16(Op::CONST, c, 0);
     chunk.emit_op(Op::STR_LENGTH, 0); // 1
-    chunk.emit_op(Op::I32_EQZ, 0);   // is zero? → Bool(false)
-    chunk.emit_op(Op::I32_EQZ, 0);   // not zero? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0); // is zero? → Bool(false)
+    chunk.emit_op(Op::I32_EQZ, 0); // not zero? → Bool(true)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -1184,7 +1212,6 @@ fn array_set() {
 // behaviour, spec-compliant surface.
 
 #[test]
-
 #[test]
 fn array_fill() {
     let mut chunk = Chunk::new("test");
@@ -1534,7 +1561,10 @@ fn ref_is_null_on_number() {
 fn ref_is_null_on_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::CONST, c, 0); }
+    {
+        let c = chunk.add_constant(Value::Undefined);
+        chunk.emit_op_u16(Op::CONST, c, 0);
+    }
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
@@ -1626,7 +1656,10 @@ fn ref_typeof_boolean() {
 fn ref_typeof_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::CONST, c, 0); }
+    {
+        let c = chunk.add_constant(Value::Undefined);
+        chunk.emit_op_u16(Op::CONST, c, 0);
+    }
     chunk.emit_op(Op::REF_TYPEOF, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_string(&run_chunks(vec![chunk]), "undefined");
@@ -1725,7 +1758,9 @@ fn invoke_with_multiple_args() {
     vm.run(vec![main, func]).unwrap();
 
     let func_val = vm.globals.get("add").cloned().unwrap();
-    let result = vm.invoke(&func_val, &[Value::I32(3), Value::I32(7)]).unwrap();
+    let result = vm
+        .invoke(&func_val, &[Value::I32(3), Value::I32(7)])
+        .unwrap();
     assert_i32(&result, 10);
 }
 
@@ -1764,7 +1799,10 @@ fn immediate_values() {
     chunk.local_count = 1;
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::DROP, 0);
-    { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::CONST, c, 0); }
+    {
+        let c = chunk.add_constant(Value::Undefined);
+        chunk.emit_op_u16(Op::CONST, c, 0);
+    }
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::TRUE, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -1893,9 +1931,13 @@ fn host_function_with_multiple_args() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("math", "add3", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32())
-    }));
+    vm.register_host_fn(
+        "math",
+        "add3",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32())
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 60);
 }
@@ -1912,10 +1954,18 @@ fn host_function_returning_string() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("util", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let name = if let Value::String(s) = &args[0] { s.as_ref() } else { "?" };
-        Value::String(Arc::from(format!("Hello, {}!", name).as_str()))
-    }));
+    vm.register_host_fn(
+        "util",
+        "greet",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            let name = if let Value::String(s) = &args[0] {
+                s.as_ref()
+            } else {
+                "?"
+            };
+            Value::String(Arc::from(format!("Hello, {}!", name).as_str()))
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_string(&result, "Hello, World!");
 }
@@ -1960,7 +2010,6 @@ fn str_length_empty() {
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 0);
 }
-
 
 #[test]
 fn dyn_to_bool_nan_is_false() {

@@ -2,7 +2,7 @@
 //! When `await` is hit, the current fiber is suspended (stack + frames saved).
 //! When the awaited Promise resolves, the fiber is resumed.
 
-use crate::value::{Value, Upvalue};
+use crate::value::{Upvalue, Value};
 use std::sync::{Arc, Mutex};
 
 /// A suspended execution context — everything needed to resume.
@@ -34,11 +34,16 @@ pub struct SavedFrame {
     pub chunk_index: usize,
     pub ip: usize,
     pub base: usize,
+    pub label_base: usize,
     pub upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
 impl Fiber {
-    pub fn new(stack: Vec<Value>, frames: Vec<SavedFrame>, open_upvalues: Vec<Arc<Mutex<Upvalue>>>) -> Self {
+    pub fn new(
+        stack: Vec<Value>,
+        frames: Vec<SavedFrame>,
+        open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
+    ) -> Self {
         Fiber {
             stack,
             frames,

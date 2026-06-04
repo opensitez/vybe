@@ -8,9 +8,9 @@
 //! Timer scheduling uses a monotonic clock (wasi:clocks/monotonic-clock
 //! semantics) so fire times are immune to wall-clock jumps.
 
-use std::collections::VecDeque;
 use crate::fiber::Fiber;
 use crate::value::Value;
+use std::collections::VecDeque;
 
 /// A task in the event loop.
 #[derive(Debug)]
@@ -25,10 +25,7 @@ pub enum Task {
         id: u64,
     },
     /// A microtask — Promise.then/catch callback with a value.
-    Microtask {
-        callback: Value,
-        value: Value,
-    },
+    Microtask { callback: Value, value: Value },
 }
 
 /// The event loop — manages pending async work.
@@ -39,7 +36,7 @@ pub struct EventLoop {
     /// Macrotask queue (setTimeout callbacks).
     pub macrotasks: VecDeque<Task>,
     /// Suspended fibers waiting for Promise resolution.
-    pub waiting_fibers: Vec<(u64, Fiber)>,  // (promise_id, fiber)
+    pub waiting_fibers: Vec<(u64, Fiber)>, // (promise_id, fiber)
     /// Next promise ID.
     next_promise_id: u64,
     /// Next timer ID (separate counter from promise IDs).
@@ -66,7 +63,8 @@ impl EventLoop {
 
     /// Schedule a microtask (Promise.then callback).
     pub fn queue_microtask(&mut self, callback: Value, value: Value) {
-        self.microtasks.push_back(Task::Microtask { callback, value });
+        self.microtasks
+            .push_back(Task::Microtask { callback, value });
     }
 
     /// Schedule a macrotask (setTimeout callback). Does not return an ID.
@@ -97,9 +95,11 @@ impl EventLoop {
 
     /// Cancel a timer by ID. Returns true if the timer was found and removed.
     pub fn cancel_timer(&mut self, id: u64) -> bool {
-        if let Some(pos) = self.macrotasks.iter().position(|t| {
-            matches!(t, Task::Timer { id: tid, .. } if *tid == id)
-        }) {
+        if let Some(pos) = self
+            .macrotasks
+            .iter()
+            .position(|t| matches!(t, Task::Timer { id: tid, .. } if *tid == id))
+        {
             self.macrotasks.remove(pos);
             true
         } else {
@@ -114,7 +114,11 @@ impl EventLoop {
 
     /// Resolve a promise — wake the fiber waiting for it.
     pub fn resolve_promise(&mut self, promise_id: u64, value: Value) -> Option<Fiber> {
-        if let Some(pos) = self.waiting_fibers.iter().position(|(id, _)| *id == promise_id) {
+        if let Some(pos) = self
+            .waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == promise_id)
+        {
             let (_, mut fiber) = self.waiting_fibers.remove(pos);
             fiber.resume_value = Some(value);
             Some(fiber)
@@ -131,9 +135,11 @@ impl EventLoop {
     /// Get the next ready macrotask (timer whose fire time has passed).
     pub fn next_ready_timer(&mut self) -> Option<Task> {
         let now = current_time_ms();
-        if let Some(pos) = self.macrotasks.iter().position(|t| {
-            matches!(t, Task::Timer { fire_at_ms, .. } if *fire_at_ms <= now)
-        }) {
+        if let Some(pos) = self
+            .macrotasks
+            .iter()
+            .position(|t| matches!(t, Task::Timer { fire_at_ms, .. } if *fire_at_ms <= now))
+        {
             Some(self.macrotasks.remove(pos).unwrap())
         } else {
             None
@@ -142,7 +148,9 @@ impl EventLoop {
 
     /// Check if there's any pending work.
     pub fn has_pending(&self) -> bool {
-        !self.microtasks.is_empty() || !self.macrotasks.is_empty() || !self.waiting_fibers.is_empty()
+        !self.microtasks.is_empty()
+            || !self.macrotasks.is_empty()
+            || !self.waiting_fibers.is_empty()
     }
 
     /// Sleep until the next timer fires (or return immediately if microtasks pending).
@@ -151,9 +159,18 @@ impl EventLoop {
         if !self.microtasks.is_empty() || !self.waiting_fibers.is_empty() {
             return; // microtasks are processed immediately
         }
-        if let Some(earliest) = self.macrotasks.iter().filter_map(|t| {
-            if let Task::Timer { fire_at_ms, .. } = t { Some(*fire_at_ms) } else { None }
-        }).reduce(f64::min) {
+        if let Some(earliest) = self
+            .macrotasks
+            .iter()
+            .filter_map(|t| {
+                if let Task::Timer { fire_at_ms, .. } = t {
+                    Some(*fire_at_ms)
+                } else {
+                    None
+                }
+            })
+            .reduce(f64::min)
+        {
             let now = current_time_ms();
             if earliest > now {
                 let sleep_ms = (earliest - now) as u64;

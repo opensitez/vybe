@@ -574,19 +574,24 @@ impl ResourceTable {
     pub fn create(&mut self, type_id: usize, data: super::Value) -> u32 {
         let handle = self.next_handle;
         self.next_handle += 1;
-        self.entries.insert(handle, ResourceEntry {
-            type_id,
-            data,
-            borrow_count: 0,
-            dropped: false,
-        });
+        self.entries.insert(
+            handle,
+            ResourceEntry {
+                type_id,
+                data,
+                borrow_count: 0,
+                dropped: false,
+            },
+        );
         handle
     }
 
     /// Borrow a resource (read-only access). Returns the data if valid.
     pub fn borrow(&mut self, handle: u32) -> Option<super::Value> {
         let entry = self.entries.get_mut(&handle)?;
-        if entry.dropped { return None; }
+        if entry.dropped {
+            return None;
+        }
         entry.borrow_count += 1;
         Some(entry.data.clone())
     }
@@ -602,13 +607,18 @@ impl ResourceTable {
 
     /// Drop a resource (destroy it). Fails if there are active borrows.
     pub fn drop_resource(&mut self, handle: u32) -> Result<super::Value, String> {
-        let entry = self.entries.get_mut(&handle)
+        let entry = self
+            .entries
+            .get_mut(&handle)
             .ok_or_else(|| format!("Invalid resource handle: {}", handle))?;
         if entry.dropped {
             return Err(format!("Resource {} already dropped", handle));
         }
         if entry.borrow_count > 0 {
-            return Err(format!("Cannot drop resource {}: {} active borrows", handle, entry.borrow_count));
+            return Err(format!(
+                "Cannot drop resource {}: {} active borrows",
+                handle, entry.borrow_count
+            ));
         }
         entry.dropped = true;
         Ok(entry.data.clone())
@@ -621,7 +631,10 @@ impl ResourceTable {
 
     /// Check if a handle is valid and not dropped.
     pub fn is_valid(&self, handle: u32) -> bool {
-        self.entries.get(&handle).map(|e| !e.dropped).unwrap_or(false)
+        self.entries
+            .get(&handle)
+            .map(|e| !e.dropped)
+            .unwrap_or(false)
     }
 }
 
@@ -664,13 +677,13 @@ mod tests {
 
         // Add a resource type
         let file_resource = ResourceType::new("FileHandle")
-            .with_constructor(ResourceMethod::static_method("[constructor]")
-                .with_params(vec![ValType::String])
-                .with_results(vec![ValType::I32]))
-            .with_method(ResourceMethod::new("read")
-                .with_results(vec![ValType::String]))
-            .with_method(ResourceMethod::new("write")
-                .with_params(vec![ValType::String]))
+            .with_constructor(
+                ResourceMethod::static_method("[constructor]")
+                    .with_params(vec![ValType::String])
+                    .with_results(vec![ValType::I32]),
+            )
+            .with_method(ResourceMethod::new("read").with_results(vec![ValType::String]))
+            .with_method(ResourceMethod::new("write").with_params(vec![ValType::String]))
             .with_destructor(ResourceMethod::new("[resource-drop]").consuming());
 
         comp.add_resource(file_resource);
@@ -685,7 +698,7 @@ mod tests {
             .with_field("Text")
             .with_property(
                 PropertyDef::new("Enabled")
-                    .with_setter(HostTarget::new("vybe:gui", "controlSetProperty"))
+                    .with_setter(HostTarget::new("vybe:gui", "controlSetProperty")),
             )
             .with_method(MethodDef::new(
                 "PerformClick",
@@ -693,8 +706,7 @@ mod tests {
                 MethodBody::HostCall(HostTarget::new("vybe:gui", "buttonPerformClick")),
             ))
             .with_constructor(
-                ConstructorDef::new(0)
-                    .with_backing(HostTarget::new("vybe:gui", "new_Button"))
+                ConstructorDef::new(0).with_backing(HostTarget::new("vybe:gui", "new_Button")),
             );
 
         comp.add_class(button_class.clone());
@@ -705,19 +717,31 @@ mod tests {
         assert_eq!(comp.classes[0].methods.len(), 1);
 
         // Add imports/exports
-        comp.add_import_fn("wasi:io/streams", "read", FuncSig {
-            name: "read".into(),
-            params: vec![ValType::I32],
-            results: vec![ValType::String],
-        });
+        comp.add_import_fn(
+            "wasi:io/streams",
+            "read",
+            FuncSig {
+                name: "read".into(),
+                params: vec![ValType::I32],
+                results: vec![ValType::String],
+            },
+        );
 
-        comp.add_export_fn("my:api/math", "add", FuncSig {
-            name: "add".into(),
-            params: vec![ValType::I32, ValType::I32],
-            results: vec![ValType::I32],
-        });
+        comp.add_export_fn(
+            "my:api/math",
+            "add",
+            FuncSig {
+                name: "add".into(),
+                params: vec![ValType::I32, ValType::I32],
+                results: vec![ValType::I32],
+            },
+        );
 
-        comp.add_import_class("dotnet.System.Windows.Forms", "Button", button_class.clone());
+        comp.add_import_class(
+            "dotnet.System.Windows.Forms",
+            "Button",
+            button_class.clone(),
+        );
         comp.add_export_class("dotnet.System.Windows.Forms", "Button", button_class);
 
         assert_eq!(comp.imports.len(), 2);

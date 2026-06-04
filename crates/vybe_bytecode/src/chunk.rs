@@ -147,7 +147,10 @@ impl Chunk {
 
     /// Add an import and return its index (used by CallHost operand).
     pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
-        let import = Import { module: module.into(), name: name.into() };
+        let import = Import {
+            module: module.into(),
+            name: name.into(),
+        };
         // Deduplicate — return existing index if already imported
         for (i, existing) in self.imports.iter().enumerate() {
             if *existing == import {
@@ -164,7 +167,9 @@ impl Chunk {
         let name = type_name.into();
         // Deduplicate
         for (i, existing) in self.exception_tags.iter().enumerate() {
-            if *existing == name { return i as u8; }
+            if *existing == name {
+                return i as u8;
+            }
         }
         self.exception_tags.push(name);
         (self.exception_tags.len() - 1) as u8
@@ -172,11 +177,19 @@ impl Chunk {
 
     /// Add a global initializer (evaluated at load time).
     pub fn add_global_init(&mut self, name: impl Into<String>, init: ConstExpr) {
-        self.global_inits.push(GlobalInit { name: name.into(), init });
+        self.global_inits.push(GlobalInit {
+            name: name.into(),
+            init,
+        });
     }
 
     /// Add a continuation tag and return its index.
-    pub fn add_continuation_tag(&mut self, name: impl Into<String>, yield_type: impl Into<String>, resume_type: impl Into<String>) -> u16 {
+    pub fn add_continuation_tag(
+        &mut self,
+        name: impl Into<String>,
+        yield_type: impl Into<String>,
+        resume_type: impl Into<String>,
+    ) -> u16 {
         let tag = ContinuationTag {
             name: name.into(),
             yield_type: yield_type.into(),
@@ -212,9 +225,13 @@ impl Chunk {
         loop {
             let mut byte = (value & 0x7f) as u8;
             value >>= 7;
-            if value != 0 { byte |= 0x80; }
+            if value != 0 {
+                byte |= 0x80;
+            }
             self.emit(byte, line);
-            if value == 0 { break; }
+            if value == 0 {
+                break;
+            }
         }
     }
 
@@ -273,7 +290,7 @@ impl Chunk {
     pub fn emit_block_typed(&mut self, line: u32, result_count: u8) -> usize {
         self.emit_op(Op::BLOCK, line);
         self.emit(result_count, line); // raw count; WASM encoder translates to blocktype
-        self.code.len() - 1  // dummy patch pos — patch_block is a no-op
+        self.code.len() - 1 // dummy patch pos — patch_block is a no-op
     }
 
     /// Emit a void LOOP. Returns (dummy_patch, loop_body_start).

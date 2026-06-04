@@ -17,8 +17,8 @@
 //!   - Block/loop/end label stack matches WASM spec
 //!   - br depth targets the Nth enclosing construct
 
-use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::value::Value;
+use vybe_bytecode::{Chunk, Op, VM};
 
 /// Helper: build a script chunk from an emit closure, run it, return the popped result.
 fn run_script(emit: impl FnOnce(&mut Chunk)) -> Value {
@@ -62,16 +62,51 @@ fn const_string_on_stack() {
 
 #[test]
 fn true_false_null_opcodes() {
-    assert_eq!(run_script(|c| { c.emit_op(Op::TRUE, 0); }).as_bool(), true);
-    assert_eq!(run_script(|c| { c.emit_op(Op::FALSE, 0); }).as_bool(), false);
-    assert!(matches!(run_script(|c| { c.emit_op(Op::NULL, 0); }), Value::Null));
+    assert_eq!(
+        run_script(|c| {
+            c.emit_op(Op::TRUE, 0);
+        })
+        .as_bool(),
+        true
+    );
+    assert_eq!(
+        run_script(|c| {
+            c.emit_op(Op::FALSE, 0);
+        })
+        .as_bool(),
+        false
+    );
+    assert!(matches!(
+        run_script(|c| {
+            c.emit_op(Op::NULL, 0);
+        }),
+        Value::Null
+    ));
 }
 
 #[test]
 fn i32_const_shortcuts() {
-    assert_eq!(run_script(|c| { c.emit_op(Op::I32_CONST_0, 0); }).as_i32(), 0);
-    assert_eq!(run_script(|c| { c.emit_op(Op::I32_CONST_1, 0); }).as_i32(), 1);
-    assert_eq!(run_script(|c| { c.emit_op(Op::F64_CONST_0, 0); }).as_f64(), 0.0);
+    assert_eq!(
+        run_script(|c| {
+            c.emit_op(Op::I32_CONST_0, 0);
+        })
+        .as_i32(),
+        0
+    );
+    assert_eq!(
+        run_script(|c| {
+            c.emit_op(Op::I32_CONST_1, 0);
+        })
+        .as_i32(),
+        1
+    );
+    assert_eq!(
+        run_script(|c| {
+            c.emit_op(Op::F64_CONST_0, 0);
+        })
+        .as_f64(),
+        0.0
+    );
 }
 
 #[test]
@@ -110,15 +145,34 @@ fn binop_f64(emit_op: Op, a: f64, b: f64) -> f64 {
         c.emit_op_u16(Op::CONST, ia, 0);
         c.emit_op_u16(Op::CONST, ib, 0);
         c.emit_op(emit_op, 0);
-    }).as_f64()
+    })
+    .as_f64()
 }
 
-#[test] fn f64_add() { assert_eq!(binop_f64(Op::F64_ADD, 2.5, 3.25), 5.75); }
-#[test] fn f64_sub() { assert_eq!(binop_f64(Op::F64_SUB, 10.0, 3.0), 7.0); }
-#[test] fn f64_mul() { assert_eq!(binop_f64(Op::F64_MUL, 4.0, 2.5), 10.0); }
-#[test] fn f64_div() { assert_eq!(binop_f64(Op::F64_DIV, 10.0, 4.0), 2.5); }
-#[test] fn f64_min() { assert_eq!(binop_f64(Op::F64_MIN, 3.0, 7.0), 3.0); }
-#[test] fn f64_max() { assert_eq!(binop_f64(Op::F64_MAX, 3.0, 7.0), 7.0); }
+#[test]
+fn f64_add() {
+    assert_eq!(binop_f64(Op::F64_ADD, 2.5, 3.25), 5.75);
+}
+#[test]
+fn f64_sub() {
+    assert_eq!(binop_f64(Op::F64_SUB, 10.0, 3.0), 7.0);
+}
+#[test]
+fn f64_mul() {
+    assert_eq!(binop_f64(Op::F64_MUL, 4.0, 2.5), 10.0);
+}
+#[test]
+fn f64_div() {
+    assert_eq!(binop_f64(Op::F64_DIV, 10.0, 4.0), 2.5);
+}
+#[test]
+fn f64_min() {
+    assert_eq!(binop_f64(Op::F64_MIN, 3.0, 7.0), 3.0);
+}
+#[test]
+fn f64_max() {
+    assert_eq!(binop_f64(Op::F64_MAX, 3.0, 7.0), 7.0);
+}
 
 fn binop_i32(emit_op: Op, a: i32, b: i32) -> i32 {
     run_script(|c| {
@@ -127,17 +181,42 @@ fn binop_i32(emit_op: Op, a: i32, b: i32) -> i32 {
         c.emit_op_u16(Op::CONST, ia, 0);
         c.emit_op_u16(Op::CONST, ib, 0);
         c.emit_op(emit_op, 0);
-    }).as_i32()
+    })
+    .as_i32()
 }
 
-#[test] fn i32_add() { assert_eq!(binop_i32(Op::I32_ADD, 5, 7), 12); }
-#[test] fn i32_sub() { assert_eq!(binop_i32(Op::I32_SUB, 10, 3), 7); }
-#[test] fn i32_mul() { assert_eq!(binop_i32(Op::I32_MUL, 4, 6), 24); }
-#[test] fn i32_div_s() { assert_eq!(binop_i32(Op::I32_DIV_S, -10, 2), -5); }
-#[test] fn i32_and() { assert_eq!(binop_i32(Op::I32_AND, 0b1100, 0b1010), 0b1000); }
-#[test] fn i32_or()  { assert_eq!(binop_i32(Op::I32_OR,  0b1100, 0b1010), 0b1110); }
-#[test] fn i32_xor() { assert_eq!(binop_i32(Op::I32_XOR, 0b1100, 0b1010), 0b0110); }
-#[test] fn i32_shl() { assert_eq!(binop_i32(Op::I32_SHL, 1, 4), 16); }
+#[test]
+fn i32_add() {
+    assert_eq!(binop_i32(Op::I32_ADD, 5, 7), 12);
+}
+#[test]
+fn i32_sub() {
+    assert_eq!(binop_i32(Op::I32_SUB, 10, 3), 7);
+}
+#[test]
+fn i32_mul() {
+    assert_eq!(binop_i32(Op::I32_MUL, 4, 6), 24);
+}
+#[test]
+fn i32_div_s() {
+    assert_eq!(binop_i32(Op::I32_DIV_S, -10, 2), -5);
+}
+#[test]
+fn i32_and() {
+    assert_eq!(binop_i32(Op::I32_AND, 0b1100, 0b1010), 0b1000);
+}
+#[test]
+fn i32_or() {
+    assert_eq!(binop_i32(Op::I32_OR, 0b1100, 0b1010), 0b1110);
+}
+#[test]
+fn i32_xor() {
+    assert_eq!(binop_i32(Op::I32_XOR, 0b1100, 0b1010), 0b0110);
+}
+#[test]
+fn i32_shl() {
+    assert_eq!(binop_i32(Op::I32_SHL, 1, 4), 16);
+}
 
 #[test]
 fn f64_neg_unary() {
@@ -189,9 +268,9 @@ fn local_get_set_slot_0() {
         c.local_count = 1;
         let idx = c.add_constant(Value::F64(42.0));
         c.emit_op_u16(Op::CONST, idx, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0);  // tee to slot 0, keeps value
-        c.emit_op(Op::DROP, 0);               // drop the teed copy
-        c.emit_op_u16(Op::LOCAL_GET, 0, 0);   // push slot 0
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0); // tee to slot 0, keeps value
+        c.emit_op(Op::DROP, 0); // drop the teed copy
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0); // push slot 0
     });
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -203,8 +282,8 @@ fn function_receives_args_at_slots_0_and_1() {
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;
     add_fn.local_count = 2;
-    add_fn.emit_op_u16(Op::LOCAL_GET, 0, 0);  // a
-    add_fn.emit_op_u16(Op::LOCAL_GET, 1, 0);  // b
+    add_fn.emit_op_u16(Op::LOCAL_GET, 0, 0); // a
+    add_fn.emit_op_u16(Op::LOCAL_GET, 1, 0); // b
     add_fn.emit_op(Op::F64_ADD, 0);
     add_fn.emit_op(Op::RETURN, 0);
 
@@ -231,12 +310,12 @@ fn function_with_local_beyond_args() {
     let mut fun = Chunk::new("fn");
     fun.arity = 2;
     fun.local_count = 3;
-    fun.emit_op_u16(Op::LOCAL_GET, 0, 0);    // a
-    fun.emit_op_u16(Op::LOCAL_GET, 1, 0);    // b
+    fun.emit_op_u16(Op::LOCAL_GET, 0, 0); // a
+    fun.emit_op_u16(Op::LOCAL_GET, 1, 0); // b
     fun.emit_op(Op::F64_ADD, 0);
-    fun.emit_op_u16(Op::LOCAL_SET, 2, 0);    // tmp
+    fun.emit_op_u16(Op::LOCAL_SET, 2, 0); // tmp
     fun.emit_op(Op::DROP, 0);
-    fun.emit_op_u16(Op::LOCAL_GET, 2, 0);    // tmp
+    fun.emit_op_u16(Op::LOCAL_GET, 2, 0); // tmp
     let two = fun.add_constant(Value::F64(2.0));
     fun.emit_op_u16(Op::CONST, two, 0);
     fun.emit_op(Op::F64_MUL, 0);
@@ -280,9 +359,9 @@ fn br_0_exits_block() {
         let bp = c.emit_block(0);
         let i5 = c.add_constant(Value::F64(5.0));
         c.emit_op_u16(Op::CONST, i5, 0);
-        c.emit_br(0, 0);                    // branch to end of block
+        c.emit_br(0, 0); // branch to end of block
         let i99 = c.add_constant(Value::F64(99.0));
-        c.emit_op_u16(Op::CONST, i99, 0);   // unreachable
+        c.emit_op_u16(Op::CONST, i99, 0); // unreachable
         c.emit_end(0);
         c.patch_block(bp);
     });
@@ -298,9 +377,9 @@ fn br_if_conditional_branch() {
         let bp = c.emit_block(0);
         let one = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, one, 0);
-        c.emit_br_if(0, 0);                 // branch because true
+        c.emit_br_if(0, 0); // branch because true
         let i99 = c.add_constant(Value::F64(99.0));
-        c.emit_op_u16(Op::CONST, i99, 0);   // skipped
+        c.emit_op_u16(Op::CONST, i99, 0); // skipped
         c.emit_end(0);
         c.patch_block(bp);
         // Push sentinel so we have something to return
@@ -317,7 +396,7 @@ fn br_if_zero_does_not_branch() {
         let bp = c.emit_block(0);
         let zero = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, zero, 0);
-        c.emit_br_if(0, 0);                 // does NOT branch
+        c.emit_br_if(0, 0); // does NOT branch
         let i7 = c.add_constant(Value::F64(7.0));
         c.emit_op_u16(Op::CONST, i7, 0);
         c.emit_br(0, 0);
@@ -359,8 +438,10 @@ fn simple_while_loop() {
         // continue loop
         c.emit_br(0, 0);
 
-        c.emit_end(0); c.patch_loop(lp);
-        c.emit_end(0); c.patch_block(bp);
+        c.emit_end(0);
+        c.patch_loop(lp);
+        c.emit_end(0);
+        c.patch_block(bp);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     });
@@ -389,9 +470,11 @@ fn nested_loops_break_with_labels() {
 
         // Init
         c.emit_op(Op::I32_CONST_0, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0); c.emit_op(Op::DROP, 0); // total=0
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0); // total=0
         c.emit_op(Op::I32_CONST_0, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 1, 0); c.emit_op(Op::DROP, 0); // i_outer=0
+        c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+        c.emit_op(Op::DROP, 0); // i_outer=0
 
         let outer_b = c.emit_block(0);
         let (outer_l, _) = c.emit_loop_s(0);
@@ -406,7 +489,8 @@ fn nested_loops_break_with_labels() {
 
         // Reset i_inner = 0
         c.emit_op(Op::I32_CONST_0, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 2, 0); c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+        c.emit_op(Op::DROP, 0);
 
         let inner_b = c.emit_block(0);
         let (inner_l, _) = c.emit_loop_s(0);
@@ -423,27 +507,34 @@ fn nested_loops_break_with_labels() {
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0); c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
 
         // i_inner++
         c.emit_op_u16(Op::LOCAL_GET, 2, 0);
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 2, 0); c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+        c.emit_op(Op::DROP, 0);
 
         c.emit_br(0, 0); // continue inner loop
-        c.emit_end(0); c.patch_loop(inner_l);
-        c.emit_end(0); c.patch_block(inner_b);
+        c.emit_end(0);
+        c.patch_loop(inner_l);
+        c.emit_end(0);
+        c.patch_block(inner_b);
 
         // i_outer++
         c.emit_op_u16(Op::LOCAL_GET, 1, 0);
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
-        c.emit_op_u16(Op::LOCAL_SET, 1, 0); c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+        c.emit_op(Op::DROP, 0);
 
         c.emit_br(0, 0); // continue outer loop
-        c.emit_end(0); c.patch_loop(outer_l);
-        c.emit_end(0); c.patch_block(outer_b);
+        c.emit_end(0);
+        c.patch_loop(outer_l);
+        c.emit_end(0);
+        c.patch_block(outer_b);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     });
@@ -520,7 +611,11 @@ fn round_trip_function_call() {
     // First verify it works when run directly
     let mut vm_direct = VM::new();
     let direct_result = vm_direct.run(chunks.clone()).expect("direct run");
-    assert_eq!(direct_result.as_f64(), 5.0, "direct execution should give 5.0");
+    assert_eq!(
+        direct_result.as_f64(),
+        5.0,
+        "direct execution should give 5.0"
+    );
 
     // Now round-trip
     let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
@@ -528,10 +623,19 @@ fn round_trip_function_call() {
 
     // Verify the read-back bytecode matches
     assert_eq!(chunks_rt.len(), chunks.len(), "chunk count mismatch");
-    assert_eq!(chunks_rt[0].code, chunks[0].code, "script bytecode round-trip mismatch");
-    assert_eq!(chunks_rt[1].code, chunks[1].code, "add bytecode round-trip mismatch");
+    assert_eq!(
+        chunks_rt[0].code, chunks[0].code,
+        "script bytecode round-trip mismatch"
+    );
+    assert_eq!(
+        chunks_rt[1].code, chunks[1].code,
+        "add bytecode round-trip mismatch"
+    );
     assert_eq!(chunks_rt[1].arity, chunks[1].arity, "arity mismatch");
-    assert_eq!(chunks_rt[1].local_count, chunks[1].local_count, "local_count mismatch");
+    assert_eq!(
+        chunks_rt[1].local_count, chunks[1].local_count,
+        "local_count mismatch"
+    );
 
     let mut vm = VM::new();
     let result = vm.run(chunks_rt).expect("run");
@@ -562,13 +666,19 @@ fn wasm_emits_required_sections() {
     let mut pos = 8;
     let mut seen = std::collections::HashSet::new();
     while pos < wasm.len() {
-        let sid = wasm[pos]; pos += 1;
+        let sid = wasm[pos];
+        pos += 1;
         // LEB128 size
-        let mut size = 0u32; let mut shift = 0u32;
+        let mut size = 0u32;
+        let mut shift = 0u32;
         loop {
-            let b = wasm[pos]; pos += 1;
-            size |= ((b & 0x7f) as u32) << shift; shift += 7;
-            if b & 0x80 == 0 { break; }
+            let b = wasm[pos];
+            pos += 1;
+            size |= ((b & 0x7f) as u32) << shift;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
         }
         seen.insert(sid);
         pos += size as usize;
@@ -604,19 +714,40 @@ fn function_type_has_arity_params_not_arity_plus_one() {
     // This is: 0x60 0x02 0x6F 0x6F 0x01 0x6F (func, 2 params, externref x2, 1 result, externref)
     let target = [0x60, 0x02, 0x6F, 0x6F, 0x01, 0x6F];
     let found = wasm.windows(target.len()).any(|w| w == target);
-    assert!(found, "WASM binary should contain the (externref, externref) → externref function type for arity-2 functions");
+    assert!(
+        found,
+        "WASM binary should contain the (externref, externref) → externref function type for arity-2 functions"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
 // 8. MORE ARITHMETIC EDGE CASES
 // ──────────────────────────────────────────────────────────────────────
 
-#[test] fn f64_sub_negative() { assert_eq!(binop_f64(Op::F64_SUB, 3.0, 10.0), -7.0); }
-#[test] fn f64_div_by_one() { assert_eq!(binop_f64(Op::F64_DIV, 42.0, 1.0), 42.0); }
-#[test] fn f64_mul_zero() { assert_eq!(binop_f64(Op::F64_MUL, 42.0, 0.0), 0.0); }
-#[test] fn f64_add_zero() { assert_eq!(binop_f64(Op::F64_ADD, 42.0, 0.0), 42.0); }
-#[test] fn f64_min_equal() { assert_eq!(binop_f64(Op::F64_MIN, 5.0, 5.0), 5.0); }
-#[test] fn f64_max_negatives() { assert_eq!(binop_f64(Op::F64_MAX, -3.0, -1.0), -1.0); }
+#[test]
+fn f64_sub_negative() {
+    assert_eq!(binop_f64(Op::F64_SUB, 3.0, 10.0), -7.0);
+}
+#[test]
+fn f64_div_by_one() {
+    assert_eq!(binop_f64(Op::F64_DIV, 42.0, 1.0), 42.0);
+}
+#[test]
+fn f64_mul_zero() {
+    assert_eq!(binop_f64(Op::F64_MUL, 42.0, 0.0), 0.0);
+}
+#[test]
+fn f64_add_zero() {
+    assert_eq!(binop_f64(Op::F64_ADD, 42.0, 0.0), 42.0);
+}
+#[test]
+fn f64_min_equal() {
+    assert_eq!(binop_f64(Op::F64_MIN, 5.0, 5.0), 5.0);
+}
+#[test]
+fn f64_max_negatives() {
+    assert_eq!(binop_f64(Op::F64_MAX, -3.0, -1.0), -1.0);
+}
 
 #[test]
 fn f64_sqrt() {
@@ -648,17 +779,31 @@ fn f64_ceil() {
     assert_eq!(r.as_f64(), 4.0);
 }
 
-#[test] fn i32_sub_negative() { assert_eq!(binop_i32(Op::I32_SUB, 3, 10), -7); }
-#[test] fn i32_rem_s_positive() { assert_eq!(binop_i32(Op::I32_REM_S, 10, 3), 1); }
-#[test] fn i32_rem_s_negative() { assert_eq!(binop_i32(Op::I32_REM_S, -10, 3), -1); }
-#[test] fn i32_shr_s_sign_extend() { assert_eq!(binop_i32(Op::I32_SHR_S, -8, 1), -4); }
-#[test] fn i32_shr_u_zero_extend() {
+#[test]
+fn i32_sub_negative() {
+    assert_eq!(binop_i32(Op::I32_SUB, 3, 10), -7);
+}
+#[test]
+fn i32_rem_s_positive() {
+    assert_eq!(binop_i32(Op::I32_REM_S, 10, 3), 1);
+}
+#[test]
+fn i32_rem_s_negative() {
+    assert_eq!(binop_i32(Op::I32_REM_S, -10, 3), -1);
+}
+#[test]
+fn i32_shr_s_sign_extend() {
+    assert_eq!(binop_i32(Op::I32_SHR_S, -8, 1), -4);
+}
+#[test]
+fn i32_shr_u_zero_extend() {
     // -8 >> 1 unsigned = i32::MAX / 2 + 1 area
     let v = binop_i32(Op::I32_SHR_U, -1, 1);
     assert_eq!(v, i32::MAX);
 }
 
-#[test] fn i32_eq_true() {
+#[test]
+fn i32_eq_true() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::I32(5));
         let b = c.add_constant(Value::I32(5));
@@ -669,7 +814,8 @@ fn f64_ceil() {
     assert_eq!(r.as_i32(), 1);
 }
 
-#[test] fn i32_eq_false() {
+#[test]
+fn i32_eq_false() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::I32(5));
         let b = c.add_constant(Value::I32(6));
@@ -680,7 +826,8 @@ fn f64_ceil() {
     assert_eq!(r.as_i32(), 0);
 }
 
-#[test] fn i32_ne() {
+#[test]
+fn i32_ne() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::I32(5));
         let b = c.add_constant(Value::I32(6));
@@ -691,7 +838,8 @@ fn f64_ceil() {
     assert_eq!(r.as_i32(), 1);
 }
 
-#[test] fn i32_eqz_zero() {
+#[test]
+fn i32_eqz_zero() {
     let r = run_script(|c| {
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op(Op::I32_EQZ, 0);
@@ -699,7 +847,8 @@ fn f64_ceil() {
     assert_eq!(r.as_i32(), 1);
 }
 
-#[test] fn i32_eqz_nonzero() {
+#[test]
+fn i32_eqz_nonzero() {
     let r = run_script(|c| {
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_EQZ, 0);
@@ -888,7 +1037,7 @@ fn array_set_then_get() {
         let n99 = c.add_constant(Value::F64(99.0));
         c.emit_op_u16(Op::CONST, n99, 0);
         c.emit_op(Op::ARRAY_SET, 0);
-        c.emit_op(Op::DROP, 0);  // array.set result
+        c.emit_op(Op::DROP, 0); // array.set result
         // Get arr[1]
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, one, 0);
@@ -972,7 +1121,8 @@ fn recursive_function_fibonacci() {
     fib.emit_br_if(0, 0); // skip if not less than 2
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_op(Op::RETURN, 0);
-    fib.emit_end(0); fib.patch_block(bp);
+    fib.emit_end(0);
+    fib.patch_block(bp);
 
     // return fib(n-1) + fib(n-2)
     fib.emit_op_u16(Op::REF_FUNC, 1, 0); // ref to self (chunk 1)
@@ -1027,7 +1177,9 @@ fn br_if_rejects_null_condition() {
         c.emit_op(Op::RETURN, 0);
     }
     let mut vm = VM::new();
-    let err = vm.run(vec![chunk]).expect_err("br_if should reject null conditions");
+    let err = vm
+        .run(vec![chunk])
+        .expect_err("br_if should reject null conditions");
     assert!(err.message.contains("br_if expected i32 condition"));
 }
 
@@ -1055,8 +1207,10 @@ fn loop_restarts_at_top() {
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_op(Op::DROP, 0);
         c.emit_br(0, 0);
-        c.emit_end(0); c.patch_loop(lp);
-        c.emit_end(0); c.patch_block(bp);
+        c.emit_end(0);
+        c.patch_loop(lp);
+        c.emit_end(0);
+        c.patch_block(bp);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     });
     assert_eq!(r.as_i32(), 5);
@@ -1072,10 +1226,12 @@ fn nested_blocks_br_outer() {
         c.emit_br(1, 0); // to outer end
         let i1 = c.add_constant(Value::F64(1.0));
         c.emit_op_u16(Op::CONST, i1, 0);
-        c.emit_end(0); c.patch_block(inner);
+        c.emit_end(0);
+        c.patch_block(inner);
         let i2 = c.add_constant(Value::F64(2.0));
         c.emit_op_u16(Op::CONST, i2, 0);
-        c.emit_end(0); c.patch_block(outer);
+        c.emit_end(0);
+        c.patch_block(outer);
         let sentinel = c.add_constant(Value::F64(99.0));
         c.emit_op_u16(Op::CONST, sentinel, 0);
     });
@@ -1090,13 +1246,16 @@ fn nested_blocks_br_outer() {
 fn round_trip_preserves_line_info() {
     let mut chunk = Chunk::new("<script>");
     let idx = chunk.add_constant(Value::F64(7.0));
-    chunk.emit_op_u16(Op::CONST, idx, 42);  // line 42
+    chunk.emit_op_u16(Op::CONST, idx, 42); // line 42
     chunk.emit_op(Op::RETURN, 42);
 
     let wasm = vybe_bytecode::wasm::write_wasm(&[chunk.clone()]);
     let chunks_rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
-    assert_eq!(chunks_rt[0].lines.len(), chunk.lines.len(),
-        "line count preserved");
+    assert_eq!(
+        chunks_rt[0].lines.len(),
+        chunk.lines.len(),
+        "line count preserved"
+    );
 }
 
 #[test]
@@ -1138,8 +1297,10 @@ fn round_trip_loop_execution_matches() {
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_br(0, 0);
-    chunk.emit_end(0); chunk.patch_loop(lp);
-    chunk.emit_end(0); chunk.patch_block(bp);
+    chunk.emit_end(0);
+    chunk.patch_loop(lp);
+    chunk.emit_end(0);
+    chunk.patch_block(bp);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1457,6 +1618,39 @@ fn structured_if_takes_else_when_i32_zero() {
 }
 
 #[test]
+fn return_inside_block_does_not_poison_caller_labels() {
+    let mut script = Chunk::new("<script>");
+    let v1 = script.add_constant(Value::F64(1.0));
+    let v2 = script.add_constant(Value::F64(2.0));
+
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op(Op::DROP, 0);
+    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_if_value(0);
+    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_else(0);
+    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_end(0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut callee = Chunk::new("returns_inside_block");
+    let callee_v7 = callee.add_constant(Value::F64(7.0));
+    let callee_v99 = callee.add_constant(Value::F64(99.0));
+    callee.emit_block(0);
+    callee.emit_op_u16(Op::CONST, callee_v7, 0);
+    callee.emit_op(Op::RETURN, 0);
+    callee.emit_end(0);
+    callee.emit_op_u16(Op::CONST, callee_v99, 0);
+    callee.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, callee]).unwrap();
+    assert_eq!(result.as_f64(), 2.0);
+}
+
+#[test]
 fn br_to_outer_block_skips_inner_work() {
     // Structured:
     //   block { block { br 1 } push 5 } push 42
@@ -1552,7 +1746,10 @@ fn round_trip_three_functions_chained_calls() {
     let rt_result = vm2.run(rt).unwrap().as_f64();
 
     assert_eq!(direct, 30.0);
-    assert_eq!(rt_result, direct, "round-trip must preserve chained call semantics");
+    assert_eq!(
+        rt_result, direct,
+        "round-trip must preserve chained call semantics"
+    );
 }
 
 #[test]
@@ -1593,7 +1790,10 @@ fn round_trip_preserves_chunk_name() {
     let chunks = vec![script, named];
     let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
     let rt = vybe_bytecode::wasm::read_wasm(&wasm).unwrap();
-    assert_eq!(rt[1].name, "my_cool_function", "chunk name preserved across round-trip");
+    assert_eq!(
+        rt[1].name, "my_cool_function",
+        "chunk name preserved across round-trip"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1626,15 +1826,20 @@ fn wasm_binary_sections_in_correct_order() {
             let b = wasm[pos];
             pos += 1;
             size |= ((b & 0x7F) as u32) << shift;
-            if b & 0x80 == 0 { break; }
+            if b & 0x80 == 0 {
+                break;
+            }
             shift += 7;
         }
 
         // Custom sections (id=0) can appear anywhere — skip order check
         if section_id != 0 {
-            assert!(section_id >= last_known_order,
+            assert!(
+                section_id >= last_known_order,
                 "section id {} appeared after {} — WASM spec requires ordered sections",
-                section_id, last_known_order);
+                section_id,
+                last_known_order
+            );
             last_known_order = section_id;
         }
 
@@ -1654,7 +1859,10 @@ fn wasm_contains_vybe_custom_section() {
     // Search for "vybe" string as section name
     let needle = b"vybe";
     let found = wasm.windows(needle.len()).any(|w| w == needle);
-    assert!(found, "wasm must contain custom section named 'vybe' for round-trip");
+    assert!(
+        found,
+        "wasm must contain custom section named 'vybe' for round-trip"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1706,7 +1914,11 @@ fn i32_min_minus_one_wraps_to_max() {
         c.emit_op_u16(Op::CONST, one, 0);
         c.emit_op(Op::I32_SUB, 0);
     });
-    assert_eq!(result.as_i32(), i32::MAX, "i32.sub underflow wraps per WASM");
+    assert_eq!(
+        result.as_i32(),
+        i32::MAX,
+        "i32.sub underflow wraps per WASM"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1808,16 +2020,31 @@ fn wasm_imports_include_full_js_builtins_surface() {
     let wasm = emit_trivial_wasm();
     let required = [
         // js-number
-        "fromF64", "fromI32", "fromU32", "toF64", "toI32", "toU32",
-        "test", "testI32", "testU32",
+        "fromF64",
+        "fromI32",
+        "fromU32",
+        "toF64",
+        "toI32",
+        "toU32",
+        "test",
+        "testI32",
+        "testU32",
         // js-string (core)
-        "concat", "equals", "compare", "length",
-        "charCodeAt", "codePointAt",
-        "fromCharCode", "fromCodePoint",
-        "substring", "cast",
-        "intoCharCodeArray", "fromCharCodeArray",
+        "concat",
+        "equals",
+        "compare",
+        "length",
+        "charCodeAt",
+        "codePointAt",
+        "fromCharCode",
+        "fromCodePoint",
+        "substring",
+        "cast",
+        "intoCharCodeArray",
+        "fromCharCodeArray",
         // js-string (primitive-builtins numeric formatting)
-        "fromI64", "fromU64",
+        "fromI64",
+        "fromU64",
         // js-boolean
         // js-undefined
         // js-symbol
@@ -1827,7 +2054,11 @@ fn wasm_imports_include_full_js_builtins_surface() {
     for name in required {
         let bytes = name.as_bytes();
         let found = wasm.windows(bytes.len()).any(|w| w == bytes);
-        assert!(found, "builtin `{}` not found in emitted .wasm import section", name);
+        assert!(
+            found,
+            "builtin `{}` not found in emitted .wasm import section",
+            name
+        );
     }
 }
 
@@ -1835,13 +2066,20 @@ fn wasm_imports_include_full_js_builtins_surface() {
 fn wasm_imports_include_all_js_builtin_modules() {
     let wasm = emit_trivial_wasm();
     for module in [
-        "wasm:js-number", "wasm:js-string",
-        "wasm:js-boolean", "wasm:js-undefined",
-        "wasm:js-symbol", "wasm:js-bigint",
+        "wasm:js-number",
+        "wasm:js-string",
+        "wasm:js-boolean",
+        "wasm:js-undefined",
+        "wasm:js-symbol",
+        "wasm:js-bigint",
     ] {
         let bytes = module.as_bytes();
         let found = wasm.windows(bytes.len()).any(|w| w == bytes);
-        assert!(found, "module `{}` missing from emitted .wasm imports", module);
+        assert!(
+            found,
+            "module `{}` missing from emitted .wasm imports",
+            module
+        );
     }
 }
 
@@ -1903,8 +2141,8 @@ fn str_into_char_codes_produces_array() {
 #[test]
 fn str_from_char_codes_builds_string() {
     use std::sync::Arc;
-    use vybe_bytecode::value::{Object, ObjectKind};
     use std::sync::Mutex;
+    use vybe_bytecode::value::{Object, ObjectKind};
 
     // Build an array [72, 105] via the VM and feed it to STR_FROM_CHAR_CODES.
     let mut script = Chunk::new("<script>");
@@ -1932,7 +2170,9 @@ fn str_from_char_codes_builds_string() {
 
 #[test]
 fn undefined_opcode_pushes_undefined_value() {
-    let result = run_script(|c| { c.emit_op(Op::UNDEFINED, 0); });
+    let result = run_script(|c| {
+        c.emit_op(Op::UNDEFINED, 0);
+    });
     assert!(matches!(result, Value::Undefined), "got {:?}", result);
 }
 
@@ -2139,20 +2379,26 @@ fn emitted_wasm_has_js_global_imports() {
         let bytes = name.as_bytes();
         assert!(
             wasm.windows(bytes.len()).any(|w| w == bytes),
-            "global import name `{}` not found in emitted .wasm", name);
+            "global import name `{}` not found in emitted .wasm",
+            name
+        );
     }
     // Scan import section for at least one global descriptor (kind 0x03,
     // externref = 0x6F, mut = 0x00).
     let mut pos = 8;
     let mut found_global = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
+        let section_id = wasm[pos];
+        pos += 1;
         let mut size: u32 = 0;
         let mut shift = 0;
         loop {
-            let b = wasm[pos]; pos += 1;
+            let b = wasm[pos];
+            pos += 1;
             size |= ((b & 0x7F) as u32) << shift;
-            if b & 0x80 == 0 { break; }
+            if b & 0x80 == 0 {
+                break;
+            }
             shift += 7;
         }
         if section_id == 2 {
@@ -2180,13 +2426,17 @@ fn emitted_wasm_has_export_section() {
     let mut pos = 8; // skip magic + version
     let mut found = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
+        let section_id = wasm[pos];
+        pos += 1;
         let mut size: u32 = 0;
         let mut shift = 0;
         loop {
-            let b = wasm[pos]; pos += 1;
+            let b = wasm[pos];
+            pos += 1;
             size |= ((b & 0x7F) as u32) << shift;
-            if b & 0x80 == 0 { break; }
+            if b & 0x80 == 0 {
+                break;
+            }
             shift += 7;
         }
         if section_id == 7 {
@@ -2197,7 +2447,10 @@ fn emitted_wasm_has_export_section() {
         }
         pos += size as usize;
     }
-    assert!(found, "generated .wasm has no export section — ESM import would see no bindings");
+    assert!(
+        found,
+        "generated .wasm has no export section — ESM import would see no bindings"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2212,9 +2465,9 @@ fn emitted_wasm_has_export_section() {
 #[test]
 fn every_proposal_module_exposes_uniform_surface() {
     use vybe_bytecode::wasm::{
-        reference_types, extended_name_section as _, compilation_hints as _,
-        js_string_builtins, js_primitive_builtins, esm_integration,
-        gc, simd, threads, bulk_memory, exception_handling, tail_call, multi_value,
+        bulk_memory, compilation_hints as _, esm_integration, exception_handling,
+        extended_name_section as _, gc, js_primitive_builtins, js_string_builtins, multi_value,
+        reference_types, simd, tail_call, threads,
     };
 
     // Each of these must compile — the test is the shape check.
@@ -2229,7 +2482,10 @@ fn every_proposal_module_exposes_uniform_surface() {
     total_imports += exception_handling::IMPORTS.len();
     total_imports += tail_call::IMPORTS.len();
     total_imports += multi_value::IMPORTS.len();
-    assert!(total_imports > 0, "no proposal module exposes any imports — suspicious");
+    assert!(
+        total_imports > 0,
+        "no proposal module exposes any imports — suspicious"
+    );
 
     // ESM readiness check accepts a non-empty chunk list.
     let chunk = vybe_bytecode::Chunk::new("ok");
@@ -2256,7 +2512,8 @@ fn emitted_wasm_has_standard_name_section() {
     let mut pos = 8;
     let mut found_name_section = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
+        let section_id = wasm[pos];
+        pos += 1;
         let (size, read) = decode_leb128_u32(&wasm[pos..]);
         pos += read;
         let end = pos + size as usize;
@@ -2267,12 +2524,17 @@ fn emitted_wasm_has_standard_name_section() {
             let name_end = name_start + name_len as usize;
             if name_end <= end {
                 let name = std::str::from_utf8(&wasm[name_start..name_end]).unwrap_or("");
-                if name == "name" { found_name_section = true; }
+                if name == "name" {
+                    found_name_section = true;
+                }
             }
         }
         pos = end;
     }
-    assert!(found_name_section, "generated .wasm is missing the standard `name` custom section");
+    assert!(
+        found_name_section,
+        "generated .wasm is missing the standard `name` custom section"
+    );
 }
 
 /// The `"name"` section must contain at least subsection 1 (function
@@ -2281,22 +2543,32 @@ fn emitted_wasm_has_standard_name_section() {
 #[test]
 fn name_section_includes_function_and_global_subsections() {
     let wasm = emit_trivial_wasm();
-    let name_payload = find_custom_section(&wasm, "name")
-        .expect("name section missing");
+    let name_payload = find_custom_section(&wasm, "name").expect("name section missing");
     // Walk subsections.
     let mut pos = 0;
     let mut seen_fn = false;
     let mut seen_global = false;
     while pos < name_payload.len() {
-        let id = name_payload[pos]; pos += 1;
+        let id = name_payload[pos];
+        pos += 1;
         let (size, r) = decode_leb128_u32(&name_payload[pos..]);
         pos += r;
-        if id == 1 { seen_fn = true; }
-        if id == 7 { seen_global = true; }
+        if id == 1 {
+            seen_fn = true;
+        }
+        if id == 7 {
+            seen_global = true;
+        }
         pos += size as usize;
     }
-    assert!(seen_fn,     "name section missing function-names subsection (id=1)");
-    assert!(seen_global, "name section missing global-names subsection (id=7)");
+    assert!(
+        seen_fn,
+        "name section missing function-names subsection (id=1)"
+    );
+    assert!(
+        seen_global,
+        "name section missing global-names subsection (id=7)"
+    );
 }
 
 /// The compilation-hints proposal gets a custom section under the
@@ -2305,8 +2577,10 @@ fn name_section_includes_function_and_global_subsections() {
 fn emitted_wasm_has_compilation_hints_section() {
     let wasm = emit_trivial_wasm();
     let payload = find_custom_section(&wasm, "metadata.code.compilation_order");
-    assert!(payload.is_some(),
-        "generated .wasm is missing metadata.code.compilation_order section");
+    assert!(
+        payload.is_some(),
+        "generated .wasm is missing metadata.code.compilation_order section"
+    );
     // First byte of payload is the hint count (LEB128). Must be >= 1 for
     // our entry chunk.
     let p = payload.unwrap();
@@ -2323,7 +2597,9 @@ fn decode_leb128_u32(bytes: &[u8]) -> (u32, usize) {
     for &b in bytes {
         read += 1;
         result |= ((b & 0x7F) as u32) << shift;
-        if b & 0x80 == 0 { break; }
+        if b & 0x80 == 0 {
+            break;
+        }
         shift += 7;
     }
     (result, read)
@@ -2334,7 +2610,8 @@ fn decode_leb128_u32(bytes: &[u8]) -> (u32, usize) {
 fn find_custom_section<'a>(wasm: &'a [u8], target: &str) -> Option<&'a [u8]> {
     let mut pos = 8;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
+        let section_id = wasm[pos];
+        pos += 1;
         let (size, r) = decode_leb128_u32(&wasm[pos..]);
         pos += r;
         let end = pos + size as usize;
@@ -2344,7 +2621,9 @@ fn find_custom_section<'a>(wasm: &'a [u8], target: &str) -> Option<&'a [u8]> {
             let name_end = name_start + name_len as usize;
             if name_end <= end {
                 if let Ok(name) = std::str::from_utf8(&wasm[name_start..name_end]) {
-                    if name == target { return Some(&wasm[name_end..end]); }
+                    if name == target {
+                        return Some(&wasm[name_end..end]);
+                    }
                 }
             }
         }
@@ -2371,8 +2650,10 @@ fn emitted_wasm_declares_single_funcref_table_by_default() {
     let mut table_count: Option<u32> = None;
     let mut first_elem_type: Option<u8> = None;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 4 {
             let (n, nread) = decode_leb128_u32(&wasm[pos..]);
             table_count = Some(n);
@@ -2381,11 +2662,17 @@ fn emitted_wasm_declares_single_funcref_table_by_default() {
         }
         pos += size as usize;
     }
-    assert_eq!(table_count, Some(1),
+    assert_eq!(
+        table_count,
+        Some(1),
         "default table section must declare exactly 1 table (funcref) — \
-         multi-table is opt-in via encode_table_section_with");
-    assert_eq!(first_elem_type, Some(0x70),
-        "default table must be funcref (0x70)");
+         multi-table is opt-in via encode_table_section_with"
+    );
+    assert_eq!(
+        first_elem_type,
+        Some(0x70),
+        "default table must be funcref (0x70)"
+    );
 }
 
 #[test]
@@ -2431,14 +2718,14 @@ fn multi_value_result_arity_round_trips() {
     let mut pos = 8;
     let mut found_multi_result = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 1 {
             let end = pos + size as usize;
             let pat = [0x60u8, 0x00, 0x02, 0x6F, 0x6F];
-            found_multi_result = wasm[pos..end]
-                .windows(pat.len())
-                .any(|w| w == pat);
+            found_multi_result = wasm[pos..end].windows(pat.len()).any(|w| w == pat);
             break;
         }
         pos += size as usize;
@@ -2447,8 +2734,13 @@ fn multi_value_result_arity_round_trips() {
     // accept either the emit proof above OR matching result_arity.
     let dual_idx = reread.iter().position(|c| c.name == "dual");
     let roundtripped_or_emitted = found_multi_result
-        || dual_idx.map(|i| reread[i].result_arity == 2).unwrap_or(false);
-    assert!(roundtripped_or_emitted, "multi-value signature not reflected in emitted type section");
+        || dual_idx
+            .map(|i| reread[i].result_arity == 2)
+            .unwrap_or(false);
+    assert!(
+        roundtripped_or_emitted,
+        "multi-value signature not reflected in emitted type section"
+    );
 }
 
 #[test]
@@ -2464,8 +2756,8 @@ fn multi_value_block_emits_typeidx_blocktype() {
 
     let mut fun = Chunk::new("with_multi_block");
     fun.arity = 0;
-    let bp = fun.emit_block_typed(0, 2);   // 2-result block
-    let k  = fun.add_constant(Value::F64(42.0));
+    let bp = fun.emit_block_typed(0, 2); // 2-result block
+    let k = fun.add_constant(Value::F64(42.0));
     fun.emit_op_u16(Op::CONST, k, 0);
     fun.emit_op_u16(Op::CONST, k, 0);
     fun.emit_op(Op::END, 0);
@@ -2482,8 +2774,10 @@ fn multi_value_block_emits_typeidx_blocktype() {
     let mut pos = 8;
     let mut multi_type_present = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 1 {
             let end = pos + size as usize;
             let pat = [0x60u8, 0x00, 0x02, 0x6F, 0x6F];
@@ -2492,7 +2786,10 @@ fn multi_value_block_emits_typeidx_blocktype() {
         }
         pos += size as usize;
     }
-    assert!(multi_type_present, "multi-result block did not register `() -> externref^2` type");
+    assert!(
+        multi_type_present,
+        "multi-result block did not register `() -> externref^2` type"
+    );
 }
 
 #[test]
@@ -2503,8 +2800,8 @@ fn multi_value_return_pushes_n_results_on_caller_stack() {
     let mut callee = Chunk::new("triple");
     callee.arity = 0;
     callee.result_arity = 3;
-    let one  = callee.add_constant(Value::F64(1.0));
-    let ten  = callee.add_constant(Value::F64(10.0));
+    let one = callee.add_constant(Value::F64(1.0));
+    let ten = callee.add_constant(Value::F64(10.0));
     let hund = callee.add_constant(Value::F64(100.0));
     callee.emit_op_u16(Op::CONST, one, 0);
     callee.emit_op_u16(Op::CONST, ten, 0);
@@ -2524,8 +2821,11 @@ fn multi_value_return_pushes_n_results_on_caller_stack() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![script, callee]).unwrap();
-    assert_eq!(result.as_f64(), 111.0,
-        "multi-value RETURN should leave all 3 callee results on caller stack");
+    assert_eq!(
+        result.as_f64(),
+        111.0,
+        "multi-value RETURN should leave all 3 callee results on caller stack"
+    );
 }
 
 #[test]
@@ -2536,8 +2836,15 @@ fn shared_memory_section_emits_shared_flag() {
     // bytes[0] = count=1, bytes[1] = flags
     assert_eq!(bytes[0], 1);
     let flags = bytes[1];
-    assert!(flags & 0x02 != 0, "shared flag bit not set (got {:#x})", flags);
-    assert!(flags & 0x01 != 0, "max flag bit not set (shared requires max)");
+    assert!(
+        flags & 0x02 != 0,
+        "shared flag bit not set (got {:#x})",
+        flags
+    );
+    assert!(
+        flags & 0x01 != 0,
+        "max flag bit not set (shared requires max)"
+    );
 }
 
 #[test]
@@ -2548,14 +2855,26 @@ fn name_section_includes_data_and_tag_subsections() {
     let mut seen_data = false;
     let mut seen_tag = false;
     while pos < payload.len() {
-        let id = payload[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&payload[pos..]); pos += r;
-        if id == 9  { seen_data = true; }
-        if id == 11 { seen_tag  = true; }
+        let id = payload[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&payload[pos..]);
+        pos += r;
+        if id == 9 {
+            seen_data = true;
+        }
+        if id == 11 {
+            seen_tag = true;
+        }
         pos += size as usize;
     }
-    assert!(seen_data, "name section missing data-names subsection (id=9)");
-    assert!(seen_tag,  "name section missing tag-names subsection (id=11)");
+    assert!(
+        seen_data,
+        "name section missing data-names subsection (id=9)"
+    );
+    assert!(
+        seen_tag,
+        "name section missing tag-names subsection (id=11)"
+    );
 }
 
 #[test]
@@ -2564,7 +2883,12 @@ fn ref_eq_matches_identical_objects() {
     use vybe_bytecode::value::{Object, ObjectKind};
 
     // Two constants pointing at the same Arc<Object>.
-    let obj = Arc::new(Mutex::new(Object { properties: Default::default(), kind: ObjectKind::Ordinary, type_id: 0, fields: Vec::new() }));
+    let obj = Arc::new(Mutex::new(Object {
+        properties: Default::default(),
+        kind: ObjectKind::Ordinary,
+        type_id: 0,
+        fields: Vec::new(),
+    }));
     let mut chunk = Chunk::new("<script>");
     let k1 = chunk.add_constant(Value::Object(obj.clone()));
     let k2 = chunk.add_constant(Value::Object(obj));
@@ -2578,8 +2902,18 @@ fn ref_eq_matches_identical_objects() {
 
     // Two DIFFERENT objects → ref.eq is false.
     let mut chunk = Chunk::new("<script>");
-    let a = Arc::new(Mutex::new(Object { properties: Default::default(), kind: ObjectKind::Ordinary, type_id: 0, fields: Vec::new() }));
-    let b = Arc::new(Mutex::new(Object { properties: Default::default(), kind: ObjectKind::Ordinary, type_id: 0, fields: Vec::new() }));
+    let a = Arc::new(Mutex::new(Object {
+        properties: Default::default(),
+        kind: ObjectKind::Ordinary,
+        type_id: 0,
+        fields: Vec::new(),
+    }));
+    let b = Arc::new(Mutex::new(Object {
+        properties: Default::default(),
+        kind: ObjectKind::Ordinary,
+        type_id: 0,
+        fields: Vec::new(),
+    }));
     let ka = chunk.add_constant(Value::Object(a));
     let kb = chunk.add_constant(Value::Object(b));
     chunk.emit_op_u16(Op::CONST, ka, 0);
@@ -2616,9 +2950,13 @@ fn name_section_includes_type_subsection() {
     let mut pos = 0;
     let mut seen = false;
     while pos < name_payload.len() {
-        let id = name_payload[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&name_payload[pos..]); pos += r;
-        if id == 4 { seen = true; }
+        let id = name_payload[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&name_payload[pos..]);
+        pos += r;
+        if id == 4 {
+            seen = true;
+        }
         pos += size as usize;
     }
     assert!(seen, "name section missing type-names subsection (id=4)");
@@ -2638,16 +2976,20 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
     fun.emit_op_u16(Op::CONST, zero, 0);
     fun.emit_loop_s(0);
     fun.emit_op(Op::DUP, 0);
-    fun.emit_br_if(0, 0);  // back-edge inside loop
+    fun.emit_br_if(0, 0); // back-edge inside loop
     fun.emit_op(Op::END, 0);
     fun.emit_op(Op::RETURN, 0);
 
     let wasm = vybe_bytecode::wasm::write_wasm(&vec![script, fun]);
 
-    assert!(find_custom_section(&wasm, "metadata.code.branch_hint").is_some(),
-        "branch_hint section not emitted for module with back-edge BR_IF");
-    assert!(find_custom_section(&wasm, "metadata.code.inlining").is_some(),
-        "inlining section not emitted for leaf function");
+    assert!(
+        find_custom_section(&wasm, "metadata.code.branch_hint").is_some(),
+        "branch_hint section not emitted for module with back-edge BR_IF"
+    );
+    assert!(
+        find_custom_section(&wasm, "metadata.code.inlining").is_some(),
+        "inlining section not emitted for leaf function"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2691,8 +3033,10 @@ fn tag_section_emitted_when_module_uses_exceptions() {
     let mut pos = 8;
     let mut found = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 13 {
             let (n, _) = decode_leb128_u32(&wasm[pos..]);
             assert_eq!(n, 1, "tag section must declare exactly 1 tag");
@@ -2709,10 +3053,14 @@ fn tag_section_omitted_when_module_has_no_exceptions() {
     let wasm = emit_trivial_wasm();
     let mut pos = 8;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
-        assert_ne!(section_id, 13,
-            "tag section must not be emitted when no chunk uses throw/try");
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
+        assert_ne!(
+            section_id, 13,
+            "tag section must not be emitted when no chunk uses throw/try"
+        );
         pos += size as usize;
     }
 }
@@ -2724,20 +3072,22 @@ fn throw_emits_as_wasm_throw_not_nop() {
     let mut pos = 8;
     let mut seen_throw = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 10 {
             let end = pos + size as usize;
             // Byte pattern: throw opcode (0x08) + tag index LEB128 (0x00).
-            seen_throw = wasm[pos..end]
-                .windows(2)
-                .any(|w| w == [0x08, 0x00]);
+            seen_throw = wasm[pos..end].windows(2).any(|w| w == [0x08, 0x00]);
             break;
         }
         pos += size as usize;
     }
-    assert!(seen_throw,
-        "emitted code must contain `throw 0` bytes (0x08 0x00) — THROW was silently nop'd");
+    assert!(
+        seen_throw,
+        "emitted code must contain `throw 0` bytes (0x08 0x00) — THROW was silently nop'd"
+    );
 }
 
 #[test]
@@ -2747,8 +3097,10 @@ fn try_table_opcode_emitted_for_try_region() {
     let mut pos = 8;
     let mut seen_try_table = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 10 {
             let end = pos + size as usize;
             seen_try_table = wasm[pos..end].iter().any(|&b| b == 0x1F);
@@ -2756,8 +3108,10 @@ fn try_table_opcode_emitted_for_try_region() {
         }
         pos += size as usize;
     }
-    assert!(seen_try_table,
-        "code section must contain try_table opcode (0x1F) for try region");
+    assert!(
+        seen_try_table,
+        "code section must contain try_table opcode (0x1F) for try region"
+    );
 }
 
 #[test]
@@ -2767,8 +3121,10 @@ fn exception_type_declared_with_externref_param() {
     let mut pos = 8;
     let mut found = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 1 {
             let end = pos + size as usize;
             let pat = [0x60u8, 0x01, 0x6F, 0x00];
@@ -2777,8 +3133,10 @@ fn exception_type_declared_with_externref_param() {
         }
         pos += size as usize;
     }
-    assert!(found,
-        "type section must declare `(externref) -> ()` for exception tag");
+    assert!(
+        found,
+        "type section must declare `(externref) -> ()` for exception tag"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2793,56 +3151,71 @@ fn exception_type_declared_with_externref_param() {
 fn gc_opcodes_use_spec_byte_values() {
     let table: &[(Op, u8, u8, &str)] = &[
         // Struct ops
-        (Op::STRUCT_NEW,            0xFB, 0x00, "struct.new"),
-        (Op::STRUCT_NEW_DEFAULT,    0xFB, 0x01, "struct.new_default"),
-        (Op::STRUCT_GET,            0xFB, 0x02, "struct.get"),
-        (Op::STRUCT_GET_S,          0xFB, 0x03, "struct.get_s"),
-        (Op::STRUCT_GET_U,          0xFB, 0x04, "struct.get_u"),
-        (Op::STRUCT_SET,            0xFB, 0x05, "struct.set"),
+        (Op::STRUCT_NEW, 0xFB, 0x00, "struct.new"),
+        (Op::STRUCT_NEW_DEFAULT, 0xFB, 0x01, "struct.new_default"),
+        (Op::STRUCT_GET, 0xFB, 0x02, "struct.get"),
+        (Op::STRUCT_GET_S, 0xFB, 0x03, "struct.get_s"),
+        (Op::STRUCT_GET_U, 0xFB, 0x04, "struct.get_u"),
+        (Op::STRUCT_SET, 0xFB, 0x05, "struct.set"),
         // Array ops
-        (Op::ARRAY_NEW,             0xFB, 0x06, "array.new"),
-        (Op::ARRAY_NEW_DEFAULT,     0xFB, 0x07, "array.new_default"),
-        (Op::ARRAY_NEW_FIXED,       0xFB, 0x08, "array.new_fixed"),
-        (Op::ARRAY_NEW_DATA,        0xFB, 0x09, "array.new_data"),
-        (Op::ARRAY_NEW_ELEM,        0xFB, 0x0A, "array.new_elem"),
-        (Op::ARRAY_GET,             0xFB, 0x0B, "array.get"),
-        (Op::ARRAY_GET_S,           0xFB, 0x0C, "array.get_s"),
-        (Op::ARRAY_GET_U,           0xFB, 0x0D, "array.get_u"),
-        (Op::ARRAY_SET,             0xFB, 0x0E, "array.set"),
-        (Op::ARRAY_LENGTH,          0xFB, 0x0F, "array.len"),
-        (Op::ARRAY_FILL,            0xFB, 0x10, "array.fill"),
-        (Op::ARRAY_COPY,            0xFB, 0x11, "array.copy"),
-        (Op::ARRAY_INIT_DATA,       0xFB, 0x12, "array.init_data"),
-        (Op::ARRAY_INIT_ELEM,       0xFB, 0x13, "array.init_elem"),
+        (Op::ARRAY_NEW, 0xFB, 0x06, "array.new"),
+        (Op::ARRAY_NEW_DEFAULT, 0xFB, 0x07, "array.new_default"),
+        (Op::ARRAY_NEW_FIXED, 0xFB, 0x08, "array.new_fixed"),
+        (Op::ARRAY_NEW_DATA, 0xFB, 0x09, "array.new_data"),
+        (Op::ARRAY_NEW_ELEM, 0xFB, 0x0A, "array.new_elem"),
+        (Op::ARRAY_GET, 0xFB, 0x0B, "array.get"),
+        (Op::ARRAY_GET_S, 0xFB, 0x0C, "array.get_s"),
+        (Op::ARRAY_GET_U, 0xFB, 0x0D, "array.get_u"),
+        (Op::ARRAY_SET, 0xFB, 0x0E, "array.set"),
+        (Op::ARRAY_LENGTH, 0xFB, 0x0F, "array.len"),
+        (Op::ARRAY_FILL, 0xFB, 0x10, "array.fill"),
+        (Op::ARRAY_COPY, 0xFB, 0x11, "array.copy"),
+        (Op::ARRAY_INIT_DATA, 0xFB, 0x12, "array.init_data"),
+        (Op::ARRAY_INIT_ELEM, 0xFB, 0x13, "array.init_elem"),
         // Reference tests / casts
-        (Op::REF_TEST,              0xFB, 0x14, "ref.test"),
-        (Op::REF_TEST_NULL,         0xFB, 0x15, "ref.test_null"),
-        (Op::REF_CAST,              0xFB, 0x16, "ref.cast"),
-        (Op::REF_CAST_NULL,         0xFB, 0x17, "ref.cast_null"),
-        (Op::BR_ON_CAST,            0xFB, 0x18, "br_on_cast"),
-        (Op::BR_ON_CAST_FAIL,       0xFB, 0x19, "br_on_cast_fail"),
+        (Op::REF_TEST, 0xFB, 0x14, "ref.test"),
+        (Op::REF_TEST_NULL, 0xFB, 0x15, "ref.test_null"),
+        (Op::REF_CAST, 0xFB, 0x16, "ref.cast"),
+        (Op::REF_CAST_NULL, 0xFB, 0x17, "ref.cast_null"),
+        (Op::BR_ON_CAST, 0xFB, 0x18, "br_on_cast"),
+        (Op::BR_ON_CAST_FAIL, 0xFB, 0x19, "br_on_cast_fail"),
         // Extern <-> any
-        (Op::ANY_CONVERT_EXTERN,    0xFB, 0x1A, "any.convert_extern"),
-        (Op::EXTERN_CONVERT_ANY,    0xFB, 0x1B, "extern.convert_any"),
+        (Op::ANY_CONVERT_EXTERN, 0xFB, 0x1A, "any.convert_extern"),
+        (Op::EXTERN_CONVERT_ANY, 0xFB, 0x1B, "extern.convert_any"),
         // i31
-        (Op::I31_NEW,               0xFB, 0x1C, "ref.i31"),
-        (Op::I31_GET_S,             0xFB, 0x1D, "i31.get_s"),
-        (Op::I31_GET_U,             0xFB, 0x1E, "i31.get_u"),
+        (Op::I31_NEW, 0xFB, 0x1C, "ref.i31"),
+        (Op::I31_GET_S, 0xFB, 0x1D, "i31.get_s"),
+        (Op::I31_GET_U, 0xFB, 0x1E, "i31.get_u"),
         // Core-prefix GC ops
-        (Op::REF_EQ,                0x00, 0xD3, "ref.eq"),
-        (Op::REF_AS_NON_NULL,       0x00, 0xD4, "ref.as_non_null"),
-        (Op::BR_ON_NULL,            0x00, 0xD5, "br_on_null"),
-        (Op::BR_ON_NON_NULL,        0x00, 0xD6, "br_on_non_null"),
+        (Op::REF_EQ, 0x00, 0xD3, "ref.eq"),
+        (Op::REF_AS_NON_NULL, 0x00, 0xD4, "ref.as_non_null"),
+        (Op::BR_ON_NULL, 0x00, 0xD5, "br_on_null"),
+        (Op::BR_ON_NON_NULL, 0x00, 0xD6, "br_on_non_null"),
     ];
     for (op, prefix, sub, name) in table {
-        assert_eq!(op.prefix(), *prefix,
+        assert_eq!(
+            op.prefix(),
+            *prefix,
             "{}: prefix mismatch (got 0x{:02X}, spec 0x{:02X})",
-            name, op.prefix(), *prefix);
-        assert_eq!(op.sub(), *sub,
+            name,
+            op.prefix(),
+            *prefix
+        );
+        assert_eq!(
+            op.sub(),
+            *sub,
             "{}: sub mismatch (got 0x{:02X}, spec 0x{:02X})",
-            name, op.sub(), *sub);
-        assert_eq!(op.wasm_name(), *name,
-            "{}: name mismatch (got {:?})", name, op.wasm_name());
+            name,
+            op.sub(),
+            *sub
+        );
+        assert_eq!(
+            op.wasm_name(),
+            *name,
+            "{}: name mismatch (got {:?})",
+            name,
+            op.wasm_name()
+        );
     }
 }
 
@@ -2914,8 +3287,11 @@ fn ref_as_non_null_traps_on_null_passes_on_object() {
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     let err = vm.run(vec![chunk]).unwrap_err();
-    assert!(err.message.contains("ref.as_non_null"),
-        "expected trap mentioning ref.as_non_null, got {:?}", err.message);
+    assert!(
+        err.message.contains("ref.as_non_null"),
+        "expected trap mentioning ref.as_non_null, got {:?}",
+        err.message
+    );
 }
 
 #[test]
@@ -2957,8 +3333,10 @@ fn ref_eq_emits_as_core_0xd3_byte_in_wasm() {
     let mut pos = 8;
     let mut seen = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 10 {
             let end = pos + size as usize;
             seen = wasm[pos..end].iter().any(|&b| b == 0xD3);
@@ -2994,8 +3372,10 @@ fn relaxed_simd_emits_correct_spec_subopcode() {
     let mut pos = 8;
     let mut seen = false;
     while pos < wasm.len() {
-        let section_id = wasm[pos]; pos += 1;
-        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
         if section_id == 10 {
             let end = pos + size as usize;
             // Expected bytes for `i8x16.relaxed_swizzle`: 0xFD 0x80 0x02.
@@ -3005,8 +3385,10 @@ fn relaxed_simd_emits_correct_spec_subopcode() {
         }
         pos += size as usize;
     }
-    assert!(seen,
-        "emitted code must contain `0xFD 0x80 0x02` (relaxed_swizzle spec sub 0x100)");
+    assert!(
+        seen,
+        "emitted code must contain `0xFD 0x80 0x02` (relaxed_swizzle spec sub 0x100)"
+    );
     // Sanity: `spec_sub` matches the spec.
     assert_eq!(relaxed_simd::spec_sub(0x00), 0x100);
     assert_eq!(relaxed_simd::spec_sub(0x13), 0x113);
@@ -3018,30 +3400,57 @@ fn relaxed_simd_every_opcode_is_named() {
     // through `wasm_name_opt` — otherwise the dispatch in vm.rs is
     // silently matching a "None" opcode and falling through.
     let all: &[(Op, &str)] = &[
-        (Op::I8X16_RELAXED_SWIZZLE,            "i8x16.relaxed_swizzle"),
-        (Op::I32X4_RELAXED_TRUNC_F32X4_S,      "i32x4.relaxed_trunc_f32x4_s"),
-        (Op::I32X4_RELAXED_TRUNC_F32X4_U,      "i32x4.relaxed_trunc_f32x4_u"),
-        (Op::I32X4_RELAXED_TRUNC_F64X2_S_ZERO, "i32x4.relaxed_trunc_f64x2_s_zero"),
-        (Op::I32X4_RELAXED_TRUNC_F64X2_U_ZERO, "i32x4.relaxed_trunc_f64x2_u_zero"),
-        (Op::F32X4_RELAXED_MADD,               "f32x4.relaxed_madd"),
-        (Op::F32X4_RELAXED_NMADD,              "f32x4.relaxed_nmadd"),
-        (Op::F64X2_RELAXED_MADD,               "f64x2.relaxed_madd"),
-        (Op::F64X2_RELAXED_NMADD,              "f64x2.relaxed_nmadd"),
-        (Op::I8X16_RELAXED_LANESELECT,         "i8x16.relaxed_laneselect"),
-        (Op::I16X8_RELAXED_LANESELECT,         "i16x8.relaxed_laneselect"),
-        (Op::I32X4_RELAXED_LANESELECT,         "i32x4.relaxed_laneselect"),
-        (Op::I64X2_RELAXED_LANESELECT,         "i64x2.relaxed_laneselect"),
-        (Op::F32X4_RELAXED_MIN,                "f32x4.relaxed_min"),
-        (Op::F32X4_RELAXED_MAX,                "f32x4.relaxed_max"),
-        (Op::F64X2_RELAXED_MIN,                "f64x2.relaxed_min"),
-        (Op::F64X2_RELAXED_MAX,                "f64x2.relaxed_max"),
-        (Op::I16X8_RELAXED_Q15MULR_S,          "i16x8.relaxed_q15mulr_s"),
-        (Op::I16X8_RELAXED_DOT_I8X16_I7X16_S,  "i16x8.relaxed_dot_i8x16_i7x16_s"),
-        (Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S, "i32x4.relaxed_dot_i8x16_i7x16_add_s"),
+        (Op::I8X16_RELAXED_SWIZZLE, "i8x16.relaxed_swizzle"),
+        (
+            Op::I32X4_RELAXED_TRUNC_F32X4_S,
+            "i32x4.relaxed_trunc_f32x4_s",
+        ),
+        (
+            Op::I32X4_RELAXED_TRUNC_F32X4_U,
+            "i32x4.relaxed_trunc_f32x4_u",
+        ),
+        (
+            Op::I32X4_RELAXED_TRUNC_F64X2_S_ZERO,
+            "i32x4.relaxed_trunc_f64x2_s_zero",
+        ),
+        (
+            Op::I32X4_RELAXED_TRUNC_F64X2_U_ZERO,
+            "i32x4.relaxed_trunc_f64x2_u_zero",
+        ),
+        (Op::F32X4_RELAXED_MADD, "f32x4.relaxed_madd"),
+        (Op::F32X4_RELAXED_NMADD, "f32x4.relaxed_nmadd"),
+        (Op::F64X2_RELAXED_MADD, "f64x2.relaxed_madd"),
+        (Op::F64X2_RELAXED_NMADD, "f64x2.relaxed_nmadd"),
+        (Op::I8X16_RELAXED_LANESELECT, "i8x16.relaxed_laneselect"),
+        (Op::I16X8_RELAXED_LANESELECT, "i16x8.relaxed_laneselect"),
+        (Op::I32X4_RELAXED_LANESELECT, "i32x4.relaxed_laneselect"),
+        (Op::I64X2_RELAXED_LANESELECT, "i64x2.relaxed_laneselect"),
+        (Op::F32X4_RELAXED_MIN, "f32x4.relaxed_min"),
+        (Op::F32X4_RELAXED_MAX, "f32x4.relaxed_max"),
+        (Op::F64X2_RELAXED_MIN, "f64x2.relaxed_min"),
+        (Op::F64X2_RELAXED_MAX, "f64x2.relaxed_max"),
+        (Op::I16X8_RELAXED_Q15MULR_S, "i16x8.relaxed_q15mulr_s"),
+        (
+            Op::I16X8_RELAXED_DOT_I8X16_I7X16_S,
+            "i16x8.relaxed_dot_i8x16_i7x16_s",
+        ),
+        (
+            Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,
+            "i32x4.relaxed_dot_i8x16_i7x16_add_s",
+        ),
     ];
-    assert_eq!(all.len(), 20, "relaxed-SIMD proposal has exactly 20 opcodes");
+    assert_eq!(
+        all.len(),
+        20,
+        "relaxed-SIMD proposal has exactly 20 opcodes"
+    );
     for (op, expected_name) in all {
-        assert_eq!(op.prefix(), 0xDD, "relaxed-SIMD op must use internal prefix 0xDD: {}", expected_name);
+        assert_eq!(
+            op.prefix(),
+            0xDD,
+            "relaxed-SIMD op must use internal prefix 0xDD: {}",
+            expected_name
+        );
         assert_eq!(op.wasm_name(), *expected_name);
     }
 }
@@ -3055,9 +3464,12 @@ fn relaxed_simd_madd_matches_nonrelaxed_madd() {
     let mut lanes_b = [0u8; 16];
     let mut lanes_c = [0u8; 16];
     for i in 0..4u32 {
-        lanes_a[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&((i + 1) as f32).to_le_bytes());
-        lanes_b[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&((i + 5) as f32).to_le_bytes());
-        lanes_c[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&((i + 9) as f32).to_le_bytes());
+        lanes_a[i as usize * 4..(i as usize + 1) * 4]
+            .copy_from_slice(&((i + 1) as f32).to_le_bytes());
+        lanes_b[i as usize * 4..(i as usize + 1) * 4]
+            .copy_from_slice(&((i + 5) as f32).to_le_bytes());
+        lanes_c[i as usize * 4..(i as usize + 1) * 4]
+            .copy_from_slice(&((i + 9) as f32).to_le_bytes());
     }
     let mut chunk = Chunk::new("<script>");
     let a = chunk.add_constant(Value::V128(lanes_a));
@@ -3072,10 +3484,15 @@ fn relaxed_simd_madd_matches_nonrelaxed_madd() {
     let result = vm.run(vec![chunk]).unwrap();
     if let Value::V128(bytes) = result {
         for i in 0..4 {
-            let lane = f32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap());
+            let lane = f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
             let expected = (i as f32 + 1.0) * (i as f32 + 5.0) + (i as f32 + 9.0);
-            assert!((lane - expected).abs() < 1e-6,
-                "lane {} mismatch: {} vs expected {}", i, lane, expected);
+            assert!(
+                (lane - expected).abs() < 1e-6,
+                "lane {} mismatch: {} vs expected {}",
+                i,
+                lane,
+                expected
+            );
         }
     } else {
         panic!("expected V128, got {:?}", result);
@@ -3090,10 +3507,11 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
     let mut mask = [0u8; 16];
     // a = [1, 2, 3, 4], b = [100, 200, 300, 400], mask = [0, 0xFFFFFFFF, 0, 0xFFFFFFFF]
     for i in 0..4u32 {
-        a[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&((i + 1) as i32).to_le_bytes());
-        b[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&(((i + 1) * 100) as i32).to_le_bytes());
+        a[i as usize * 4..(i as usize + 1) * 4].copy_from_slice(&((i + 1) as i32).to_le_bytes());
+        b[i as usize * 4..(i as usize + 1) * 4]
+            .copy_from_slice(&(((i + 1) * 100) as i32).to_le_bytes());
         let m: u32 = if i % 2 == 1 { 0xFFFF_FFFF } else { 0 };
-        mask[i as usize * 4..(i as usize + 1)*4].copy_from_slice(&m.to_le_bytes());
+        mask[i as usize * 4..(i as usize + 1) * 4].copy_from_slice(&m.to_le_bytes());
     }
     let mut chunk = Chunk::new("<script>");
     let ka = chunk.add_constant(Value::V128(a));
@@ -3109,7 +3527,7 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
     if let Value::V128(bytes) = result {
         let expect = [100i32, 2, 300, 4];
         for i in 0..4 {
-            let lane = i32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap());
+            let lane = i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
             assert_eq!(lane, expect[i], "lane {} mismatch", i);
         }
     } else {
@@ -3124,7 +3542,7 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
 #[test]
 fn table_size_returns_current_size() {
     let result = run_script(|c| {
-        c.emit_op_u8(Op::TABLE_SIZE, 0, 0);  // table index 0
+        c.emit_op_u8(Op::TABLE_SIZE, 0, 0); // table index 0
     });
     assert_eq!(result.as_i32(), 0);
 }
@@ -3178,11 +3596,14 @@ fn table_fill_assigns_value_across_range() {
 ///     builtins automatically on supported versions)
 #[test]
 fn esm_round_trip_via_node_if_available() {
-    use std::process::Command;
     use std::io::Write;
+    use std::process::Command;
 
     // Bail cleanly if `node` is not installed.
-    let node_ok = Command::new("node").arg("--version").output().ok()
+    let node_ok = Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !node_ok {
@@ -3201,9 +3622,7 @@ fn esm_round_trip_via_node_if_available() {
     let wasm = vybe_bytecode::wasm::write_wasm(&vec![script]);
 
     // Stage the .wasm + the driver .mjs in a temp directory.
-    let dir = std::env::temp_dir().join(format!(
-        "vybe_esm_{}", std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("vybe_esm_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create tmp dir");
     let wasm_path = dir.join("mod.wasm");
@@ -3255,12 +3674,22 @@ console.log(JSON.stringify({
     assert!(
         out.status.success(),
         "node rejected the module.\nstdout: {}\nstderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
-    assert!(stdout.contains("\"has_js_undefined_value\":true"),
-        "js-undefined global missing in import list. stdout: {}", stdout);
-    assert!(stdout.contains("\"has_js_true\":true"),
-        "js-boolean.true global missing. stdout: {}", stdout);
-    assert!(stdout.contains("\"has_js_false\":true"),
-        "js-boolean.false global missing. stdout: {}", stdout);
+    assert!(
+        stdout.contains("\"has_js_undefined_value\":true"),
+        "js-undefined global missing in import list. stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"has_js_true\":true"),
+        "js-boolean.true global missing. stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"has_js_false\":true"),
+        "js-boolean.false global missing. stdout: {}",
+        stdout
+    );
 }

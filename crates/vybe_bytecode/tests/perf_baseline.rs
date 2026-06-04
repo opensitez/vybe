@@ -15,8 +15,8 @@
 //! See `dynamicruntime_support.md` Phase B0.3.
 
 use std::time::Instant;
-use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::value::Value;
+use vybe_bytecode::{Chunk, Op, VM};
 
 const ITERATIONS: usize = 100_000;
 
@@ -165,5 +165,7 @@ fn capture_pre_migration_baseline() {
     // iteration when we have a standard bench fixture.
 
     println!();
-    println!("_Generated via `cargo test -p vybe_bytecode --test perf_baseline -- --ignored --nocapture`_");
+    println!(
+        "_Generated via `cargo test -p vybe_bytecode --test perf_baseline -- --ignored --nocapture`_"
+    );
 }

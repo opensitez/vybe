@@ -21,12 +21,14 @@
 //! the WASM tag level — this lets us share one tag across every
 //! language without a combinatorial type explosion.
 
-use crate::Chunk;
 use super::encoding::*;
+use crate::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];
-pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec::new() }
+pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
+    Vec::new()
+}
 
 /// Tag index of the single `$vybe_exception` tag in the emitted module.
 /// Every `throw` in the emitted .wasm references this tag.
@@ -43,9 +45,16 @@ pub fn encode_tag_section(exception_type_idx: u32) -> Vec<u8> {
 
 /// Full-control tag section encoder. Pass `Some(typeidx)` for the
 /// suspend/resume tag to declare it alongside the exception tag.
-pub fn encode_tag_section_with(exception_type_idx: u32, suspend_tag_type_idx: Option<u32>) -> Vec<u8> {
+pub fn encode_tag_section_with(
+    exception_type_idx: u32,
+    suspend_tag_type_idx: Option<u32>,
+) -> Vec<u8> {
     let mut out = Vec::new();
-    let count = if suspend_tag_type_idx.is_some() { 2u32 } else { 1u32 };
+    let count = if suspend_tag_type_idx.is_some() {
+        2u32
+    } else {
+        1u32
+    };
     write_leb128_u32(&mut out, count);
     out.push(0x00);
     write_leb128_u32(&mut out, exception_type_idx);

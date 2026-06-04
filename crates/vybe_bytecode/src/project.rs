@@ -19,7 +19,6 @@
 //! filesystem = true
 //! ```
 
-
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub name: String,
@@ -60,10 +59,12 @@ impl ProjectConfig {
 
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
 
             if line.starts_with('[') && line.ends_with(']') {
-                section = match &line[1..line.len()-1] {
+                section = match &line[1..line.len() - 1] {
                     "project" => "project",
                     "sources" => "sources",
                     "window" => "window",
@@ -75,7 +76,7 @@ impl ProjectConfig {
 
             if let Some(eq) = line.find('=') {
                 let key = line[..eq].trim().to_lowercase();
-                let val = line[eq+1..].trim().trim_matches('"');
+                let val = line[eq + 1..].trim().trim_matches('"');
 
                 match section {
                     "project" => match key.as_str() {
@@ -89,7 +90,9 @@ impl ProjectConfig {
                             let inner = val.trim_start_matches('[').trim_end_matches(']');
                             for item in inner.split(',') {
                                 let f = item.trim().trim_matches('"').trim_matches('\'');
-                                if !f.is_empty() { files.push(f.to_string()); }
+                                if !f.is_empty() {
+                                    files.push(f.to_string());
+                                }
                             }
                         }
                     }
@@ -112,13 +115,23 @@ impl ProjectConfig {
         }
 
         if !win_title.is_empty() {
-            window = Some(WindowConfig { title: win_title, width: win_width, height: win_height });
+            window = Some(WindowConfig {
+                title: win_title,
+                width: win_width,
+                height: win_height,
+            });
         }
 
         if entry.is_empty() && !files.is_empty() {
             entry = files[0].clone();
         }
 
-        Ok(ProjectConfig { name, entry, files, window, host })
+        Ok(ProjectConfig {
+            name,
+            entry,
+            files,
+            window,
+            host,
+        })
     }
 }

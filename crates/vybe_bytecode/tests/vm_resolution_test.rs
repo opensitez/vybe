@@ -1,9 +1,8 @@
-/// Tests for VM import resolution, global scoping, call mechanics, and edge cases.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use vybe_bytecode::value::{Object, ObjectKind};
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
+use vybe_bytecode::value::{Object, ObjectKind};
+/// Tests for VM import resolution, global scoping, call mechanics, and edge cases.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
 // IMPORT RESOLUTION
@@ -12,21 +11,31 @@ use std::cell::RefCell;
 #[test]
 fn import_resolution_basic() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "add", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0)
-                 + args.get(1).map(|v| v.as_f64()).unwrap_or(0.0))
-    }));
+    vm.register_host_fn(
+        "test",
+        "add",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::F64(
+                args.first().map(|v| v.as_f64()).unwrap_or(0.0)
+                    + args.get(1).map(|v| v.as_f64()).unwrap_or(0.0),
+            )
+        }),
+    );
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "test".into(), name: "add".into() });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "test".into(),
+        name: "add".into(),
+    });
     let a = chunk.add_constant(Value::F64(3.0));
     let b = chunk.add_constant(Value::F64(4.0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     // call_import: u16 import_idx + u8 argc
     chunk.emit_op(Op::CALL_IMPORT, 0);
-    chunk.emit(0, 0); chunk.emit(0, 0); // import_idx = 0
+    chunk.emit(0, 0);
+    chunk.emit(0, 0); // import_idx = 0
     chunk.emit(2, 0); // argc = 2
     chunk.emit_op(Op::HALT, 0);
 
@@ -39,7 +48,10 @@ fn import_unresolved_errors_gracefully() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "missing".into(), name: "func".into() });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "missing".into(),
+        name: "func".into(),
+    });
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]);
@@ -50,23 +62,38 @@ fn import_unresolved_errors_gracefully() {
 #[test]
 fn import_multiple_modules_correct_dispatch() {
     let mut vm = VM::new();
-    vm.register_host_fn("math", "double", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::F64(args[0].as_f64() * 2.0)
-    }));
-    vm.register_host_fn("str", "len", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::F64(format!("{}", args[0]).len() as f64)
-    }));
+    vm.register_host_fn(
+        "math",
+        "double",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::F64(args[0].as_f64() * 2.0)
+        }),
+    );
+    vm.register_host_fn(
+        "str",
+        "len",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::F64(format!("{}", args[0]).len() as f64)
+        }),
+    );
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "math".into(), name: "double".into() });
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "str".into(), name: "len".into() });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "math".into(),
+        name: "double".into(),
+    });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "str".into(),
+        name: "len".into(),
+    });
 
     // Call str.len("hello") — should be import 1, not 0
     let s = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::CALL_IMPORT, 0);
-    chunk.emit(0, 0); chunk.emit(1, 0); // import_idx = 1 (str.len)
+    chunk.emit(0, 0);
+    chunk.emit(1, 0); // import_idx = 1 (str.len)
     chunk.emit(1, 0); // argc = 1
     chunk.emit_op(Op::HALT, 0);
 
@@ -77,17 +104,31 @@ fn import_multiple_modules_correct_dispatch() {
 #[test]
 fn import_same_module_different_functions() {
     let mut vm = VM::new();
-    vm.register_host_fn("math", "add", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::F64(args[0].as_f64() + args[1].as_f64())
-    }));
-    vm.register_host_fn("math", "mul", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::F64(args[0].as_f64() * args[1].as_f64())
-    }));
+    vm.register_host_fn(
+        "math",
+        "add",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::F64(args[0].as_f64() + args[1].as_f64())
+        }),
+    );
+    vm.register_host_fn(
+        "math",
+        "mul",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::F64(args[0].as_f64() * args[1].as_f64())
+        }),
+    );
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "math".into(), name: "add".into() });
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "math".into(), name: "mul".into() });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "math".into(),
+        name: "add".into(),
+    });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "math".into(),
+        name: "mul".into(),
+    });
 
     let v3 = chunk.add_constant(Value::F64(3.0));
     let v4 = chunk.add_constant(Value::F64(4.0));
@@ -97,12 +138,14 @@ fn import_same_module_different_functions() {
     chunk.emit_op_u16(Op::CONST, v3, 0);
     chunk.emit_op_u16(Op::CONST, v4, 0);
     chunk.emit_op(Op::CALL_IMPORT, 0);
-    chunk.emit(0, 0); chunk.emit(0, 0); // import 0 = add
+    chunk.emit(0, 0);
+    chunk.emit(0, 0); // import 0 = add
     chunk.emit(2, 0);
     // mul(7, 10) = 70
     chunk.emit_op_u16(Op::CONST, v10, 0);
     chunk.emit_op(Op::CALL_IMPORT, 0);
-    chunk.emit(0, 0); chunk.emit(1, 0); // import 1 = mul
+    chunk.emit(0, 0);
+    chunk.emit(1, 0); // import 1 = mul
     chunk.emit(2, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -296,14 +339,20 @@ fn invoke_function_defined_in_run() {
 #[test]
 fn invoke_host_fn_via_value() {
     let mut vm = VM::new();
-    vm.register_host_fn("t", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::String(Arc::from(format!("hi {}", args[0]).as_str()))
-    }));
+    vm.register_host_fn(
+        "t",
+        "greet",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::String(Arc::from(format!("hi {}", args[0]).as_str()))
+        }),
+    );
     let idx = *vm.host_registry.get(&("t".into(), "greet".into())).unwrap();
     let mut obj = Object::new();
     obj.kind = ObjectKind::HostFunction(idx);
     let host_val = Value::Object(Arc::new(std::sync::Mutex::new(obj)));
-    let result = vm.invoke(&host_val, &[Value::String(Arc::from("world"))]).unwrap();
+    let result = vm
+        .invoke(&host_val, &[Value::String(Arc::from("world"))])
+        .unwrap();
     assert_eq!(format!("{}", result), "hi world");
 }
 
@@ -338,7 +387,9 @@ fn invoke_multiple_times_globals_accumulate() {
 
     vm.run(vec![main, f]).unwrap();
     let inc = vm.globals.get("inc").cloned().unwrap();
-    for _ in 0..5 { vm.invoke(&inc, &[]).unwrap(); }
+    for _ in 0..5 {
+        vm.invoke(&inc, &[]).unwrap();
+    }
     assert_eq!(vm.globals.get("n").unwrap().as_f64(), 5.0);
 }
 
@@ -443,9 +494,13 @@ fn host_fn_registered_before_run() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.imports.push(vybe_bytecode::chunk::Import { module: "b".into(), name: "f3".into() });
+    chunk.imports.push(vybe_bytecode::chunk::Import {
+        module: "b".into(),
+        name: "f3".into(),
+    });
     chunk.emit_op(Op::CALL_IMPORT, 0);
-    chunk.emit(0, 0); chunk.emit(0, 0);
+    chunk.emit(0, 0);
+    chunk.emit(0, 0);
     chunk.emit(0, 0);
     chunk.emit_op(Op::HALT, 0);
 

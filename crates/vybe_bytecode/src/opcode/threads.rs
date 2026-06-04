@@ -5,25 +5,25 @@ use super::Op;
 use super::opcode_category;
 
 impl Op {
-    pub const MEMORY_ATOMIC_NOTIFY: Op   = Op::new(0xFE, 0x00);
-    pub const MEMORY_ATOMIC_WAIT32: Op   = Op::new(0xFE, 0x01);
-    pub const ATOMIC_FENCE: Op           = Op::new(0xFE, 0x03);
-    pub const I32_ATOMIC_LOAD: Op        = Op::new(0xFE, 0x10);
-    pub const I64_ATOMIC_LOAD: Op        = Op::new(0xFE, 0x11);
-    pub const I32_ATOMIC_STORE: Op       = Op::new(0xFE, 0x17);
-    pub const I64_ATOMIC_STORE: Op       = Op::new(0xFE, 0x18);
-    pub const I32_ATOMIC_RMW_ADD: Op     = Op::new(0xFE, 0x1E);
-    pub const I32_ATOMIC_RMW_SUB: Op     = Op::new(0xFE, 0x1F);
-    pub const I32_ATOMIC_RMW_AND: Op     = Op::new(0xFE, 0x20);
-    pub const I32_ATOMIC_RMW_OR: Op      = Op::new(0xFE, 0x21);
-    pub const I32_ATOMIC_RMW_XOR: Op     = Op::new(0xFE, 0x22);
-    pub const I32_ATOMIC_RMW_XCHG: Op    = Op::new(0xFE, 0x23);
+    pub const MEMORY_ATOMIC_NOTIFY: Op = Op::new(0xFE, 0x00);
+    pub const MEMORY_ATOMIC_WAIT32: Op = Op::new(0xFE, 0x01);
+    pub const ATOMIC_FENCE: Op = Op::new(0xFE, 0x03);
+    pub const I32_ATOMIC_LOAD: Op = Op::new(0xFE, 0x10);
+    pub const I64_ATOMIC_LOAD: Op = Op::new(0xFE, 0x11);
+    pub const I32_ATOMIC_STORE: Op = Op::new(0xFE, 0x17);
+    pub const I64_ATOMIC_STORE: Op = Op::new(0xFE, 0x18);
+    pub const I32_ATOMIC_RMW_ADD: Op = Op::new(0xFE, 0x1E);
+    pub const I32_ATOMIC_RMW_SUB: Op = Op::new(0xFE, 0x1F);
+    pub const I32_ATOMIC_RMW_AND: Op = Op::new(0xFE, 0x20);
+    pub const I32_ATOMIC_RMW_OR: Op = Op::new(0xFE, 0x21);
+    pub const I32_ATOMIC_RMW_XOR: Op = Op::new(0xFE, 0x22);
+    pub const I32_ATOMIC_RMW_XCHG: Op = Op::new(0xFE, 0x23);
     pub const I32_ATOMIC_RMW_CMPXCHG: Op = Op::new(0xFE, 0x24);
-    pub const I64_ATOMIC_RMW_ADD: Op     = Op::new(0xFE, 0x25);
-    pub const I64_ATOMIC_RMW_SUB: Op     = Op::new(0xFE, 0x26);
+    pub const I64_ATOMIC_RMW_ADD: Op = Op::new(0xFE, 0x25);
+    pub const I64_ATOMIC_RMW_SUB: Op = Op::new(0xFE, 0x26);
     pub const I64_ATOMIC_RMW_CMPXCHG: Op = Op::new(0xFE, 0x2E);
-    pub const THREAD_SPAWN: Op           = Op::new(0xFE, 0x80);
-    pub const THREAD_JOIN: Op            = Op::new(0xFE, 0x81);
+    pub const THREAD_SPAWN: Op = Op::new(0xFE, 0x80);
+    pub const THREAD_JOIN: Op = Op::new(0xFE, 0x81);
 }
 
 opcode_category! {

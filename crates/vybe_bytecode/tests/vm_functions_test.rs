@@ -1,8 +1,8 @@
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use vybe_bytecode::value::{Object, ObjectKind, Function};
-use std::sync::Arc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
+use vybe_bytecode::value::{Function, Object, ObjectKind};
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
 // Helpers
@@ -26,7 +26,8 @@ fn assert_f64(val: &Value, expected: f64) {
         Value::F64(v) => assert!(
             (v - expected).abs() < 1e-10,
             "Expected F64({}), got F64({})",
-            expected, v
+            expected,
+            v
         ),
         _ => panic!("Expected F64({}), got {:?}", expected, val),
     }
@@ -249,7 +250,7 @@ fn recursive_fibonacci() {
 
     // if n <= 0, return 0
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
-    fib.emit_op_u16(Op::CONST, c0, 0);  // 0
+    fib.emit_op_u16(Op::CONST, c0, 0); // 0
     fib.emit_op(Op::I32_LE_S, 0);
     fib.emit_if(0);
     fib.emit_op_u16(Op::CONST, c0, 0);
@@ -258,7 +259,7 @@ fn recursive_fibonacci() {
 
     // if n == 1, return 1
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
-    fib.emit_op_u16(Op::CONST, c1, 0);  // 1
+    fib.emit_op_u16(Op::CONST, c1, 0); // 1
     fib.emit_op(Op::I32_EQ, 0);
     fib.emit_if(0);
     fib.emit_op_u16(Op::CONST, c1, 0);
@@ -342,9 +343,11 @@ fn call_import_zero_args() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "get_value", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::I32(42)
-    }));
+    vm.register_host_fn(
+        "test",
+        "get_value",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::I32(42)),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 42);
 }
@@ -361,9 +364,13 @@ fn call_import_one_arg() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "negate", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(-args[0].as_i32())
-    }));
+    vm.register_host_fn(
+        "test",
+        "negate",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(-args[0].as_i32())
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, -7);
 }
@@ -382,9 +389,13 @@ fn call_import_two_args() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "add", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() + args[1].as_i32())
-    }));
+    vm.register_host_fn(
+        "test",
+        "add",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() + args[1].as_i32())
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 33);
 }
@@ -405,9 +416,13 @@ fn call_import_three_args() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "sum3", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32())
-    }));
+    vm.register_host_fn(
+        "test",
+        "sum3",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32())
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 6);
 }
@@ -430,9 +445,13 @@ fn call_import_four_args() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "sum4", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32() + args[3].as_i32())
-    }));
+    vm.register_host_fn(
+        "test",
+        "sum4",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() + args[1].as_i32() + args[2].as_i32() + args[3].as_i32())
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 100);
 }
@@ -457,9 +476,13 @@ fn call_import_return_in_expression() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "double", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() * 2)
-    }));
+    vm.register_host_fn(
+        "test",
+        "double",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() * 2)
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 13);
 }
@@ -485,9 +508,13 @@ fn call_value_with_host_function() {
     main.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "triple", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        Value::I32(args[0].as_i32() * 3)
-    }));
+    vm.register_host_fn(
+        "test",
+        "triple",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            Value::I32(args[0].as_i32() * 3)
+        }),
+    );
     let result = vm.run(vec![main]).unwrap();
     assert_i32(&result, 21);
 }
@@ -539,7 +566,10 @@ fn call_value_non_callable_errors() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![main]);
-    assert!(result.is_err(), "Calling a non-callable should return an error");
+    assert!(
+        result.is_err(),
+        "Calling a non-callable should return an error"
+    );
     let err = result.unwrap_err();
     assert!(
         err.message.contains("not callable") || err.message.contains("Not a function"),
@@ -575,7 +605,8 @@ fn invoke_zero_args_arity_zero() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -611,7 +642,8 @@ fn invoke_fewer_args_padding() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[Value::I32(100)]).unwrap();
@@ -651,10 +683,13 @@ fn invoke_exact_args() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
-    let result = vm.invoke(&func_obj, &[Value::I32(10), Value::I32(20), Value::I32(30)]).unwrap();
+    let result = vm
+        .invoke(&func_obj, &[Value::I32(10), Value::I32(20), Value::I32(30)])
+        .unwrap();
     assert_i32(&result, 60);
 }
 
@@ -688,7 +723,8 @@ fn invoke_returning_value() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -728,7 +764,8 @@ fn invoke_returning_object() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
@@ -768,10 +805,14 @@ fn invoke_host_function() {
     wrapper.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.register_host_fn("test", "square", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let n = args[0].as_i32();
-        Value::I32(n * n)
-    }));
+    vm.register_host_fn(
+        "test",
+        "square",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            let n = args[0].as_i32();
+            Value::I32(n * n)
+        }),
+    );
     vm.run(vec![dummy_main, wrapper]).ok();
 
     let wrapper_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
@@ -782,7 +823,8 @@ fn invoke_host_function() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let result = vm.invoke(&wrapper_obj, &[Value::I32(9)]).unwrap();
@@ -821,7 +863,8 @@ fn invoke_stack_clean_between_invocations() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let r1 = vm.invoke(&func_obj, &[Value::I32(5)]).unwrap();
@@ -874,7 +917,8 @@ fn invoke_preserves_globals() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     let getter_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
@@ -885,7 +929,8 @@ fn invoke_preserves_globals() {
             chunk_index: 2,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     // Set global to 42
@@ -926,7 +971,8 @@ fn invoke_function_that_uses_struct_get() {
             chunk_index: 1,
             upvalues: vec![],
         }),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
 
     // Create an object {x: 99}

@@ -7,64 +7,64 @@ use super::opcode_category;
 
 impl Op {
     // Constants & stack
-    pub const CONST: Op             = Op::new(0xFF, 0x00);
-    pub const DUP: Op               = Op::new(0xFF, 0x01);
-    pub const UPVALUE_GET: Op       = Op::new(0xFF, 0x02);
-    pub const UPVALUE_SET: Op       = Op::new(0xFF, 0x03);
-    pub const CALL_IMPORT: Op       = Op::new(0xFF, 0x04);
+    pub const CONST: Op = Op::new(0xFF, 0x00);
+    pub const DUP: Op = Op::new(0xFF, 0x01);
+    pub const UPVALUE_GET: Op = Op::new(0xFF, 0x02);
+    pub const UPVALUE_SET: Op = Op::new(0xFF, 0x03);
+    pub const CALL_IMPORT: Op = Op::new(0xFF, 0x04);
     // Branch variants
-    pub const BR_IF_FALSE: Op       = Op::new(0xFF, 0x05);
-    pub const BR_IF_NULL: Op        = Op::new(0xFF, 0x06);
+    pub const BR_IF_FALSE: Op = Op::new(0xFF, 0x05);
+    pub const BR_IF_NULL: Op = Op::new(0xFF, 0x06);
     // Immediate values
-    pub const TRUE: Op              = Op::new(0xFF, 0x09);
-    pub const FALSE: Op             = Op::new(0xFF, 0x0A);
-    pub const I32_CONST_0: Op       = Op::new(0xFF, 0x0B);
-    pub const I32_CONST_1: Op       = Op::new(0xFF, 0x0C);
-    pub const F64_CONST_0: Op       = Op::new(0xFF, 0x0D);
+    pub const TRUE: Op = Op::new(0xFF, 0x09);
+    pub const FALSE: Op = Op::new(0xFF, 0x0A);
+    pub const I32_CONST_0: Op = Op::new(0xFF, 0x0B);
+    pub const I32_CONST_1: Op = Op::new(0xFF, 0x0C);
+    pub const F64_CONST_0: Op = Op::new(0xFF, 0x0D);
     // Type checks
-    pub const REF_IS_STRING: Op     = Op::new(0xFF, 0x0E);
-    pub const REF_IS_NUMBER: Op     = Op::new(0xFF, 0x0F);
-    pub const REF_IS_BOOL: Op       = Op::new(0xFF, 0x10);
-    pub const REF_IS_OBJECT: Op     = Op::new(0xFF, 0x11);
-    pub const REF_IS_FUNC: Op       = Op::new(0xFF, 0x12);
-    pub const REF_TYPEOF: Op        = Op::new(0xFF, 0x13);
-    pub const REF_IS_ARRAY: Op      = Op::new(0xFF, 0x14);
+    pub const REF_IS_STRING: Op = Op::new(0xFF, 0x0E);
+    pub const REF_IS_NUMBER: Op = Op::new(0xFF, 0x0F);
+    pub const REF_IS_BOOL: Op = Op::new(0xFF, 0x10);
+    pub const REF_IS_OBJECT: Op = Op::new(0xFF, 0x11);
+    pub const REF_IS_FUNC: Op = Op::new(0xFF, 0x12);
+    pub const REF_TYPEOF: Op = Op::new(0xFF, 0x13);
+    pub const REF_IS_ARRAY: Op = Op::new(0xFF, 0x14);
     // 0xFF 0x15–0x1E: retired (DYN_* opcodes removed; replaced by wasm:js-* emitter sequences)
     // Exception handling
-    pub const TRY_START: Op         = Op::new(0xFF, 0x1F);
-    pub const TRY_END: Op           = Op::new(0xFF, 0x20);
+    pub const TRY_START: Op = Op::new(0xFF, 0x1F);
+    pub const TRY_END: Op = Op::new(0xFF, 0x20);
     // Timers & spread
-    pub const SET_TIMER: Op         = Op::new(0xFF, 0x21);
-    pub const SPREAD: Op            = Op::new(0xFF, 0x22);
+    pub const SET_TIMER: Op = Op::new(0xFF, 0x21);
+    pub const SPREAD: Op = Op::new(0xFF, 0x22);
     // VM control
-    pub const HALT: Op              = Op::new(0xFF, 0x23);
+    pub const HALT: Op = Op::new(0xFF, 0x23);
     // String builtins (wasm:js-string imports in .wasm output)
-    pub const STR_CONCAT: Op        = Op::new(0xFF, 0x24);
-    pub const STR_CONCAT_N: Op      = Op::new(0xFF, 0x25);
-    pub const STR_LENGTH: Op        = Op::new(0xFF, 0x26);
-    pub const STR_CHAR_CODE_AT: Op  = Op::new(0xFF, 0x27);
+    pub const STR_CONCAT: Op = Op::new(0xFF, 0x24);
+    pub const STR_CONCAT_N: Op = Op::new(0xFF, 0x25);
+    pub const STR_LENGTH: Op = Op::new(0xFF, 0x26);
+    pub const STR_CHAR_CODE_AT: Op = Op::new(0xFF, 0x27);
     pub const STR_FROM_CHAR_CODE: Op = Op::new(0xFF, 0x28);
-    pub const STR_SUBSTRING: Op     = Op::new(0xFF, 0x29);
-    pub const STR_INDEX_OF: Op      = Op::new(0xFF, 0x2A);
+    pub const STR_SUBSTRING: Op = Op::new(0xFF, 0x29);
+    pub const STR_INDEX_OF: Op = Op::new(0xFF, 0x2A);
     pub const STR_LAST_INDEX_OF: Op = Op::new(0xFF, 0x2B);
-    pub const STR_EQUALS: Op        = Op::new(0xFF, 0x2C);
-    pub const STR_COMPARE: Op       = Op::new(0xFF, 0x2D);
-    pub const STR_TO_UPPER: Op      = Op::new(0xFF, 0x2E);
-    pub const STR_TO_LOWER: Op      = Op::new(0xFF, 0x2F);
-    pub const STR_TRIM: Op          = Op::new(0xFF, 0x30);
-    pub const STR_TRIM_START: Op    = Op::new(0xFF, 0x31);
-    pub const STR_TRIM_END: Op      = Op::new(0xFF, 0x32);
-    pub const STR_STARTS_WITH: Op   = Op::new(0xFF, 0x33);
-    pub const STR_ENDS_WITH: Op     = Op::new(0xFF, 0x34);
-    pub const STR_CONTAINS: Op      = Op::new(0xFF, 0x35);
-    pub const STR_REPLACE: Op       = Op::new(0xFF, 0x36);
-    pub const STR_SPLIT: Op         = Op::new(0xFF, 0x37);
-    pub const STR_REPEAT: Op        = Op::new(0xFF, 0x38);
-    pub const STR_PAD_START: Op     = Op::new(0xFF, 0x39);
-    pub const STR_PAD_END: Op       = Op::new(0xFF, 0x3A);
-    pub const STR_SLICE: Op         = Op::new(0xFF, 0x3B);
-    pub const STR_CHAR_AT: Op       = Op::new(0xFF, 0x3C);
-    pub const STR_REVERSE: Op       = Op::new(0xFF, 0x3D);
+    pub const STR_EQUALS: Op = Op::new(0xFF, 0x2C);
+    pub const STR_COMPARE: Op = Op::new(0xFF, 0x2D);
+    pub const STR_TO_UPPER: Op = Op::new(0xFF, 0x2E);
+    pub const STR_TO_LOWER: Op = Op::new(0xFF, 0x2F);
+    pub const STR_TRIM: Op = Op::new(0xFF, 0x30);
+    pub const STR_TRIM_START: Op = Op::new(0xFF, 0x31);
+    pub const STR_TRIM_END: Op = Op::new(0xFF, 0x32);
+    pub const STR_STARTS_WITH: Op = Op::new(0xFF, 0x33);
+    pub const STR_ENDS_WITH: Op = Op::new(0xFF, 0x34);
+    pub const STR_CONTAINS: Op = Op::new(0xFF, 0x35);
+    pub const STR_REPLACE: Op = Op::new(0xFF, 0x36);
+    pub const STR_SPLIT: Op = Op::new(0xFF, 0x37);
+    pub const STR_REPEAT: Op = Op::new(0xFF, 0x38);
+    pub const STR_PAD_START: Op = Op::new(0xFF, 0x39);
+    pub const STR_PAD_END: Op = Op::new(0xFF, 0x3A);
+    pub const STR_SLICE: Op = Op::new(0xFF, 0x3B);
+    pub const STR_CHAR_AT: Op = Op::new(0xFF, 0x3C);
+    pub const STR_REVERSE: Op = Op::new(0xFF, 0x3D);
     pub const STR_FROM_CODE_POINT: Op = Op::new(0xFF, 0x3E);
     pub const STR_CODE_POINT_AT: Op = Op::new(0xFF, 0x3F);
     pub const STR_INTO_CHAR_CODES: Op = Op::new(0xFF, 0x40);
@@ -79,84 +79,84 @@ impl Op {
     // that still carries them fails decode loudly rather than silently
     // aliasing to something else.
     // Stack switching (proposal not finalized)
-    pub const CONT_NEW: Op          = Op::new(0xFF, 0x4B);
-    pub const SUSPEND: Op           = Op::new(0xFF, 0x4C);
-    pub const RESUME: Op            = Op::new(0xFF, 0x4D);
-    pub const SWITCH: Op            = Op::new(0xFF, 0x4E);
+    pub const CONT_NEW: Op = Op::new(0xFF, 0x4B);
+    pub const SUSPEND: Op = Op::new(0xFF, 0x4C);
+    pub const RESUME: Op = Op::new(0xFF, 0x4D);
+    pub const SWITCH: Op = Op::new(0xFF, 0x4E);
     // JSPI
-    pub const PROMISE_SUSPEND: Op   = Op::new(0xFF, 0x4F);
+    pub const PROMISE_SUSPEND: Op = Op::new(0xFF, 0x4F);
     // GC extensions
-    pub const SET_TYPE_ID: Op       = Op::new(0xFF, 0x50);
+    pub const SET_TYPE_ID: Op = Op::new(0xFF, 0x50);
     // Weak references
-    pub const REF_MAKE_WEAK: Op     = Op::new(0xFF, 0x51);
-    pub const REF_DEREF_WEAK: Op    = Op::new(0xFF, 0x52);
-    pub const REF_IS_ALIVE: Op      = Op::new(0xFF, 0x53);
+    pub const REF_MAKE_WEAK: Op = Op::new(0xFF, 0x51);
+    pub const REF_DEREF_WEAK: Op = Op::new(0xFF, 0x52);
+    pub const REF_IS_ALIVE: Op = Op::new(0xFF, 0x53);
     pub const REF_REGISTER_FINALIZER: Op = Op::new(0xFF, 0x54);
     // Multi-memory
-    pub const MEMORY_SELECT: Op     = Op::new(0xFF, 0x55);
+    pub const MEMORY_SELECT: Op = Op::new(0xFF, 0x55);
     pub const MEMORY_COPY_CROSS: Op = Op::new(0xFF, 0x56);
     // Extended const
-    pub const GLOBAL_INIT: Op       = Op::new(0xFF, 0x57);
+    pub const GLOBAL_INIT: Op = Op::new(0xFF, 0x57);
     // Typed continuations
-    pub const CONT_NEW_TYPED: Op    = Op::new(0xFF, 0x58);
-    pub const SUSPEND_TYPED: Op     = Op::new(0xFF, 0x59);
-    pub const RESUME_TYPED: Op      = Op::new(0xFF, 0x5A);
+    pub const CONT_NEW_TYPED: Op = Op::new(0xFF, 0x58);
+    pub const SUSPEND_TYPED: Op = Op::new(0xFF, 0x59);
+    pub const RESUME_TYPED: Op = Op::new(0xFF, 0x5A);
     // String references
-    pub const STRING_AS_REF: Op     = Op::new(0xFF, 0x5B);
-    pub const STRING_FROM_REF: Op   = Op::new(0xFF, 0x5C);
-    pub const STRING_REF_EQ: Op     = Op::new(0xFF, 0x5D);
+    pub const STRING_AS_REF: Op = Op::new(0xFF, 0x5B);
+    pub const STRING_FROM_REF: Op = Op::new(0xFF, 0x5C);
+    pub const STRING_REF_EQ: Op = Op::new(0xFF, 0x5D);
     // Shared GC objects
-    pub const SHARED_NEW: Op        = Op::new(0xFF, 0x5E);
+    pub const SHARED_NEW: Op = Op::new(0xFF, 0x5E);
     pub const SHARED_STRUCT_GET: Op = Op::new(0xFF, 0x5F);
     pub const SHARED_STRUCT_SET: Op = Op::new(0xFF, 0x60);
-    pub const SHARED_ARRAY_GET: Op  = Op::new(0xFF, 0x61);
-    pub const SHARED_ARRAY_SET: Op  = Op::new(0xFF, 0x62);
+    pub const SHARED_ARRAY_GET: Op = Op::new(0xFF, 0x61);
+    pub const SHARED_ARRAY_SET: Op = Op::new(0xFF, 0x62);
     pub const SHARED_STRUCT_CAS: Op = Op::new(0xFF, 0x63);
     // Component model
-    pub const CANON_LIFT: Op        = Op::new(0xFF, 0x64);
-    pub const CANON_LOWER: Op       = Op::new(0xFF, 0x65);
-    pub const TYPE_IMPORT: Op       = Op::new(0xFF, 0x66);
-    pub const TYPE_EXPORT: Op       = Op::new(0xFF, 0x67);
+    pub const CANON_LIFT: Op = Op::new(0xFF, 0x64);
+    pub const CANON_LOWER: Op = Op::new(0xFF, 0x65);
+    pub const TYPE_IMPORT: Op = Op::new(0xFF, 0x66);
+    pub const TYPE_EXPORT: Op = Op::new(0xFF, 0x67);
     // Memory64
-    pub const I64_MEMORY_SIZE: Op   = Op::new(0xFF, 0x68);
-    pub const I64_MEMORY_GROW: Op   = Op::new(0xFF, 0x69);
-    pub const I32_LOAD_64: Op       = Op::new(0xFF, 0x6A);
-    pub const I64_LOAD_64: Op       = Op::new(0xFF, 0x6B);
-    pub const F64_LOAD_64: Op       = Op::new(0xFF, 0x6C);
-    pub const I32_STORE_64: Op      = Op::new(0xFF, 0x6D);
-    pub const I64_STORE_64: Op      = Op::new(0xFF, 0x6E);
-    pub const F64_STORE_64: Op      = Op::new(0xFF, 0x6F);
+    pub const I64_MEMORY_SIZE: Op = Op::new(0xFF, 0x68);
+    pub const I64_MEMORY_GROW: Op = Op::new(0xFF, 0x69);
+    pub const I32_LOAD_64: Op = Op::new(0xFF, 0x6A);
+    pub const I64_LOAD_64: Op = Op::new(0xFF, 0x6B);
+    pub const F64_LOAD_64: Op = Op::new(0xFF, 0x6C);
+    pub const I32_STORE_64: Op = Op::new(0xFF, 0x6D);
+    pub const I64_STORE_64: Op = Op::new(0xFF, 0x6E);
+    pub const F64_STORE_64: Op = Op::new(0xFF, 0x6F);
     // JS primitive creation / testing (js-primitive-builtins proposal)
-    pub const UNDEFINED: Op         = Op::new(0xFF, 0x70);
-    pub const SYMBOL: Op            = Op::new(0xFF, 0x71); // u16 const-idx (description)
-    pub const BIGINT: Op            = Op::new(0xFF, 0x72); // u16 const-idx (Value::I64)
-    pub const REF_IS_UNDEFINED: Op  = Op::new(0xFF, 0x73);
-    pub const REF_IS_SYMBOL: Op     = Op::new(0xFF, 0x74);
-    pub const REF_IS_BIGINT: Op     = Op::new(0xFF, 0x75);
+    pub const UNDEFINED: Op = Op::new(0xFF, 0x70);
+    pub const SYMBOL: Op = Op::new(0xFF, 0x71); // u16 const-idx (description)
+    pub const BIGINT: Op = Op::new(0xFF, 0x72); // u16 const-idx (Value::I64)
+    pub const REF_IS_UNDEFINED: Op = Op::new(0xFF, 0x73);
+    pub const REF_IS_SYMBOL: Op = Op::new(0xFF, 0x74);
+    pub const REF_IS_BIGINT: Op = Op::new(0xFF, 0x75);
     // Narrow numeric type tests + unsigned coercions + string formatting
     // (js-primitive-builtins wiring). These give compilers direct access
     // to the declared `wasm:js-*` imports for efficient interop.
-    pub const REF_IS_I32: Op        = Op::new(0xFF, 0x76); // wasm:js-number.testI32
-    pub const REF_IS_U32: Op        = Op::new(0xFF, 0x77); // wasm:js-number.testU32
-    pub const NUM_BOX_U32: Op       = Op::new(0xFF, 0x78); // i32 → externref via fromU32
-    pub const NUM_UNBOX_U32: Op     = Op::new(0xFF, 0x79); // externref → i32 via toU32
-    pub const BOOL_CAST: Op         = Op::new(0xFF, 0x7A); // externref → i32 via js-boolean.cast
-    pub const STR_CAST: Op          = Op::new(0xFF, 0x7B); // externref → externref (validates)
-    pub const STR_FROM_I32: Op      = Op::new(0xFF, 0x7C);
-    pub const STR_FROM_U32: Op      = Op::new(0xFF, 0x7D);
-    pub const STR_FROM_I64: Op      = Op::new(0xFF, 0x7E);
-    pub const STR_FROM_U64: Op      = Op::new(0xFF, 0x7F);
-    pub const STR_FROM_F64: Op      = Op::new(0xFF, 0x80);
-    pub const SYMBOL_EQ: Op         = Op::new(0xFF, 0x81); // (sym, sym) → bool via js-symbol.equals
+    pub const REF_IS_I32: Op = Op::new(0xFF, 0x76); // wasm:js-number.testI32
+    pub const REF_IS_U32: Op = Op::new(0xFF, 0x77); // wasm:js-number.testU32
+    pub const NUM_BOX_U32: Op = Op::new(0xFF, 0x78); // i32 → externref via fromU32
+    pub const NUM_UNBOX_U32: Op = Op::new(0xFF, 0x79); // externref → i32 via toU32
+    pub const BOOL_CAST: Op = Op::new(0xFF, 0x7A); // externref → i32 via js-boolean.cast
+    pub const STR_CAST: Op = Op::new(0xFF, 0x7B); // externref → externref (validates)
+    pub const STR_FROM_I32: Op = Op::new(0xFF, 0x7C);
+    pub const STR_FROM_U32: Op = Op::new(0xFF, 0x7D);
+    pub const STR_FROM_I64: Op = Op::new(0xFF, 0x7E);
+    pub const STR_FROM_U64: Op = Op::new(0xFF, 0x7F);
+    pub const STR_FROM_F64: Op = Op::new(0xFF, 0x80);
+    pub const SYMBOL_EQ: Op = Op::new(0xFF, 0x81); // (sym, sym) → bool via js-symbol.equals
     // ── Reference-types: typed `ref.null` variants ──────────────────
     // The core `NULL` op emits `ref.null extern` (0xD0 0x6F). These
     // emit `ref.null func` / `ref.null any` / `ref.null none` so the
     // null can be stored in slots typed anything other than externref.
     // Runtime semantics are identical — every variant pushes
     // `Value::Null`. The distinction is purely in the WASM binary.
-    pub const NULL_FUNC: Op         = Op::new(0xFF, 0x82); // → 0xD0 0x70
-    pub const NULL_ANY: Op          = Op::new(0xFF, 0x83); // → 0xD0 0x6E
-    pub const NULL_NONE: Op         = Op::new(0xFF, 0x84); // → 0xD0 0x71
+    pub const NULL_FUNC: Op = Op::new(0xFF, 0x82); // → 0xD0 0x70
+    pub const NULL_ANY: Op = Op::new(0xFF, 0x83); // → 0xD0 0x6E
+    pub const NULL_NONE: Op = Op::new(0xFF, 0x84); // → 0xD0 0x71
     // ── Stack-switching proposal extras ─────────────────────────────
     // `cont.bind` partially applies args to a continuation; emits
     // `0xE1 <src_cont_typeidx> <dst_cont_typeidx>`. `resume_throw`
@@ -164,8 +164,8 @@ impl Op {
     // instead of passing a value; emits `0xE4 <cont_typeidx>
     // <tagidx> <handler-count=0>`. Both are VM-internal in our
     // bytecode (prefix 0xFF) and lower to the spec bytes on emit.
-    pub const CONT_BIND: Op         = Op::new(0xFF, 0x85);
-    pub const RESUME_THROW: Op      = Op::new(0xFF, 0x86);
+    pub const CONT_BIND: Op = Op::new(0xFF, 0x85);
+    pub const RESUME_THROW: Op = Op::new(0xFF, 0x86);
     /// Iterator-protocol resume: `[cont] → [value, has_more_i32]`.
     /// Advances the continuation one step via the stack-switching
     /// machinery, then reports whether the cont is still Suspended
@@ -173,7 +173,7 @@ impl Op {
     /// languages whose generator is opt-in via stack switching.
     /// VM-only; not emitted to the WASM binary (the for-in expansion
     /// uses core ops only on the wire).
-    pub const GEN_NEXT: Op          = Op::new(0xFF, 0x87);
+    pub const GEN_NEXT: Op = Op::new(0xFF, 0x87);
 }
 
 opcode_category! {
@@ -206,17 +206,8 @@ opcode_category! {
     [0x12] ref_is_func => None, "ref.is_func";
     [0x13] ref_typeof => None, "ref.typeof";
     [0x14] ref_is_array => None, "ref.is_array";
-    // Dynamic dispatch
-    [0x15] dyn_add => None, "dyn.add";
-    [0x16] dyn_eq => None, "dyn.eq";
-    [0x17] dyn_ne => None, "dyn.ne";
-    [0x18] dyn_lt => None, "dyn.lt";
-    [0x19] dyn_gt => None, "dyn.gt";
-    [0x1A] dyn_le => None, "dyn.le";
-    [0x1B] dyn_ge => None, "dyn.ge";
-    [0x1C] dyn_neg => None, "dyn.neg";
-    [0x1D] dyn_not => None, "dyn.not";
-    [0x1E] dyn_to_bool => None, "dyn.to_bool";
+    // 0x15–0x1E: RETIRED — DYN_* opcodes removed. Slots vacant so legacy
+    // bytecode carrying them fails loudly instead of silently aliasing.
     // Exception handling
     [0x1F] try_start => U16_U16, "try_start";
     [0x20] try_end => None, "try_end";
@@ -256,16 +247,9 @@ opcode_category! {
     [0x3F] str_code_point_at => None, "string.codePointAt";
     [0x40] str_into_char_codes => None, "string.intoCharCodes";
     [0x41] str_from_char_codes => None, "string.fromCharCodes";
-    // Array builtins
-    [0x42] array_push => None, "array.push";
-    [0x43] array_pop => None, "array.pop";
-    [0x44] array_slice => None, "array.slice";
-    [0x45] array_join => None, "array.join";
-    [0x46] array_reverse => None, "array.reverse";
-    [0x47] array_contains => None, "array.contains";
-    [0x48] array_index_of => None, "array.indexOf";
-    [0x49] array_concat => None, "array.concat";
-    [0x4A] array_shift => None, "array.shift";
+    // 0x42–0x4A: RETIRED — ARRAY_* opcodes removed (Phase E). All callers
+    // now route through ecma:array.* imports. Slots vacant; legacy bytecode
+    // carrying them fails loudly rather than silently aliasing.
     // Stack switching
     [0x4B] cont_new => None, "cont.new";
     [0x4C] suspend => U16, "suspend";

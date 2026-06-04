@@ -8,9 +8,9 @@
 //!      Useful for visually inspecting what we produce without
 //!      running through an external disassembler.
 
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use vybe_bytecode::value::ValueTag;
 use vybe_bytecode::wasm::wat::{write_wat, write_wat_chunk};
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ── Type recorder ──────────────────────────────────────────────────
 
@@ -41,8 +41,10 @@ fn type_recorder_captures_monomorphic_slot() {
 
     let chunk_obs = &rec.slots()[0];
     assert_eq!(chunk_obs[0].monomorphic_tag(), Some(ValueTag::I32));
-    assert!(chunk_obs[0].counts[ValueTag::I32.as_usize()] >= 2,
-        "slot should see both LOCAL_SET and LOCAL_GET traffic");
+    assert!(
+        chunk_obs[0].counts[ValueTag::I32.as_usize()] >= 2,
+        "slot should see both LOCAL_SET and LOCAL_GET traffic"
+    );
 }
 
 #[test]
@@ -156,8 +158,10 @@ fn wat_renders_const_comment_for_known_values() {
     chunk.emit_op(Op::RETURN, 0);
 
     let wat = write_wat_chunk(&chunk);
-    assert!(wat.contains("42i32"),
-        "expected const comment surfacing the literal value, got:\n{wat}");
+    assert!(
+        wat.contains("42i32"),
+        "expected const comment surfacing the literal value, got:\n{wat}"
+    );
 }
 
 #[test]
@@ -177,10 +181,18 @@ fn wat_indents_block_bodies() {
     // surrounding `block` / `end` — verify by looking at leading
     // whitespace on the line containing `ref.null` (opcode name).
     let lines: Vec<&str> = wat.lines().collect();
-    let block_indent = lines.iter().find(|l| l.trim_start().starts_with("block"))
-        .map(|l| l.len() - l.trim_start().len()).unwrap_or(0);
-    let null_indent = lines.iter().find(|l| l.trim_start().starts_with("ref.null"))
-        .map(|l| l.len() - l.trim_start().len()).unwrap_or(0);
-    assert!(null_indent > block_indent,
-        "inner `ref.null` should be indented past outer `block` — got {null_indent} vs {block_indent}\n{wat}");
+    let block_indent = lines
+        .iter()
+        .find(|l| l.trim_start().starts_with("block"))
+        .map(|l| l.len() - l.trim_start().len())
+        .unwrap_or(0);
+    let null_indent = lines
+        .iter()
+        .find(|l| l.trim_start().starts_with("ref.null"))
+        .map(|l| l.len() - l.trim_start().len())
+        .unwrap_or(0);
+    assert!(
+        null_indent > block_indent,
+        "inner `ref.null` should be indented past outer `block` — got {null_indent} vs {block_indent}\n{wat}"
+    );
 }

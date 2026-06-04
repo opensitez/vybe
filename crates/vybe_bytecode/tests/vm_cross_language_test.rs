@@ -1,15 +1,15 @@
+use std::cell::RefCell;
+use std::sync::Arc;
+use vybe_bytecode::value::{Object, ObjectKind};
 /// Cross-language compatibility tests.
 /// Verify that objects created by different language compilers are interoperable.
-
 use vybe_bytecode::*;
-use vybe_bytecode::value::{Object, ObjectKind};
-use std::sync::Arc;
-use std::cell::RefCell;
 
 /// Simulate what Python `{"name": "Rex", "age": 3}` compiles to
 fn make_python_dict() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
@@ -17,7 +17,8 @@ fn make_python_dict() -> Value {
 /// Simulate what JS `{name: "Rex", age: 3}` compiles to
 fn make_js_object() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
@@ -25,7 +26,8 @@ fn make_js_object() -> Value {
 /// Simulate what VB `New With {.Name = "Rex", .Age = 3}` compiles to
 fn make_vb_object() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
     Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
@@ -38,8 +40,14 @@ fn python_dict_equals_js_object() {
     if let (Value::Object(a), Value::Object(b)) = (&py, &js) {
         let a = a.lock().unwrap();
         let b = b.lock().unwrap();
-        assert_eq!(a.properties.get("name").unwrap().to_string(), b.properties.get("name").unwrap().to_string());
-        assert_eq!(a.properties.get("age").unwrap().as_i32(), b.properties.get("age").unwrap().as_i32());
+        assert_eq!(
+            a.properties.get("name").unwrap().to_string(),
+            b.properties.get("name").unwrap().to_string()
+        );
+        assert_eq!(
+            a.properties.get("age").unwrap().as_i32(),
+            b.properties.get("age").unwrap().as_i32()
+        );
         assert_eq!(a.properties.len(), b.properties.len());
     }
 }
@@ -191,7 +199,10 @@ fn inheritance_works_across_languages() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Dog should be instanceof Animal");
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Dog should be instanceof Animal"
+    );
 }
 
 #[test]
@@ -199,9 +210,13 @@ fn interface_works_across_languages() {
     // VB defines Interface IAnimal, C# class Dog : IAnimal, Python checks isinstance
     let mut vm = VM::new();
 
-    let iface_id = vm.type_registry.register_interface("IAnimal", &[("speak", 1)]);
+    let iface_id = vm
+        .type_registry
+        .register_interface("IAnimal", &[("speak", 1)]);
     let mut dog_td = TypeDef::new("Dog");
-    dog_td.methods.insert("speak".into(), typedef::Method::ChunkFn(0));
+    dog_td
+        .methods
+        .insert("speak".into(), typedef::Method::ChunkFn(0));
     let dog_id = vm.type_registry.register(dog_td);
     vm.type_registry.add_implements(dog_id, iface_id);
 
@@ -217,7 +232,10 @@ fn interface_works_across_languages() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)), "Dog implements IAnimal");
+    assert!(
+        matches!(result, Value::Bool(true)),
+        "Dog implements IAnimal"
+    );
 }
 
 #[test]
@@ -258,9 +276,9 @@ fn numeric_equality_across_types() {
 
 #[test]
 fn cls_case_resolution_at_link_time() {
-    use vybe_bytecode::component::*;
-    use vybe_bytecode::chunk::TypeEntry;
     use std::collections::HashMap;
+    use vybe_bytecode::chunk::TypeEntry;
+    use vybe_bytecode::component::*;
 
     // C# component defines Dog with PascalCase field "Name"
     let mut cs_script = Chunk::new("<script>");
@@ -321,15 +339,27 @@ fn cls_case_resolution_at_link_time() {
     let breed_val = &vb_chunk.constants[1];
     let bark_val = &vb_chunk.constants[2];
 
-    assert_eq!(name_val.to_string(), "Name", "VB 'name' should be rewritten to 'Name'");
-    assert_eq!(breed_val.to_string(), "Breed", "VB 'breed' should be rewritten to 'Breed'");
-    assert_eq!(bark_val.to_string(), "Bark", "VB 'bark' should be rewritten to 'Bark'");
+    assert_eq!(
+        name_val.to_string(),
+        "Name",
+        "VB 'name' should be rewritten to 'Name'"
+    );
+    assert_eq!(
+        breed_val.to_string(),
+        "Breed",
+        "VB 'breed' should be rewritten to 'Breed'"
+    );
+    assert_eq!(
+        bark_val.to_string(),
+        "Bark",
+        "VB 'bark' should be rewritten to 'Bark'"
+    );
 }
 
 #[test]
 fn cls_case_preserves_case_sensitive_languages() {
-    use vybe_bytecode::component::*;
     use std::collections::HashMap;
+    use vybe_bytecode::component::*;
 
     // JS component with camelCase "firstName"
     let mut js_script = Chunk::new("<script>");

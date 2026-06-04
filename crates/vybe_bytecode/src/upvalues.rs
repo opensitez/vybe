@@ -5,18 +5,22 @@
 //! stack value into the Upvalue's `closed` slot when the enclosing frame
 //! returns, so closures can outlive their defining frame.
 
-use std::sync::{Arc, Mutex};
 use crate::value::{Upvalue, UpvalueLocation};
 use crate::vm::VM;
+use std::sync::{Arc, Mutex};
 
 impl VM {
     pub(crate) fn capture_upvalue(&mut self, stack_idx: usize) -> Arc<Mutex<Upvalue>> {
         for uv in &self.open_upvalues {
             if let UpvalueLocation::Open(idx) = uv.lock().unwrap().location {
-                if idx == stack_idx { return uv.clone(); }
+                if idx == stack_idx {
+                    return uv.clone();
+                }
             }
         }
-        let uv = Arc::new(Mutex::new(Upvalue { location: UpvalueLocation::Open(stack_idx) }));
+        let uv = Arc::new(Mutex::new(Upvalue {
+            location: UpvalueLocation::Open(stack_idx),
+        }));
         self.open_upvalues.push(uv.clone());
         uv
     }

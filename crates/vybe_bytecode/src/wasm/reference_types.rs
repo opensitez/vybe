@@ -41,10 +41,14 @@
 use crate::{Chunk, Op};
 
 /// Reference-types imports nothing — all ops are core (prefix 0x00).
-pub fn declare_imports() -> &'static [(&'static str, &'static str)] { &[] }
+pub fn declare_imports() -> &'static [(&'static str, &'static str)] {
+    &[]
+}
 
 /// Reference-types declares no globals.
-pub fn declare_globals() -> &'static [(&'static str, &'static str)] { &[] }
+pub fn declare_globals() -> &'static [(&'static str, &'static str)] {
+    &[]
+}
 
 /// The reference-types ops that are **actually emitted** by our code
 /// generator. Used by the test suite to audit coverage.
@@ -52,4 +56,6 @@ pub const EMITTED_OPCODES: &[Op] = &[Op::NULL, Op::REF_IS_NULL, Op::REF_FUNC];
 
 /// Proposal adds no custom sections — reference types ride in the
 /// standard type / table / element sections.
-pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec::new() }
+pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
+    Vec::new()
+}

@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex, Weak as ArcWeak};
 use crate::chunk::Chunk;
 use crate::error::VMError;
 use crate::event_loop::EventLoop;
+use crate::module_record::{ExportEntry, ModuleRecord};
 use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
-use crate::module_record::{ExportEntry, ModuleRecord};
 use crate::value::{Object, ObjectKind, Upvalue, Value};
 
 pub(crate) const MAX_FRAMES: usize = 256;
@@ -145,6 +145,25 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Generate a unique promise ID.
+    pub fn next_promise_id(&mut self) -> u64 {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().next_promise_id()
+        } else {
+            0
+        }
+    }
+
+    /// Resolve a suspended promise fiber and queue it in the microtask queue.
+    pub fn resolve_promise(&mut self, promise_id: u64, value: Value) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.resolve_promise(promise_id, value) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -180,6 +199,7 @@ pub(crate) struct CallFrame {
     pub(crate) chunk_index: usize,
     pub(crate) ip: usize,
     pub(crate) base: usize,
+    pub(crate) label_base: usize,
     pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
@@ -361,13 +381,19 @@ impl VM {
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
     /// `func_table`; indexes 1.. map to `extra_tables`.
     pub(crate) fn table_ref(&self, idx: usize) -> Option<&Vec<Value>> {
-        if idx == 0 { Some(&self.func_table) }
-        else { self.extra_tables.get(idx - 1) }
+        if idx == 0 {
+            Some(&self.func_table)
+        } else {
+            self.extra_tables.get(idx - 1)
+        }
     }
     /// Mutable borrow of the table at `tableidx`.
     pub(crate) fn table_mut(&mut self, idx: usize) -> Option<&mut Vec<Value>> {
-        if idx == 0 { Some(&mut self.func_table) }
-        else { self.extra_tables.get_mut(idx - 1) }
+        if idx == 0 {
+            Some(&mut self.func_table)
+        } else {
+            self.extra_tables.get_mut(idx - 1)
+        }
     }
 
     /// Turn on per-slot value-type recording for the next `run`.
@@ -437,15 +463,19 @@ impl VM {
 
     /// Capture the current call stack for error reporting.
     pub fn capture_call_stack(&self) -> Vec<crate::error::StackFrame> {
-        self.frames.iter().rev().map(|f| {
-            let chunk = &self.chunks[f.chunk_index];
-            let line = chunk.get_line(f.ip.saturating_sub(1));
-            crate::error::StackFrame {
-                chunk_name: chunk.name.clone(),
-                offset: f.ip,
-                line,
-            }
-        }).collect()
+        self.frames
+            .iter()
+            .rev()
+            .map(|f| {
+                let chunk = &self.chunks[f.chunk_index];
+                let line = chunk.get_line(f.ip.saturating_sub(1));
+                crate::error::StackFrame {
+                    chunk_name: chunk.name.clone(),
+                    offset: f.ip,
+                    line,
+                }
+            })
+            .collect()
     }
 
     /// Dump disassembled bytecode for all chunks. Useful for debugging
@@ -475,9 +505,7 @@ impl VM {
         use crate::chunk::ConstExpr;
         match expr {
             ConstExpr::Value(v) => v.clone(),
-            ConstExpr::GlobalGet(name) => {
-                self.globals.get(name).cloned().unwrap_or(Value::Null)
-            }
+            ConstExpr::GlobalGet(name) => self.globals.get(name).cloned().unwrap_or(Value::Null),
             ConstExpr::Add(left, right) => {
                 let l = self.eval_const_expr(left);
                 let r = self.eval_const_expr(right);
@@ -523,7 +551,11 @@ impl VM {
             self.memory.len()
         } else {
             let idx = self.active_memory - 1;
-            if idx < self.extra_memories.len() { self.extra_memories[idx].len() } else { 0 }
+            if idx < self.extra_memories.len() {
+                self.extra_memories[idx].len()
+            } else {
+                0
+            }
         }
     }
 
@@ -581,10 +613,16 @@ impl VM {
     /// Also adds it to the function table for call_indirect dispatch,
     /// and records the export in the per-module `ModuleRecord` so the
     /// Linker (ESM host-import resolver) can see it.
-    pub fn register_host_fn(&mut self, module: &str, name: &str, f: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>) {
+    pub fn register_host_fn(
+        &mut self,
+        module: &str,
+        name: &str,
+        f: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+    ) {
         let idx = self.host_fns.len();
         self.host_fns.push(Arc::from(f));
-        self.host_registry.insert((module.to_string(), name.to_string()), idx);
+        self.host_registry
+            .insert((module.to_string(), name.to_string()), idx);
         // Add to function table — func_table index == host_fns index for host functions
         while self.func_table.len() <= idx {
             self.func_table.push(Value::Null);
@@ -642,7 +680,9 @@ impl VM {
     }
 
     /// Resolve host type exports (Class / ResourceType) through Module Records.
-    pub fn iter_host_type_exports(&self) -> impl Iterator<Item = (String, String, crate::TypeDef)> + '_ {
+    pub fn iter_host_type_exports(
+        &self,
+    ) -> impl Iterator<Item = (String, String, crate::TypeDef)> + '_ {
         self.modules.iter().flat_map(move |(module, record)| {
             record.exports.keys().filter_map(move |name| {
                 self.resolve_host_type_export(module, name)
@@ -659,7 +699,8 @@ impl VM {
     }
 
     fn insert_module_export(&mut self, module: &str, name: &str, export: ExportEntry) {
-        let record = self.modules
+        let record = self
+            .modules
             .entry(module.to_string())
             .or_insert_with(|| ModuleRecord::new_synthetic(module));
         record.exports.insert(name.to_string(), export);
@@ -691,9 +732,10 @@ impl VM {
 
         let record = self.modules.get(module)?;
         match record.exports.get(name)? {
-            ExportEntry::Indirect { from, name: target_name } => {
-                self.resolve_host_export(from, target_name, visited)
-            }
+            ExportEntry::Indirect {
+                from,
+                name: target_name,
+            } => self.resolve_host_export(from, target_name, visited),
             export => Some(export),
         }
     }
@@ -814,7 +856,6 @@ impl VM {
         self.type_registry.get_id(name).unwrap_or(0)
     }
 
-
     /// Load chunks and execute the script chunk (first in the new set).
     /// Appends to existing chunks so cross-language calls work (functions reference chunk indices).
     /// Resolves the import table against registered host functions.
@@ -822,7 +863,11 @@ impl VM {
     /// Each component gets its own global namespace (prefixed).
     /// Cross-component communication happens ONLY through declared exports/imports.
     /// Type metadata is shared read-only for inheritance.
-    pub fn run_components(&mut self, link_result: &crate::component::LinkResult, components: &[crate::component::Component]) -> Result<Value, VMError> {
+    pub fn run_components(
+        &mut self,
+        link_result: &crate::component::LinkResult,
+        components: &[crate::component::Component],
+    ) -> Result<Value, VMError> {
         // Load all chunks
         let base_offset = self.chunks.len();
         self.chunks.extend(link_result.chunks.clone());
@@ -868,7 +913,8 @@ impl VM {
                             let obj = crate::value::Object {
                                 properties: std::collections::HashMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
-                                type_id: 0, fields: Vec::new(),
+                                type_id: 0,
+                                fields: Vec::new(),
                             };
                             Value::Object(Arc::new(Mutex::new(obj)))
                         }
@@ -884,22 +930,29 @@ impl VM {
                     // Also store without prefix so the module's code can find it
                     // (the module emits global_get "func_name", which gets prefixed by strict_isolation)
                     let unprefixed = func_name.to_lowercase();
-                    self.globals.insert(format!("{}::{}", comp.name, unprefixed), func_val);
+                    self.globals
+                        .insert(format!("{}::{}", comp.name, unprefixed), func_val);
                 }
             }
 
             // Also inject exported functions from OTHER modules that this module imports
             // by making them available under the importing module's prefix
             for other_comp in components {
-                if other_comp.name == comp.name { continue; }
+                if other_comp.name == comp.name {
+                    continue;
+                }
                 for ((_, func_name), export_impl) in &other_comp.exports {
                     let func_val = match export_impl {
                         crate::component::ExportImpl::ChunkFn(ci) => {
-                            let other_offset = link_result.component_offsets[
-                                components.iter().position(|c| c.name == other_comp.name).unwrap()
-                            ] + base_offset;
+                            let other_offset = link_result.component_offsets[components
+                                .iter()
+                                .position(|c| c.name == other_comp.name)
+                                .unwrap()]
+                                + base_offset;
                             let adjusted_ci = ci + other_offset;
-                            if adjusted_ci >= self.chunks.len() { continue; }
+                            if adjusted_ci >= self.chunks.len() {
+                                continue;
+                            }
                             let chunk = &self.chunks[adjusted_ci];
                             let func = crate::value::Function {
                                 name: Some(func_name.clone()),
@@ -910,7 +963,8 @@ impl VM {
                             let obj = crate::value::Object {
                                 properties: std::collections::HashMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
-                                type_id: 0, fields: Vec::new(),
+                                type_id: 0,
+                                fields: Vec::new(),
                             };
                             Value::Object(Arc::new(Mutex::new(obj)))
                         }
@@ -952,7 +1006,11 @@ impl VM {
 
     /// Run linked chunks with a pre-resolved import table from the Linker.
     /// Used for bootstrap: Linker resolves imports at link time, VM just loads them.
-    pub fn run_linked(&mut self, chunks: Vec<Chunk>, resolved_imports: Vec<ImportTarget>) -> Result<Value, VMError> {
+    pub fn run_linked(
+        &mut self,
+        chunks: Vec<Chunk>,
+        resolved_imports: Vec<ImportTarget>,
+    ) -> Result<Value, VMError> {
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
@@ -964,7 +1022,9 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    if ip + 1 >= code.len() { break; }
+                    if ip + 1 >= code.len() {
+                        break;
+                    }
                     let prefix = code[ip];
                     let sub = code[ip + 1];
                     if let Some(op) = Op::decode(prefix, sub) {
@@ -1008,9 +1068,7 @@ impl VM {
                 }
                 ImportTarget::StdlibRedirect(name) => {
                     // Try to resolve against host registry first
-                    let key_candidates = [
-                        ("wasi:cli".to_string(), name.clone()),
-                    ];
+                    let key_candidates = [("wasi:cli".to_string(), name.clone())];
                     let mut resolved = false;
                     for key in &key_candidates {
                         if let Some(idx) = self.resolve_host_function_index(&key.0, &key.1) {
@@ -1030,16 +1088,21 @@ impl VM {
         {
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
-                let adjusted_types: Vec<_> = types.iter().map(|t| {
-                    let mut entry = t.clone();
-                    entry.methods = t.methods.iter().map(|(name, idx)| {
-                        (name.clone(), idx + script_idx)
-                    }).collect();
-                    if let Some(ci) = entry.constructor_chunk {
-                        entry.constructor_chunk = Some(ci + script_idx);
-                    }
-                    entry
-                }).collect();
+                let adjusted_types: Vec<_> = types
+                    .iter()
+                    .map(|t| {
+                        let mut entry = t.clone();
+                        entry.methods = t
+                            .methods
+                            .iter()
+                            .map(|(name, idx)| (name.clone(), idx + script_idx))
+                            .collect();
+                        if let Some(ci) = entry.constructor_chunk {
+                            entry.constructor_chunk = Some(ci + script_idx);
+                        }
+                        entry
+                    })
+                    .collect();
                 self.type_registry.load_type_table(&adjusted_types);
             }
         }
@@ -1049,9 +1112,13 @@ impl VM {
             chunk_index: script_idx,
             ip: 0,
             base: self.stack.len(),
+            label_base: self.label_stack.len(),
             upvalues: Vec::new(),
         });
-        self.stack.resize(self.stack.len() + self.chunks[script_idx].local_count as usize, Value::Null);
+        self.stack.resize(
+            self.stack.len() + self.chunks[script_idx].local_count as usize,
+            Value::Null,
+        );
         self.execute()
     }
 
@@ -1073,7 +1140,9 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    if ip + 1 >= code.len() { break; }
+                    if ip + 1 >= code.len() {
+                        break;
+                    }
                     let prefix = code[ip];
                     let sub = code[ip + 1];
                     if let Some(op) = Op::decode(prefix, sub) {
@@ -1118,13 +1187,13 @@ impl VM {
             // 2. Wildcard module "*" — resolve from globals (cross-language or same-language)
             if import.module == "*" {
                 // Check lowercase and original case
-                let candidates = [
-                    import.name.clone(),
-                    import.name.to_lowercase(),
-                ];
-                let found = candidates.iter().find(|g| self.globals.contains_key(g.as_str()));
+                let candidates = [import.name.clone(), import.name.to_lowercase()];
+                let found = candidates
+                    .iter()
+                    .find(|g| self.globals.contains_key(g.as_str()));
                 if let Some(global_name) = found {
-                    self.import_table.push(ImportTarget::StdlibRedirect(global_name.clone()));
+                    self.import_table
+                        .push(ImportTarget::StdlibRedirect(global_name.clone()));
                     continue;
                 }
             }
@@ -1133,12 +1202,16 @@ impl VM {
                 format!("__vybe_{}", import.name),
                 format!("__vybe_{}", import.name.to_lowercase()),
             ];
-            let found = candidates.iter().find(|g| self.globals.contains_key(g.as_str()));
+            let found = candidates
+                .iter()
+                .find(|g| self.globals.contains_key(g.as_str()));
             if let Some(global_name) = found {
-                self.import_table.push(ImportTarget::StdlibRedirect(global_name.clone()));
+                self.import_table
+                    .push(ImportTarget::StdlibRedirect(global_name.clone()));
             } else {
                 return Err(VMError::new(format!(
-                    "Unresolved import: \"{}\" \"{}\"", import.module, import.name
+                    "Unresolved import: \"{}\" \"{}\"",
+                    import.module, import.name
                 )));
             }
         }
@@ -1150,13 +1223,18 @@ impl VM {
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
                 // Adjust chunk indices in methods (same offset as ref_func)
-                let adjusted_types: Vec<_> = types.iter().map(|t| {
-                    let mut entry = t.clone();
-                    entry.methods = t.methods.iter().map(|(name, idx)| {
-                        (name.clone(), idx + script_idx)
-                    }).collect();
-                    entry
-                }).collect();
+                let adjusted_types: Vec<_> = types
+                    .iter()
+                    .map(|t| {
+                        let mut entry = t.clone();
+                        entry.methods = t
+                            .methods
+                            .iter()
+                            .map(|(name, idx)| (name.clone(), idx + script_idx))
+                            .collect();
+                        entry
+                    })
+                    .collect();
                 self.type_registry.load_type_table(&adjusted_types);
                 // Set __tid_<name> globals for each registered type. The
                 // name is what the compiler canonicalised on registration —
@@ -1194,6 +1272,7 @@ impl VM {
             chunk_index: script_idx,
             ip: 0,
             base: 0,
+            label_base: self.label_stack.len(),
             upvalues: Vec::new(),
         });
 
@@ -1254,10 +1333,13 @@ impl VM {
     }
 
     pub(crate) fn stack_floor(&self) -> usize {
-        self.frames.last().map(|frame| {
-            let chunk = &self.chunks[frame.chunk_index];
-            frame.base + (chunk.local_count as usize).max(chunk.arity as usize)
-        }).unwrap_or(0)
+        self.frames
+            .last()
+            .map(|frame| {
+                let chunk = &self.chunks[frame.chunk_index];
+                frame.base + (chunk.local_count as usize).max(chunk.arity as usize)
+            })
+            .unwrap_or(0)
     }
 
     pub(crate) fn pop(&mut self) -> Value {
@@ -1300,6 +1382,50 @@ impl VM {
         self.chunks[f.chunk_index].constants[index as usize].clone()
     }
 
+    pub(crate) fn resolve_chunk_import(
+        &self,
+        chunk_index: usize,
+        import_idx: usize,
+    ) -> Result<Option<ImportTarget>, VMError> {
+        let Some(import) = self
+            .chunks
+            .get(chunk_index)
+            .and_then(|chunk| chunk.imports.get(import_idx))
+        else {
+            return Ok(None);
+        };
+
+        if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
+            return Ok(Some(ImportTarget::Host(idx)));
+        }
+
+        if import.module == "*" {
+            let candidates = [import.name.clone(), import.name.to_lowercase()];
+            if let Some(global_name) = candidates
+                .iter()
+                .find(|name| self.globals.contains_key(name.as_str()))
+            {
+                return Ok(Some(ImportTarget::StdlibRedirect(global_name.clone())));
+            }
+        }
+
+        let candidates = [
+            format!("__vybe_{}", import.name),
+            format!("__vybe_{}", import.name.to_lowercase()),
+        ];
+        if let Some(global_name) = candidates
+            .iter()
+            .find(|name| self.globals.contains_key(name.as_str()))
+        {
+            return Ok(Some(ImportTarget::StdlibRedirect(global_name.clone())));
+        }
+
+        Err(VMError::new(format!(
+            "Unresolved import: \"{}\" \"{}\"",
+            import.module, import.name
+        )))
+    }
+
     pub(crate) fn constant_str(&self, index: u16) -> String {
         match &self.get_constant(index) {
             Value::String(s) => s.to_string(),
@@ -1314,6 +1440,10 @@ impl VM {
             Err(e) if e.message.starts_with("__await__:") => {
                 // Await suspension — extract promise ID
                 let id: u64 = e.message["__await__:".len()..].parse().unwrap_or(0);
+                Ok(ExecResult::Suspended(id))
+            }
+            Err(e) if e.message.starts_with("__jspi__:") => {
+                let id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended(id))
             }
             Err(e) => Err(e),
@@ -1331,7 +1461,6 @@ impl VM {
         })
     }
 }
-
 
 pub(crate) fn dyn_truthy(v: &Value) -> bool {
     match v {

@@ -10,8 +10,8 @@ use super::encoding::*;
 pub const MODULE: &str = "ecma:json";
 
 pub const IMPORTS: &[&str] = &[
-    "stringify",   // JSON.stringify(value, replacer?, space?)
-    "parse",       // JSON.parse(text, reviver?)
+    "stringify", // JSON.stringify(value, replacer?, space?)
+    "parse",     // JSON.parse(text, reviver?)
 ];
 
 pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {

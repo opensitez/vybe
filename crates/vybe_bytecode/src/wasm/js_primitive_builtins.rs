@@ -65,8 +65,8 @@ pub const FUNC_IMPORTS: &[(&str, &str)] = &[
 /// exposed from `sections.rs` so the emitter can reference them.
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[
     ("wasm:js-undefined", "value"),
-    ("wasm:js-boolean",   "true"),
-    ("wasm:js-boolean",   "false"),
+    ("wasm:js-boolean", "true"),
+    ("wasm:js-boolean", "false"),
 ];
 
 /// Emit the WASM function signature for a `(module, name)` pair.

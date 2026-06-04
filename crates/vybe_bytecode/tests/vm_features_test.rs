@@ -1,7 +1,7 @@
-use vybe_bytecode::*;
-use vybe_bytecode::value::*;
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
+use vybe_bytecode::value::*;
+use vybe_bytecode::*;
 
 fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
     let mut chunk = Chunk::new("<test>");
@@ -59,7 +59,10 @@ fn memory_i32_store_load() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
-    match result { Value::I32(42) => {} _ => panic!("Expected I32(42), got {:?}", result) }
+    match result {
+        Value::I32(42) => {}
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 #[test]
@@ -82,7 +85,10 @@ fn memory_f64_store_load() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
-    match result { Value::F64(v) if (v - std::f64::consts::PI).abs() < 1e-10 => {} _ => panic!("Expected PI") }
+    match result {
+        Value::F64(v) if (v - std::f64::consts::PI).abs() < 1e-10 => {}
+        _ => panic!("Expected PI"),
+    }
 }
 
 #[test]
@@ -106,7 +112,10 @@ fn memory_byte_store_load() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
-    match result { Value::I32(255) => {} _ => panic!("Expected I32(255), got {:?}", result) }
+    match result {
+        Value::I32(255) => {}
+        _ => panic!("Expected I32(255), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -132,7 +141,10 @@ fn pack_unpack() {
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
-    match result { Value::F64(v) if v == 30.0 => {} _ => panic!("Expected F64(30)") }
+    match result {
+        Value::F64(v) if v == 30.0 => {}
+        _ => panic!("Expected F64(30)"),
+    }
 }
 
 // ============================================================
@@ -177,11 +189,17 @@ fn call_indirect_basic() {
 
     let mut vm = VM::new();
     // Put the add function in the func_table
-    let func = Function { name: Some("add".into()), arity: 2, chunk_index: 1, upvalues: vec![] };
+    let func = Function {
+        name: Some("add".into()),
+        arity: 2,
+        chunk_index: 1,
+        upvalues: vec![],
+    };
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: std::collections::HashMap::new(),
         kind: ObjectKind::Function(func),
-        type_id: 0, fields: Vec::new(),
+        type_id: 0,
+        fields: Vec::new(),
     })));
     vm.func_table.push(func_val);
 
@@ -199,19 +217,29 @@ fn type_registry_method_dispatch() {
     let mut vm = VM::new();
 
     // Register a host function
-    vm.register_host_fn("test", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
-        Value::String(Arc::from("hello from vtable"))
-    }));
+    vm.register_host_fn(
+        "test",
+        "greet",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+            Value::String(Arc::from("hello from vtable"))
+        }),
+    );
 
     // Create a type with a method
     let mut typedef = vybe_bytecode::TypeDef::new("MyType");
-    let fn_idx = *vm.host_registry.get(&("test".to_string(), "greet".to_string())).unwrap();
-    typedef.methods.insert("greet".into(), vybe_bytecode::Method::HostFn(fn_idx));
+    let fn_idx = *vm
+        .host_registry
+        .get(&("test".to_string(), "greet".to_string()))
+        .unwrap();
+    typedef
+        .methods
+        .insert("greet".into(), vybe_bytecode::Method::HostFn(fn_idx));
     let type_id = vm.type_registry.register(typedef);
 
     // Create an object with that type_id
     let mut obj = Object::new_typed(type_id);
-    obj.properties.insert("__type".into(), Value::String(Arc::from("MyType")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("MyType")));
     let obj_val = Value::Object(Arc::new(std::sync::Mutex::new(obj)));
 
     // Resolve "greet" method through type registry
@@ -223,21 +251,38 @@ fn type_registry_method_dispatch() {
 fn type_registry_inheritance() {
     let mut vm = VM::new();
 
-    vm.register_host_fn("test", "base_method", Box::new(|_, _| Value::String(Arc::from("base"))));
-    vm.register_host_fn("test", "child_method", Box::new(|_, _| Value::String(Arc::from("child"))));
+    vm.register_host_fn(
+        "test",
+        "base_method",
+        Box::new(|_, _| Value::String(Arc::from("base"))),
+    );
+    vm.register_host_fn(
+        "test",
+        "child_method",
+        Box::new(|_, _| Value::String(Arc::from("child"))),
+    );
 
-    let base_fn = *vm.host_registry.get(&("test".into(), "base_method".into())).unwrap();
-    let child_fn = *vm.host_registry.get(&("test".into(), "child_method".into())).unwrap();
+    let base_fn = *vm
+        .host_registry
+        .get(&("test".into(), "base_method".into()))
+        .unwrap();
+    let child_fn = *vm
+        .host_registry
+        .get(&("test".into(), "child_method".into()))
+        .unwrap();
 
     // Base type
     let mut base = TypeDef::new("Base");
-    base.methods.insert("speak".into(), vybe_bytecode::Method::HostFn(base_fn));
+    base.methods
+        .insert("speak".into(), vybe_bytecode::Method::HostFn(base_fn));
     let base_id = vm.type_registry.register(base);
 
     // Child type inheriting from Base
     let mut child = TypeDef::new("Child");
     child.parent = Some(base_id);
-    child.methods.insert("play".into(), vybe_bytecode::Method::HostFn(child_fn));
+    child
+        .methods
+        .insert("play".into(), vybe_bytecode::Method::HostFn(child_fn));
     let child_id = vm.type_registry.register(child);
 
     // Child should resolve "speak" from parent

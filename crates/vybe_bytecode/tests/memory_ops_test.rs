@@ -1,7 +1,6 @@
-/// Tests for memory operations, table operations, and WASM binary I/O.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
 use std::sync::Arc;
+/// Tests for memory operations, table operations, and WASM binary I/O.
+use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
 // MEMORY OPERATIONS
@@ -104,7 +103,9 @@ fn memory_fill_via_rust() {
     let mut vm = VM::new();
     vm.memory.resize(256, 0);
     // Fill bytes 0..16 with 0xFF
-    for i in 0..16 { vm.memory.store_u8(i, 0xFF); }
+    for i in 0..16 {
+        vm.memory.store_u8(i, 0xFF);
+    }
     // Verify via i32_load
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -122,7 +123,9 @@ fn memory_copy_via_rust() {
     vm.memory.resize(256, 0);
     vm.memory.store_i32(0, 42);
     // Copy 4 bytes from offset 0 to offset 16
-    vm.memory.with_buffer_mut(|buf| { buf.copy_within(0..4, 16); });
+    vm.memory.with_buffer_mut(|buf| {
+        buf.copy_within(0..4, 16);
+    });
     // Verify via i32_load at offset 16
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -355,9 +358,9 @@ fn f32_store_and_load() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::F64(3.14f32 as f64));
+        let val = c.add_constant(Value::F64(3.14f32 as f64));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::F32_STORE, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::F32_LOAD, 0);
@@ -372,9 +375,9 @@ fn i32_store8_and_load8_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I32(-1i32)); // 0xFF as byte
+        let val = c.add_constant(Value::I32(-1i32)); // 0xFF as byte
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I32_STORE8, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I32_LOAD8_S, 0); // sign-extend → -1
@@ -387,9 +390,9 @@ fn i32_load8_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I32(0xFF));
+        let val = c.add_constant(Value::I32(0xFF));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I32_STORE8, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I32_LOAD8_U, 0); // zero-extend → 255
@@ -402,9 +405,9 @@ fn i32_store16_and_load16_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I32(-1000));
+        let val = c.add_constant(Value::I32(-1000));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I32_STORE16, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I32_LOAD16_S, 0);
@@ -417,9 +420,9 @@ fn i32_load16_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I32(0xFFFF));
+        let val = c.add_constant(Value::I32(0xFFFF));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I32_STORE16, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I32_LOAD16_U, 0);
@@ -434,9 +437,9 @@ fn i64_store_and_load() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(i64::MAX));
+        let val = c.add_constant(Value::I64(i64::MAX));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD, 0);
@@ -449,9 +452,9 @@ fn i64_store8_and_load8_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(-1));
+        let val = c.add_constant(Value::I64(-1));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE8, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD8_S, 0);
@@ -464,9 +467,9 @@ fn i64_load8_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(200));
+        let val = c.add_constant(Value::I64(200));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE8, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD8_U, 0);
@@ -479,9 +482,9 @@ fn i64_store16_and_load16_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(-5000));
+        let val = c.add_constant(Value::I64(-5000));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE16, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD16_S, 0);
@@ -494,9 +497,9 @@ fn i64_load16_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(40000));
+        let val = c.add_constant(Value::I64(40000));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE16, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD16_U, 0);
@@ -509,9 +512,9 @@ fn i64_store32_and_load32_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(-70000));
+        let val = c.add_constant(Value::I64(-70000));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE32, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD32_S, 0);
@@ -524,9 +527,9 @@ fn i64_load32_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
         let addr = c.add_constant(Value::I32(0));
-        let val  = c.add_constant(Value::I64(3_000_000_000i64));
+        let val = c.add_constant(Value::I64(3_000_000_000i64));
         c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op_u16(Op::CONST, val, 0);
         c.emit_op(Op::I64_STORE32, 0);
         c.emit_op_u16(Op::CONST, addr, 0);
         c.emit_op(Op::I64_LOAD32_U, 0);
