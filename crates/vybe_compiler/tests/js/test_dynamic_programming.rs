@@ -1,10 +1,11 @@
 /// Dynamic programming patterns in JS
-
 use super::helpers::run_js;
 
 #[test]
 fn fibonacci_dp() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function fib(n) {
     if (n <= 1) return n;
     let a = 0, b = 1;
@@ -15,12 +16,17 @@ console.log(fib(0));
 console.log(fib(1));
 console.log(fib(10));
 console.log(fib(20));
-"#), vec!["0", "1", "55", "6765"]);
+"#
+        ),
+        vec!["0", "1", "55", "6765"]
+    );
 }
 
 #[test]
 fn memoized_fibonacci() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const memo = {};
 function fib(n) {
     if (n in memo) return memo[n];
@@ -29,12 +35,17 @@ function fib(n) {
 }
 console.log(fib(30));
 console.log(fib(35));
-"#), vec!["832040", "9227465"]);
+"#
+        ),
+        vec!["832040", "9227465"]
+    );
 }
 
 #[test]
 fn coin_change_greedy_check() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function coinChange(coins, amount) {
     const dp = Array(amount + 1).fill(Infinity);
     dp[0] = 0;
@@ -47,12 +58,17 @@ function coinChange(coins, amount) {
 }
 console.log(coinChange([1, 5, 10, 25], 36));
 console.log(coinChange([2], 3));
-"#), vec!["3", "-1"]);
+"#
+        ),
+        vec!["3", "-1"]
+    );
 }
 
 #[test]
 fn longest_increasing_subsequence() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function lis(arr) {
     const dp = Array(arr.length).fill(1);
     for (let i = 1; i < arr.length; i++) {
@@ -64,12 +80,17 @@ function lis(arr) {
 }
 console.log(lis([10, 9, 2, 5, 3, 7, 101, 18]));
 console.log(lis([0, 1, 0, 3, 2, 3]));
-"#), vec!["4", "4"]);
+"#
+        ),
+        vec!["4", "4"]
+    );
 }
 
 #[test]
 fn longest_common_subsequence() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function lcs(a, b) {
     const m = a.length, n = b.length;
     const dp = Array.from({length: m+1}, () => Array(n+1).fill(0));
@@ -84,12 +105,17 @@ function lcs(a, b) {
 console.log(lcs("abcde", "ace"));
 console.log(lcs("abc", "abc"));
 console.log(lcs("abc", "def"));
-"#), vec!["3", "3", "0"]);
+"#
+        ),
+        vec!["3", "3", "0"]
+    );
 }
 
 #[test]
 fn knapsack_01() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function knapsack(weights, values, capacity) {
     const n = weights.length;
     const dp = Array.from({length: n+1}, () => Array(capacity+1).fill(0));
@@ -104,12 +130,17 @@ function knapsack(weights, values, capacity) {
     return dp[n][capacity];
 }
 console.log(knapsack([2, 3, 4, 5], [3, 4, 5, 6], 5));
-"#), vec!["7"]);
+"#
+        ),
+        vec!["7"]
+    );
 }
 
 #[test]
 fn edit_distance() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function editDistance(a, b) {
     const m = a.length, n = b.length;
     const dp = Array.from({length: m+1}, (_, i) => Array.from({length: n+1}, (_, j) => i || j));
@@ -124,12 +155,17 @@ function editDistance(a, b) {
 console.log(editDistance("horse", "ros"));
 console.log(editDistance("intention", "execution"));
 console.log(editDistance("", "abc"));
-"#), vec!["3", "5", "3"]);
+"#
+        ),
+        vec!["3", "5", "3"]
+    );
 }
 
 #[test]
 fn max_profit_stock() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function maxProfit(prices) {
     let min = Infinity, profit = 0;
     for (const p of prices) {
@@ -140,12 +176,17 @@ function maxProfit(prices) {
 }
 console.log(maxProfit([7, 1, 5, 3, 6, 4]));
 console.log(maxProfit([7, 6, 4, 3, 1]));
-"#), vec!["5", "0"]);
+"#
+        ),
+        vec!["5", "0"]
+    );
 }
 
 #[test]
 fn triangular_number_paths() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function minTrianglePath(triangle) {
     const dp = [...triangle[triangle.length - 1]];
     for (let i = triangle.length - 2; i >= 0; i--) {
@@ -157,12 +198,17 @@ function minTrianglePath(triangle) {
 }
 const t = [[2], [3, 4], [6, 5, 7], [4, 1, 8, 3]];
 console.log(minTrianglePath(t));
-"#), vec!["11"]);
+"#
+        ),
+        vec!["11"]
+    );
 }
 
 #[test]
 fn word_break_dp() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function wordBreak(s, wordDict) {
     const set = new Set(wordDict);
     const dp = Array(s.length + 1).fill(false);
@@ -177,12 +223,17 @@ function wordBreak(s, wordDict) {
 console.log(wordBreak("leetcode", ["leet", "code"]));
 console.log(wordBreak("applepenapple", ["apple", "pen"]));
 console.log(wordBreak("catsandog", ["cats", "dog", "sand", "and", "cat"]));
-"#), vec!["true", "true", "false"]);
+"#
+        ),
+        vec!["true", "true", "false"]
+    );
 }
 
 #[test]
 fn house_robber() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function rob(nums) {
     let prev2 = 0, prev1 = 0;
     for (const n of nums) {
@@ -194,12 +245,17 @@ function rob(nums) {
 }
 console.log(rob([1, 2, 3, 1]));
 console.log(rob([2, 7, 9, 3, 1]));
-"#), vec!["4", "12"]);
+"#
+        ),
+        vec!["4", "12"]
+    );
 }
 
 #[test]
 fn jump_game() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function canJump(nums) {
     let maxReach = 0;
     for (let i = 0; i < nums.length; i++) {
@@ -210,12 +266,17 @@ function canJump(nums) {
 }
 console.log(canJump([2, 3, 1, 1, 4]));
 console.log(canJump([3, 2, 1, 0, 4]));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 #[test]
 fn count_combinations() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function combinations(n, k) {
     if (k === 0 || k === n) return 1;
     const dp = Array.from({length: n+1}, (_, i) => Array(i+1).fill(1));
@@ -229,5 +290,8 @@ function combinations(n, k) {
 console.log(combinations(4, 2));
 console.log(combinations(5, 0));
 console.log(combinations(6, 3));
-"#), vec!["6", "1", "20"]);
+"#
+        ),
+        vec!["6", "1", "20"]
+    );
 }

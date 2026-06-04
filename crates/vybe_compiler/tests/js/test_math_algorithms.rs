@@ -1,21 +1,27 @@
 /// Math and number utility patterns
-
 use super::helpers::run_js;
 
 #[test]
 fn gcd_lcm() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 function lcm(a, b) { return (a / gcd(a, b)) * b; }
 console.log(gcd(48, 18));
 console.log(lcm(4, 6));
 console.log(gcd(17, 5));
-"#), vec!["6", "12", "1"]);
+"#
+        ),
+        vec!["6", "12", "1"]
+    );
 }
 
 #[test]
 fn sieve_of_eratosthenes() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function sieve(n) {
     const primes = Array(n + 1).fill(true);
     primes[0] = primes[1] = false;
@@ -26,12 +32,17 @@ function sieve(n) {
 }
 const p = sieve(30);
 console.log(p.join(","));
-"#), vec!["2,3,5,7,11,13,17,19,23,29"]);
+"#
+        ),
+        vec!["2,3,5,7,11,13,17,19,23,29"]
+    );
 }
 
 #[test]
 fn prime_factorization() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function primeFactors(n) {
     const factors = [];
     for (let d = 2; d * d <= n; d++) {
@@ -43,12 +54,17 @@ function primeFactors(n) {
 console.log(primeFactors(12).join(","));
 console.log(primeFactors(100).join(","));
 console.log(primeFactors(17).join(","));
-"#), vec!["2,2,3", "2,2,5,5", "17"]);
+"#
+        ),
+        vec!["2,2,3", "2,2,5,5", "17"]
+    );
 }
 
 #[test]
 fn power_with_modulo() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function powMod(base, exp, mod) {
     let result = 1n;
     base = BigInt(base) % BigInt(mod);
@@ -63,12 +79,17 @@ function powMod(base, exp, mod) {
 }
 console.log(powMod(2, 10, 1000));
 console.log(powMod(3, 5, 13));
-"#), vec!["24", "9"]);
+"#
+        ),
+        vec!["24", "9"]
+    );
 }
 
 #[test]
 fn sum_of_digits() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function digitSum(n) {
     return Math.abs(n).toString().split("").reduce((s, d) => s + Number(d), 0);
 }
@@ -79,24 +100,34 @@ function digitalRoot(n) {
 console.log(digitSum(12345));
 console.log(digitalRoot(9875));
 console.log(digitalRoot(0));
-"#), vec!["15", "2", "0"]);
+"#
+        ),
+        vec!["15", "2", "0"]
+    );
 }
 
 #[test]
 fn factorial_and_permutations() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function factorial(n) { return n <= 1 ? 1 : n * factorial(n - 1); }
 function permutations(n, r) { return factorial(n) / factorial(n - r); }
 function combinations(n, r) { return permutations(n, r) / factorial(r); }
 console.log(factorial(5));
 console.log(permutations(5, 2));
 console.log(combinations(5, 2));
-"#), vec!["120", "20", "10"]);
+"#
+        ),
+        vec!["120", "20", "10"]
+    );
 }
 
 #[test]
 fn number_base_conversions() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const dec = n => parseInt(n, 2);  // binary to decimal
 const hex = n => n.toString(16);
 const bin = n => n.toString(2);
@@ -104,12 +135,17 @@ console.log(dec("1010"));
 console.log(hex(255));
 console.log(bin(42));
 console.log(parseInt("ff", 16));
-"#), vec!["10", "ff", "101010", "255"]);
+"#
+        ),
+        vec!["10", "ff", "101010", "255"]
+    );
 }
 
 #[test]
 fn is_perfect_number() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function isPerfect(n) {
     if (n <= 1) return false;
     let sum = 1;
@@ -121,12 +157,17 @@ function isPerfect(n) {
 console.log(isPerfect(6));
 console.log(isPerfect(28));
 console.log(isPerfect(12));
-"#), vec!["true", "true", "false"]);
+"#
+        ),
+        vec!["true", "true", "false"]
+    );
 }
 
 #[test]
 fn statistics_mean_median_mode() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function mean(arr) { return arr.reduce((a,b)=>a+b,0) / arr.length; }
 function median(arr) {
     const s = [...arr].sort((a,b)=>a-b);
@@ -142,12 +183,17 @@ const data = [1, 2, 2, 3, 4, 4, 4, 5];
 console.log(mean(data));
 console.log(median(data));
 console.log(mode(data));
-"#), vec!["3.125", "3.5", "4"]);
+"#
+        ),
+        vec!["3.125", "3.5", "4"]
+    );
 }
 
 #[test]
 fn clamp_lerp_normalize() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const normalize = (v, min, max) => (v - min) / (max - min);
@@ -155,12 +201,17 @@ console.log(clamp(150, 0, 100));
 console.log(lerp(0, 100, 0.5));
 console.log(normalize(75, 0, 100));
 console.log(clamp(-5, 0, 100));
-"#), vec!["100", "50", "0.75", "0"]);
+"#
+        ),
+        vec!["100", "50", "0.75", "0"]
+    );
 }
 
 #[test]
 fn number_palindrome() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function isPalindromeNum(n) {
     if (n < 0) return false;
     const s = n.toString();
@@ -170,12 +221,17 @@ console.log(isPalindromeNum(121));
 console.log(isPalindromeNum(-121));
 console.log(isPalindromeNum(1001));
 console.log(isPalindromeNum(10));
-"#), vec!["true", "false", "true", "false"]);
+"#
+        ),
+        vec!["true", "false", "true", "false"]
+    );
 }
 
 #[test]
 fn fibonacci_sequence_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* fibSeq() {
     let [a, b] = [0, 1];
     while (true) { yield a; [a, b] = [b, a+b]; }
@@ -183,12 +239,17 @@ function* fibSeq() {
 const gen = fibSeq();
 const first10 = Array.from({length: 10}, () => gen.next().value);
 console.log(first10.join(","));
-"#), vec!["0,1,1,2,3,5,8,13,21,34"]);
+"#
+        ),
+        vec!["0,1,1,2,3,5,8,13,21,34"]
+    );
 }
 
 #[test]
 fn integer_square_root() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function isqrt(n) {
     if (n < 0) return NaN;
     let x = Math.floor(Math.sqrt(n));
@@ -200,5 +261,8 @@ console.log(isqrt(16));
 console.log(isqrt(17));
 console.log(isqrt(100));
 console.log(isqrt(0));
-"#), vec!["4", "4", "10", "0"]);
+"#
+        ),
+        vec!["4", "4", "10", "0"]
+    );
 }

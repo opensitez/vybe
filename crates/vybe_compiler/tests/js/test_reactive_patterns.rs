@@ -1,10 +1,11 @@
 /// Reactive patterns — observable, pub-sub, streams
-
 use super::helpers::run_js;
 
 #[test]
 fn simple_observable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Observable {
     constructor(subscribe) { this._subscribe = subscribe; }
     subscribe(observer) { return this._subscribe(observer); }
@@ -35,12 +36,17 @@ Observable.of(1,2,3,4,5)
     .map(x => x * 10)
     .subscribe({ next: v => results.push(v), error: ()=>{}, complete: ()=>{} });
 console.log(results.join(","));
-"#), vec!["20,40"]);
+"#
+        ),
+        vec!["20,40"]
+    );
 }
 
 #[test]
 fn event_emitter_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class EventEmitter {
     #listeners = new Map();
     on(event, fn) {
@@ -69,12 +75,17 @@ ee.once("data", v => results.push("once:" + v));
 ee.emit("data", 1);
 ee.emit("data", 2);
 console.log(results.join(","));
-"#), vec!["on:1,once:1,on:2"]);
+"#
+        ),
+        vec!["on:1,once:1,on:2"]
+    );
 }
 
 #[test]
 fn reactive_store() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Store {
     #state;
     #subscribers = [];
@@ -98,12 +109,17 @@ unsub();
 store.setState(s => ({ count: s.count + 1 }));
 console.log(log.join(","));
 console.log(store.getState().count);
-"#), vec!["1,2", "3"]);
+"#
+        ),
+        vec!["1,2", "3"]
+    );
 }
 
 #[test]
 fn pub_sub_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class PubSub {
     #topics = new Map();
     subscribe(topic, fn) {
@@ -123,12 +139,17 @@ ps.publish("news", "hello");
 unsub();
 ps.publish("news", "world");
 console.log(log.join(","));
-"#), vec!["hello,B:hello,B:world"]);
+"#
+        ),
+        vec!["hello,B:hello,B:world"]
+    );
 }
 
 #[test]
 fn signal_reactivity() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function createSignal(init) {
     let value = init;
     const subscribers = new Set();
@@ -150,12 +171,17 @@ setCount(5);
 setCount(10);
 console.log(log.join(","));
 console.log(doubled());
-"#), vec!["count:5,count:10", "20"]);
+"#
+        ),
+        vec!["count:5,count:10", "20"]
+    );
 }
 
 #[test]
 fn stream_accumulator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Stream {
     #buffer = [];
     #subscribers = [];
@@ -183,12 +209,17 @@ const results = [];
 evens.subscribe(v => results.push(v));
 s.push(1, 2, 3, 4, 5);
 console.log(results.join(","));
-"#), vec!["20,40"]);
+"#
+        ),
+        vec!["20,40"]
+    );
 }
 
 #[test]
 fn debounce_throttle() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function debounce(fn, delay) {
     let timer;
     return (...args) => {
@@ -210,5 +241,8 @@ const calls = [];
 const t = throttle(x => calls.push(x), 1000);
 t(1); t(2); t(3);
 console.log(calls.length);
-"#), vec!["function", "function", "1"]);
+"#
+        ),
+        vec!["function", "function", "1"]
+    );
 }

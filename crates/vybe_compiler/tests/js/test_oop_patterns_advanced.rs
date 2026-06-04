@@ -1,10 +1,11 @@
 /// Object-oriented programming patterns — advanced class features
-
 use super::helpers::run_js;
 
 #[test]
 fn abstract_class_simulation() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Shape {
     area() { throw new Error("not implemented"); }
 }
@@ -17,12 +18,17 @@ console.log(Math.abs(c.area() - Math.PI) < 0.0001);
 let threw = false;
 try { new Shape().area(); } catch { threw = true; }
 console.log(threw);
-"#), vec!["true", "true"]);
+"#
+        ),
+        vec!["true", "true"]
+    );
 }
 
 #[test]
 fn interface_duck_typing() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function implements_(obj, methods) {
     return methods.every(m => typeof obj[m] === "function");
 }
@@ -35,12 +41,17 @@ const cfg = new Config();
 cfg.data = { x: 1 };
 console.log(implements_(cfg, Serializable));
 console.log(implements_({}, Serializable));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 #[test]
 fn visitor_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class NumberExpr { constructor(v) { this.v=v; } accept(visitor) { return visitor.visitNumber(this); } }
 class AddExpr { constructor(l,r) { this.l=l; this.r=r; } accept(visitor) { return visitor.visitAdd(this); } }
 class Evaluator {
@@ -49,12 +60,17 @@ class Evaluator {
 }
 const expr = new AddExpr(new NumberExpr(3), new AddExpr(new NumberExpr(4), new NumberExpr(5)));
 console.log(expr.accept(new Evaluator()));
-"#), vec!["12"]);
+"#
+        ),
+        vec!["12"]
+    );
 }
 
 #[test]
 fn chain_of_responsibility() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Handler {
     constructor(next = null) { this.next = next; }
     handle(req) { return this.next ? this.next.handle(req) : "unhandled"; }
@@ -72,12 +88,17 @@ const chain = new AuthHandler(new RateLimitHandler(new ResourceHandler()));
 console.log(chain.handle({ auth: true, rate: 50, resource: "data" }));
 console.log(chain.handle({ auth: false, rate: 50, resource: "data" }));
 console.log(chain.handle({ auth: true, rate: 200, resource: "data" }));
-"#), vec!["ok:data", "unauthorized", "rate limited"]);
+"#
+        ),
+        vec!["ok:data", "unauthorized", "rate limited"]
+    );
 }
 
 #[test]
 fn template_method_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Report {
     generate() {
         return [this.header(), this.body(), this.footer()].join("|");
@@ -95,12 +116,17 @@ class HRReport extends Report {
 }
 console.log(new SalesReport().generate());
 console.log(new HRReport().generate());
-"#), vec!["Report|Sales: 1000|End", "HR Report|Staff: 50|End"]);
+"#
+        ),
+        vec!["Report|Sales: 1000|End", "HR Report|Staff: 50|End"]
+    );
 }
 
 #[test]
 fn lazy_initialization_class() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class ExpensiveResource {
     #_data = null;
     get data() {
@@ -111,12 +137,17 @@ class ExpensiveResource {
 const r = new ExpensiveResource();
 console.log(r.data.computed);
 console.log(r.data === r.data);
-"#), vec!["42", "true"]);
+"#
+        ),
+        vec!["42", "true"]
+    );
 }
 
 #[test]
 fn flyweight_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class TreeType {
     constructor(name, color) { this.name=name; this.color=color; }
 }
@@ -135,12 +166,17 @@ const t3 = TreeFactory.get("Pine", "dark");
 console.log(t1 === t2);
 console.log(t1 === t3);
 console.log(TreeFactory.size());
-"#), vec!["true", "false", "2"]);
+"#
+        ),
+        vec!["true", "false", "2"]
+    );
 }
 
 #[test]
 fn memento_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Editor {
     #content = "";
     #history = [];
@@ -156,12 +192,17 @@ e.undo();
 console.log(e.content);
 e.undo();
 console.log(e.content);
-"#), vec!["Hello World", "Hello", ""]);
+"#
+        ),
+        vec!["Hello World", "Hello", ""]
+    );
 }
 
 #[test]
 fn composite_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class File {
     constructor(name, size) { this.name=name; this.size=size; }
     totalSize() { return this.size; }
@@ -175,12 +216,17 @@ const root = new Folder("root")
     .add(new File("a.txt", 100))
     .add(new Folder("sub").add(new File("b.txt", 200)).add(new File("c.txt", 300)));
 console.log(root.totalSize());
-"#), vec!["600"]);
+"#
+        ),
+        vec!["600"]
+    );
 }
 
 #[test]
 fn proxy_validation_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function createValidated(target, validators) {
     return new Proxy(target, {
         set(obj, prop, value) {
@@ -198,12 +244,17 @@ console.log(person.age);
 let threw = false;
 try { person.age = -5; } catch { threw = true; }
 console.log(threw);
-"#), vec!["Alice", "30", "true"]);
+"#
+        ),
+        vec!["Alice", "30", "true"]
+    );
 }
 
 #[test]
 fn event_sourcing_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class EventStore {
     #events = [];
     append(event) { this.#events.push({...event, timestamp: Date.now()}); }
@@ -225,5 +276,8 @@ const state = store.replay({
 });
 console.log(state.name);
 console.log(state.age);
-"#), vec!["Alice", "30"]);
+"#
+        ),
+        vec!["Alice", "30"]
+    );
 }

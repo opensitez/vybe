@@ -1,10 +1,11 @@
 /// Symbol.iterator custom implementations — pagination, linked list, tree, cyclic
-
 use super::helpers::run_js;
 
 #[test]
 fn linked_list_iterable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Node {
     constructor(val, next = null) { this.val = val; this.next = next; }
 }
@@ -30,12 +31,17 @@ class LinkedList {
 const list = new LinkedList();
 [1, 2, 3, 4, 5].forEach(x => list.push(x));
 console.log([...list].join(","));
-"#), vec!["1,2,3,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5"]
+    );
 }
 
 #[test]
 fn pagination_iterable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Paginator {
     constructor(data, pageSize) { this.data = data; this.pageSize = pageSize; }
     [Symbol.iterator]() {
@@ -56,12 +62,17 @@ console.log(pages.length);
 console.log(pages[0].join(","));
 console.log(pages[1].join(","));
 console.log(pages[2].join(","));
-"#), vec!["3", "1,2,3", "4,5,6", "7"]);
+"#
+        ),
+        vec!["3", "1,2,3", "4,5,6", "7"]
+    );
 }
 
 #[test]
 fn cyclic_iterator_take() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* cycle(arr) {
     while (true) yield* arr;
 }
@@ -72,12 +83,17 @@ function take(n, gen) {
 }
 const colors = take(7, cycle(["red", "green", "blue"]));
 console.log(colors.join(","));
-"#), vec!["red,green,blue,red,green,blue,red"]);
+"#
+        ),
+        vec!["red,green,blue,red,green,blue,red"]
+    );
 }
 
 #[test]
 fn reverse_iterable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class ReverseIterable {
     constructor(arr) { this.arr = arr; }
     [Symbol.iterator]() {
@@ -92,24 +108,34 @@ class ReverseIterable {
 }
 const rev = new ReverseIterable([1, 2, 3, 4, 5]);
 console.log([...rev].join(","));
-"#), vec!["5,4,3,2,1"]);
+"#
+        ),
+        vec!["5,4,3,2,1"]
+    );
 }
 
 #[test]
 fn cartesian_product_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* cartesian(a, b) {
     for (const x of a) for (const y of b) yield [x, y];
 }
 const pairs = [...cartesian([1, 2], ["a", "b"])];
 console.log(pairs.length);
 console.log(pairs.map(([x,y]) => x+y).join(","));
-"#), vec!["4", "1a,1b,2a,2b"]);
+"#
+        ),
+        vec!["4", "1a,1b,2a,2b"]
+    );
 }
 
 #[test]
 fn permutation_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* permute(arr) {
     if (arr.length <= 1) { yield arr; return; }
     for (let i = 0; i < arr.length; i++) {
@@ -120,5 +146,8 @@ function* permute(arr) {
 const perms = [...permute([1, 2, 3])];
 console.log(perms.length);
 console.log(perms[0].join(","));
-"#), vec!["6", "1,2,3"]);
+"#
+        ),
+        vec!["6", "1,2,3"]
+    );
 }

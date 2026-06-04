@@ -1,21 +1,27 @@
 /// Explicit Resource Management (ES2025) — using declarations, Symbol.dispose,
 /// Symbol.asyncDispose, DisposableStack, AsyncDisposableStack, await using.
-
 use super::helpers::run_js;
 
 // ── Symbol.dispose ────────────────────────────────────────────────────────────
 
 #[test]
 fn symbol_dispose_exists() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 console.log(typeof Symbol.dispose);
 console.log(typeof Symbol.asyncDispose);
-"#), vec!["symbol", "symbol"]);
+"#
+        ),
+        vec!["symbol", "symbol"]
+    );
 }
 
 #[test]
 fn object_with_dispose_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 const res = {
     [Symbol.dispose]() { log.push("disposed"); }
@@ -24,12 +30,17 @@ const res = {
     using r = res;
 }
 console.log(log.join(","));
-"#), vec!["disposed"]);
+"#
+        ),
+        vec!["disposed"]
+    );
 }
 
 #[test]
 fn using_disposes_on_block_exit() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 function makeResource(name) {
     return { [Symbol.dispose]() { log.push("close:" + name); } };
@@ -40,12 +51,17 @@ function makeResource(name) {
     log.push("work");
 }
 console.log(log.join(","));
-"#), vec!["work,close:B,close:A"]);
+"#
+        ),
+        vec!["work,close:B,close:A"]
+    );
 }
 
 #[test]
 fn using_disposes_in_lifo_order() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const order = [];
 {
     using r1 = { [Symbol.dispose]() { order.push(1); } };
@@ -53,12 +69,17 @@ const order = [];
     using r3 = { [Symbol.dispose]() { order.push(3); } };
 }
 console.log(order.join(","));
-"#), vec!["3,2,1"]);
+"#
+        ),
+        vec!["3,2,1"]
+    );
 }
 
 #[test]
 fn using_disposes_even_on_throw() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 try {
     using r = { [Symbol.dispose]() { log.push("disposed"); } };
@@ -67,12 +88,17 @@ try {
     log.push("caught:" + e.message);
 }
 console.log(log.join(","));
-"#), vec!["disposed,caught:oops"]);
+"#
+        ),
+        vec!["disposed,caught:oops"]
+    );
 }
 
 #[test]
 fn using_null_or_undefined_is_allowed() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let ok = true;
 try {
     using r = null;
@@ -81,12 +107,17 @@ try {
     ok = false;
 }
 console.log(ok);
-"#), vec!["true"]);
+"#
+        ),
+        vec!["true"]
+    );
 }
 
 #[test]
 fn using_non_disposable_object_throws() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let threw = false;
 try {
     using r = { value: 42 }; // no Symbol.dispose
@@ -94,14 +125,19 @@ try {
     threw = e instanceof TypeError;
 }
 console.log(threw);
-"#), vec!["true"]);
+"#
+        ),
+        vec!["true"]
+    );
 }
 
 // ── using in for loop ─────────────────────────────────────────────────────────
 
 #[test]
 fn using_in_for_of_disposes_each_iteration() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 function makeRes(n) {
     return { n, [Symbol.dispose]() { log.push("d" + this.n); } };
@@ -110,14 +146,19 @@ for (using r of [makeRes(1), makeRes(2), makeRes(3)]) {
     log.push("u" + r.n);
 }
 console.log(log.join(","));
-"#), vec!["u1,d1,u2,d2,u3,d3"]);
+"#
+        ),
+        vec!["u1,d1,u2,d2,u3,d3"]
+    );
 }
 
 // ── DisposableStack ───────────────────────────────────────────────────────────
 
 #[test]
 fn disposable_stack_basic_use() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 {
     using stack = new DisposableStack();
@@ -126,12 +167,17 @@ const log = [];
     log.push("work");
 }
 console.log(log.join(","));
-"#), vec!["work,cleanup2,cleanup1"]);
+"#
+        ),
+        vec!["work,cleanup2,cleanup1"]
+    );
 }
 
 #[test]
 fn disposable_stack_adopt() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 {
     using stack = new DisposableStack();
@@ -139,12 +185,17 @@ const log = [];
     log.push("use:" + handle.id);
 }
 console.log(log.join(","));
-"#), vec!["use:1,close:1"]);
+"#
+        ),
+        vec!["use:1,close:1"]
+    );
 }
 
 #[test]
 fn disposable_stack_use() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 const res = { [Symbol.dispose]() { log.push("disposed"); } };
 {
@@ -153,22 +204,32 @@ const res = { [Symbol.dispose]() { log.push("disposed"); } };
     log.push("work");
 }
 console.log(log.join(","));
-"#), vec!["work,disposed"]);
+"#
+        ),
+        vec!["work,disposed"]
+    );
 }
 
 #[test]
 fn disposable_stack_disposed_property() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const stack = new DisposableStack();
 console.log(stack.disposed);
 stack.dispose();
 console.log(stack.disposed);
-"#), vec!["false", "true"]);
+"#
+        ),
+        vec!["false", "true"]
+    );
 }
 
 #[test]
 fn disposable_stack_move_transfers_ownership() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 let outer;
 {
@@ -181,14 +242,19 @@ log.push("outer disposed before:" + outer.disposed);
 outer.dispose();
 log.push("outer disposed after:" + outer.disposed);
 console.log(log.join(","));
-"#), vec!["inner disposed:true,outer disposed before:false,cleanup,outer disposed after:true"]);
+"#
+        ),
+        vec!["inner disposed:true,outer disposed before:false,cleanup,outer disposed after:true"]
+    );
 }
 
 // ── await using ───────────────────────────────────────────────────────────────
 
 #[test]
 fn await_using_calls_async_dispose() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function main() {
     await using r = {
@@ -199,26 +265,36 @@ async function main() {
     log.push("work");
 }
 main().then(() => console.log(log.join(",")));
-"#), vec!["work,async disposed"]);
+"#
+        ),
+        vec!["work,async disposed"]
+    );
 }
 
 #[test]
 fn await_using_falls_back_to_sync_dispose() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function main() {
     await using r = { [Symbol.dispose]() { log.push("sync disposed"); } };
     log.push("work");
 }
 main().then(() => console.log(log.join(",")));
-"#), vec!["work,sync disposed"]);
+"#
+        ),
+        vec!["work,sync disposed"]
+    );
 }
 
 // ── AsyncDisposableStack ──────────────────────────────────────────────────────
 
 #[test]
 fn async_disposable_stack_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function main() {
     await using stack = new AsyncDisposableStack();
@@ -229,5 +305,8 @@ async function main() {
     log.push("work");
 }
 main().then(() => console.log(log.join(",")));
-"#), vec!["work,cleanup"]);
+"#
+        ),
+        vec!["work,cleanup"]
+    );
 }

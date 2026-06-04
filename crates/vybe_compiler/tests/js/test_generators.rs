@@ -1,14 +1,16 @@
 /// JavaScript generators: function*, yield, yield*, iterator protocol,
 /// custom iterables, Symbol.iterator, infinite sequences, generator composition.
-
 use super::helpers::run_js;
 
 // ===================================================================
 // BASIC GENERATORS
 // ===================================================================
 
-#[test] fn generator_basic_yield() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_basic_yield() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield 1;
     yield 2;
@@ -19,11 +21,17 @@ console.log(g.next().value);
 console.log(g.next().value);
 console.log(g.next().value);
 console.log(g.next().done);
-"#), &["1", "2", "3", "true"]);
+"#
+        ),
+        &["1", "2", "3", "true"]
+    );
 }
 
-#[test] fn generator_for_of() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_for_of() {
+    assert_eq!(
+        run_js(
+            r#"
 function* range(start, end) {
     for (let i = start; i <= end; i++) {
         yield i;
@@ -32,11 +40,17 @@ function* range(start, end) {
 for (let n of range(1, 5)) {
     console.log(n);
 }
-"#), &["1", "2", "3", "4", "5"]);
+"#
+        ),
+        &["1", "2", "3", "4", "5"]
+    );
 }
 
-#[test] fn generator_with_return() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_with_return() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield 1;
     return 99;
@@ -47,11 +61,17 @@ console.log(g.next().value);
 let r = g.next();
 console.log(r.value);
 console.log(r.done);
-"#), &["1", "99", "true"]);
+"#
+        ),
+        &["1", "99", "true"]
+    );
 }
 
-#[test] fn generator_early_return() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_early_return() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield 1;
     yield 2;
@@ -61,11 +81,17 @@ let g = gen();
 console.log(g.next().value);
 console.log(g.return("stopped").value);
 console.log(g.next().done);
-"#), &["1", "stopped", "true"]);
+"#
+        ),
+        &["1", "stopped", "true"]
+    );
 }
 
-#[test] fn generator_return_runs_finally() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_return_runs_finally() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     try {
         yield 1;
@@ -79,11 +105,17 @@ console.log(g.next().value);
 let result = g.return("stopped");
 console.log(result.value);
 console.log(result.done);
-"#), &["1", "cleanup", "stopped", "true"]);
+"#
+        ),
+        &["1", "cleanup", "stopped", "true"]
+    );
 }
 
-#[test] fn generator_return_before_first_yield() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_return_before_first_yield() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield 1;
     return 99;
@@ -93,11 +125,17 @@ let result = g.return("stopped");
 console.log(result.value);
 console.log(result.done);
 console.log(g.next().done);
-"#), &["stopped", "true", "true"]);
+"#
+        ),
+        &["stopped", "true", "true"]
+    );
 }
 
-#[test] fn generator_throw_before_first_yield_caught() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_throw_before_first_yield_caught() {
+    assert_eq!(
+        run_js(
+            r#"
 function* guarded() {
     try {
         yield "ready";
@@ -110,11 +148,17 @@ let g = guarded();
 let result = g.throw(new Error("stop"));
 console.log(result.value);
 console.log(result.done);
-"#), &["caught: stop", "handled", "false"]);
+"#
+        ),
+        &["caught: stop", "handled", "false"]
+    );
 }
 
-#[test] fn generator_rest_args_survive_fresh_throw() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_rest_args_survive_fresh_throw() {
+    assert_eq!(
+        run_js(
+            r#"
 function* guarded(head, ...rest) {
     try {
         yield rest.length;
@@ -127,11 +171,17 @@ let g = guarded("a", "b", "c");
 let result = g.throw(new Error("stop"));
 console.log(result.value);
 console.log(result.done);
-"#), &["b,c", "stop", "false"]);
+"#
+        ),
+        &["b,c", "stop", "false"]
+    );
 }
 
-#[test] fn generator_yield_receive_value() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_yield_receive_value() {
+    assert_eq!(
+        run_js(
+            r#"
 function* echo() {
     let msg = yield "ready";
     console.log("received: " + msg);
@@ -140,11 +190,17 @@ function* echo() {
 let g = echo();
 console.log(g.next().value);
 console.log(g.next("hello").value);
-"#), &["ready", "received: hello", "done"]);
+"#
+        ),
+        &["ready", "received: hello", "done"]
+    );
 }
 
-#[test] fn generator_throw_caught_in_generator() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_throw_caught_in_generator() {
+    assert_eq!(
+        run_js(
+            r#"
 function* guarded() {
     try {
         yield "ready";
@@ -157,11 +213,17 @@ let g = guarded();
 console.log(g.next().value);
 let result = g.throw(new Error("stop"));
 console.log(result.done);
-"#), &["ready", "caught: stop", "true"]);
+"#
+        ),
+        &["ready", "caught: stop", "true"]
+    );
 }
 
-#[test] fn generator_infinite_sequence() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_infinite_sequence() {
+    assert_eq!(
+        run_js(
+            r#"
 function* naturals() {
     let n = 1;
     while (true) {
@@ -174,11 +236,17 @@ for (let i = 0; i < 5; i++) {
     results.push(gen.next().value);
 }
 console.log(results.join(","));
-"#), &["1,2,3,4,5"]);
+"#
+        ),
+        &["1,2,3,4,5"]
+    );
 }
 
-#[test] fn generator_fibonacci() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_fibonacci() {
+    assert_eq!(
+        run_js(
+            r#"
 function* fib() {
     let a = 0, b = 1;
     while (true) {
@@ -192,11 +260,17 @@ for (let i = 0; i < 8; i++) {
     results.push(g.next().value);
 }
 console.log(results.join(","));
-"#), &["0,1,1,2,3,5,8,13"]);
+"#
+        ),
+        &["0,1,1,2,3,5,8,13"]
+    );
 }
 
-#[test] fn generator_yield_star() {
-    assert_eq!(run_js(r#"
+#[test]
+fn generator_yield_star() {
+    assert_eq!(
+        run_js(
+            r#"
 function* inner() {
     yield 2;
     yield 3;
@@ -209,15 +283,21 @@ function* outer() {
 let results = [];
 for (let v of outer()) results.push(v);
 console.log(results.join(","));
-"#), &["1,2,3,4"]);
+"#
+        ),
+        &["1,2,3,4"]
+    );
 }
 
 // ===================================================================
 // CUSTOM ITERABLES
 // ===================================================================
 
-#[test] fn custom_iterable_symbol_iterator() {
-    assert_eq!(run_js(r#"
+#[test]
+fn custom_iterable_symbol_iterator() {
+    assert_eq!(
+        run_js(
+            r#"
 let range = {
     from: 1,
     to: 5,
@@ -237,11 +317,17 @@ let range = {
 let result = [];
 for (let n of range) result.push(n);
 console.log(result.join(","));
-"#), &["1,2,3,4,5"]);
+"#
+        ),
+        &["1,2,3,4,5"]
+    );
 }
 
-#[test] fn spread_on_custom_iterable() {
-    assert_eq!(run_js(r#"
+#[test]
+fn spread_on_custom_iterable() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield 10;
     yield 20;
@@ -249,11 +335,17 @@ function* gen() {
 }
 let arr = [...gen()];
 console.log(arr.join(","));
-"#), &["10,20,30"]);
+"#
+        ),
+        &["10,20,30"]
+    );
 }
 
-#[test] fn destructure_generator() {
-    assert_eq!(run_js(r#"
+#[test]
+fn destructure_generator() {
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     yield "a";
     yield "b";
@@ -263,15 +355,21 @@ let [x, y, z] = gen();
 console.log(x);
 console.log(y);
 console.log(z);
-"#), &["a", "b", "c"]);
+"#
+        ),
+        &["a", "b", "c"]
+    );
 }
 
 // ===================================================================
 // ITERATOR PROTOCOL MANUAL
 // ===================================================================
 
-#[test] fn manual_iterator() {
-    assert_eq!(run_js(r#"
+#[test]
+fn manual_iterator() {
+    assert_eq!(
+        run_js(
+            r#"
 let iter = {
     items: ["x", "y", "z"],
     index: 0,
@@ -284,15 +382,24 @@ let iter = {
     [Symbol.iterator]() { return this; }
 };
 for (let v of iter) console.log(v);
-"#), &["x", "y", "z"]);
+"#
+        ),
+        &["x", "y", "z"]
+    );
 }
 
-#[test] fn array_from_generator() {
-    assert_eq!(run_js(r#"
+#[test]
+fn array_from_generator() {
+    assert_eq!(
+        run_js(
+            r#"
 function* countdown(n) {
     while (n > 0) yield n--;
 }
 let arr = Array.from(countdown(5));
 console.log(arr.join(","));
-"#), &["5,4,3,2,1"]);
+"#
+        ),
+        &["5,4,3,2,1"]
+    );
 }

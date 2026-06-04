@@ -5,7 +5,6 @@
 /// flat (depth), flatMap with index, Array.from (Set/Map/mapper), Array.of,
 /// groupBy via reduce, fill/copyWithin variants, iterators, indexOf/lastIndexOf
 /// with fromIndex, chaining, spread copy, findIndex not-found.
-
 use super::helpers::run_js;
 
 // ===================================================================
@@ -14,11 +13,16 @@ use super::helpers::run_js;
 
 #[test]
 fn array_at_positive_index() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = ["a", "b", "c", "d"];
 console.log(arr.at(0));
 console.log(arr.at(2));
-"#), vec!["a", "c"]);
+"#
+        ),
+        vec!["a", "c"]
+    );
 }
 
 // ===================================================================
@@ -27,11 +31,16 @@ console.log(arr.at(2));
 
 #[test]
 fn array_at_negative_index_last() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [10, 20, 30, 40, 50];
 console.log(arr.at(-1));
 console.log(arr.at(-3));
-"#), vec!["50", "30"]);
+"#
+        ),
+        vec!["50", "30"]
+    );
 }
 
 // ===================================================================
@@ -40,11 +49,16 @@ console.log(arr.at(-3));
 
 #[test]
 fn array_findlast_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 3, 5, 7, 2, 4, 6];
 const last = arr.findLast(x => x % 2 === 0);
 console.log(last);
-"#), vec!["6"]);
+"#
+        ),
+        vec!["6"]
+    );
 }
 
 // ===================================================================
@@ -53,11 +67,16 @@ console.log(last);
 
 #[test]
 fn array_findlastindex_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 2, 3, 4, 5, 6];
 const idx = arr.findLastIndex(x => x % 2 === 0);
 console.log(idx);
-"#), vec!["5"]);
+"#
+        ),
+        vec!["5"]
+    );
 }
 
 // ===================================================================
@@ -66,12 +85,17 @@ console.log(idx);
 
 #[test]
 fn array_tosorted_does_not_mutate() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const orig = [3, 1, 4, 1, 5];
 const sorted = orig.toSorted((a, b) => a - b);
 console.log(orig.join(","));
 console.log(sorted.join(","));
-"#), vec!["3,1,4,1,5", "1,1,3,4,5"]);
+"#
+        ),
+        vec!["3,1,4,1,5", "1,1,3,4,5"]
+    );
 }
 
 // ===================================================================
@@ -80,12 +104,17 @@ console.log(sorted.join(","));
 
 #[test]
 fn array_toreversed_does_not_mutate() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const orig = [1, 2, 3, 4, 5];
 const rev = orig.toReversed();
 console.log(orig.join(","));
 console.log(rev.join(","));
-"#), vec!["1,2,3,4,5", "5,4,3,2,1"]);
+"#
+        ),
+        vec!["1,2,3,4,5", "5,4,3,2,1"]
+    );
 }
 
 // ===================================================================
@@ -94,12 +123,17 @@ console.log(rev.join(","));
 
 #[test]
 fn array_tospliced_returns_new_array() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const orig = [1, 2, 3, 4, 5];
 const spliced = orig.toSpliced(1, 2, 10, 20);
 console.log(orig.join(","));
 console.log(spliced.join(","));
-"#), vec!["1,2,3,4,5", "1,10,20,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5", "1,10,20,4,5"]
+    );
 }
 
 // ===================================================================
@@ -108,12 +142,17 @@ console.log(spliced.join(","));
 
 #[test]
 fn array_with_replaces_single_element() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const orig = [1, 2, 3, 4, 5];
 const updated = orig.with(2, 99);
 console.log(orig.join(","));
 console.log(updated.join(","));
-"#), vec!["1,2,3,4,5", "1,2,99,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5", "1,2,99,4,5"]
+    );
 }
 
 // ===================================================================
@@ -122,10 +161,15 @@ console.log(updated.join(","));
 
 #[test]
 fn array_flat_depth_one() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, [2, 3], [4, [5, 6]]];
 console.log(arr.flat(1).join(","));
-"#), vec!["1,2,3,4,5,6"]);
+"#
+        ),
+        vec!["1,2,3,4,5,6"]
+    );
 }
 
 // ===================================================================
@@ -134,10 +178,15 @@ console.log(arr.flat(1).join(","));
 
 #[test]
 fn array_flat_depth_two() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, [2, [3, [4]]]];
 console.log(arr.flat(2).join(","));
-"#), vec!["1,2,3,4"]);
+"#
+        ),
+        vec!["1,2,3,4"]
+    );
 }
 
 // ===================================================================
@@ -146,10 +195,15 @@ console.log(arr.flat(2).join(","));
 
 #[test]
 fn array_flat_infinity_depth() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [[1, 2], [3, [4, 5]]];
 console.log(arr.flat(Infinity).join(","));
-"#), vec!["1,2,3,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5"]
+    );
 }
 
 // ===================================================================
@@ -158,12 +212,17 @@ console.log(arr.flat(Infinity).join(","));
 
 #[test]
 fn array_flatmap_maps_and_flattens() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = ["hello world", "foo bar baz"];
 const words = arr.flatMap(s => s.split(" "));
 console.log(words.length);
 console.log(words.join(","));
-"#), vec!["5", "hello,world,foo,bar,baz"]);
+"#
+        ),
+        vec!["5", "hello,world,foo,bar,baz"]
+    );
 }
 
 // ===================================================================
@@ -172,10 +231,15 @@ console.log(words.join(","));
 
 #[test]
 fn array_from_with_mapping_function() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = Array.from([1, 2, 3, 4], x => x * x);
 console.log(arr.join(","));
-"#), vec!["1,4,9,16"]);
+"#
+        ),
+        vec!["1,4,9,16"]
+    );
 }
 
 // ===================================================================
@@ -184,10 +248,15 @@ console.log(arr.join(","));
 
 #[test]
 fn array_from_on_string() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = Array.from("rust");
 console.log(arr.join("-"));
-"#), vec!["r-u-s-t"]);
+"#
+        ),
+        vec!["r-u-s-t"]
+    );
 }
 
 // ===================================================================
@@ -196,12 +265,17 @@ console.log(arr.join("-"));
 
 #[test]
 fn array_from_on_set() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const s = new Set([1, 2, 2, 3, 3, 3]);
 const arr = Array.from(s);
 arr.sort((a, b) => a - b);
 console.log(arr.join(","));
-"#), vec!["1,2,3"]);
+"#
+        ),
+        vec!["1,2,3"]
+    );
 }
 
 // ===================================================================
@@ -210,12 +284,17 @@ console.log(arr.join(","));
 
 #[test]
 fn array_from_on_map() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const m = new Map([["a", 1], ["b", 2], ["c", 3]]);
 const arr = Array.from(m);
 console.log(arr.length);
 console.log(arr[0][0] + ":" + arr[0][1]);
-"#), vec!["3", "a:1"]);
+"#
+        ),
+        vec!["3", "a:1"]
+    );
 }
 
 // ===================================================================
@@ -224,11 +303,16 @@ console.log(arr[0][0] + ":" + arr[0][1]);
 
 #[test]
 fn array_of_from_arguments() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = Array.of(7, 8, 9);
 console.log(arr.length);
 console.log(arr.join(","));
-"#), vec!["3", "7,8,9"]);
+"#
+        ),
+        vec!["3", "7,8,9"]
+    );
 }
 
 // ===================================================================
@@ -237,7 +321,9 @@ console.log(arr.join(","));
 
 #[test]
 fn array_groupby_via_reduce() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const items = ["apple", "avocado", "banana", "blueberry", "cherry"];
 const grouped = items.reduce((acc, item) => {
     const key = item[0];
@@ -248,7 +334,10 @@ const grouped = items.reduce((acc, item) => {
 console.log(grouped["a"].length);
 console.log(grouped["b"].length);
 console.log(grouped["c"].length);
-"#), vec!["2", "2", "1"]);
+"#
+        ),
+        vec!["2", "2", "1"]
+    );
 }
 
 // ===================================================================
@@ -257,11 +346,16 @@ console.log(grouped["c"].length);
 
 #[test]
 fn array_fill_with_start_end() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [0, 0, 0, 0, 0];
 arr.fill(7, 1, 4);
 console.log(arr.join(","));
-"#), vec!["0,7,7,7,0"]);
+"#
+        ),
+        vec!["0,7,7,7,0"]
+    );
 }
 
 // ===================================================================
@@ -270,11 +364,16 @@ console.log(arr.join(","));
 
 #[test]
 fn array_copywithin_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 2, 3, 4, 5];
 arr.copyWithin(1, 3, 5);
 console.log(arr.join(","));
-"#), vec!["1,4,5,4,5"]);
+"#
+        ),
+        vec!["1,4,5,4,5"]
+    );
 }
 
 // ===================================================================
@@ -283,11 +382,16 @@ console.log(arr.join(","));
 
 #[test]
 fn array_keys_iterator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = ["x", "y", "z"];
 const keys = [...arr.keys()];
 console.log(keys.join(","));
-"#), vec!["0,1,2"]);
+"#
+        ),
+        vec!["0,1,2"]
+    );
 }
 
 // ===================================================================
@@ -296,11 +400,16 @@ console.log(keys.join(","));
 
 #[test]
 fn array_values_iterator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [100, 200, 300];
 const vals = [...arr.values()];
 console.log(vals.join(","));
-"#), vec!["100,200,300"]);
+"#
+        ),
+        vec!["100,200,300"]
+    );
 }
 
 // ===================================================================
@@ -309,14 +418,19 @@ console.log(vals.join(","));
 
 #[test]
 fn array_entries_iterator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = ["a", "b", "c"];
 const pairs = [];
 for (const [i, v] of arr.entries()) {
     pairs.push(i + "=" + v);
 }
 console.log(pairs.join(","));
-"#), vec!["0=a,1=b,2=c"]);
+"#
+        ),
+        vec!["0=a,1=b,2=c"]
+    );
 }
 
 // ===================================================================
@@ -325,12 +439,17 @@ console.log(pairs.join(","));
 
 #[test]
 fn array_indexof_with_fromindex() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 2, 3, 2, 1];
 console.log(arr.indexOf(2));
 console.log(arr.indexOf(2, 2));
 console.log(arr.indexOf(2, 4));
-"#), vec!["1", "3", "-1"]);
+"#
+        ),
+        vec!["1", "3", "-1"]
+    );
 }
 
 // ===================================================================
@@ -339,12 +458,17 @@ console.log(arr.indexOf(2, 4));
 
 #[test]
 fn array_lastindexof_with_fromindex() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 2, 3, 2, 1];
 console.log(arr.lastIndexOf(2));
 console.log(arr.lastIndexOf(2, 2));
 console.log(arr.lastIndexOf(9));
-"#), vec!["3", "1", "-1"]);
+"#
+        ),
+        vec!["3", "1", "-1"]
+    );
 }
 
 // ===================================================================
@@ -353,14 +477,19 @@ console.log(arr.lastIndexOf(9));
 
 #[test]
 fn array_tosorted_map_filter_chain() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const nums = [5, 2, 8, 1, 9, 3];
 const result = nums
     .toSorted((a, b) => a - b)
     .filter(x => x > 3)
     .map(x => x * 10);
 console.log(result.join(","));
-"#), vec!["50,80,90"]);
+"#
+        ),
+        vec!["50,80,90"]
+    );
 }
 
 // ===================================================================
@@ -369,14 +498,19 @@ console.log(result.join(","));
 
 #[test]
 fn array_spread_shallow_copy() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const orig = [1, 2, 3];
 const copy = [...orig];
 copy.push(4);
 console.log(orig.join(","));
 console.log(copy.join(","));
 console.log(orig === copy);
-"#), vec!["1,2,3", "1,2,3,4", "false"]);
+"#
+        ),
+        vec!["1,2,3", "1,2,3,4", "false"]
+    );
 }
 
 // ===================================================================
@@ -385,11 +519,16 @@ console.log(orig === copy);
 
 #[test]
 fn nested_array_at_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const matrix = [[1, 2], [3, 4], [5, 6]];
 console.log(matrix.at(0).at(-1));
 console.log(matrix.at(-1).at(0));
-"#), vec!["2", "5"]);
+"#
+        ),
+        vec!["2", "5"]
+    );
 }
 
 // ===================================================================
@@ -398,11 +537,16 @@ console.log(matrix.at(-1).at(0));
 
 #[test]
 fn array_findindex_returns_negative_one_when_not_found() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = [1, 2, 3, 4, 5];
 console.log(arr.findIndex(x => x > 100));
 console.log(arr.findIndex(x => x === 0));
-"#), vec!["-1", "-1"]);
+"#
+        ),
+        vec!["-1", "-1"]
+    );
 }
 
 // ===================================================================
@@ -411,9 +555,14 @@ console.log(arr.findIndex(x => x === 0));
 
 #[test]
 fn array_flatmap_with_index_parameter() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const arr = ["a", "b", "c"];
 const result = arr.flatMap((val, idx) => [idx, val]);
 console.log(result.join(","));
-"#), vec!["0,a,1,b,2,c"]);
+"#
+        ),
+        vec!["0,a,1,b,2,c"]
+    );
 }

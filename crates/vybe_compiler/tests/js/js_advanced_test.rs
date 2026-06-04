@@ -145,11 +145,13 @@ fn test_nested_if() {
 
 #[test]
 fn test_multiple_outputs() {
-    let lines = run_js(r#"
+    let lines = run_js(
+        r#"
         console.log("line 1");
         console.log("line 2");
         console.log("line 3");
-    "#);
+    "#,
+    );
     assert_eq!(lines, vec!["line 1", "line 2", "line 3"]);
 }
 
@@ -187,7 +189,10 @@ fn test_empty_function() {
 
 #[test]
 fn test_return_without_value() {
-    assert_eq!(run_js_one("function f() { return; } console.log(f())"), "null");
+    assert_eq!(
+        run_js_one("function f() { return; } console.log(f())"),
+        "null"
+    );
 }
 
 #[test]

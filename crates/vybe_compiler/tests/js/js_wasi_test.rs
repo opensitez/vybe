@@ -265,12 +265,18 @@ fn test_btoa_atob() {
 
 #[test]
 fn test_encode_uri_component() {
-    assert_eq!(run_js_one(r#"console.log(encodeURIComponent("hello world"))"#), "hello%20world");
+    assert_eq!(
+        run_js_one(r#"console.log(encodeURIComponent("hello world"))"#),
+        "hello%20world"
+    );
 }
 
 #[test]
 fn test_decode_uri_component() {
-    assert_eq!(run_js_one(r#"console.log(decodeURIComponent("hello%20world"))"#), "hello world");
+    assert_eq!(
+        run_js_one(r#"console.log(decodeURIComponent("hello%20world"))"#),
+        "hello world"
+    );
 }
 
 // ============================================================

@@ -167,7 +167,7 @@ fn test_strict_vs_loose_equality() {
     assert_eq!(run_js_one("console.log(1 === 1)"), "true");
     assert_eq!(run_js_one("console.log(1 === 2)"), "false");
     assert_eq!(run_js_one(r#"console.log("1" === 1)"#), "false"); // strict: different types
-    assert_eq!(run_js_one(r#"console.log("1" == 1)"#), "true");   // loose: string→number coercion
+    assert_eq!(run_js_one(r#"console.log("1" == 1)"#), "true"); // loose: string→number coercion
 }
 
 // ============================================================
@@ -196,7 +196,10 @@ fn test_for_of_with_template() {
         }
     "#;
     let lines = run_js(code);
-    assert_eq!(lines, vec!["I like apple", "I like banana", "I like cherry"]);
+    assert_eq!(
+        lines,
+        vec!["I like apple", "I like banana", "I like cherry"]
+    );
 }
 
 #[test]
@@ -225,18 +228,27 @@ fn test_optional_chaining_non_null() {
 #[test]
 fn test_optional_chaining_null() {
     // ECMA-262 §13.3.9.2: optional chain on null short-circuits to undefined.
-    assert_eq!(run_js_one(r#"let o = null; console.log(o?.x)"#), "undefined");
+    assert_eq!(
+        run_js_one(r#"let o = null; console.log(o?.x)"#),
+        "undefined"
+    );
 }
 
 #[test]
 fn test_optional_chaining_nested() {
-    assert_eq!(run_js_one(r#"let o = { a: { b: 99 } }; console.log(o?.a?.b)"#), "99");
+    assert_eq!(
+        run_js_one(r#"let o = { a: { b: 99 } }; console.log(o?.a?.b)"#),
+        "99"
+    );
 }
 
 #[test]
 fn test_optional_chaining_null_nested() {
     // ECMA-262 §13.3.9.2: optional chain on null short-circuits to undefined.
-    assert_eq!(run_js_one(r#"let o = { a: null }; console.log(o?.a?.b)"#), "undefined");
+    assert_eq!(
+        run_js_one(r#"let o = { a: null }; console.log(o?.a?.b)"#),
+        "undefined"
+    );
 }
 
 // ============================================================
@@ -554,8 +566,14 @@ fn test_destructure_swap() {
 
 #[test]
 fn test_regex_test() {
-    assert_eq!(run_js_one(r#"console.log(RegExp.test("\\d+", "abc123"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log(RegExp.test("\\d+", "abc"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log(RegExp.test("\\d+", "abc123"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log(RegExp.test("\\d+", "abc"))"#),
+        "false"
+    );
 }
 
 // ECMA-262 regex APIs are receiver-first per the spec
@@ -852,7 +870,10 @@ fn test_char_code_at() {
 
 #[test]
 fn test_from_char_code() {
-    assert_eq!(run_js_one(r#"console.log(String.fromCharCode(72, 105))"#), "Hi");
+    assert_eq!(
+        run_js_one(r#"console.log(String.fromCharCode(72, 105))"#),
+        "Hi"
+    );
 }
 
 #[test]
@@ -872,7 +893,10 @@ fn test_pad_end() {
 
 #[test]
 fn test_replace_all() {
-    assert_eq!(run_js_one(r#"console.log("aXbXc".replaceAll("X", "-"))"#), "a-b-c");
+    assert_eq!(
+        run_js_one(r#"console.log("aXbXc".replaceAll("X", "-"))"#),
+        "a-b-c"
+    );
 }
 
 // ============================================================
@@ -1057,7 +1081,10 @@ fn test_typeof_boolean() {
 
 #[test]
 fn test_typeof_function() {
-    assert_eq!(run_js_one(r#"function f() {} console.log(typeof f)"#), "function");
+    assert_eq!(
+        run_js_one(r#"function f() {} console.log(typeof f)"#),
+        "function"
+    );
 }
 
 #[test]
@@ -1182,7 +1209,7 @@ fn test_set_timeout_async() {
         console.log(log);
     "#;
     let lines = run_js(code);
-    assert_eq!(lines[0], "sync ");        // sync code runs first
+    assert_eq!(lines[0], "sync "); // sync code runs first
     assert_eq!(lines[1], "sync timer done"); // then timer callback fires
 }
 
@@ -1212,8 +1239,8 @@ fn test_settimeout_zero() {
         console.log(result);
     "#;
     let lines = run_js(code);
-    assert_eq!(lines[0], "before");  // sync runs first
-    assert_eq!(lines[1], "after");   // then timer
+    assert_eq!(lines[0], "before"); // sync runs first
+    assert_eq!(lines[1], "after"); // then timer
 }
 
 #[test]
@@ -1401,7 +1428,10 @@ fn test_mixed_sync_async() {
         log.push("4-after-await");
         console.log(log.join(" | "));
     "#;
-    assert_eq!(run_js_one(code), "1-sync | 2-async-start | 3-async-end | 4-after-await");
+    assert_eq!(
+        run_js_one(code),
+        "1-sync | 2-async-start | 3-async-end | 4-after-await"
+    );
 }
 
 // ============================================================

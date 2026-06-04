@@ -65,8 +65,11 @@ fn test_a04_method_stored_in_variable() {
     "#;
     // In non-strict JS, `this` would be globalThis, so this.x is undefined.
     let result = run_js_one(code);
-    assert!(result == "undefined" || result == "null",
-        "expected undefined or null, got: {}", result);
+    assert!(
+        result == "undefined" || result == "null",
+        "expected undefined or null, got: {}",
+        result
+    );
 }
 
 // A5. Callback function passed to another function
@@ -352,13 +355,19 @@ fn test_c24_push_pop_shift() {
 // C25. map with arrow function
 #[test]
 fn test_c25_map_with_arrow() {
-    assert_eq!(run_js_one("console.log([1, 2, 3].map(x => x * x))"), "1,4,9");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3].map(x => x * x))"),
+        "1,4,9"
+    );
 }
 
 // C26. filter with arrow function
 #[test]
 fn test_c26_filter_with_arrow() {
-    assert_eq!(run_js_one("console.log([1, 2, 3, 4, 5, 6].filter(x => x % 2 === 0))"), "2,4,6");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3, 4, 5, 6].filter(x => x % 2 === 0))"),
+        "2,4,6"
+    );
 }
 
 // C27. reduce accumulator
@@ -384,24 +393,31 @@ fn test_c28_find_returns_first_match() {
 // C29. some/every with edge cases
 #[test]
 fn test_c29_some_every_edge_cases() {
-    let lines = run_js(r#"
+    let lines = run_js(
+        r#"
         console.log([1, 2, 3].some(x => x > 2));
         console.log([1, 2, 3].some(x => x > 10));
         console.log([2, 4, 6].every(x => x % 2 === 0));
         console.log([2, 3, 6].every(x => x % 2 === 0));
         console.log([].some(x => true));
         console.log([].every(x => false));
-    "#);
-    assert_eq!(lines, vec!["true", "false", "true", "false", "false", "true"]);
+    "#,
+    );
+    assert_eq!(
+        lines,
+        vec!["true", "false", "true", "false", "false", "true"]
+    );
 }
 
 // C30. findIndex
 #[test]
 fn test_c30_find_index() {
-    let lines = run_js(r#"
+    let lines = run_js(
+        r#"
         console.log([10, 20, 30].findIndex(x => x === 20));
         console.log([10, 20, 30].findIndex(x => x === 99));
-    "#);
+    "#,
+    );
     assert_eq!(lines, vec!["1", "-1"]);
 }
 
@@ -616,8 +632,14 @@ fn test_e44_invoke_global_function() {
         function double(x) { return x * 2; }
     "#;
     let (mut vm, _output) = run_js_vm(code);
-    let func = vm.globals.get("double").cloned().expect("double not in globals");
-    let result = vm.invoke(&func, &[vybe_bytecode::Value::F64(21.0)]).expect("invoke failed");
+    let func = vm
+        .globals
+        .get("double")
+        .cloned()
+        .expect("double not in globals");
+    let result = vm
+        .invoke(&func, &[vybe_bytecode::Value::F64(21.0)])
+        .expect("invoke failed");
     assert_eq!(format!("{}", result), "42");
 }
 
@@ -629,11 +651,16 @@ fn test_e45_invoke_with_multiple_args() {
     "#;
     let (mut vm, _output) = run_js_vm(code);
     let func = vm.globals.get("add").cloned().expect("add not in globals");
-    let result = vm.invoke(&func, &[
-        vybe_bytecode::Value::F64(10.0),
-        vybe_bytecode::Value::F64(20.0),
-        vybe_bytecode::Value::F64(30.0),
-    ]).expect("invoke failed");
+    let result = vm
+        .invoke(
+            &func,
+            &[
+                vybe_bytecode::Value::F64(10.0),
+                vybe_bytecode::Value::F64(20.0),
+                vybe_bytecode::Value::F64(30.0),
+            ],
+        )
+        .expect("invoke failed");
     assert_eq!(format!("{}", result), "60");
 }
 
@@ -653,7 +680,11 @@ fn test_e46_invoke_method_on_global_object() {
     // Extract the method from the object
     if let vybe_bytecode::Value::Object(ref rc) = obj {
         let borrowed = rc.lock().unwrap();
-        let method = borrowed.properties.get("getX").cloned().expect("getX not on obj");
+        let method = borrowed
+            .properties
+            .get("getX")
+            .cloned()
+            .expect("getX not on obj");
         // Invoke as standalone function (this may not bind correctly without method_call)
         let result = vm.invoke(&method, &[]);
         // Just check it doesn't crash; this binding for detached methods is a known issue
@@ -672,8 +703,14 @@ fn test_e47_invoke_returns_correct_value() {
         }
     "#;
     let (mut vm, _output) = run_js_vm(code);
-    let func = vm.globals.get("makeGreeting").cloned().expect("fn not found");
-    let result = vm.invoke(&func, &[vybe_bytecode::Value::String("World".into())]).expect("invoke failed");
+    let func = vm
+        .globals
+        .get("makeGreeting")
+        .cloned()
+        .expect("fn not found");
+    let result = vm
+        .invoke(&func, &[vybe_bytecode::Value::String("World".into())])
+        .expect("invoke failed");
     assert_eq!(format!("{}", result), "Hello World!");
 }
 
@@ -718,7 +755,11 @@ fn test_e49_invoke_class_method_with_this() {
     let adder = vm.globals.get("adder").cloned().expect("adder not found");
     if let vybe_bytecode::Value::Object(ref rc) = adder {
         let borrowed = rc.lock().unwrap();
-        let method = borrowed.properties.get("add").cloned().expect("add not found");
+        let method = borrowed
+            .properties
+            .get("add")
+            .cloned()
+            .expect("add not found");
         // Sanity: the `add` slot resolves to a callable.
         assert!(
             matches!(&method, vybe_bytecode::Value::Object(o)
@@ -743,9 +784,18 @@ fn test_e50_invoke_closure_modifies_captured() {
         function getState() { return state; }
     "#;
     let (mut vm, _output) = run_js_vm(code);
-    let set_fn = vm.globals.get("setState").cloned().expect("setState not found");
-    let get_fn = vm.globals.get("getState").cloned().expect("getState not found");
-    vm.invoke(&set_fn, &[vybe_bytecode::Value::F64(42.0)]).expect("set failed");
+    let set_fn = vm
+        .globals
+        .get("setState")
+        .cloned()
+        .expect("setState not found");
+    let get_fn = vm
+        .globals
+        .get("getState")
+        .cloned()
+        .expect("getState not found");
+    vm.invoke(&set_fn, &[vybe_bytecode::Value::F64(42.0)])
+        .expect("set failed");
     let result = vm.invoke(&get_fn, &[]).expect("get failed");
     assert_eq!(format!("{}", result), "42");
 }
@@ -762,11 +812,20 @@ fn test_e51_invoke_after_class_definition() {
         }
     "#;
     let (mut vm, _output) = run_js_vm(code);
-    let func = vm.globals.get("compute").cloned().expect("compute not found");
-    let result = vm.invoke(&func, &[
-        vybe_bytecode::Value::F64(6.0),
-        vybe_bytecode::Value::F64(7.0),
-    ]).expect("invoke failed");
+    let func = vm
+        .globals
+        .get("compute")
+        .cloned()
+        .expect("compute not found");
+    let result = vm
+        .invoke(
+            &func,
+            &[
+                vybe_bytecode::Value::F64(6.0),
+                vybe_bytecode::Value::F64(7.0),
+            ],
+        )
+        .expect("invoke failed");
     assert_eq!(format!("{}", result), "42");
 }
 
@@ -984,10 +1043,12 @@ fn test_g68_empty_array_is_truthy() {
 // G69. 0 is falsy, "0" is truthy
 #[test]
 fn test_g69_zero_falsy_string_zero_truthy() {
-    let lines = run_js(r#"
+    let lines = run_js(
+        r#"
         console.log(0 ? "truthy" : "falsy");
         console.log("0" ? "truthy" : "falsy");
-    "#);
+    "#,
+    );
     assert_eq!(lines, vec!["falsy", "truthy"]);
 }
 
@@ -1061,7 +1122,8 @@ fn test_h73_switch_fallthrough() {
 // H74. try/catch/finally — finally always runs
 #[test]
 fn test_h74_try_catch_finally() {
-    let lines = run_js(r#"
+    let lines = run_js(
+        r#"
         let log = "";
         try {
             log += "try ";
@@ -1082,7 +1144,8 @@ fn test_h74_try_catch_finally() {
             log2 += "finally";
         }
         console.log(log2);
-    "#);
+    "#,
+    );
     assert_eq!(lines[0], "try catch(oops) finally");
     assert_eq!(lines[1], "try finally");
 }

@@ -1,10 +1,11 @@
 /// Class private class fields — #field, #method, brand checking, accessor
-
 use super::helpers::run_js;
 
 #[test]
 fn private_field_inaccessible_outside() {
-    assert_eq!(run_js(r##"
+    assert_eq!(
+        run_js(
+            r##"
 class Wallet {
     #balance = 0;
     deposit(n) { this.#balance += n; }
@@ -15,12 +16,17 @@ w.deposit(100);
 console.log(w.balance);
 const key = "#" + "balance";
 console.log(w[key] === undefined);
-"##), vec!["100", "true"]);
+"##
+        ),
+        vec!["100", "true"]
+    );
 }
 
 #[test]
 fn private_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Validator {
     #validate(x) { return x > 0; }
     check(x) { return this.#validate(x) ? "valid" : "invalid"; }
@@ -28,12 +34,17 @@ class Validator {
 const v = new Validator();
 console.log(v.check(5));
 console.log(v.check(-1));
-"#), vec!["valid", "invalid"]);
+"#
+        ),
+        vec!["valid", "invalid"]
+    );
 }
 
 #[test]
 fn private_static_field() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class IdGenerator {
     static #nextId = 1;
     static generate() { return IdGenerator.#nextId++; }
@@ -41,12 +52,17 @@ class IdGenerator {
 console.log(IdGenerator.generate());
 console.log(IdGenerator.generate());
 console.log(IdGenerator.generate());
-"#), vec!["1", "2", "3"]);
+"#
+        ),
+        vec!["1", "2", "3"]
+    );
 }
 
 #[test]
 fn private_field_per_instance() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Counter {
     #count = 0;
     inc() { this.#count++; }
@@ -58,12 +74,17 @@ a.inc(); a.inc();
 b.inc();
 console.log(a.get());
 console.log(b.get());
-"#), vec!["2", "1"]);
+"#
+        ),
+        vec!["2", "1"]
+    );
 }
 
 #[test]
 fn private_field_in_operator_brand_check() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Foo {
     #x;
     static isFoo(obj) { return #x in obj; }
@@ -71,12 +92,17 @@ class Foo {
 const f = new Foo();
 console.log(Foo.isFoo(f));
 console.log(Foo.isFoo({}));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 #[test]
 fn private_accessor_auto_accessor() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Temperature {
     #celsius = 0;
     get celsius() { return this.#celsius; }
@@ -87,12 +113,17 @@ const t = new Temperature();
 t.celsius = 100;
 console.log(t.celsius);
 console.log(t.fahrenheit);
-"#), vec!["100", "212"]);
+"#
+        ),
+        vec!["100", "212"]
+    );
 }
 
 #[test]
 fn private_fields_not_inherited() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Parent {
     #x = 42;
     getX() { return this.#x; }
@@ -103,12 +134,17 @@ class Child extends Parent {
 }
 const c = new Child();
 console.log(c.getFromParent());
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 #[test]
 fn private_method_calling_private_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Parser {
     #tokenize(str) { return str.split(" "); }
     #process(tokens) { return tokens.map(t => t.toUpperCase()); }
@@ -116,12 +152,17 @@ class Parser {
 }
 const p = new Parser();
 console.log(p.parse("hello world foo"));
-"#), vec!["HELLO,WORLD,FOO"]);
+"#
+        ),
+        vec!["HELLO,WORLD,FOO"]
+    );
 }
 
 #[test]
 fn static_private_with_instance_methods() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class EventLogger {
     static #log = [];
     static getLog() { return [...EventLogger.#log]; }
@@ -132,5 +173,8 @@ logger.log("start");
 logger.log("process");
 logger.log("end");
 console.log(EventLogger.getLog().join(","));
-"#), vec!["start,process,end"]);
+"#
+        ),
+        vec!["start,process,end"]
+    );
 }

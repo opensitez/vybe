@@ -167,12 +167,18 @@ fn test_labeled_continue_outer() {
 
 #[test]
 fn test_array_some_true() {
-    assert_eq!(run_js_one("console.log([1, 2, 3].some(x => x > 2))"), "true");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3].some(x => x > 2))"),
+        "true"
+    );
 }
 
 #[test]
 fn test_array_some_false() {
-    assert_eq!(run_js_one("console.log([1, 2, 3].some(x => x > 5))"), "false");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3].some(x => x > 5))"),
+        "false"
+    );
 }
 
 #[test]
@@ -182,12 +188,18 @@ fn test_array_some_empty() {
 
 #[test]
 fn test_array_every_true() {
-    assert_eq!(run_js_one("console.log([2, 4, 6].every(x => x % 2 === 0))"), "true");
+    assert_eq!(
+        run_js_one("console.log([2, 4, 6].every(x => x % 2 === 0))"),
+        "true"
+    );
 }
 
 #[test]
 fn test_array_every_false() {
-    assert_eq!(run_js_one("console.log([2, 3, 6].every(x => x % 2 === 0))"), "false");
+    assert_eq!(
+        run_js_one("console.log([2, 3, 6].every(x => x % 2 === 0))"),
+        "false"
+    );
 }
 
 #[test]
@@ -197,12 +209,18 @@ fn test_array_every_empty() {
 
 #[test]
 fn test_array_findindex_found() {
-    assert_eq!(run_js_one("console.log([10, 20, 30].findIndex(x => x === 20))"), "1");
+    assert_eq!(
+        run_js_one("console.log([10, 20, 30].findIndex(x => x === 20))"),
+        "1"
+    );
 }
 
 #[test]
 fn test_array_findindex_not_found() {
-    assert_eq!(run_js_one("console.log([10, 20, 30].findIndex(x => x === 99))"), "-1");
+    assert_eq!(
+        run_js_one("console.log([10, 20, 30].findIndex(x => x === 99))"),
+        "-1"
+    );
 }
 
 // ============================================================
@@ -334,12 +352,18 @@ fn test_array_isarray_true() {
 
 #[test]
 fn test_array_isarray_false_object() {
-    assert_eq!(run_js_one("console.log(Array.isArray({ length: 3 }))"), "false");
+    assert_eq!(
+        run_js_one("console.log(Array.isArray({ length: 3 }))"),
+        "false"
+    );
 }
 
 #[test]
 fn test_array_isarray_false_string() {
-    assert_eq!(run_js_one(r#"console.log(Array.isArray("hello"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log(Array.isArray("hello"))"#),
+        "false"
+    );
 }
 
 #[test]
@@ -551,8 +575,11 @@ fn test_optional_chaining_null_prop() {
         console.log(obj?.a);
     "#;
     let result = run_js_one(code);
-    assert!(result == "undefined" || result == "null",
-        "expected undefined or null, got: {}", result);
+    assert!(
+        result == "undefined" || result == "null",
+        "expected undefined or null, got: {}",
+        result
+    );
 }
 
 #[test]
@@ -802,8 +829,14 @@ fn test_string_split() {
 
 #[test]
 fn test_string_includes() {
-    assert_eq!(run_js_one(r#"console.log("hello world".includes("world"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".includes("xyz"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".includes("world"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".includes("xyz"))"#),
+        "false"
+    );
 }
 
 #[test]
@@ -814,19 +847,34 @@ fn test_string_index_of() {
 
 #[test]
 fn test_string_starts_with() {
-    assert_eq!(run_js_one(r#"console.log("hello".startsWith("hel"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".startsWith("xyz"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log("hello".startsWith("hel"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".startsWith("xyz"))"#),
+        "false"
+    );
 }
 
 #[test]
 fn test_string_ends_with() {
-    assert_eq!(run_js_one(r#"console.log("hello".endsWith("llo"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".endsWith("xyz"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log("hello".endsWith("llo"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".endsWith("xyz"))"#),
+        "false"
+    );
 }
 
 #[test]
 fn test_string_replace() {
-    assert_eq!(run_js_one(r#"console.log("hello world".replace("world", "JS"))"#), "hello JS");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".replace("world", "JS"))"#),
+        "hello JS"
+    );
 }
 
 #[test]
@@ -890,17 +938,26 @@ fn test_array_shift() {
 
 #[test]
 fn test_array_map() {
-    assert_eq!(run_js_one("console.log([1, 2, 3].map(x => x * 2))"), "2,4,6");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3].map(x => x * 2))"),
+        "2,4,6"
+    );
 }
 
 #[test]
 fn test_array_filter() {
-    assert_eq!(run_js_one("console.log([1, 2, 3, 4, 5].filter(x => x % 2 === 0))"), "2,4");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3, 4, 5].filter(x => x % 2 === 0))"),
+        "2,4"
+    );
 }
 
 #[test]
 fn test_array_reduce() {
-    assert_eq!(run_js_one("console.log([1, 2, 3, 4].reduce((a, b) => a + b, 0))"), "10");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3, 4].reduce((a, b) => a + b, 0))"),
+        "10"
+    );
 }
 
 #[test]
@@ -910,7 +967,10 @@ fn test_array_find() {
 
 #[test]
 fn test_array_sort() {
-    assert_eq!(run_js_one("console.log([3, 1, 2].sort((a, b) => a - b))"), "1,2,3");
+    assert_eq!(
+        run_js_one("console.log([3, 1, 2].sort((a, b) => a - b))"),
+        "1,2,3"
+    );
 }
 
 #[test]
@@ -925,7 +985,10 @@ fn test_array_concat() {
 
 #[test]
 fn test_array_slice() {
-    assert_eq!(run_js_one("console.log([1, 2, 3, 4, 5].slice(1, 4))"), "2,3,4");
+    assert_eq!(
+        run_js_one("console.log([1, 2, 3, 4, 5].slice(1, 4))"),
+        "2,3,4"
+    );
 }
 
 #[test]
@@ -941,7 +1004,10 @@ fn test_array_fill() {
 
 #[test]
 fn test_array_flat() {
-    assert_eq!(run_js_one("console.log([1, [2, 3], [4]].flat())"), "1,2,3,4");
+    assert_eq!(
+        run_js_one("console.log([1, [2, 3], [4]].flat())"),
+        "1,2,3,4"
+    );
 }
 
 #[test]
@@ -1090,7 +1156,10 @@ fn test_math_ceil() {
 #[test]
 fn test_math_sqrt() {
     assert_eq!(run_js_one("console.log(Math.sqrt(16))"), "4");
-    assert_eq!(run_js_one("console.log(Math.sqrt(2))"), "1.4142135623730951");
+    assert_eq!(
+        run_js_one("console.log(Math.sqrt(2))"),
+        "1.4142135623730951"
+    );
 }
 
 #[test]
@@ -1120,4 +1189,3 @@ fn test_math_pi() {
     let result = run_js_one("console.log(Math.PI)");
     assert!(result.starts_with("3.14159"));
 }
-

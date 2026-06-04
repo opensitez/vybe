@@ -1,10 +1,11 @@
 /// Generator state machines — traffic lights, parsers, coroutines, backtracking
-
 use super::helpers::run_js;
 
 #[test]
 fn traffic_light_state_machine() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* trafficLight() {
     while (true) {
         yield "red";
@@ -16,12 +17,17 @@ const light = trafficLight();
 const states = [];
 for (let i = 0; i < 7; i++) states.push(light.next().value);
 console.log(states.join(","));
-"#), vec!["red,green,yellow,red,green,yellow,red"]);
+"#
+        ),
+        vec!["red,green,yellow,red,green,yellow,red"]
+    );
 }
 
 #[test]
 fn csv_parser_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* parseCSV(text) {
     const lines = text.split("\n").filter(Boolean);
     for (const line of lines) {
@@ -33,12 +39,17 @@ const rows = [...parseCSV(csv)];
 console.log(rows.length);
 console.log(rows[0][0]);
 console.log(rows[1][2]);
-"#), vec!["3", "Alice", "Designer"]);
+"#
+        ),
+        vec!["3", "Alice", "Designer"]
+    );
 }
 
 #[test]
 fn token_lexer_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* tokenize(expr) {
     const re = /\d+|[+\-*/()]/g;
     let m;
@@ -48,12 +59,17 @@ function* tokenize(expr) {
 }
 const tokens = [...tokenize("1 + 2 * (3 - 4)")];
 console.log(tokens.join(","));
-"#), vec!["1,+,2,*,(,3,-,4,)"]);
+"#
+        ),
+        vec!["1,+,2,*,(,3,-,4,)"]
+    );
 }
 
 #[test]
 fn generator_as_coroutine_send() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* counter(start = 0) {
     let n = start;
     while (true) {
@@ -68,12 +84,17 @@ console.log(gen.next().value);  // 11
 console.log(gen.next().value);  // 12
 console.log(gen.next(true).value); // reset to 10
 console.log(gen.next().value);  // 11
-"#), vec!["11", "12", "10", "11"]);
+"#
+        ),
+        vec!["11", "12", "10", "11"]
+    );
 }
 
 #[test]
 fn round_robin_scheduler() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* roundRobin(tasks) {
     const generators = tasks.map(t => t());
     while (generators.length > 0) {
@@ -92,12 +113,17 @@ const log = [...roundRobin([
     () => task("B", 2),
 ])];
 console.log(log.join(","));
-"#), vec!["B:0,A:0,B:1,A:1"]);
+"#
+        ),
+        vec!["B:0,A:0,B:1,A:1"]
+    );
 }
 
 #[test]
 fn depth_first_search_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* dfs(graph, start, visited = new Set()) {
     if (visited.has(start)) return;
     visited.add(start);
@@ -115,12 +141,17 @@ const graph = {
 };
 const order = [...dfs(graph, "A")];
 console.log(order.join(","));
-"#), vec!["A,B,D,C,E"]);
+"#
+        ),
+        vec!["A,B,D,C,E"]
+    );
 }
 
 #[test]
 fn generator_as_observable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* events(data) {
     for (const item of data) {
         if (item > 0) yield { type: "positive", value: item };
@@ -131,5 +162,8 @@ function* events(data) {
 const evts = [...events([1, -2, 0, 3])];
 console.log(evts.map(e => e.type).join(","));
 console.log(evts.map(e => e.value).join(","));
-"#), vec!["positive,negative,zero,positive", "1,-2,0,3"]);
+"#
+        ),
+        vec!["positive,negative,zero,positive", "1,-2,0,3"]
+    );
 }

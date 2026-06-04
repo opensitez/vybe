@@ -1,10 +1,11 @@
 /// Error handling patterns — custom error hierarchies, typed catch, retry, validation
-
 use super::helpers::run_js;
 
 #[test]
 fn validation_error_with_field() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class ValidationError extends Error {
     constructor(field, message) {
         super(message);
@@ -24,12 +25,17 @@ try {
     console.log(e.field);
     console.log(e.message);
 }
-"#), vec!["true", "age", "must be non-negative"]);
+"#
+        ),
+        vec!["true", "age", "must be non-negative"]
+    );
 }
 
 #[test]
 fn retry_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function withRetry(fn, maxAttempts) {
     let lastError;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -52,12 +58,17 @@ async function main() {
     console.log(callCount);
 }
 main();
-"#), vec!["success", "3"]);
+"#
+        ),
+        vec!["success", "3"]
+    );
 }
 
 #[test]
 fn error_boundary_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function safe(fn) {
     return function(...args) {
         try {
@@ -77,12 +88,17 @@ console.log(r1.value);
 console.log(r1.error);
 console.log(r2.value);
 console.log(r2.error.message);
-"#), vec!["5", "null", "null", "division by zero"]);
+"#
+        ),
+        vec!["5", "null", "null", "division by zero"]
+    );
 }
 
 #[test]
 fn error_chain_via_cause() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function fetchData() {
     throw new TypeError("network error");
 }
@@ -100,12 +116,17 @@ try {
     console.log(e.cause instanceof TypeError);
     console.log(e.cause.message);
 }
-"#), vec!["Failed to load user 42", "true", "network error"]);
+"#
+        ),
+        vec!["Failed to load user 42", "true", "network error"]
+    );
 }
 
 #[test]
 fn multiple_catch_types() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class NetworkError extends Error { constructor(m) { super(m); this.name = "NetworkError"; } }
 class TimeoutError extends NetworkError { constructor(m) { super(m); this.name = "TimeoutError"; } }
 function handle(err) {
@@ -117,12 +138,17 @@ function handle(err) {
 console.log(handle(new TimeoutError("slow")));
 console.log(handle(new NetworkError("down")));
 console.log(handle(new Error("oops")));
-"#), vec!["timeout", "network", "error"]);
+"#
+        ),
+        vec!["timeout", "network", "error"]
+    );
 }
 
 #[test]
 fn finally_cleanup_resource() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const resources = [];
 function openResource(id) {
     resources.push("open:" + id);
@@ -140,12 +166,17 @@ function process(id) {
 try { process(1); } catch {}
 try { process(2); } catch {}
 console.log(resources.join(","));
-"#), vec!["open:1,close:1,open:2,close:2"]);
+"#
+        ),
+        vec!["open:1,close:1,open:2,close:2"]
+    );
 }
 
 #[test]
 fn unhandled_rejection_can_be_caught() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const results = await Promise.allSettled([
         Promise.reject(new Error("r1")),
@@ -156,5 +187,8 @@ async function main() {
     console.log(errors.join(","));
 }
 main();
-"#), vec!["r1,r3"]);
+"#
+        ),
+        vec!["r1,r3"]
+    );
 }

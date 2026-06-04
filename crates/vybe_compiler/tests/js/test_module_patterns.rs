@@ -1,10 +1,11 @@
 /// Module-like patterns — revealing module, namespace, factory, singleton
-
 use super::helpers::run_js;
 
 #[test]
 fn revealing_module_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const BankAccount = (() => {
     let balance = 0;
     const deposit = (n) => { balance += n; };
@@ -16,12 +17,17 @@ BankAccount.deposit(100);
 BankAccount.deposit(50);
 BankAccount.withdraw(30);
 console.log(BankAccount.getBalance());
-"#), vec!["120"]);
+"#
+        ),
+        vec!["120"]
+    );
 }
 
 #[test]
 fn namespace_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const App = {
     utils: {
         add: (a, b) => a + b,
@@ -38,12 +44,17 @@ const App = {
 console.log(App.utils.add(3, 4));
 console.log(App.init());
 console.log(App.config.debug);
-"#), vec!["7", "App v1.0 initialized", "false"]);
+"#
+        ),
+        vec!["7", "App v1.0 initialized", "false"]
+    );
 }
 
 #[test]
 fn factory_function_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function createUser(name, role = "user") {
     const permissions = role === "admin" ? ["read", "write", "delete"] : ["read"];
     return {
@@ -58,12 +69,17 @@ const bob = createUser("Bob");
 console.log(alice.hasPermission("delete"));
 console.log(bob.hasPermission("delete"));
 console.log(String(alice));
-"#), vec!["true", "false", "Alice (admin)"]);
+"#
+        ),
+        vec!["true", "false", "Alice (admin)"]
+    );
 }
 
 #[test]
 fn plugin_system_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class PluginSystem {
     #plugins = new Map();
     register(name, plugin) { this.#plugins.set(name, plugin); }
@@ -78,12 +94,17 @@ system.register("double", x => x * 2);
 system.register("greet", name => `Hello, ${name}!`);
 console.log(system.run("double", 21));
 console.log(system.run("greet", "World"));
-"#), vec!["42", "Hello, World!"]);
+"#
+        ),
+        vec!["42", "Hello, World!"]
+    );
 }
 
 #[test]
 fn dependency_injection_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Logger {
     log(msg) { return "[LOG] " + msg; }
 }
@@ -97,12 +118,17 @@ class UserService {
 const logger = new Logger();
 const service = new UserService(logger);
 console.log(service.createUser("Alice"));
-"#), vec!["[LOG] Creating user: Alice"]);
+"#
+        ),
+        vec!["[LOG] Creating user: Alice"]
+    );
 }
 
 #[test]
 fn module_with_state() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const Counter = (() => {
     let count = 0;
     return {
@@ -119,12 +145,17 @@ Counter.dec();
 console.log(Counter.value());
 Counter.reset();
 console.log(Counter.value());
-"#), vec!["2", "0"]);
+"#
+        ),
+        vec!["2", "0"]
+    );
 }
 
 #[test]
 fn lazy_initialization_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class LazyInit {
     #instance = null;
     #factory;
@@ -144,12 +175,17 @@ console.log(created);     // now created
 const v2 = lazy.get();
 console.log(created);     // not created again
 console.log(v === v2);    // same instance
-"#), vec!["0", "1", "1", "true"]);
+"#
+        ),
+        vec!["0", "1", "1", "true"]
+    );
 }
 
 #[test]
 fn memoize_with_max_size() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function lruMemoize(fn, maxSize = 3) {
     const cache = new Map();
     return function(key) {
@@ -172,5 +208,8 @@ const sq = lruMemoize(x => { calls++; return x * x; }, 2);
 sq(2); sq(3); sq(2); sq(4); // sq(4) evicts sq(3)
 sq(3); // must recompute (evicted)
 console.log(calls); // 2+3+4+3 computed = 4 unique + 1 recompute = 5
-"#), vec!["5"]);
+"#
+        ),
+        vec!["5"]
+    );
 }

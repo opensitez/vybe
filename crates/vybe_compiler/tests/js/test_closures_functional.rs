@@ -1,7 +1,6 @@
 /// JavaScript closure patterns, functional programming: currying, memoization,
 /// module pattern, partial application, compose, pipe, higher-order patterns,
 /// trampolining, once/debounce patterns.
-
 use super::helpers::run_js;
 
 // ===================================================================
@@ -10,7 +9,9 @@ use super::helpers::run_js;
 
 #[test]
 fn curry_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function curry(fn) {
     return function(a) {
         return function(b) {
@@ -20,12 +21,17 @@ function curry(fn) {
 }
 let add = curry((a, b) => a + b);
 console.log(add(3)(4));
-"#), &["7"]);
+"#
+        ),
+        &["7"]
+    );
 }
 
 #[test]
 fn curry_reusable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function multiply(a) {
     return function(b) {
         return a * b;
@@ -35,12 +41,17 @@ let double = multiply(2);
 let triple = multiply(3);
 console.log(double(5));
 console.log(triple(5));
-"#), &["10", "15"]);
+"#
+        ),
+        &["10", "15"]
+    );
 }
 
 #[test]
 fn curry_string_formatter() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function greet(greeting) {
     return function(name) {
         return greeting + ", " + name + "!";
@@ -50,7 +61,10 @@ let hello = greet("Hello");
 let hi = greet("Hi");
 console.log(hello("Alice"));
 console.log(hi("Bob"));
-"#), &["Hello, Alice!", "Hi, Bob!"]);
+"#
+        ),
+        &["Hello, Alice!", "Hi, Bob!"]
+    );
 }
 
 // ===================================================================
@@ -59,7 +73,9 @@ console.log(hi("Bob"));
 
 #[test]
 fn partial_application() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function partial(fn, ...presets) {
     return function(...args) {
         return fn(...presets, ...args);
@@ -69,7 +85,10 @@ function add3(a, b, c) { return a + b + c; }
 let addTo10 = partial(add3, 3, 7);
 console.log(addTo10(5));
 console.log(addTo10(10));
-"#), &["15", "20"]);
+"#
+        ),
+        &["15", "20"]
+    );
 }
 
 // ===================================================================
@@ -78,7 +97,9 @@ console.log(addTo10(10));
 
 #[test]
 fn compose_functions() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function compose(...fns) {
     return function(x) {
         return fns.reduceRight((acc, fn) => fn(acc), x);
@@ -89,12 +110,17 @@ let double = x => x * 2;
 let square = x => x * x;
 let transform = compose(square, double, addOne);
 console.log(transform(3));
-"#), &["64"]);
+"#
+        ),
+        &["64"]
+    );
 }
 
 #[test]
 fn pipe_functions() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function pipe(...fns) {
     return function(x) {
         return fns.reduce((acc, fn) => fn(acc), x);
@@ -104,7 +130,10 @@ let addOne = x => x + 1;
 let double = x => x * 2;
 let transform = pipe(addOne, double, addOne);
 console.log(transform(3));
-"#), &["9"]);
+"#
+        ),
+        &["9"]
+    );
 }
 
 // ===================================================================
@@ -113,7 +142,9 @@ console.log(transform(3));
 
 #[test]
 fn memoize_basic() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function memoize(fn) {
     let cache = {};
     return function(n) {
@@ -128,12 +159,17 @@ console.log(square(4));
 console.log(square(4));
 console.log(square(5));
 console.log(callCount);
-"#), &["16", "16", "25", "2"]);
+"#
+        ),
+        &["16", "16", "25", "2"]
+    );
 }
 
 #[test]
 fn memoize_fibonacci() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function memoize(fn) {
     let cache = {};
     return function(n) {
@@ -148,7 +184,10 @@ let fib = memoize(function(n) {
 });
 console.log(fib(10));
 console.log(fib(20));
-"#), &["55", "6765"]);
+"#
+        ),
+        &["55", "6765"]
+    );
 }
 
 // ===================================================================
@@ -157,7 +196,9 @@ console.log(fib(20));
 
 #[test]
 fn module_pattern_iife() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let counter = (function() {
     let count = 0;
     return {
@@ -171,12 +212,17 @@ counter.increment();
 counter.increment();
 counter.decrement();
 console.log(counter.getCount());
-"#), &["2"]);
+"#
+        ),
+        &["2"]
+    );
 }
 
 #[test]
 fn module_pattern_private_state() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let bank = (function() {
     let balance = 0;
     return {
@@ -195,7 +241,10 @@ console.log(bank.withdraw(30));
 console.log(bank.getBalance());
 console.log(bank.withdraw(200));
 console.log(bank.getBalance());
-"#), &["true", "120", "false", "120"]);
+"#
+        ),
+        &["true", "120", "false", "120"]
+    );
 }
 
 // ===================================================================
@@ -204,7 +253,9 @@ console.log(bank.getBalance());
 
 #[test]
 fn closure_factory() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function makeCounter(start) {
     let count = start;
     return {
@@ -218,12 +269,17 @@ console.log(c.next());
 console.log(c.next());
 c.reset();
 console.log(c.next());
-"#), &["10", "11", "12", "10"]);
+"#
+        ),
+        &["10", "11", "12", "10"]
+    );
 }
 
 #[test]
 fn closure_over_let_in_loop() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let funcs = [];
 for (let i = 0; i < 5; i++) {
     funcs.push(() => i);
@@ -231,7 +287,10 @@ for (let i = 0; i < 5; i++) {
 console.log(funcs[0]());
 console.log(funcs[2]());
 console.log(funcs[4]());
-"#), &["0", "2", "4"]);
+"#
+        ),
+        &["0", "2", "4"]
+    );
 }
 
 #[test]
@@ -240,7 +299,9 @@ fn closure_over_var_in_loop() {
         .name("closure_over_var_in_loop".to_string())
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
-            assert_eq!(run_js(r#"
+            assert_eq!(
+                run_js(
+                    r#"
 var funcs = [];
 for (var i = 0; i < 5; i++) {
     funcs.push((function(j) { return function() { return j; }; })(i));
@@ -248,16 +309,23 @@ for (var i = 0; i < 5; i++) {
 console.log(funcs[0]());
 console.log(funcs[2]());
 console.log(funcs[4]());
-"#), &["0", "2", "4"]);
+"#
+                ),
+                &["0", "2", "4"]
+            );
         })
         .expect("failed to spawn test thread");
 
-    handle.join().expect("closure_over_var_in_loop thread panicked");
+    handle
+        .join()
+        .expect("closure_over_var_in_loop thread panicked");
 }
 
 #[test]
 fn once_function() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function once(fn) {
     let called = false;
     let result;
@@ -272,7 +340,10 @@ function once(fn) {
 let init = once(() => { console.log("initialized"); return 42; });
 console.log(init());
 console.log(init());
-"#), &["initialized", "42", "42"]);
+"#
+        ),
+        &["initialized", "42", "42"]
+    );
 }
 
 // ===================================================================
@@ -281,28 +352,40 @@ console.log(init());
 
 #[test]
 fn map_filter_reduce_chain() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 let result = data
     .filter(x => x % 2 === 0)
     .map(x => x * x)
     .reduce((acc, x) => acc + x, 0);
 console.log(result);
-"#), &["220"]);
+"#
+        ),
+        &["220"]
+    );
 }
 
 #[test]
 fn custom_flat_map() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let sentences = ["Hello World", "Foo Bar Baz"];
 let words = sentences.flatMap(s => s.split(" "));
 console.log(words.join(","));
-"#), &["Hello,World,Foo,Bar,Baz"]);
+"#
+        ),
+        &["Hello,World,Foo,Bar,Baz"]
+    );
 }
 
 #[test]
 fn reduce_group_by() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let people = [
     { name: "Alice", dept: "eng" },
     { name: "Bob", dept: "sales" },
@@ -317,12 +400,17 @@ let groups = people.reduce((acc, p) => {
 }, {});
 console.log(groups.eng.length);
 console.log(groups.sales.length);
-"#), &["3", "2"]);
+"#
+        ),
+        &["3", "2"]
+    );
 }
 
 #[test]
 fn reduce_to_frequency_map() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let letters = "abracadabra".split("");
 let freq = letters.reduce((acc, ch) => {
     acc[ch] = (acc[ch] || 0) + 1;
@@ -331,7 +419,10 @@ let freq = letters.reduce((acc, ch) => {
 console.log(freq.a);
 console.log(freq.b);
 console.log(freq.r);
-"#), &["5", "2", "2"]);
+"#
+        ),
+        &["5", "2", "2"]
+    );
 }
 
 // ===================================================================
@@ -340,7 +431,9 @@ console.log(freq.r);
 
 #[test]
 fn trampoline() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function trampoline(fn) {
     return function(...args) {
         let result = fn(...args);
@@ -356,5 +449,8 @@ function sumHelper(n, acc) {
 }
 let tSum = trampoline(sumHelper);
 console.log(tSum(100, 0));
-"#), &["5050"]);
+"#
+        ),
+        &["5050"]
+    );
 }

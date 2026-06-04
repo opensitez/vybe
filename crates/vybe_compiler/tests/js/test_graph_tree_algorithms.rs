@@ -1,10 +1,11 @@
 /// Graph and tree algorithms in pure JavaScript
-
 use super::helpers::run_js;
 
 #[test]
 fn bfs_shortest_path() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function bfs(graph, start, end) {
     const queue = [[start, [start]]];
     const visited = new Set([start]);
@@ -25,12 +26,17 @@ const path = bfs(g, "A", "F");
 console.log(path[0]);
 console.log(path[path.length - 1]);
 console.log(path.length <= 4);
-"#), vec!["A", "F", "true"]);
+"#
+        ),
+        vec!["A", "F", "true"]
+    );
 }
 
 #[test]
 fn dfs_recursive() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function dfs(graph, node, visited = new Set()) {
     if (visited.has(node)) return [];
     visited.add(node);
@@ -45,12 +51,17 @@ const visited = dfs(g, 1);
 console.log(visited.includes(1));
 console.log(visited.includes(4));
 console.log(visited.length);
-"#), vec!["true", "true", "4"]);
+"#
+        ),
+        vec!["true", "true", "4"]
+    );
 }
 
 #[test]
 fn topological_sort() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function topoSort(nodes, edges) {
     const inDegree = {};
     const adj = {};
@@ -71,12 +82,17 @@ const order = topoSort([1,2,3,4,5], [[1,3],[2,3],[3,4],[3,5]]);
 console.log(order.indexOf(1) < order.indexOf(3));
 console.log(order.indexOf(3) < order.indexOf(4));
 console.log(order.length);
-"#), vec!["true", "true", "5"]);
+"#
+        ),
+        vec!["true", "true", "5"]
+    );
 }
 
 #[test]
 fn connected_components() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function countComponents(n, edges) {
     const parent = Array.from({length: n}, (_, i) => i);
     function find(x) { return parent[x] === x ? x : parent[x] = find(parent[x]); }
@@ -87,12 +103,17 @@ function countComponents(n, edges) {
 console.log(countComponents(5, [[0,1],[1,2],[3,4]]));
 console.log(countComponents(5, []));
 console.log(countComponents(4, [[0,1],[1,2],[2,3]]));
-"#), vec!["2", "5", "1"]);
+"#
+        ),
+        vec!["2", "5", "1"]
+    );
 }
 
 #[test]
 fn binary_tree_traversal() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class TreeNode {
     constructor(val, left=null, right=null) { this.val=val; this.left=left; this.right=right; }
 }
@@ -105,12 +126,17 @@ function inorder(root, result=[]) {
 }
 const root = new TreeNode(4, new TreeNode(2, new TreeNode(1), new TreeNode(3)), new TreeNode(5));
 console.log(inorder(root).join(","));
-"#), vec!["1,2,3,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5"]
+    );
 }
 
 #[test]
 fn binary_tree_max_depth() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function maxDepth(root) {
     if (!root) return 0;
     return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
@@ -118,12 +144,17 @@ function maxDepth(root) {
 const t = { val: 1, left: { val: 2, left: { val: 4, left: null, right: null }, right: null }, right: { val: 3, left: null, right: null } };
 console.log(maxDepth(t));
 console.log(maxDepth(null));
-"#), vec!["3", "0"]);
+"#
+        ),
+        vec!["3", "0"]
+    );
 }
 
 #[test]
 fn path_sum_in_tree() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function hasPathSum(root, target) {
     if (!root) return false;
     if (!root.left && !root.right) return root.val === target;
@@ -132,12 +163,17 @@ function hasPathSum(root, target) {
 const t = { val: 5, left: { val: 4, left: { val: 11, left: { val: 7, left:null, right:null }, right: { val: 2, left:null, right:null } }, right: null }, right: { val: 8, left:null, right:null } };
 console.log(hasPathSum(t, 22));
 console.log(hasPathSum(t, 10));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 #[test]
 fn detect_cycle() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function hasCycle(graph) {
     const visited = new Set(), stack = new Set();
     function dfs(node) {
@@ -154,12 +190,17 @@ function hasCycle(graph) {
 }
 console.log(hasCycle({ A: ["B"], B: ["C"], C: ["A"] }));
 console.log(hasCycle({ A: ["B"], B: ["C"], C: [] }));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 #[test]
 fn level_order_bfs() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function levelOrder(root) {
     if (!root) return [];
     const result = [], queue = [root];
@@ -180,12 +221,17 @@ const levels = levelOrder(t);
 console.log(levels[0].join(","));
 console.log(levels[1].join(","));
 console.log(levels[2].join(","));
-"#), vec!["1", "2,3", "4"]);
+"#
+        ),
+        vec!["1", "2,3", "4"]
+    );
 }
 
 #[test]
 fn dijkstra_shortest_path() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function dijkstra(graph, start) {
     const dist = {}, visited = new Set();
     for (const node of Object.keys(graph)) dist[node] = Infinity;
@@ -207,12 +253,17 @@ console.log(d.A);
 console.log(d.B);
 console.log(d.C);
 console.log(d.D);
-"#), vec!["0", "1", "3", "4"]);
+"#
+        ),
+        vec!["0", "1", "3", "4"]
+    );
 }
 
 #[test]
 fn flatten_tree_to_list() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function flatten(root, acc=[]) {
     if (!root) return acc;
     acc.push(root.val);
@@ -222,5 +273,8 @@ function flatten(root, acc=[]) {
 }
 const t = { val:1, left:{val:2,left:{val:4,left:null,right:null},right:{val:5,left:null,right:null}}, right:{val:3,left:null,right:null} };
 console.log(flatten(t).join(","));
-"#), vec!["1,2,4,5,3"]);
+"#
+        ),
+        vec!["1,2,4,5,3"]
+    );
 }

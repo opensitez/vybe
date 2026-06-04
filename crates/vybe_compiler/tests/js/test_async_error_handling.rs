@@ -1,14 +1,15 @@
 /// Async/await error handling — rejection patterns, async try/catch/finally,
 /// unhandled rejection, async forEach/map patterns, timeout patterns,
 /// sequential vs parallel execution.
-
 use super::helpers::run_js;
 
 // ── basic async try/catch ─────────────────────────────────────────────────────
 
 #[test]
 fn async_try_catch_catches_thrown_value() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function f() {
     try {
         throw new Error("async error");
@@ -17,12 +18,17 @@ async function f() {
     }
 }
 f().then(v => console.log(v));
-"#), vec!["async error"]);
+"#
+        ),
+        vec!["async error"]
+    );
 }
 
 #[test]
 fn async_catch_on_awaited_rejection() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function f() {
     try {
         await Promise.reject(new TypeError("bad"));
@@ -31,14 +37,19 @@ async function f() {
     }
 }
 f().then(v => console.log(v));
-"#), vec!["caught"]);
+"#
+        ),
+        vec!["caught"]
+    );
 }
 
 // ── async finally ─────────────────────────────────────────────────────────────
 
 #[test]
 fn async_finally_always_runs() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function withFinally(fail) {
     try {
@@ -52,36 +63,51 @@ Promise.all([
     withFinally(false).catch(() => {}),
     withFinally(true).catch(() => {})
 ]).then(() => console.log(log.join(",")));
-"#), vec!["finally,finally"]);
+"#
+        ),
+        vec!["finally,finally"]
+    );
 }
 
 #[test]
 fn async_finally_does_not_change_resolved_value() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function f() {
     try { return 42; }
     finally { /* no return */ }
 }
 f().then(v => console.log(v));
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 #[test]
 fn async_finally_return_overrides_result() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function f() {
     try { return "try"; }
     finally { return "finally"; } // overrides
 }
 f().then(v => console.log(v));
-"#), vec!["finally"]);
+"#
+        ),
+        vec!["finally"]
+    );
 }
 
 // ── sequential vs parallel ────────────────────────────────────────────────────
 
 #[test]
 fn sequential_async_execution_preserves_order() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function task(n) {
     log.push("start:" + n);
@@ -94,12 +120,17 @@ async function main() {
     await task(2);
 }
 main().then(() => console.log(log.join(",")));
-"#), vec!["start:1,end:1,start:2,end:2"]);
+"#
+        ),
+        vec!["start:1,end:1,start:2,end:2"]
+    );
 }
 
 #[test]
 fn parallel_async_with_promise_all() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function delay(n) {
     await Promise.resolve();
     return n * n;
@@ -109,14 +140,19 @@ async function main() {
     console.log(results.join(","));
 }
 main();
-"#), vec!["4,9,16"]);
+"#
+        ),
+        vec!["4,9,16"]
+    );
 }
 
 // ── async iteration patterns ──────────────────────────────────────────────────
 
 #[test]
 fn sequential_async_map() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function asyncMap(arr, fn) {
     const results = [];
     for (const item of arr) {
@@ -126,14 +162,19 @@ async function asyncMap(arr, fn) {
 }
 asyncMap([1, 2, 3], async x => x * x)
     .then(r => console.log(r.join(",")));
-"#), vec!["1,4,9"]);
+"#
+        ),
+        vec!["1,4,9"]
+    );
 }
 
 // ── error recovery ────────────────────────────────────────────────────────────
 
 #[test]
 fn async_retry_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function withRetry(fn, maxAttempts) {
     let lastError;
     for (let i = 0; i < maxAttempts; i++) {
@@ -154,14 +195,19 @@ withRetry(flakyOp, 5).then(r => {
     console.log(r);
     console.log(attempt);
 });
-"#), vec!["success", "3"]);
+"#
+        ),
+        vec!["success", "3"]
+    );
 }
 
 // ── async error rethrow ───────────────────────────────────────────────────────
 
 #[test]
 fn async_rethrow_unknown_errors() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class NetworkError extends Error {}
 
 async function fetchSafe() {
@@ -174,14 +220,19 @@ async function fetchSafe() {
 }
 
 fetchSafe().then(v => console.log(v));
-"#), vec!["null"]);
+"#
+        ),
+        vec!["null"]
+    );
 }
 
 // ── async generator interaction ───────────────────────────────────────────────
 
 #[test]
 fn for_await_collects_values() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function* produce() {
     yield await Promise.resolve(1);
     yield await Promise.resolve(2);
@@ -193,14 +244,19 @@ async function collect() {
     return results;
 }
 collect().then(r => console.log(r.join(",")));
-"#), vec!["1,2,3"]);
+"#
+        ),
+        vec!["1,2,3"]
+    );
 }
 
 // ── async timeout pattern ─────────────────────────────────────────────────────
 
 #[test]
 fn async_timeout_with_promise_race() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function timeout(ms, reason) {
     return new Promise((_, reject) =>
         setTimeout(() => reject(new Error(reason)), ms)
@@ -212,14 +268,19 @@ async function withTimeout(fn, ms) {
 
 const fast = () => Promise.resolve("done");
 withTimeout(fast, 1000).then(v => console.log(v));
-"#), vec!["done"]);
+"#
+        ),
+        vec!["done"]
+    );
 }
 
 // ── chained async operations ──────────────────────────────────────────────────
 
 #[test]
 fn async_pipeline_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const steps = [
     async (x) => x + 1,
     async (x) => x * 2,
@@ -233,14 +294,19 @@ async function pipeline(input, fns) {
 }
 
 pipeline(5, steps).then(v => console.log(v)); // (5+1)*2-3 = 9
-"#), vec!["9"]);
+"#
+        ),
+        vec!["9"]
+    );
 }
 
 // ── async class methods ───────────────────────────────────────────────────────
 
 #[test]
 fn async_method_in_class() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class DataService {
     async fetch(id) {
         await Promise.resolve();
@@ -249,5 +315,8 @@ class DataService {
 }
 const svc = new DataService();
 svc.fetch(42).then(r => console.log(r.data));
-"#), vec!["result:42"]);
+"#
+        ),
+        vec!["result:42"]
+    );
 }

@@ -1,10 +1,11 @@
 /// Async patterns — promises, async/await, concurrency control
-
 use super::helpers::run_js;
 
 #[test]
 fn async_queue_sequential() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class AsyncQueue {
     #queue = [];
     #running = false;
@@ -36,12 +37,17 @@ async function main() {
     console.log(order.join(","));
 }
 main();
-"#), vec!["a,b,c", "1,2,3"]);
+"#
+        ),
+        vec!["a,b,c", "1,2,3"]
+    );
 }
 
 #[test]
 fn promise_pool_concurrency() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function pool(tasks, limit) {
     const results = [];
     const executing = [];
@@ -59,12 +65,17 @@ async function main() {
     console.log(results.join(","));
 }
 main();
-"#), vec!["2,4,6,8,10"]);
+"#
+        ),
+        vec!["2,4,6,8,10"]
+    );
 }
 
 #[test]
 fn async_iterator_custom() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function collect(iter) {
     const result = [];
     for await (const v of iter) result.push(v);
@@ -78,12 +89,17 @@ async function main() {
     console.log(vals.join(","));
 }
 main();
-"#), vec!["1,2,3,4,5"]);
+"#
+        ),
+        vec!["1,2,3,4,5"]
+    );
 }
 
 #[test]
 fn timeout_with_abort() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function withTimeout(promise, ms) {
     let id;
     const timeout = new Promise((_, reject) => {
@@ -101,12 +117,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["ok", "timeout"]);
+"#
+        ),
+        vec!["ok", "timeout"]
+    );
 }
 
 #[test]
 fn async_semaphore() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Semaphore {
     #count;
     #queue = [];
@@ -136,12 +157,17 @@ async function main() {
     console.log(log.includes("out:3"));
 }
 main();
-"#), vec!["true", "true", "true"]);
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
 }
 
 #[test]
 fn retry_with_backoff() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function retry(fn, maxAttempts, delay = 0) {
     for (let i = 0; i < maxAttempts; i++) {
         try { return await fn(); }
@@ -162,12 +188,17 @@ async function main() {
     console.log(attempts);
 }
 main();
-"#), vec!["success", "3"]);
+"#
+        ),
+        vec!["success", "3"]
+    );
 }
 
 #[test]
 fn deferred_promise() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function deferred() {
     let resolve, reject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
@@ -182,12 +213,17 @@ async function main() {
     try { await d2.promise; } catch(e) { console.log(e.message); }
 }
 main();
-"#), vec!["42", "fail"]);
+"#
+        ),
+        vec!["42", "fail"]
+    );
 }
 
 #[test]
 fn async_compose() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const asyncPipe = (...fns) => x => fns.reduce(async (p, f) => f(await p), Promise.resolve(x));
 async function main() {
     const process = asyncPipe(
@@ -199,5 +235,8 @@ async function main() {
     console.log(await process(10));
 }
 main();
-"#), vec!["12", "22"]);
+"#
+        ),
+        vec!["12", "22"]
+    );
 }

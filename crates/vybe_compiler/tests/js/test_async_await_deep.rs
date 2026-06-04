@@ -1,20 +1,26 @@
 /// Async/await advanced — for-await, async class methods, async IIFE, error in finally
-
 use super::helpers::run_js;
 
 #[test]
 fn async_iife() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 (async () => {
     const val = await Promise.resolve(42);
     console.log(val);
 })();
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 #[test]
 fn async_class_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class DataService {
     async fetch(id) {
         return await Promise.resolve({ id, name: "Item " + id });
@@ -27,12 +33,17 @@ async function main() {
     console.log(item.name);
 }
 main();
-"#), vec!["5", "Item 5"]);
+"#
+        ),
+        vec!["5", "Item 5"]
+    );
 }
 
 #[test]
 fn async_getter_not_directly_supported_workaround() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Loader {
     async load() {
         return await Promise.resolve("data");
@@ -43,12 +54,17 @@ async function main() {
     console.log(await loader.load());
 }
 main();
-"#), vec!["data"]);
+"#
+        ),
+        vec!["data"]
+    );
 }
 
 #[test]
 fn async_function_returns_value() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function double(x) {
     return x * 2;
 }
@@ -56,12 +72,17 @@ async function main() {
     console.log(await double(21));
 }
 main();
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 #[test]
 fn await_inside_loop() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const results = [];
     for (let i = 1; i <= 3; i++) {
@@ -71,12 +92,17 @@ async function main() {
     console.log(results.join(","));
 }
 main();
-"#), vec!["1,4,9"]);
+"#
+        ),
+        vec!["1,4,9"]
+    );
 }
 
 #[test]
 fn async_try_catch() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function unsafe() {
     throw new Error("oops");
 }
@@ -90,12 +116,17 @@ async function main() {
     console.log(caught);
 }
 main();
-"#), vec!["oops"]);
+"#
+        ),
+        vec!["oops"]
+    );
 }
 
 #[test]
 fn async_finally_always_runs() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const log = [];
 async function main() {
     try {
@@ -107,12 +138,17 @@ async function main() {
     console.log(log.join(","));
 }
 main();
-"#), vec!["try,finally"]);
+"#
+        ),
+        vec!["try,finally"]
+    );
 }
 
 #[test]
 fn async_parallel_execution() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function delay(ms, val) {
     return new Promise(resolve => setTimeout(() => resolve(val), ms));
 }
@@ -125,12 +161,17 @@ async function main() {
     console.log(a + b);
 }
 main();
-"#), vec!["3"]);
+"#
+        ),
+        vec!["3"]
+    );
 }
 
 #[test]
 fn async_for_of_with_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function* numbers() {
     yield 1;
     yield 2;
@@ -144,12 +185,17 @@ async function main() {
     console.log(sum.join(","));
 }
 main();
-"#), vec!["1,2,3"]);
+"#
+        ),
+        vec!["1,2,3"]
+    );
 }
 
 #[test]
 fn async_sequential_accumulator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function accumulate(fns) {
     let result = 0;
     for (const fn of fns) {
@@ -166,12 +212,17 @@ async function main() {
     console.log(result); // ((0+1)*2)+10 = 12
 }
 main();
-"#), vec!["12"]);
+"#
+        ),
+        vec!["12"]
+    );
 }
 
 #[test]
 fn async_timeout_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function withTimeout(promise, ms) {
     const timeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("timeout")), ms)
@@ -186,5 +237,8 @@ async function main() {
     // slow would timeout, but we test success path only
 }
 main();
-"#), vec!["done"]);
+"#
+        ),
+        vec!["done"]
+    );
 }

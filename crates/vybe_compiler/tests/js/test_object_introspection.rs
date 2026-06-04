@@ -6,14 +6,19 @@ use super::helpers::run_js;
 
 #[test]
 fn get_own_property_names_includes_non_enumerable() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "hidden", { value: 99, enumerable: false });
 const names = Object.getOwnPropertyNames(obj);
 console.log(names.includes("a"));
 console.log(names.includes("b"));
 console.log(names.includes("hidden"));
-"#), vec!["true", "true", "true"]);
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
 }
 
 // ===================================================================
@@ -22,14 +27,19 @@ console.log(names.includes("hidden"));
 
 #[test]
 fn get_own_property_descriptor_all_flags() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { x: 42 };
 const d = Object.getOwnPropertyDescriptor(obj, "x");
 console.log(d.value);
 console.log(d.writable);
 console.log(d.enumerable);
 console.log(d.configurable);
-"#), vec!["42", "true", "true", "true"]);
+"#
+        ),
+        vec!["42", "true", "true", "true"]
+    );
 }
 
 // ===================================================================
@@ -38,7 +48,9 @@ console.log(d.configurable);
 
 #[test]
 fn get_own_property_descriptors_returns_all() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "c", { value: 3, enumerable: false, writable: true, configurable: true });
 const descs = Object.getOwnPropertyDescriptors(obj);
@@ -46,7 +58,10 @@ console.log(descs.a.value);
 console.log(descs.b.value);
 console.log(descs.c.value);
 console.log(descs.c.enumerable);
-"#), vec!["1", "2", "3", "false"]);
+"#
+        ),
+        vec!["1", "2", "3", "false"]
+    );
 }
 
 // ===================================================================
@@ -55,13 +70,18 @@ console.log(descs.c.enumerable);
 
 #[test]
 fn get_own_property_symbols_returns_symbol_keys() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const sym = Symbol("tag");
 const obj = { normal: 1, [sym]: "symbolValue" };
 const syms = Object.getOwnPropertySymbols(obj);
 console.log(syms.length);
 console.log(obj[syms[0]]);
-"#), vec!["1", "symbolValue"]);
+"#
+        ),
+        vec!["1", "symbolValue"]
+    );
 }
 
 // ===================================================================
@@ -70,7 +90,9 @@ console.log(obj[syms[0]]);
 
 #[test]
 fn define_property_non_enumerable_absent_from_for_in() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1 };
 Object.defineProperty(obj, "secret", { value: 42, enumerable: false });
 const keys = [];
@@ -78,7 +100,10 @@ for (const k in obj) keys.push(k);
 console.log(keys.includes("a"));
 console.log(keys.includes("secret"));
 console.log(obj.secret);
-"#), vec!["true", "false", "42"]);
+"#
+        ),
+        vec!["true", "false", "42"]
+    );
 }
 
 // ===================================================================
@@ -87,12 +112,17 @@ console.log(obj.secret);
 
 #[test]
 fn define_property_writable_false_ignores_assignment() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = {};
 Object.defineProperty(obj, "CONST", { value: 100, writable: false, enumerable: true, configurable: false });
 obj.CONST = 999;
 console.log(obj.CONST);
-"#), vec!["100"]);
+"#
+        ),
+        vec!["100"]
+    );
 }
 
 // ===================================================================
@@ -101,7 +131,9 @@ console.log(obj.CONST);
 
 #[test]
 fn define_property_configurable_false_prevents_redefine() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = {};
 Object.defineProperty(obj, "locked", { value: 1, configurable: false, writable: false, enumerable: true });
 let threw = false;
@@ -112,7 +144,10 @@ try {
 }
 console.log(threw);
 console.log(obj.locked);
-"#), vec!["true", "1"]);
+"#
+        ),
+        vec!["true", "1"]
+    );
 }
 
 // ===================================================================
@@ -121,7 +156,9 @@ console.log(obj.locked);
 
 #[test]
 fn define_property_getter_setter_pair() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { _count: 0 };
 Object.defineProperty(obj, "count", {
     get() { return this._count; },
@@ -133,7 +170,10 @@ obj.count = 5;
 console.log(obj.count);
 obj.count = -3;
 console.log(obj.count);
-"#), vec!["5", "0"]);
+"#
+        ),
+        vec!["5", "0"]
+    );
 }
 
 // ===================================================================
@@ -142,7 +182,9 @@ console.log(obj.count);
 
 #[test]
 fn define_properties_multiple_at_once() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = {};
 Object.defineProperties(obj, {
     x: { value: 10, enumerable: true, writable: true, configurable: true },
@@ -153,7 +195,10 @@ console.log(obj.x);
 console.log(obj.y);
 console.log(obj.z);
 console.log(Object.keys(obj).join(","));
-"#), vec!["10", "20", "30", "x,y"]);
+"#
+        ),
+        vec!["10", "20", "30", "x,y"]
+    );
 }
 
 // ===================================================================
@@ -162,11 +207,16 @@ console.log(Object.keys(obj).join(","));
 
 #[test]
 fn is_frozen_true_after_freeze() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1 };
 Object.freeze(obj);
 console.log(Object.isFrozen(obj));
-"#), vec!["true"]);
+"#
+        ),
+        vec!["true"]
+    );
 }
 
 // ===================================================================
@@ -175,10 +225,15 @@ console.log(Object.isFrozen(obj));
 
 #[test]
 fn is_frozen_false_on_normal_object() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1, b: 2 };
 console.log(Object.isFrozen(obj));
-"#), vec!["false"]);
+"#
+        ),
+        vec!["false"]
+    );
 }
 
 // ===================================================================
@@ -187,11 +242,16 @@ console.log(Object.isFrozen(obj));
 
 #[test]
 fn is_sealed_true_after_seal() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { x: 10 };
 Object.seal(obj);
 console.log(Object.isSealed(obj));
-"#), vec!["true"]);
+"#
+        ),
+        vec!["true"]
+    );
 }
 
 // ===================================================================
@@ -200,10 +260,15 @@ console.log(Object.isSealed(obj));
 
 #[test]
 fn is_sealed_false_on_normal_object() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { x: 10 };
 console.log(Object.isSealed(obj));
-"#), vec!["false"]);
+"#
+        ),
+        vec!["false"]
+    );
 }
 
 // ===================================================================
@@ -212,12 +277,17 @@ console.log(Object.isSealed(obj));
 
 #[test]
 fn is_extensible_false_after_prevent_extensions() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1 };
 console.log(Object.isExtensible(obj));
 Object.preventExtensions(obj);
 console.log(Object.isExtensible(obj));
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }
 
 // ===================================================================
@@ -226,13 +296,18 @@ console.log(Object.isExtensible(obj));
 
 #[test]
 fn prevent_extensions_blocks_new_properties() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { existing: "yes" };
 Object.preventExtensions(obj);
 obj.newProp = "no";
 console.log(obj.existing);
 console.log(obj.newProp);
-"#), vec!["yes", "undefined"]);
+"#
+        ),
+        vec!["yes", "undefined"]
+    );
 }
 
 // ===================================================================
@@ -241,7 +316,9 @@ console.log(obj.newProp);
 
 #[test]
 fn seal_allows_modify_blocks_add_and_delete() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1, b: 2 };
 Object.seal(obj);
 obj.a = 99;
@@ -250,7 +327,10 @@ delete obj.b;
 console.log(obj.a);
 console.log(obj.b);
 console.log(obj.c);
-"#), vec!["99", "2", "undefined"]);
+"#
+        ),
+        vec!["99", "2", "undefined"]
+    );
 }
 
 // ===================================================================
@@ -259,7 +339,9 @@ console.log(obj.c);
 
 #[test]
 fn freeze_blocks_add_delete_and_modify() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { a: 1, b: 2 };
 Object.freeze(obj);
 obj.a = 99;
@@ -268,7 +350,10 @@ delete obj.b;
 console.log(obj.a);
 console.log(obj.b);
 console.log(obj.c);
-"#), vec!["1", "2", "undefined"]);
+"#
+        ),
+        vec!["1", "2", "undefined"]
+    );
 }
 
 // ===================================================================
@@ -277,12 +362,17 @@ console.log(obj.c);
 
 #[test]
 fn get_prototype_of_returns_prototype() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const proto = { kind: "proto" };
 const obj = Object.create(proto);
 console.log(Object.getPrototypeOf(obj) === proto);
 console.log(obj.kind);
-"#), vec!["true", "proto"]);
+"#
+        ),
+        vec!["true", "proto"]
+    );
 }
 
 // ===================================================================
@@ -291,13 +381,18 @@ console.log(obj.kind);
 
 #[test]
 fn set_prototype_of_changes_prototype() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const newProto = { greet() { return "hello from newProto"; } };
 const obj = { x: 1 };
 Object.setPrototypeOf(obj, newProto);
 console.log(Object.getPrototypeOf(obj) === newProto);
 console.log(obj.greet());
-"#), vec!["true", "hello from newProto"]);
+"#
+        ),
+        vec!["true", "hello from newProto"]
+    );
 }
 
 // ===================================================================
@@ -306,7 +401,9 @@ console.log(obj.greet());
 
 #[test]
 fn object_create_with_descriptors() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = Object.create(Object.prototype, {
     name: { value: "Alice", enumerable: true, writable: true, configurable: true },
     age:  { value: 30,      enumerable: true, writable: false, configurable: false }
@@ -315,7 +412,10 @@ console.log(obj.name);
 console.log(obj.age);
 obj.age = 99;
 console.log(obj.age);
-"#), vec!["Alice", "30", "30"]);
+"#
+        ),
+        vec!["Alice", "30", "30"]
+    );
 }
 
 // ===================================================================
@@ -324,12 +424,17 @@ console.log(obj.age);
 
 #[test]
 fn object_create_null_no_prototype() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = Object.create(null);
 obj.foo = "bar";
 console.log(obj.foo);
 console.log(Object.getPrototypeOf(obj));
-"#), vec!["bar", "null"]);
+"#
+        ),
+        vec!["bar", "null"]
+    );
 }
 
 // ===================================================================
@@ -338,7 +443,9 @@ console.log(Object.getPrototypeOf(obj));
 
 #[test]
 fn object_assign_copies_own_enumerable_only() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const src = { a: 1, b: 2 };
 Object.defineProperty(src, "hidden", { value: 99, enumerable: false });
 const dest = {};
@@ -346,7 +453,10 @@ Object.assign(dest, src);
 console.log(dest.a);
 console.log(dest.b);
 console.log(dest.hidden);
-"#), vec!["1", "2", "undefined"]);
+"#
+        ),
+        vec!["1", "2", "undefined"]
+    );
 }
 
 // ===================================================================
@@ -355,11 +465,16 @@ console.log(dest.hidden);
 
 #[test]
 fn object_entries_returns_key_value_pairs() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { x: 10, y: 20, z: 30 };
 const entries = Object.entries(obj);
 entries.forEach(([k, v]) => console.log(k + "=" + v));
-"#), vec!["x=10", "y=20", "z=30"]);
+"#
+        ),
+        vec!["x=10", "y=20", "z=30"]
+    );
 }
 
 // ===================================================================
@@ -368,13 +483,18 @@ entries.forEach(([k, v]) => console.log(k + "=" + v));
 
 #[test]
 fn object_from_entries_from_array() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const pairs = [["name", "Bob"], ["age", 25], ["city", "Paris"]];
 const obj = Object.fromEntries(pairs);
 console.log(obj.name);
 console.log(obj.age);
 console.log(obj.city);
-"#), vec!["Bob", "25", "Paris"]);
+"#
+        ),
+        vec!["Bob", "25", "Paris"]
+    );
 }
 
 // ===================================================================
@@ -383,13 +503,18 @@ console.log(obj.city);
 
 #[test]
 fn object_from_entries_from_map() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const map = new Map([["one", 1], ["two", 2], ["three", 3]]);
 const obj = Object.fromEntries(map);
 console.log(obj.one);
 console.log(obj.two);
 console.log(obj.three);
-"#), vec!["1", "2", "3"]);
+"#
+        ),
+        vec!["1", "2", "3"]
+    );
 }
 
 // ===================================================================
@@ -398,14 +523,19 @@ console.log(obj.three);
 
 #[test]
 fn has_own_property_vs_inherited() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const proto = { inherited: true };
 const obj = Object.create(proto);
 obj.own = true;
 console.log(obj.hasOwnProperty("own"));
 console.log(obj.hasOwnProperty("inherited"));
 console.log(obj.inherited);
-"#), vec!["true", "false", "true"]);
+"#
+        ),
+        vec!["true", "false", "true"]
+    );
 }
 
 // ===================================================================
@@ -414,7 +544,9 @@ console.log(obj.inherited);
 
 #[test]
 fn property_is_enumerable_own_vs_inherited() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const proto = { fromProto: 1 };
 const obj = Object.create(proto);
 obj.ownEnum = 2;
@@ -422,7 +554,10 @@ Object.defineProperty(obj, "ownHidden", { value: 3, enumerable: false });
 console.log(obj.propertyIsEnumerable("ownEnum"));
 console.log(obj.propertyIsEnumerable("ownHidden"));
 console.log(obj.propertyIsEnumerable("fromProto"));
-"#), vec!["true", "false", "false"]);
+"#
+        ),
+        vec!["true", "false", "false"]
+    );
 }
 
 // ===================================================================
@@ -431,7 +566,9 @@ console.log(obj.propertyIsEnumerable("fromProto"));
 
 #[test]
 fn object_keys_own_enumerable_only() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const proto = { inherited: 0 };
 const obj = Object.create(proto);
 obj.a = 1;
@@ -441,7 +578,10 @@ const keys = Object.keys(obj);
 console.log(keys.join(","));
 console.log(keys.includes("inherited"));
 console.log(keys.includes("hidden"));
-"#), vec!["a,b", "false", "false"]);
+"#
+        ),
+        vec!["a,b", "false", "false"]
+    );
 }
 
 // ===================================================================
@@ -450,13 +590,18 @@ console.log(keys.includes("hidden"));
 
 #[test]
 fn object_values_own_enumerable_only() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 const obj = { p: 10, q: 20 };
 Object.defineProperty(obj, "secret", { value: 99, enumerable: false });
 const vals = Object.values(obj);
 console.log(vals.join(","));
 console.log(vals.includes(99));
-"#), vec!["10,20", "false"]);
+"#
+        ),
+        vec!["10,20", "false"]
+    );
 }
 
 // ===================================================================
@@ -465,7 +610,9 @@ console.log(vals.includes(99));
 
 #[test]
 fn tostring_override_via_prototype() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function Point(x, y) {
     this.x = x;
     this.y = y;
@@ -476,5 +623,8 @@ Point.prototype.toString = function() {
 const p = new Point(3, 4);
 console.log(p.toString());
 console.log(String(p));
-"#), vec!["(3,4)", "(3,4)"]);
+"#
+        ),
+        vec!["(3,4)", "(3,4)"]
+    );
 }

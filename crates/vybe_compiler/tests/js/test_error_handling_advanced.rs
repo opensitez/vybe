@@ -1,10 +1,11 @@
 /// Error handling edge cases and patterns
-
 use super::helpers::run_js;
 
 #[test]
 fn custom_error_hierarchy() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class AppError extends Error {
     constructor(message, code) {
         super(message);
@@ -26,12 +27,17 @@ console.log(e instanceof NetworkError);
 console.log(e.code);
 console.log(e.statusCode);
 console.log(e.message);
-"#), vec!["true", "true", "true", "NETWORK", "404", "Not Found"]);
+"#
+        ),
+        vec!["true", "true", "true", "NETWORK", "404", "Not Found"]
+    );
 }
 
 #[test]
 fn error_type_discrimination() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function classify(fn) {
     try {
         fn();
@@ -45,12 +51,17 @@ function classify(fn) {
 console.log(classify(() => null.x));
 console.log(classify(() => new Array(-1)));
 console.log(classify(() => { throw new RangeError("oops"); }));
-"#), vec!["type", "range", "range"]);
+"#
+        ),
+        vec!["type", "range", "range"]
+    );
 }
 
 #[test]
 fn try_catch_in_promise_chain() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const result = await Promise.resolve(1)
         .then(v => { throw new Error("fail"); })
@@ -59,12 +70,17 @@ async function main() {
     console.log(result);
 }
 main();
-"#), vec!["caught: fail recovered"]);
+"#
+        ),
+        vec!["caught: fail recovered"]
+    );
 }
 
 #[test]
 fn error_in_finally() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function test() {
     try {
         throw new Error("original");
@@ -73,12 +89,17 @@ function test() {
     }
 }
 console.log(test());
-"#), vec!["from finally"]);
+"#
+        ),
+        vec!["from finally"]
+    );
 }
 
 #[test]
 fn aggregate_error_catching() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     try {
         await Promise.any([
@@ -92,12 +113,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["true", "2", "e1"]);
+"#
+        ),
+        vec!["true", "2", "e1"]
+    );
 }
 
 #[test]
 fn error_propagation_through_callbacks() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function safe(fn) {
     try { return { ok: true, value: fn() }; }
     catch(e) { return { ok: false, error: e.message }; }
@@ -108,12 +134,17 @@ console.log(r1.ok);
 console.log(r1.value.x);
 console.log(r2.ok);
 console.log(typeof r2.error);
-"#), vec!["true", "1", "false", "string"]);
+"#
+        ),
+        vec!["true", "1", "false", "string"]
+    );
 }
 
 #[test]
 fn stack_overflow_detection() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function recurse(n) {
     try { return recurse(n + 1); }
     catch(e) { return n; }
@@ -121,12 +152,17 @@ function recurse(n) {
 const depth = recurse(0);
 console.log(depth > 100);
 console.log(typeof depth);
-"#), vec!["true", "number"]);
+"#
+        ),
+        vec!["true", "number"]
+    );
 }
 
 #[test]
 fn error_cause_chain() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function level3() { throw new Error("level3 fail"); }
 function level2() {
     try { level3(); }
@@ -141,12 +177,17 @@ try { level1(); } catch(e) {
     console.log(e.cause.message);
     console.log(e.cause.cause.message);
 }
-"#), vec!["level1 fail", "level2 fail", "level3 fail"]);
+"#
+        ),
+        vec!["level1 fail", "level2 fail", "level3 fail"]
+    );
 }
 
 #[test]
 fn unhandled_rejection_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const results = await Promise.allSettled([
         Promise.resolve(1),
@@ -158,12 +199,17 @@ async function main() {
     console.log(results[1].reason.message);
 }
 main();
-"#), vec!["fulfilled,rejected,fulfilled", "fail"]);
+"#
+        ),
+        vec!["fulfilled,rejected,fulfilled", "fail"]
+    );
 }
 
 #[test]
 fn error_in_generator() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function* gen() {
     try {
         yield 1;
@@ -177,17 +223,25 @@ const g = gen();
 console.log(g.next().value);
 console.log(g.throw(new Error("oops")).value);
 console.log(g.next().value);
-"#), vec!["1", "caught: oops", "3"]);
+"#
+        ),
+        vec!["1", "caught: oops", "3"]
+    );
 }
 
 #[test]
 fn optional_catch_binding() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function safeParse(s) {
     try { return { ok: true, val: JSON.parse(s) }; }
     catch { return { ok: false }; }
 }
 console.log(safeParse('{"x":1}').ok);
 console.log(safeParse("bad").ok);
-"#), vec!["true", "false"]);
+"#
+        ),
+        vec!["true", "false"]
+    );
 }

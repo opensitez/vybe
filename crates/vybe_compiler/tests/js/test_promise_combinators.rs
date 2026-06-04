@@ -1,10 +1,11 @@
 /// Promise.withResolvers, Promise.any, Promise.race patterns (ES2024)
-
 use super::helpers::run_js;
 
 #[test]
 fn promise_any_resolves_first() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const p = await Promise.any([
         Promise.reject("no"),
@@ -14,12 +15,17 @@ async function main() {
     console.log(p);
 }
 main();
-"#), vec!["yes"]);
+"#
+        ),
+        vec!["yes"]
+    );
 }
 
 #[test]
 fn promise_any_all_reject_throws_aggregate() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     try {
         await Promise.any([
@@ -32,12 +38,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["true", "2"]);
+"#
+        ),
+        vec!["true", "2"]
+    );
 }
 
 #[test]
 fn promise_any_empty_rejects_aggregate() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     try {
         await Promise.any([]);
@@ -46,12 +57,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["true"]);
+"#
+        ),
+        vec!["true"]
+    );
 }
 
 #[test]
 fn promise_with_resolvers_resolve() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const { promise, resolve } = Promise.withResolvers();
     resolve(42);
@@ -59,12 +75,17 @@ async function main() {
     console.log(val);
 }
 main();
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 #[test]
 fn promise_with_resolvers_reject() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const { promise, reject } = Promise.withResolvers();
     reject(new Error("fail"));
@@ -75,12 +96,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["fail"]);
+"#
+        ),
+        vec!["fail"]
+    );
 }
 
 #[test]
 fn promise_with_resolvers_deferred_resolve() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const { promise, resolve } = Promise.withResolvers();
     setTimeout(() => resolve("deferred"), 0);
@@ -88,12 +114,17 @@ async function main() {
     console.log(val);
 }
 main();
-"#), vec!["deferred"]);
+"#
+        ),
+        vec!["deferred"]
+    );
 }
 
 #[test]
 fn promise_race_fastest_wins() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const fast = Promise.resolve("fast");
     const slow = new Promise(resolve => setTimeout(() => resolve("slow"), 100));
@@ -101,12 +132,17 @@ async function main() {
     console.log(result);
 }
 main();
-"#), vec!["fast"]);
+"#
+        ),
+        vec!["fast"]
+    );
 }
 
 #[test]
 fn promise_race_rejection_wins_if_first() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const rejected = Promise.reject(new Error("first"));
     const resolved = Promise.resolve("second");
@@ -117,12 +153,17 @@ async function main() {
     }
 }
 main();
-"#), vec!["first"]);
+"#
+        ),
+        vec!["first"]
+    );
 }
 
 #[test]
 fn promise_all_settled_captures_all() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const results = await Promise.allSettled([
         Promise.resolve(1),
@@ -135,12 +176,17 @@ async function main() {
     console.log(results[2].value);
 }
 main();
-"#), vec!["fulfilled", "rejected", "err", "3"]);
+"#
+        ),
+        vec!["fulfilled", "rejected", "err", "3"]
+    );
 }
 
 #[test]
 fn promise_all_rejects_on_first_failure() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     try {
         await Promise.all([
@@ -153,29 +199,42 @@ async function main() {
     }
 }
 main();
-"#), vec!["boom"]);
+"#
+        ),
+        vec!["boom"]
+    );
 }
 
 #[test]
 fn promise_all_empty_resolves_empty_array() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const result = await Promise.all([]);
     console.log(Array.isArray(result));
     console.log(result.length);
 }
 main();
-"#), vec!["true", "0"]);
+"#
+        ),
+        vec!["true", "0"]
+    );
 }
 
 #[test]
 fn promise_resolve_thenable_assimilation() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function main() {
     const thenable = { then(resolve) { resolve(100); } };
     const result = await Promise.resolve(thenable);
     console.log(result);
 }
 main();
-"#), vec!["100"]);
+"#
+        ),
+        vec!["100"]
+    );
 }

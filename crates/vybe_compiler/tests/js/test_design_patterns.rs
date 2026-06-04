@@ -1,10 +1,11 @@
 /// Design patterns in JavaScript — Observer, Builder, Strategy, Command, State
-
 use super::helpers::run_js;
 
 #[test]
 fn observer_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class EventEmitter {
     constructor() { this._events = {}; }
     on(event, listener) {
@@ -27,12 +28,17 @@ emitter.emit("data", 2);
 emitter.off("data", handler);
 emitter.emit("data", 3); // not received
 console.log(log.join(","));
-"#), vec!["1,2"]);
+"#
+        ),
+        vec!["1,2"]
+    );
 }
 
 #[test]
 fn builder_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class QueryBuilder {
     constructor() { this._table = ""; this._where = []; this._limit = null; }
     from(table) { this._table = table; return this; }
@@ -52,12 +58,17 @@ const query = new QueryBuilder()
     .limit(10)
     .build();
 console.log(query);
-"#), vec!["SELECT * FROM users WHERE age > 18 AND active = 1 LIMIT 10"]);
+"#
+        ),
+        vec!["SELECT * FROM users WHERE age > 18 AND active = 1 LIMIT 10"]
+    );
 }
 
 #[test]
 fn strategy_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Sorter {
     constructor(strategy) { this.strategy = strategy; }
     sort(arr) { return this.strategy([...arr]); }
@@ -69,12 +80,17 @@ const asc = new Sorter(ascending);
 const desc = new Sorter(descending);
 console.log(asc.sort(nums).join(","));
 console.log(desc.sort(nums).join(","));
-"#), vec!["1,1,2,3,4,5,6,9", "9,6,5,4,3,2,1,1"]);
+"#
+        ),
+        vec!["1,1,2,3,4,5,6,9", "9,6,5,4,3,2,1,1"]
+    );
 }
 
 #[test]
 fn command_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class TextEditor {
     constructor() { this.text = ""; this.history = []; }
     execute(command) {
@@ -96,12 +112,17 @@ editor.execute(append(" World"));
 console.log(editor.text);
 editor.undo();
 console.log(editor.text);
-"#), vec!["Hello World", "Hello"]);
+"#
+        ),
+        vec!["Hello World", "Hello"]
+    );
 }
 
 #[test]
 fn singleton_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Config {
     static #instance = null;
     #settings = {};
@@ -117,12 +138,17 @@ const b = Config.getInstance();
 a.set("theme", "dark");
 console.log(a === b);
 console.log(b.get("theme"));
-"#), vec!["true", "dark"]);
+"#
+        ),
+        vec!["true", "dark"]
+    );
 }
 
 #[test]
 fn decorator_pattern_functional() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function withLogging(fn, name) {
     return function(...args) {
         const result = fn(...args);
@@ -132,12 +158,17 @@ function withLogging(fn, name) {
 }
 const add = withLogging((a, b) => a + b, "add");
 add(3, 4);
-"#), vec!["add(3,4) = 7"]);
+"#
+        ),
+        vec!["add(3,4) = 7"]
+    );
 }
 
 #[test]
 fn state_machine_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class TrafficLight {
     #state = "red";
     next() {
@@ -152,12 +183,17 @@ console.log(light.state);
 console.log(light.next());
 console.log(light.next());
 console.log(light.next());
-"#), vec!["red", "green", "yellow", "red"]);
+"#
+        ),
+        vec!["red", "green", "yellow", "red"]
+    );
 }
 
 #[test]
 fn iterator_pattern_custom() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Range {
     constructor(start, end, step = 1) {
         this.start = start; this.end = end; this.step = step;
@@ -180,5 +216,8 @@ function* range(start, end, step = 1) {
 }
 console.log([...range(0, 10, 2)].join(","));
 console.log([...range(1, 6)].join(","));
-"#), vec!["0,2,4,6,8", "1,2,3,4,5"]);
+"#
+        ),
+        vec!["0,2,4,6,8", "1,2,3,4,5"]
+    );
 }

@@ -1,10 +1,11 @@
 /// Async patterns — throttle, debounce, queue, retry with exponential backoff
-
 use super::helpers::run_js;
 
 #[test]
 fn sequential_async_queue() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class AsyncQueue {
     #queue = [];
     #running = false;
@@ -36,12 +37,17 @@ async function main() {
     console.log(log.join(","));
 }
 main();
-"#), vec!["1,2,3"]);
+"#
+        ),
+        vec!["1,2,3"]
+    );
 }
 
 #[test]
 fn promise_retry_with_limit() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function retry(fn, times) {
     for (let i = 0; i < times; i++) {
         try { return await fn(); }
@@ -59,12 +65,17 @@ async function main() {
     console.log(attempts);
 }
 main();
-"#), vec!["success after 3", "3"]);
+"#
+        ),
+        vec!["success after 3", "3"]
+    );
 }
 
 #[test]
 fn async_map_sequential() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function mapSequential(arr, fn) {
     const results = [];
     for (const item of arr) {
@@ -77,12 +88,17 @@ async function main() {
     console.log(results.join(","));
 }
 main();
-"#), vec!["2,4,6"]);
+"#
+        ),
+        vec!["2,4,6"]
+    );
 }
 
 #[test]
 fn async_map_parallel() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function mapParallel(arr, fn) {
     return Promise.all(arr.map(fn));
 }
@@ -91,12 +107,17 @@ async function main() {
     console.log(results.join(","));
 }
 main();
-"#), vec!["1,4,9,16"]);
+"#
+        ),
+        vec!["1,4,9,16"]
+    );
 }
 
 #[test]
 fn async_reduce_sequential() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function asyncReduce(arr, fn, init) {
     let acc = init;
     for (const item of arr) {
@@ -109,12 +130,17 @@ async function main() {
     console.log(result);
 }
 main();
-"#), vec!["15"]);
+"#
+        ),
+        vec!["15"]
+    );
 }
 
 #[test]
 fn async_filter() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function asyncFilter(arr, pred) {
     const results = await Promise.all(arr.map(async (item) => ({
         item,
@@ -127,12 +153,17 @@ async function main() {
     console.log(evens.join(","));
 }
 main();
-"#), vec!["2,4,6"]);
+"#
+        ),
+        vec!["2,4,6"]
+    );
 }
 
 #[test]
 fn async_waterfall_pipeline() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 async function waterfall(fns, initial) {
     return fns.reduce(async (promise, fn) => fn(await promise), Promise.resolve(initial));
 }
@@ -145,12 +176,17 @@ async function main() {
     console.log(result);
 }
 main();
-"#), vec!["result: 12"]);
+"#
+        ),
+        vec!["result: 12"]
+    );
 }
 
 #[test]
 fn async_timeout_race() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 function timeout(ms) {
     return new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Timeout")), ms)
@@ -165,5 +201,8 @@ async function main() {
     console.log(result);
 }
 main();
-"#), vec!["done"]);
+"#
+        ),
+        vec!["done"]
+    );
 }

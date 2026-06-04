@@ -52,7 +52,10 @@ fn test_unary_neg() {
 
 #[test]
 fn test_string_concat() {
-    assert_eq!(run_js_one(r#"console.log("hello" + " " + "world")"#), "hello world");
+    assert_eq!(
+        run_js_one(r#"console.log("hello" + " " + "world")"#),
+        "hello world"
+    );
     assert_eq!(run_js_one(r#"console.log("count: " + 42)"#), "count: 42");
 }
 
@@ -123,8 +126,14 @@ fn test_short_circuit() {
 
 #[test]
 fn test_if_else() {
-    assert_eq!(run_js_one("if (true) { console.log('yes') } else { console.log('no') }"), "yes");
-    assert_eq!(run_js_one("if (false) { console.log('yes') } else { console.log('no') }"), "no");
+    assert_eq!(
+        run_js_one("if (true) { console.log('yes') } else { console.log('no') }"),
+        "yes"
+    );
+    assert_eq!(
+        run_js_one("if (false) { console.log('yes') } else { console.log('no') }"),
+        "no"
+    );
 }
 
 #[test]
@@ -140,30 +149,45 @@ fn test_ternary() {
 
 #[test]
 fn test_while_loop() {
-    assert_eq!(run_js_one("let i = 0; while (i < 5) { i = i + 1; } console.log(i)"), "5");
+    assert_eq!(
+        run_js_one("let i = 0; while (i < 5) { i = i + 1; } console.log(i)"),
+        "5"
+    );
 }
 
 #[test]
 fn test_for_loop() {
-    assert_eq!(run_js_one("let s = 0; for (let i = 1; i <= 10; i++) { s = s + i; } console.log(s)"), "55");
+    assert_eq!(
+        run_js_one("let s = 0; for (let i = 1; i <= 10; i++) { s = s + i; } console.log(s)"),
+        "55"
+    );
 }
 
 #[test]
 fn test_do_while() {
-    assert_eq!(run_js_one("let n = 1; do { n = n * 2; } while (n < 100); console.log(n)"), "128");
+    assert_eq!(
+        run_js_one("let n = 1; do { n = n * 2; } while (n < 100); console.log(n)"),
+        "128"
+    );
 }
 
 #[test]
 fn test_break() {
-    assert_eq!(run_js_one("let i = 0; while (true) { if (i >= 3) break; i = i + 1; } console.log(i)"), "3");
+    assert_eq!(
+        run_js_one("let i = 0; while (true) { if (i >= 3) break; i = i + 1; } console.log(i)"),
+        "3"
+    );
 }
 
 #[test]
 fn test_continue() {
     // Sum only odd numbers 1-10
-    assert_eq!(run_js_one(
-        "let s = 0; for (let i = 1; i <= 10; i++) { if (i % 2 === 0) continue; s = s + i; } console.log(s)"
-    ), "25"); // 1+3+5+7+9
+    assert_eq!(
+        run_js_one(
+            "let s = 0; for (let i = 1; i <= 10; i++) { if (i % 2 === 0) continue; s = s + i; } console.log(s)"
+        ),
+        "25"
+    ); // 1+3+5+7+9
 }
 
 #[test]
@@ -186,7 +210,10 @@ fn test_switch() {
 
 #[test]
 fn test_function_declaration() {
-    assert_eq!(run_js_one("function add(a, b) { return a + b; } console.log(add(3, 4))"), "7");
+    assert_eq!(
+        run_js_one("function add(a, b) { return a + b; } console.log(add(3, 4))"),
+        "7"
+    );
 }
 
 #[test]
@@ -197,12 +224,18 @@ fn test_recursion() {
 
 #[test]
 fn test_arrow_function() {
-    assert_eq!(run_js_one("let sq = (x) => x * x; console.log(sq(5))"), "25");
+    assert_eq!(
+        run_js_one("let sq = (x) => x * x; console.log(sq(5))"),
+        "25"
+    );
 }
 
 #[test]
 fn test_arrow_block_body() {
-    assert_eq!(run_js_one("let f = (x) => { return x + 1; }; console.log(f(9))"), "10");
+    assert_eq!(
+        run_js_one("let f = (x) => { return x + 1; }; console.log(f(9))"),
+        "10"
+    );
 }
 
 #[test]
@@ -245,12 +278,18 @@ fn test_compose() {
 
 #[test]
 fn test_object_literal() {
-    assert_eq!(run_js_one(r#"let o = { name: "Alice", age: 30 }; console.log(o.name, o.age)"#), "Alice 30");
+    assert_eq!(
+        run_js_one(r#"let o = { name: "Alice", age: 30 }; console.log(o.name, o.age)"#),
+        "Alice 30"
+    );
 }
 
 #[test]
 fn test_object_set_property() {
-    assert_eq!(run_js_one(r#"let o = {}; o.x = 42; console.log(o.x)"#), "42");
+    assert_eq!(
+        run_js_one(r#"let o = {}; o.x = 42; console.log(o.x)"#),
+        "42"
+    );
 }
 
 // ============================================================
@@ -264,7 +303,10 @@ fn test_array_literal() {
 
 #[test]
 fn test_array_length() {
-    assert_eq!(run_js_one("let a = [10, 20, 30]; console.log(a.length)"), "3");
+    assert_eq!(
+        run_js_one("let a = [10, 20, 30]; console.log(a.length)"),
+        "3"
+    );
 }
 
 // ============================================================

@@ -6,14 +6,19 @@ use super::helpers::run_js;
 
 #[test]
 fn private_field_basic_access_via_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class BankAccount {
     #balance = 100;
     getBalance() { return this.#balance; }
 }
 const acc = new BankAccount();
 console.log(acc.getBalance());
-"#), vec!["100"]);
+"#
+        ),
+        vec!["100"]
+    );
 }
 
 // ===================================================================
@@ -22,7 +27,9 @@ console.log(acc.getBalance());
 
 #[test]
 fn private_method_accessible_within_class_only() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Validator {
     #isNonEmpty(s) { return s.length > 0; }
     validate(s) { return this.#isNonEmpty(s) ? "ok" : "empty"; }
@@ -30,7 +37,10 @@ class Validator {
 const v = new Validator();
 console.log(v.validate("hello"));
 console.log(v.validate(""));
-"#), vec!["ok", "empty"]);
+"#
+        ),
+        vec!["ok", "empty"]
+    );
 }
 
 // ===================================================================
@@ -39,7 +49,9 @@ console.log(v.validate(""));
 
 #[test]
 fn private_static_field_shared_across_instances() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Registry {
     static #count = 0;
     constructor() { Registry.#count++; }
@@ -49,7 +61,10 @@ new Registry();
 new Registry();
 new Registry();
 console.log(Registry.getCount());
-"#), vec!["3"]);
+"#
+        ),
+        vec!["3"]
+    );
 }
 
 // ===================================================================
@@ -58,14 +73,19 @@ console.log(Registry.getCount());
 
 #[test]
 fn private_static_method_callable_on_class() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class MathHelper {
     static #double(x) { return x * 2; }
     static compute(x) { return MathHelper.#double(x) + 1; }
 }
 console.log(MathHelper.compute(5));
 console.log(MathHelper.compute(10));
-"#), vec!["11", "21"]);
+"#
+        ),
+        vec!["11", "21"]
+    );
 }
 
 // ===================================================================
@@ -74,7 +94,9 @@ console.log(MathHelper.compute(10));
 
 #[test]
 fn static_init_block_runs_once_at_class_definition() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 let ran = 0;
 class Setup {
     static {
@@ -85,7 +107,10 @@ console.log(ran);
 const a = new Setup();
 const b = new Setup();
 console.log(ran);
-"#), vec!["1", "1"]);
+"#
+        ),
+        vec!["1", "1"]
+    );
 }
 
 // ===================================================================
@@ -94,7 +119,9 @@ console.log(ran);
 
 #[test]
 fn static_init_block_can_call_static_methods() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Config {
     static value;
     static #compute() { return 42; }
@@ -103,7 +130,10 @@ class Config {
     }
 }
 console.log(Config.value);
-"#), vec!["42"]);
+"#
+        ),
+        vec!["42"]
+    );
 }
 
 // ===================================================================
@@ -112,7 +142,9 @@ console.log(Config.value);
 
 #[test]
 fn static_init_block_can_initialize_static_fields() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Constants {
     static PI;
     static E;
@@ -123,7 +155,10 @@ class Constants {
 }
 console.log(Constants.PI);
 console.log(Constants.E);
-"#), vec!["3.14159", "2.71828"]);
+"#
+        ),
+        vec!["3.14159", "2.71828"]
+    );
 }
 
 // ===================================================================
@@ -132,7 +167,9 @@ console.log(Constants.E);
 
 #[test]
 fn static_init_block_order_multiple_blocks() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Ordered {
     static log = [];
     static { Ordered.log.push("first"); }
@@ -140,7 +177,10 @@ class Ordered {
     static { Ordered.log.push("third"); }
 }
 console.log(Ordered.log.join(","));
-"#), vec!["first,second,third"]);
+"#
+        ),
+        vec!["first,second,third"]
+    );
 }
 
 // ===================================================================
@@ -149,7 +189,9 @@ console.log(Ordered.log.join(","));
 
 #[test]
 fn private_field_in_subclass_separate_from_parent() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Parent {
     #secret = "parent-secret";
     getSecret() { return this.#secret; }
@@ -161,7 +203,10 @@ class Child extends Parent {
 const c = new Child();
 console.log(c.getSecret());
 console.log(c.getChildSecret());
-"#), vec!["parent-secret", "child-secret"]);
+"#
+        ),
+        vec!["parent-secret", "child-secret"]
+    );
 }
 
 // ===================================================================
@@ -170,7 +215,9 @@ console.log(c.getChildSecret());
 
 #[test]
 fn private_field_access_outside_class_throws() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Secret {
     #value = 99;
     getValue() { return this.#value; }
@@ -182,7 +229,10 @@ try {
 } catch (e) {
     console.log("access denied");
 }
-"#), vec!["99", "access denied"]);
+"#
+        ),
+        vec!["99", "access denied"]
+    );
 }
 
 // ===================================================================
@@ -191,7 +241,9 @@ try {
 
 #[test]
 fn private_getter_property() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Circle {
     #radius;
     constructor(r) { this.#radius = r; }
@@ -200,7 +252,10 @@ class Circle {
 }
 const c = new Circle(5);
 console.log(c.describe());
-"#), vec!["area=78.5"]);
+"#
+        ),
+        vec!["area=78.5"]
+    );
 }
 
 // ===================================================================
@@ -209,7 +264,9 @@ console.log(c.describe());
 
 #[test]
 fn private_setter_property() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Validated {
     #score = 0;
     set #safeScore(v) { this.#score = v < 0 ? 0 : v > 100 ? 100 : v; }
@@ -223,7 +280,10 @@ obj.setScore(-10);
 console.log(obj.getScore());
 obj.setScore(75);
 console.log(obj.getScore());
-"#), vec!["100", "0", "75"]);
+"#
+        ),
+        vec!["100", "0", "75"]
+    );
 }
 
 // ===================================================================
@@ -232,7 +292,9 @@ console.log(obj.getScore());
 
 #[test]
 fn private_getter_and_setter_pair() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Temperature {
     #celsius = 0;
     get #fahrenheit() { return this.#celsius * 9 / 5 + 32; }
@@ -245,7 +307,10 @@ const t = new Temperature();
 t.setF(212);
 console.log(t.getC());
 console.log(t.getF());
-"#), vec!["100", "212"]);
+"#
+        ),
+        vec!["100", "212"]
+    );
 }
 
 // ===================================================================
@@ -254,7 +319,9 @@ console.log(t.getF());
 
 #[test]
 fn private_field_in_tostring_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Point {
     #x;
     #y;
@@ -264,7 +331,10 @@ class Point {
 const p = new Point(3, 7);
 console.log(p.toString());
 console.log("Point: " + p);
-"#), vec!["(3,7)", "Point: (3,7)"]);
+"#
+        ),
+        vec!["(3,7)", "Point: (3,7)"]
+    );
 }
 
 // ===================================================================
@@ -273,7 +343,9 @@ console.log("Point: " + p);
 
 #[test]
 fn private_field_in_static_factory_method() {
-    assert_eq!(run_js(r##"
+    assert_eq!(
+        run_js(
+            r##"
 class Color {
     #r; #g; #b;
     constructor(r, g, b) { this.#r = r; this.#g = g; this.#b = b; }
@@ -287,7 +359,10 @@ class Color {
 }
 const c = Color.fromHex("#ff8000");
 console.log(c.toString());
-"##), vec!["255,128,0"]);
+"##
+        ),
+        vec!["255,128,0"]
+    );
 }
 
 // ===================================================================
@@ -296,7 +371,9 @@ console.log(c.toString());
 
 #[test]
 fn class_field_non_private_public() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Dog {
     species = "canine";
     constructor(name) { this.name = name; }
@@ -305,7 +382,10 @@ class Dog {
 const d = new Dog("Rex");
 console.log(d.describe());
 console.log(d.species);
-"#), vec!["Rex is a canine", "canine"]);
+"#
+        ),
+        vec!["Rex is a canine", "canine"]
+    );
 }
 
 // ===================================================================
@@ -314,7 +394,9 @@ console.log(d.species);
 
 #[test]
 fn public_class_field_with_default_value() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Task {
     done = false;
     priority = 1;
@@ -324,7 +406,10 @@ const t = new Task();
 console.log(t.done);
 console.log(t.priority);
 console.log(t.label);
-"#), vec!["false", "1", "untitled"]);
+"#
+        ),
+        vec!["false", "1", "untitled"]
+    );
 }
 
 // ===================================================================
@@ -333,7 +418,9 @@ console.log(t.label);
 
 #[test]
 fn public_class_field_default_overridden_in_constructor() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Widget {
     color = "grey";
     constructor(color) {
@@ -344,7 +431,10 @@ const w1 = new Widget("blue");
 const w2 = new Widget();
 console.log(w1.color);
 console.log(w2.color);
-"#), vec!["blue", "grey"]);
+"#
+        ),
+        vec!["blue", "grey"]
+    );
 }
 
 // ===================================================================
@@ -353,7 +443,9 @@ console.log(w2.color);
 
 #[test]
 fn static_public_class_field() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class App {
     static name = "MyApp";
     static version = "2.0";
@@ -362,7 +454,10 @@ class App {
 console.log(App.name);
 console.log(App.version);
 console.log(App.description());
-"#), vec!["MyApp", "2.0", "MyApp v2.0"]);
+"#
+        ),
+        vec!["MyApp", "2.0", "MyApp v2.0"]
+    );
 }
 
 // ===================================================================
@@ -371,7 +466,9 @@ console.log(App.description());
 
 #[test]
 fn private_field_counter_pattern() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Counter {
     #n = 0;
     inc() { this.#n++; return this; }
@@ -384,7 +481,10 @@ c.inc().inc().inc().dec();
 console.log(c.value());
 c.reset();
 console.log(c.value());
-"#), vec!["2", "0"]);
+"#
+        ),
+        vec!["2", "0"]
+    );
 }
 
 // ===================================================================
@@ -393,7 +493,9 @@ console.log(c.value());
 
 #[test]
 fn private_field_encapsulating_state() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class TrafficLight {
     #state = "red";
     next() {
@@ -411,7 +513,10 @@ light.next();
 console.log(light.current());
 light.next();
 console.log(light.current());
-"#), vec!["red", "green", "yellow", "red"]);
+"#
+        ),
+        vec!["red", "green", "yellow", "red"]
+    );
 }
 
 // ===================================================================
@@ -420,7 +525,9 @@ console.log(light.current());
 
 #[test]
 fn class_private_and_public_fields_access_each_other() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class User {
     name;
     #role = "user";
@@ -435,7 +542,10 @@ const u2 = new User("Bob");
 console.log(u1.display());
 console.log(u2.display());
 console.log(u1.name);
-"#), vec!["Alice [admin]", "Bob [user]", "Alice"]);
+"#
+        ),
+        vec!["Alice [admin]", "Bob [user]", "Alice"]
+    );
 }
 
 // ===================================================================
@@ -444,7 +554,9 @@ console.log(u1.name);
 
 #[test]
 fn private_array_field_public_push_get() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Stack {
     #items = [];
     push(item) { this.#items.push(item); }
@@ -460,7 +572,10 @@ console.log(s.size());
 console.log(s.peek());
 console.log(s.pop());
 console.log(s.size());
-"#), vec!["3", "30", "30", "2"]);
+"#
+        ),
+        vec!["3", "30", "30", "2"]
+    );
 }
 
 // ===================================================================
@@ -469,7 +584,9 @@ console.log(s.size());
 
 #[test]
 fn private_method_calling_another_private_method() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class StringProcessor {
     #trim(s) { return s.trim(); }
     #upper(s) { return s.toUpperCase(); }
@@ -478,7 +595,10 @@ class StringProcessor {
 }
 const sp = new StringProcessor();
 console.log(sp.run("  hello world  "));
-"#), vec!["HELLO WORLD"]);
+"#
+        ),
+        vec!["HELLO WORLD"]
+    );
 }
 
 // ===================================================================
@@ -487,7 +607,9 @@ console.log(sp.run("  hello world  "));
 
 #[test]
 fn static_private_field_singleton_count() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Connection {
     static #pool = [];
     static #maxSize = 3;
@@ -509,7 +631,10 @@ Connection.acquire("c");
 const d = Connection.acquire("d");
 console.log(Connection.poolSize());
 console.log(d);
-"#), vec!["3", "null"]);
+"#
+        ),
+        vec!["3", "null"]
+    );
 }
 
 // ===================================================================
@@ -518,7 +643,9 @@ console.log(d);
 
 #[test]
 fn private_field_serialization_tojson() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Person {
     #name;
     #age;
@@ -529,7 +656,10 @@ class Person {
 const p = new Person("Alice", 30);
 const json = p.serialize();
 console.log(json);
-"#), vec![r#"{"name":"Alice","age":30}"#]);
+"#
+        ),
+        vec![r#"{"name":"Alice","age":30}"#]
+    );
 }
 
 // ===================================================================
@@ -538,7 +668,9 @@ console.log(json);
 
 #[test]
 fn class_field_declarations_no_constructor_needed() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Config {
     host = "localhost";
     port = 8080;
@@ -553,7 +685,10 @@ console.log(cfg.toString());
 cfg.port = 443;
 cfg.secure = true;
 console.log(cfg.toString());
-"#), vec!["http://localhost:8080", "https://localhost:443"]);
+"#
+        ),
+        vec!["http://localhost:8080", "https://localhost:443"]
+    );
 }
 
 // ===================================================================
@@ -562,7 +697,9 @@ console.log(cfg.toString());
 
 #[test]
 fn instanceof_with_private_fields() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Animal {
     #alive = true;
     isAlive() { return this.#alive; }
@@ -577,7 +714,10 @@ console.log(d instanceof Dog);
 console.log(d instanceof Animal);
 console.log(d.isAlive());
 console.log(d.getBreed());
-"#), vec!["true", "true", "true", "Labrador"]);
+"#
+        ),
+        vec!["true", "true", "true", "Labrador"]
+    );
 }
 
 // ===================================================================
@@ -586,7 +726,9 @@ console.log(d.getBreed());
 
 #[test]
 fn private_static_method_helper_in_public_factory() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class UUID {
     static #pad(n) { return n.toString(16).padStart(4, "0"); }
     static #segment(max) { return Math.floor(max / 2); }
@@ -598,7 +740,10 @@ class UUID {
 }
 console.log(UUID.create(256));
 console.log(UUID.create(65536));
-"#), vec!["0100-0080", "10000-8000"]);
+"#
+        ),
+        vec!["0100-0080", "10000-8000"]
+    );
 }
 
 // ===================================================================
@@ -607,7 +752,9 @@ console.log(UUID.create(65536));
 
 #[test]
 fn method_chaining_with_private_fields() {
-    assert_eq!(run_js(r#"
+    assert_eq!(
+        run_js(
+            r#"
 class Query {
     #table = "";
     #conditions = [];
@@ -633,6 +780,8 @@ const result = new Query()
     .limit(10)
     .build();
 console.log(result);
-"#), vec!["SELECT * FROM users WHERE age > 18 AND active = true LIMIT 10"]);
+"#
+        ),
+        vec!["SELECT * FROM users WHERE age > 18 AND active = true LIMIT 10"]
+    );
 }
-

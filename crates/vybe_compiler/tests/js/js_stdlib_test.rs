@@ -35,7 +35,10 @@ fn test_math_abs() {
 #[test]
 fn test_math_sqrt() {
     assert_eq!(run_js_one("console.log(Math.sqrt(9))"), "3");
-    assert_eq!(run_js_one("console.log(Math.sqrt(2))"), "1.4142135623730951");
+    assert_eq!(
+        run_js_one("console.log(Math.sqrt(2))"),
+        "1.4142135623730951"
+    );
 }
 
 #[test]
@@ -76,38 +79,68 @@ fn test_str_trim() {
 
 #[test]
 fn test_str_slice() {
-    assert_eq!(run_js_one(r#"console.log("hello world".slice(0, 5))"#), "hello");
-    assert_eq!(run_js_one(r#"console.log("hello world".slice(6))"#), "world");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".slice(0, 5))"#),
+        "hello"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".slice(6))"#),
+        "world"
+    );
     assert_eq!(run_js_one(r#"console.log("hello".slice(-3))"#), "llo");
 }
 
 #[test]
 fn test_str_index_of() {
-    assert_eq!(run_js_one(r#"console.log("hello world".indexOf("world"))"#), "6");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".indexOf("world"))"#),
+        "6"
+    );
     assert_eq!(run_js_one(r#"console.log("hello".indexOf("xyz"))"#), "-1");
 }
 
 #[test]
 fn test_str_includes() {
-    assert_eq!(run_js_one(r#"console.log("hello world".includes("world"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".includes("xyz"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".includes("world"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".includes("xyz"))"#),
+        "false"
+    );
 }
 
 #[test]
 fn test_str_split() {
-    assert_eq!(run_js_one(r#"let parts = "a,b,c".split(","); console.log(parts[0], parts[1], parts[2])"#), "a b c");
+    assert_eq!(
+        run_js_one(r#"let parts = "a,b,c".split(","); console.log(parts[0], parts[1], parts[2])"#),
+        "a b c"
+    );
 }
 
 #[test]
 fn test_str_replace() {
-    assert_eq!(run_js_one(r#"console.log("hello world".replace("world", "JS"))"#), "hello JS");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".replace("world", "JS"))"#),
+        "hello JS"
+    );
 }
 
 #[test]
 fn test_str_starts_ends_with() {
-    assert_eq!(run_js_one(r#"console.log("hello".startsWith("hel"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".endsWith("llo"))"#), "true");
-    assert_eq!(run_js_one(r#"console.log("hello".startsWith("xyz"))"#), "false");
+    assert_eq!(
+        run_js_one(r#"console.log("hello".startsWith("hel"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".endsWith("llo"))"#),
+        "true"
+    );
+    assert_eq!(
+        run_js_one(r#"console.log("hello".startsWith("xyz"))"#),
+        "false"
+    );
 }
 
 #[test]
@@ -117,7 +150,10 @@ fn test_str_char_at() {
 
 #[test]
 fn test_str_substring() {
-    assert_eq!(run_js_one(r#"console.log("hello world".substring(0, 5))"#), "hello");
+    assert_eq!(
+        run_js_one(r#"console.log("hello world".substring(0, 5))"#),
+        "hello"
+    );
 }
 
 // ============================================================
@@ -126,17 +162,26 @@ fn test_str_substring() {
 
 #[test]
 fn test_arr_push() {
-    assert_eq!(run_js_one("let a = [1, 2]; a.push(3); console.log(a)"), "1,2,3");
+    assert_eq!(
+        run_js_one("let a = [1, 2]; a.push(3); console.log(a)"),
+        "1,2,3"
+    );
 }
 
 #[test]
 fn test_arr_pop() {
-    assert_eq!(run_js_one("let a = [1, 2, 3]; let x = a.pop(); console.log(x, a)"), "3 1,2");
+    assert_eq!(
+        run_js_one("let a = [1, 2, 3]; let x = a.pop(); console.log(x, a)"),
+        "3 1,2"
+    );
 }
 
 #[test]
 fn test_arr_shift() {
-    assert_eq!(run_js_one("let a = [1, 2, 3]; let x = a.shift(); console.log(x, a)"), "1 2,3");
+    assert_eq!(
+        run_js_one("let a = [1, 2, 3]; let x = a.shift(); console.log(x, a)"),
+        "1 2,3"
+    );
 }
 
 #[test]
@@ -147,17 +192,26 @@ fn test_arr_join() {
 
 #[test]
 fn test_arr_reverse() {
-    assert_eq!(run_js_one("let a = [1, 2, 3]; a.reverse(); console.log(a)"), "3,2,1");
+    assert_eq!(
+        run_js_one("let a = [1, 2, 3]; a.reverse(); console.log(a)"),
+        "3,2,1"
+    );
 }
 
 #[test]
 fn test_arr_concat() {
-    assert_eq!(run_js_one("let a = [1, 2]; let b = [3, 4]; console.log(a.concat(b))"), "1,2,3,4");
+    assert_eq!(
+        run_js_one("let a = [1, 2]; let b = [3, 4]; console.log(a.concat(b))"),
+        "1,2,3,4"
+    );
 }
 
 #[test]
 fn test_arr_slice() {
-    assert_eq!(run_js_one("let a = [1, 2, 3, 4, 5]; console.log(a.slice(1, 3))"), "2,3");
+    assert_eq!(
+        run_js_one("let a = [1, 2, 3, 4, 5]; console.log(a.slice(1, 3))"),
+        "2,3"
+    );
 }
 
 // ============================================================
@@ -188,8 +242,14 @@ fn test_is_nan() {
 #[test]
 fn test_json_stringify() {
     assert_eq!(run_js_one("console.log(JSON.stringify(42))"), "42");
-    assert_eq!(run_js_one(r#"console.log(JSON.stringify("hello"))"#), r#""hello""#);
-    assert_eq!(run_js_one("console.log(JSON.stringify([1, 2, 3]))"), "[1,2,3]");
+    assert_eq!(
+        run_js_one(r#"console.log(JSON.stringify("hello"))"#),
+        r#""hello""#
+    );
+    assert_eq!(
+        run_js_one("console.log(JSON.stringify([1, 2, 3]))"),
+        "[1,2,3]"
+    );
     assert_eq!(run_js_one("console.log(JSON.stringify(null))"), "null");
 }
 
