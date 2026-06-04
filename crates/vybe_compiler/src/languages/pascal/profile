@@ -94,7 +94,7 @@ copy          = { emit = "intrinsic:copy",                 min_args = 2, max_arg
 concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_args = 255 }
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ord           = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
-format        = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
+format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }

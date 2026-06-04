@@ -10,4 +10,5 @@
 //! to `common:dart.<name>` emit targets; `emitter::dispatch::emit_common`
 //! routes those names to the `emit_*` functions in this module.
 
+pub mod dispatch;
 pub mod string_adapter;

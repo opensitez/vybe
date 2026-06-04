@@ -24,12 +24,12 @@ pub mod canonical;
 pub mod emit;
 pub mod types;
 
-pub use types::{
-    Access, BaseCall, EventBinding, NormalClass, NormalConstructor, NormalField,
-    NormalMethod, NormalProperty, SpecialMethod, SpecialMethodKind,
-};
 pub use canonical::canonicalize_method;
 pub use emit::emit_class;
+pub use types::{
+    Access, BaseCall, EventBinding, NormalClass, NormalConstructor, NormalField, NormalMethod,
+    NormalProperty, SpecialMethod, SpecialMethodKind,
+};
 
 use crate::ast::{Modifiers, Param, Span, Statement, StmtKind, Visibility};
 
@@ -83,8 +83,17 @@ pub fn from_method_stmt(
     access: Access,
 ) -> Option<NormalMethod> {
     let StmtKind::FunctionDecl {
-        name: src_name, params, return_type, body, modifiers, is_async, is_generator, is_sub, ..
-    } = &stmt.kind else {
+        name: src_name,
+        params,
+        return_type,
+        body,
+        modifiers,
+        is_async,
+        is_generator,
+        is_sub,
+        ..
+    } = &stmt.kind
+    else {
         return None;
     };
     Some(build_normal_method(

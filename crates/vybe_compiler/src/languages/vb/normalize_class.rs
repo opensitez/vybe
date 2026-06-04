@@ -27,10 +27,12 @@
 //!     ctor). We populate `auto_init_methods` so the shim preserves
 //!     that semantic when the direct `emit_class` path lands.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
+use crate::ast::{
+    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility,
+};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -55,7 +57,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers: m,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -72,7 +81,12 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: src_name, modifiers: m, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: src_name,
+                    modifiers: m,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
 
@@ -84,7 +98,9 @@ pub fn normalize_class(
                 // `auto_init_methods` profile flag, so populating here is
                 // redundant but forward-compatible.
                 if src_name.eq_ignore_ascii_case("InitializeComponent")
-                    && !auto_init_methods.iter().any(|n| n.eq_ignore_ascii_case("InitializeComponent"))
+                    && !auto_init_methods
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case("InitializeComponent"))
                 {
                     auto_init_methods.push(src_name.clone());
                 }
@@ -110,14 +126,21 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // The VB walker injects `MyBase.New()` at the start
                         // of the body when the class DECLARATION itself
@@ -131,24 +154,59 @@ pub fn normalize_class(
                         // `body_has_super_call` is consulted downstream,
                         // so this is a no-op when the body already starts
                         // with `MyBase.New(...)`.
-                        None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        None => {
+                            if parents.is_empty() {
+                                BaseCall::None
+                            } else {
+                                BaseCall::Auto
+                            }
+                        }
                     },
                     named_name: None,
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
                 let (canonical, _) = canonicalize_method(ClassLang::Vb, pname);
                 let access = access_from_visibility(m.visibility);
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
@@ -159,7 +217,9 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            other @ (ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }
@@ -204,26 +264,34 @@ fn access_from_visibility(v: Visibility) -> Access {
 mod tests {
     use super::*;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
-            name: src_name.into(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        })))
+        ClassMember::Method(Box::new(crate::ast::Statement::new(
+            StmtKind::FunctionDecl {
+                name: src_name.into(),
+                params: vec![],
+                return_type: None,
+                body: vec![],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        )))
     }
 
     #[test]
     fn tostring_canonicalises_case_insensitive() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("ToString")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("ToString")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "tostring");
@@ -233,7 +301,11 @@ mod tests {
     #[test]
     fn getenumerator_maps_to_iterator() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("GetEnumerator")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("GetEnumerator")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "iterator");
@@ -243,7 +315,10 @@ mod tests {
     #[test]
     fn initializecomponent_populates_auto_init_methods() {
         let nc = normalize_class(
-            dummy_span(), "MyForm", &["Form".into()], &[],
+            dummy_span(),
+            "MyForm",
+            &["Form".into()],
+            &[],
             &[make_method("InitializeComponent")],
             &ClassModifiers::default(),
         );

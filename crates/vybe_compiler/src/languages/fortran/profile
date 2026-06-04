@@ -89,7 +89,7 @@ repeat        = { emit = "opcode:str_repeat",              min_args = 2, max_arg
 to_upper      = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
 to_lower      = { emit = "opcode:str_to_lower",            min_args = 1, max_args = 1 }
 array_join    = { emit = "intrinsic:array_join",          min_args = 2, max_args = 2 }
-sprintf       = { emit = "stdlib:sprintf",               min_args = 1, max_args = 255 }
+sprintf       = { emit = "common:sprintf.format",        min_args = 1, max_args = 255 }
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 

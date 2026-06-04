@@ -1,5 +1,5 @@
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 use vybe_compiler::emitter::expressions;
 use vybe_compiler::emitter::ops;
 
@@ -63,8 +63,14 @@ fn rich_compare_locals_emits_dispatch() {
     chunk.local_count = 5;
     expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", ops::emit_dyn_lt, 0);
     // Should have: struct_get, dup, ref_is_null, br_if_true, call_ref, br, drop, drop, dyn_lt
-    assert!(chunk.code.len() > 15, "rich compare should emit dispatch bytecode");
-    let has_lt = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__lt__"));
+    assert!(
+        chunk.code.len() > 15,
+        "rich compare should emit dispatch bytecode"
+    );
+    let has_lt = chunk
+        .constants
+        .iter()
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "__lt__"));
     assert!(has_lt, "should have '__lt__' constant for struct_get");
 }
 
@@ -73,9 +79,18 @@ fn smart_length_emits_dispatch() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
     expressions::emit_smart_length(&mut chunk, 1, 0);
-    assert!(chunk.code.len() > 15, "smart length should emit dispatch bytecode");
-    let has_len = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__get_length"));
-    assert!(has_len, "should have '__get_length' constant for getter check");
+    assert!(
+        chunk.code.len() > 15,
+        "smart length should emit dispatch bytecode"
+    );
+    let has_len = chunk
+        .constants
+        .iter()
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "__get_length"));
+    assert!(
+        has_len,
+        "should have '__get_length' constant for getter check"
+    );
 }
 
 #[test]

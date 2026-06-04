@@ -21,7 +21,8 @@ pub fn all() -> Vec<FormModuleLanguage> {
             load_designer: crate::languages::vb::forms::load_designer,
             save_designer: crate::languages::vb::forms::save_designer,
             generate_designer_code: crate::languages::vb::designer_codegen::generate_designer_code,
-            generate_user_code_stub: crate::languages::vb::designer_codegen::generate_user_code_stub,
+            generate_user_code_stub:
+                crate::languages::vb::designer_codegen::generate_user_code_stub,
         },
         FormModuleLanguage {
             name: "csharp",

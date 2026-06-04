@@ -1,0 +1,371 @@
+// C Grammar for pest parser.
+//
+// Covers C99 core: preprocessor (#include/#define/#ifdef…), declarations
+// (typedef/struct/union/enum, pointers, arrays), functions, full statement
+// set (if/for/while/do/switch/goto/labels), and the complete expression
+// precedence chain (flattened to keep the parse stack shallow).
+//
+// C declarations are type-led (`int x = 5;`) unlike Go's `var x int`.
+// Statement-level declarations are disambiguated from expression statements
+// by requiring a named declarator after the declaration specifiers.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | line_continuation }
+line_continuation = _{ "\\" ~ "\r"? ~ "\n" }
+COMMENT = _{ line_comment | block_comment }
+line_comment  = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ── Program ───────────────────────────────────────────────────────────────
+program = { SOI ~ top_level_item* ~ EOI }
+
+top_level_item = _{
+    preproc_directive
+    | function_definition
+    | declaration
+    | ";"
+}
+
+// ── Preprocessor ──────────────────────────────────────────────────────────
+// Directives are line-oriented; the walker turns #define name value into a
+// const and #include into an import, and ignores conditionals/pragmas.
+
+preproc_directive = ${
+    "#" ~ (" " | "\t")* ~ preproc_body
+}
+preproc_body = _{
+    define_directive
+    | include_directive
+    | other_directive
+}
+
+define_directive = !{
+    "define" ~ ident_name ~ define_params? ~ define_value?
+}
+define_params = { "(" ~ (ident_name ~ ("," ~ ident_name)*)? ~ ")" }
+define_value  = @{ (line_continuation | !("\n" | "\r") ~ ANY)* }
+
+include_directive = !{
+    "include" ~ include_target
+}
+include_target = @{ ("<" ~ (!(">" | "\n") ~ ANY)* ~ ">") | ("\"" ~ (!("\"" | "\n") ~ ANY)* ~ "\"") }
+
+other_directive = @{ ident_name ~ (line_continuation | !("\n" | "\r") ~ ANY)* }
+
+// ── Type specifiers ───────────────────────────────────────────────────────
+
+type_keyword = @{
+    ("void" | "char" | "short" | "int" | "long" | "float" | "double"
+    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t"
+    | "int8_t" | "int16_t" | "int32_t" | "int64_t"
+    | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+type_qualifier = @{
+    ("const" | "volatile" | "register" | "static" | "extern" | "auto"
+    | "inline" | "restrict" | "_Atomic")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+struct_or_union_spec = {
+    ("struct" | "union") ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
+}
+
+struct_member = {
+    declaration_specifiers ~ struct_declarator_list ~ ";"
+}
+struct_declarator_list = { declarator ~ ("," ~ declarator)* }
+
+enum_spec = {
+    "enum" ~ ident_name? ~ ("{" ~ enumerator_list? ~ "}")?
+}
+enumerator_list = { enumerator ~ ("," ~ enumerator)* ~ ","? }
+enumerator = { ident_name ~ ("=" ~ assignment_expression)? }
+
+// A primitive or known type specifier (no bare typedef-name).
+type_specifier_strict = {
+    struct_or_union_spec
+    | enum_spec
+    | type_keyword
+}
+
+// A typedef-name — only valid after at least one strict specifier.
+typedef_name = @{ !type_keyword_word ~ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// type_specifier for use inside struct members / casts / typeof — allows typedef names.
+type_specifier = {
+    struct_or_union_spec
+    | enum_spec
+    | type_keyword
+    | typedef_name
+}
+
+// declaration_specifiers: one or more qualifiers/keywords/struct/enum.
+// Bare typedef-names (like `Person p`) are also allowed as standalone types
+// but ONLY when there is no other strict specifier — i.e. it's the sole element.
+// We ban a typedef_name from following a strict specifier to prevent greedily
+// consuming the declarator name.
+declaration_specifiers = {
+    (type_qualifier | "typedef")+ ~ typedef_name
+    | (type_qualifier | "typedef")* ~ type_specifier_strict ~ (type_qualifier | type_specifier_strict)*
+    | typedef_name
+}
+
+// ── Declarations ──────────────────────────────────────────────────────────
+
+declaration = {
+    typedef_declaration
+    | normal_declaration
+}
+
+typedef_declaration = {
+    "typedef" ~ declaration_specifiers ~ declarator ~ ("," ~ declarator)* ~ ";"
+}
+
+normal_declaration = {
+    declaration_specifiers ~ init_declarator_list? ~ ";"
+}
+
+init_declarator_list = { init_declarator ~ ("," ~ init_declarator)* }
+init_declarator = { declarator ~ ("=" ~ initializer)? }
+
+declarator = { pointer? ~ direct_declarator }
+// Pointer declarator: one or more `*` each optionally followed by qualifiers.
+// Handles `int *const p`, `int **restrict q`, etc.
+ptr_qual = @{ ("const" | "volatile" | "restrict" | "_Atomic") ~ !(ASCII_ALPHANUMERIC | "_") }
+ptr_star = { "*" ~ ptr_qual* }
+pointer = { ptr_star+ }
+
+direct_declarator = {
+    (ident_name | "(" ~ declarator ~ ")") ~ declarator_suffix*
+}
+declarator_suffix = _{
+    array_suffix
+    | param_suffix
+}
+array_suffix = { "[" ~ assignment_expression? ~ "]" }
+param_suffix = { "(" ~ parameter_list? ~ ")" }
+
+parameter_list = {
+    (parameter_decl ~ ("," ~ parameter_decl)* ~ ("," ~ "...")?)
+    | "void"
+    | "..."
+}
+parameter_decl = {
+    declaration_specifiers ~ (declarator | abstract_declarator)?
+}
+abstract_declarator = { pointer ~ direct_abstract_declarator? | direct_abstract_declarator }
+direct_abstract_declarator = { (array_suffix | param_suffix)+ }
+
+// ── Initializers ──────────────────────────────────────────────────────────
+
+initializer = {
+    initializer_list
+    | assignment_expression
+}
+initializer_list = { "{" ~ (designated_init ~ ("," ~ designated_init)* ~ ","?)? ~ "}" }
+designated_init = {
+    ("." ~ ident_name ~ "=" ~ initializer)
+    | ("[" ~ assignment_expression ~ "]" ~ "=" ~ initializer)
+    | initializer
+}
+
+// ── Functions ─────────────────────────────────────────────────────────────
+
+function_definition = {
+    declaration_specifiers ~ declarator ~ compound_statement
+}
+
+// ── Statements ────────────────────────────────────────────────────────────
+
+statement = {
+    compound_statement
+    | labeled_statement
+    | if_statement
+    | switch_statement
+    | while_statement
+    | do_while_statement
+    | for_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | goto_statement
+    | function_definition
+    | expression_statement
+    | declaration
+    | empty_statement
+}
+
+empty_statement = { ";" }
+compound_statement = { "{" ~ statement* ~ "}" }
+
+labeled_statement = {
+    case_label
+    | default_label
+    | goto_label
+}
+case_label    = { "case" ~ conditional_expression ~ ":" ~ statement? }
+default_label = { "default" ~ ":" ~ statement? }
+goto_label    = { ident_name ~ ":" ~ !("=") ~ statement? }
+
+expression_statement = { expression ~ ";" }
+
+if_statement = {
+    "if" ~ "(" ~ expression ~ ")" ~ statement ~ else_clause?
+}
+else_clause = { "else" ~ statement }
+
+switch_statement = {
+    "switch" ~ "(" ~ expression ~ ")" ~ statement
+}
+
+while_statement = {
+    "while" ~ "(" ~ expression ~ ")" ~ statement
+}
+do_while_statement = {
+    "do" ~ statement ~ "while" ~ "(" ~ expression ~ ")" ~ ";"
+}
+
+for_statement = {
+    "for" ~ "(" ~ for_init ~ for_cond ~ for_update? ~ ")" ~ statement
+}
+for_init   = { declaration | expression ~ ";" | ";" }
+for_cond   = { expression? ~ ";" }
+for_update = { expression }
+
+return_statement   = { "return" ~ expression? ~ ";" }
+break_statement    = { "break" ~ ";" }
+continue_statement = { "continue" ~ ";" }
+goto_statement     = { "goto" ~ ident_name ~ ";" }
+
+// ── Expressions ───────────────────────────────────────────────────────────
+// `expression` = comma operator. `assignment_expression` is the non-comma
+// form used in argument lists / initializers.
+
+expression = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+assignment_expression = {
+    unary_expression ~ assignment_op ~ assignment_expression
+    | conditional_expression
+}
+assignment_op = @{
+    "<<=" | ">>=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "="
+}
+
+conditional_expression = {
+    binary_expression ~ ("?" ~ expression ~ ":" ~ conditional_expression)?
+}
+
+// Flattened binary precedence — walker resolves precedence from op text.
+binary_expression = { unary_expression ~ (binary_op ~ unary_expression)* }
+binary_op = @{
+    "||" | "&&"
+    | "==" | "!="
+    | "<<" | ">>"
+    | "<=" | ">=" | "<" | ">"
+    | "+" | "-"
+    | "*" | "/" | "%"
+    | "|" | "^" | "&"
+}
+
+unary_expression = {
+    sizeof_expression
+    | prefix_op ~ unary_expression
+    | cast_expression
+    | postfix_expression
+}
+prefix_op = @{ "++" | "--" | "+" | "-" | "!" | "~" | "*" | "&" }
+
+sizeof_expression = {
+    "sizeof" ~ ("(" ~ type_name ~ ")" | unary_expression)
+}
+
+cast_expression = {
+    "(" ~ type_name ~ ")" ~ unary_expression
+}
+type_name = { declaration_specifiers ~ abstract_declarator? }
+
+postfix_expression = {
+    primary_expression ~ postfix_op*
+}
+postfix_op = _{
+    call_suffix
+    | index_suffix
+    | member_suffix
+    | arrow_suffix
+    | inc_dec_suffix
+}
+call_suffix    = { "(" ~ argument_list? ~ ")" }
+index_suffix   = { "[" ~ expression ~ "]" }
+member_suffix  = { "." ~ ident_name }
+arrow_suffix   = { "->" ~ ident_name }
+inc_dec_suffix = @{ "++" | "--" }
+argument_list  = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+primary_expression = {
+    literal
+    | "(" ~ expression ~ ")"
+    | ident_name
+}
+
+// ── Literals ──────────────────────────────────────────────────────────────
+
+literal = {
+    float_literal
+    | int_literal
+    | char_literal
+    | string_literal
+    | bool_literal
+}
+
+bool_literal = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+int_literal = @{
+    ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ int_suffix?
+    | ("0b" | "0B") ~ ("0" | "1")+ ~ int_suffix?
+    | "0" ~ ASCII_OCT_DIGIT+ ~ int_suffix?
+    | ASCII_DIGIT+ ~ int_suffix?
+}
+int_suffix = @{ ("u" | "U" | "l" | "L")+ }
+
+float_literal = @{
+    (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+ | ASCII_DIGIT+)
+    ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)
+    ~ float_suffix?
+    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+)
+    ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    ~ float_suffix?
+}
+float_suffix = @{ "f" | "F" | "l" | "L" }
+
+// Escape sequences: \xHH (hex), \NNN (octal 1-3 digits), or \<any>
+c_escape = @{
+    "\\" ~ ("x" ~ ASCII_HEX_DIGIT{1,2}
+    | ASCII_OCT_DIGIT{1,3}
+    | ANY)
+}
+char_literal = @{ "'" ~ (c_escape | (!"'" ~ ANY))+ ~ "'" }
+
+// Adjacent string literals concatenate in C; the walker joins them.
+c_str_char = @{ c_escape | (!("\"" | "\\") ~ ANY) }
+string_literal = @{ ("\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
+
+// ── Identifiers & keywords ─────────────────────────────────────────────────
+
+ident_name = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+type_keyword_word = _{
+    ("void" | "char" | "short" | "int" | "long" | "float" | "double"
+    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t"
+    | "int8_t" | "int16_t" | "int32_t" | "int64_t"
+    | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+keyword = _{
+    ("if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
+    | "break" | "continue" | "return" | "goto" | "sizeof" | "typedef"
+    | "struct" | "union" | "enum" | "const" | "volatile" | "register"
+    | "static" | "extern" | "auto" | "inline" | "restrict" | "true" | "false")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}

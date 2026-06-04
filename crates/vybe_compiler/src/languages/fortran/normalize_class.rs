@@ -5,8 +5,12 @@
 //! This shim preserves that shape so the shared class compiler can
 //! consume Fortran derived types.
 
-use crate::ast::{Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind};
-use crate::common::classes::{from_method_stmt, Access, BaseCall, NormalClass, NormalConstructor, NormalField};
+use crate::ast::{
+    Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind,
+};
+use crate::common::classes::{
+    Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
+};
 
 fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
     let size = bounds.first()?.clone();
@@ -56,7 +60,11 @@ pub fn normalize_class(
                     span: span.clone(),
                     name: field_name.clone(),
                     type_hint: normalized_type_hint,
-                    init: init.clone().or_else(|| array_bounds.as_deref().and_then(synthesize_fixed_array_init)),
+                    init: init.clone().or_else(|| {
+                        array_bounds
+                            .as_deref()
+                            .and_then(synthesize_fixed_array_init)
+                    }),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,
@@ -68,7 +76,14 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: source_name, modifiers: method_modifiers, params, body, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: source_name,
+                    modifiers: method_modifiers,
+                    params,
+                    body,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
 
@@ -78,14 +93,20 @@ pub fn normalize_class(
                         span: span.clone(),
                         params: params.clone(),
                         body: body.clone(),
-                        base_call: if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        base_call: if parents.is_empty() {
+                            BaseCall::None
+                        } else {
+                            BaseCall::Auto
+                        },
                         named_name: None,
                     });
                     continue;
                 }
 
                 let canonical_name = source_name.to_ascii_lowercase();
-                if let Some(method) = from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public) {
+                if let Some(method) =
+                    from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public)
+                {
                     if method_modifiers.is_static {
                         static_methods.push(method);
                     } else {
@@ -94,10 +115,10 @@ pub fn normalize_class(
                 }
             }
             other @ (ClassMember::Constructor { .. }
-                | ClassMember::Property { .. }
-                | ClassMember::Event { .. }
-                | ClassMember::Const { .. }
-                | ClassMember::NestedType(_)) => {
+            | ClassMember::Property { .. }
+            | ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }

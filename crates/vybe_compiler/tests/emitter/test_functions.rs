@@ -1,5 +1,5 @@
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 use vybe_compiler::emitter::functions;
 
 #[test]
@@ -38,7 +38,10 @@ fn emit_store_global_func_adds_constant() {
     let mut chunk = Chunk::new("test");
     // Simulate closure on stack
     functions::emit_store_global_func(&mut chunk, "greet", 0);
-    let has_name = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "greet"));
+    let has_name = chunk
+        .constants
+        .iter()
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "greet"));
     assert!(has_name);
 }
 
@@ -46,7 +49,10 @@ fn emit_store_global_func_adds_constant() {
 fn emit_push_global_func_gets_by_name() {
     let mut chunk = Chunk::new("test");
     functions::emit_push_global_func(&mut chunk, "my_func", 0);
-    let has_name = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "my_func"));
+    let has_name = chunk
+        .constants
+        .iter()
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "my_func"));
     assert!(has_name);
 }
 

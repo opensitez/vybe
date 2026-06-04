@@ -104,7 +104,11 @@ fn property_value_to_vbnet(val: &PropertyValue) -> Option<String> {
     match val {
         PropertyValue::String(s) => Some(format!("\"{}\"", s.replace('"', "\"\""))),
         PropertyValue::Integer(i) => Some(i.to_string()),
-        PropertyValue::Boolean(b) => Some(if *b { "True".to_string() } else { "False".to_string() }),
+        PropertyValue::Boolean(b) => Some(if *b {
+            "True".to_string()
+        } else {
+            "False".to_string()
+        }),
         PropertyValue::Double(d) => Some(d.to_string()),
         PropertyValue::Expression(code) => Some(code.clone()),
         // StringArray values need special handling (Items.AddRange etc.) – skip in generic output
@@ -127,7 +131,10 @@ fn format_font(font_str: &str) -> String {
             family_escaped, size_val, style
         )
     } else {
-        format!("New System.Drawing.Font(\"{}\", {}F)", family_escaped, size_val)
+        format!(
+            "New System.Drawing.Font(\"{}\", {}F)",
+            family_escaped, size_val
+        )
     }
 }
 
@@ -206,10 +213,7 @@ pub fn generate_designer_code(form: &Form) -> String {
             }
             if let Some(sort) = control.properties.get_string("Sort") {
                 if !sort.is_empty() {
-                    code.push_str(&format!(
-                        "        Me.{}.Sort = \"{}\"\n",
-                        field_name, sort
-                    ));
+                    code.push_str(&format!("        Me.{}.Sort = \"{}\"\n", field_name, sort));
                 }
             }
             if let Some(tn) = control.properties.get_string("TableName") {
@@ -257,7 +261,11 @@ pub fn generate_designer_code(form: &Form) -> String {
 
         // Text
         let text = control.get_text().unwrap_or(control.name.as_str());
-        code.push_str(&format!("        Me.{}.Text = \"{}\"\n", field_name, text.replace('"', "\"\"")));
+        code.push_str(&format!(
+            "        Me.{}.Text = \"{}\"\n",
+            field_name,
+            text.replace('"', "\"\"")
+        ));
 
         // BackColor
         if let Some(bc) = control.get_back_color() {
@@ -485,10 +493,7 @@ pub fn generate_designer_code(form: &Form) -> String {
     }
 
     if let Some(font_str) = &form.font {
-        code.push_str(&format!(
-            "        Me.Font = {}\n",
-            format_font(font_str)
-        ));
+        code.push_str(&format!("        Me.Font = {}\n", format_font(font_str)));
     } else if let Some(pv) = form.properties.get("Font") {
         if let Some(s) = property_value_to_vbnet(pv) {
             code.push_str(&format!("        Me.Font = {}\n", s));
@@ -496,7 +501,14 @@ pub fn generate_designer_code(form: &Form) -> String {
     }
 
     // Arbitrary form-level properties (StartPosition, FormBorderStyle, etc.)
-    let form_base_handled = ["BackColor", "ForeColor", "Font", "ClientSize", "Text", "Name"];
+    let form_base_handled = [
+        "BackColor",
+        "ForeColor",
+        "Font",
+        "ClientSize",
+        "Text",
+        "Name",
+    ];
     let mut form_props: Vec<(&String, &PropertyValue)> = form
         .properties
         .iter()
@@ -520,34 +532,52 @@ pub fn generate_designer_code(form: &Form) -> String {
 /// Properties that are explicitly handled in the visual control section.
 /// These are excluded from the generic arbitrary-property pass to avoid duplicates.
 static VISUAL_HANDLED: &[&str] = &[
-    "Text", "BackColor", "ForeColor", "Font",
-    "Name", "Tag", "TabIndex",
+    "Text",
+    "BackColor",
+    "ForeColor",
+    "Font",
+    "Name",
+    "Tag",
+    "TabIndex",
     // DataBindings keys (all DataBindings.* are handled dynamically)
     "DataBindings.Source",
-    "DataBindings.Text", "DataBindings.Checked", "DataBindings.ImageLocation", "DataBindings.Value",
+    "DataBindings.Text",
+    "DataBindings.Checked",
+    "DataBindings.ImageLocation",
+    "DataBindings.Value",
     // Data-source binding
-    "DataSource", "DataMember", "DisplayMember", "ValueMember", "BindingSource",
+    "DataSource",
+    "DataMember",
+    "DisplayMember",
+    "ValueMember",
+    "BindingSource",
     // Vybe-internal runtime keys with no VB.NET designer equivalent
-    "List", "ListValues", "ListIndex", "ToolbarVisible",
+    "List",
+    "ListValues",
+    "ListIndex",
+    "ToolbarVisible",
     // CheckState and Value are stored internally; DropDownStyle stored as int but VB.NET expects enum
-    "CheckState", "DropDownStyle",
+    "CheckState",
+    "DropDownStyle",
 ];
 
 /// Properties handled in the non-visual component section.
 static NON_VISUAL_HANDLED: &[&str] = &[
-    "DataSource", "DataMember", "Filter", "Sort", "TableName", "DataSetName",
-    "SelectCommand", "ConnectionString", "Name",
+    "DataSource",
+    "DataMember",
+    "Filter",
+    "Sort",
+    "TableName",
+    "DataSetName",
+    "SelectCommand",
+    "ConnectionString",
+    "Name",
 ];
 
 /// Emit all properties NOT in the `handled` list as generic VB.NET assignments.
 /// Skips `DataBindings.*` prefix keys (emitted separately as DataBindings.Add calls).
 /// Skips StringArray values (need special container-specific syntax).
-fn emit_arbitrary_props(
-    code: &mut String,
-    field_name: &str,
-    control: &Control,
-    handled: &[&str],
-) {
+fn emit_arbitrary_props(code: &mut String, field_name: &str, control: &Control, handled: &[&str]) {
     // Sort for deterministic output
     let mut props: Vec<(&String, &PropertyValue)> = control
         .properties

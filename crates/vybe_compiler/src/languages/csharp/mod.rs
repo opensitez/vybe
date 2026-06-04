@@ -1,6 +1,6 @@
-mod walker;
 pub mod forms;
 pub mod normalize_class;
+mod walker;
 
 use pest_derive::Parser;
 

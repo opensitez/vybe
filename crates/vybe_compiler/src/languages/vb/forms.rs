@@ -23,8 +23,7 @@ use vybe_host::GuiState;
 pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
     let module = super::parse(source)?;
     let class = find_class(&module).ok_or("no class found in designer source")?;
-    let init_body = find_initialize_component(&class)
-        .ok_or("no InitializeComponent found")?;
+    let init_body = find_initialize_component(&class).ok_or("no InitializeComponent found")?;
 
     // Collect Handles clauses from methods for event wiring.
     let handles = collect_handles(&class);
@@ -48,7 +47,10 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                             controls.push(ControlInfo {
                                 name: field.to_string(),
                                 type_name: short.to_string(),
-                                x: 0, y: 0, width: 100, height: 30,
+                                x: 0,
+                                y: 0,
+                                width: 100,
+                                height: 30,
                                 text: String::new(),
                                 props: Vec::new(),
                             });
@@ -60,36 +62,50 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                 }
                 // Me.X.Prop = value — control property
                 if let Some((ctrl_name, prop_name)) = extract_me_member_prop(&targets[0]) {
-                    if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl_name)) {
+                    if let Some(c) = controls
+                        .iter_mut()
+                        .find(|c| c.name.eq_ignore_ascii_case(ctrl_name))
+                    {
                         if prop_name.eq_ignore_ascii_case("Location") {
                             if let Some((x, y)) = extract_point(value) {
-                                c.x = x; c.y = y;
+                                c.x = x;
+                                c.y = y;
                             }
                         } else if prop_name.eq_ignore_ascii_case("Size") {
                             if let Some((w, h)) = extract_size(value) {
-                                c.width = w; c.height = h;
+                                c.width = w;
+                                c.height = h;
                             }
                         } else if prop_name.eq_ignore_ascii_case("ClientSize") {
                             if let Some((w, h)) = extract_size(value) {
-                                c.width = w; c.height = h;
+                                c.width = w;
+                                c.height = h;
                             }
                         } else if prop_name.eq_ignore_ascii_case("Text") {
                             if let Some(s) = extract_string(value) {
                                 c.text = s;
                             }
                         } else {
-                            c.props.push((prop_name.to_string(), expr_to_value_string(value)));
+                            c.props
+                                .push((prop_name.to_string(), expr_to_value_string(value)));
                         }
                     }
                 }
             }
 
             // AddHandler control.Event, AddressOf handler
-            StmtKind::AddHandler { control, event, handler } => {
+            StmtKind::AddHandler {
+                control,
+                event,
+                handler,
+            } => {
                 let ctrl_name = expr_to_control_name(control);
                 let handler_name = expr_to_handler_name(handler);
-                gui.register_event(&ctrl_name, event, 
-                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())));
+                gui.register_event(
+                    &ctrl_name,
+                    event,
+                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())),
+                );
             }
 
             _ => {}
@@ -132,10 +148,15 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                 let ctrl = &target[..dot];
                 let event = &target[dot + 1..];
                 // Normalize: strip "Me." or "MyBase." prefix
-                let ctrl = ctrl.strip_prefix("Me.").or_else(|| ctrl.strip_prefix("MyBase."))
+                let ctrl = ctrl
+                    .strip_prefix("Me.")
+                    .or_else(|| ctrl.strip_prefix("MyBase."))
                     .unwrap_or(ctrl);
-                gui.register_event(ctrl, event,
-                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())));
+                gui.register_event(
+                    ctrl,
+                    event,
+                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())),
+                );
             }
         }
     }
@@ -150,7 +171,9 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
 /// Emit VB.NET designer code from the current widget state.
 pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!("<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()> _\n"));
+    out.push_str(&format!(
+        "<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()> _\n"
+    ));
     out.push_str(&format!("Partial Class {}\n", class_name));
     out.push_str("    Inherits System.Windows.Forms.Form\n\n");
 
@@ -160,7 +183,10 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
             let name = ctrl.name();
             if !name.is_empty() {
                 let type_name = widget_to_vb_type(ctrl);
-                out.push_str(&format!("    Friend WithEvents {} As {}\n", name, type_name));
+                out.push_str(&format!(
+                    "    Friend WithEvents {} As {}\n",
+                    name, type_name
+                ));
             }
         }
     }
@@ -173,51 +199,82 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
     struct CtrlSnapshot {
         name: String,
         type_name: &'static str,
-        x: i32, y: i32, w: i32, h: i32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
     }
     let mut snapshots: Vec<CtrlSnapshot> = Vec::new();
     for i in 0..gui.form.control_count() {
         if let Some(ctrl) = gui.form.control(i) {
             let name = ctrl.name();
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
             let r = ctrl.rect();
             snapshots.push(CtrlSnapshot {
                 name: name.to_string(),
                 type_name: widget_to_vb_type(ctrl),
-                x: r.x as i32, y: r.y as i32, w: r.w as i32, h: r.h as i32,
+                x: r.x as i32,
+                y: r.y as i32,
+                w: r.w as i32,
+                h: r.h as i32,
             });
         }
     }
 
     // Control instantiation
     for snap in &snapshots {
-        out.push_str(&format!("        Me.{} = New {}()\n", snap.name, snap.type_name));
+        out.push_str(&format!(
+            "        Me.{} = New {}()\n",
+            snap.name, snap.type_name
+        ));
     }
 
     // Emit control properties (can now freely borrow gui)
     for snap in &snapshots {
-        out.push_str(&format!("        Me.{}.Location = New System.Drawing.Point({}, {})\n",
-            snap.name, snap.x, snap.y));
-        out.push_str(&format!("        Me.{}.Size = New System.Drawing.Size({}, {})\n",
-            snap.name, snap.w, snap.h));
-        out.push_str(&format!("        Me.{}.Name = \"{}\"\n", snap.name, snap.name));
+        out.push_str(&format!(
+            "        Me.{}.Location = New System.Drawing.Point({}, {})\n",
+            snap.name, snap.x, snap.y
+        ));
+        out.push_str(&format!(
+            "        Me.{}.Size = New System.Drawing.Size({}, {})\n",
+            snap.name, snap.w, snap.h
+        ));
+        out.push_str(&format!(
+            "        Me.{}.Name = \"{}\"\n",
+            snap.name, snap.name
+        ));
 
         // Text from widget
         let text = gui.get_property(&snap.name, "text");
         if !text.is_empty() {
-            out.push_str(&format!("        Me.{}.Text = \"{}\"\n", snap.name, text.replace('"', "\"\"")));
+            out.push_str(&format!(
+                "        Me.{}.Text = \"{}\"\n",
+                snap.name,
+                text.replace('"', "\"\"")
+            ));
         }
 
         // Extra properties from the property store
         let name_lower = snap.name.to_lowercase();
-        let keys: Vec<(String, String)> = gui.properties.keys()
+        let keys: Vec<(String, String)> = gui
+            .properties
+            .keys()
             .filter(|(n, _)| *n == name_lower)
             .cloned()
             .collect();
         for (_, prop) in keys {
-            if matches!(prop.as_str(), "text" | "name") { continue; }
+            if matches!(prop.as_str(), "text" | "name") {
+                continue;
+            }
             if let Some(val) = gui.properties.get(&(name_lower.clone(), prop.clone())) {
-                out.push_str(&format!("        Me.{}.{} = {}\n", snap.name, capitalize(&prop), val));
+                out.push_str(&format!(
+                    "        Me.{}.{} = {}\n",
+                    snap.name,
+                    capitalize(&prop),
+                    val
+                ));
             }
         }
     }
@@ -228,10 +285,15 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
     }
 
     // Form properties
-    out.push_str(&format!("        Me.ClientSize = New System.Drawing.Size({}, {})\n",
-        gui.width, gui.height));
+    out.push_str(&format!(
+        "        Me.ClientSize = New System.Drawing.Size({}, {})\n",
+        gui.width, gui.height
+    ));
     if !gui.form.title.is_empty() {
-        out.push_str(&format!("        Me.Text = \"{}\"\n", gui.form.title.replace('"', "\"\"")));
+        out.push_str(&format!(
+            "        Me.Text = \"{}\"\n",
+            gui.form.title.replace('"', "\"\"")
+        ));
     }
     out.push_str(&format!("        Me.Name = \"{}\"\n", class_name));
     out.push_str("        Me.ResumeLayout(False)\n");
@@ -272,7 +334,13 @@ fn find_initialize_component<'a>(class: &'a StmtKind) -> Option<&'a Vec<Statemen
     if let StmtKind::ClassDecl { members, .. } = class {
         for member in members {
             if let ClassMember::Method(stmt) = member {
-                if let StmtKind::FunctionDecl { name, body, is_sub: true, .. } = &stmt.kind {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    body,
+                    is_sub: true,
+                    ..
+                } = &stmt.kind
+                {
                     if name.eq_ignore_ascii_case("InitializeComponent") {
                         return Some(body);
                     }
@@ -312,8 +380,18 @@ fn extract_me_field<'a>(expr: &'a Expression) -> Option<&'a str> {
 
 /// `Me.X.Prop` → Some(("X", "Prop"))
 fn extract_me_member_prop<'a>(expr: &'a Expression) -> Option<(&'a str, &'a str)> {
-    if let ExprKind::Member { object, field: prop, .. } = &expr.kind {
-        if let ExprKind::Member { object: inner, field: ctrl, .. } = &object.kind {
+    if let ExprKind::Member {
+        object,
+        field: prop,
+        ..
+    } = &expr.kind
+    {
+        if let ExprKind::Member {
+            object: inner,
+            field: ctrl,
+            ..
+        } = &object.kind
+        {
             if matches!(inner.kind, ExprKind::This) {
                 return Some((ctrl.as_str(), prop.as_str()));
             }
@@ -412,7 +490,13 @@ fn expr_to_value_string(expr: &Expression) -> String {
         ExprKind::Lit(Literal::Str(s)) => s.clone(),
         ExprKind::Lit(Literal::Int(n)) => n.to_string(),
         ExprKind::Lit(Literal::Float(f)) => f.to_string(),
-        ExprKind::Lit(Literal::Bool(b)) => if *b { "True".to_string() } else { "False".to_string() },
+        ExprKind::Lit(Literal::Bool(b)) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         ExprKind::Lit(Literal::Null) => "Nothing".to_string(),
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Member { object, field, .. } => {
@@ -420,12 +504,18 @@ fn expr_to_value_string(expr: &Expression) -> String {
         }
         ExprKind::New { class, args } => {
             let name = expr_to_type_name(class);
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_value_string(&a.value)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| expr_to_value_string(&a.value))
+                .collect();
             format!("New {}({})", name, arg_strs.join(", "))
         }
         ExprKind::Call { callee, args, .. } => {
             let name = expr_to_value_string(callee);
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_value_string(&a.value)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| expr_to_value_string(&a.value))
+                .collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
         ExprKind::This => "Me".to_string(),
@@ -474,22 +564,63 @@ fn widget_to_vb_type(widget: &dyn vybe_widgets::PanelWidget) -> &'static str {
 }
 
 fn is_control_type(name: &str) -> bool {
-    matches!(name.to_lowercase().as_str(),
-        "button" | "label" | "textbox" | "checkbox" | "radiobutton" |
-        "combobox" | "listbox" | "panel" | "groupbox" | "picturebox" |
-        "progressbar" | "trackbar" | "numericupdown" | "datetimepicker" |
-        "richtextbox" | "treeview" | "datagridview" | "datagrid" |
-        "listview" | "tabcontrol" | "tabpage" | "monthcalendar" |
-        "hscrollbar" | "vscrollbar" | "menustrip" | "toolstrip" |
-        "statusstrip" | "contextmenustrip" | "splitcontainer" |
-        "flowlayoutpanel" | "tablelayoutpanel" | "maskedtextbox" |
-        "linklabel" | "bindingnavigator" | "usercontrol" |
-        "webbrowser" | "canvas" | "paintbox" |
-        "timer" | "imagelist" | "tooltip" | "errorprovider" |
-        "openfiledialog" | "savefiledialog" | "fontdialog" |
-        "colordialog" | "folderbrowserdialog" | "printdialog" |
-        "notifyicon" | "helpprovider" | "backgroundworker" |
-        "bindingsource" | "dataset" | "datatable" | "dataadapter"
+    matches!(
+        name.to_lowercase().as_str(),
+        "button"
+            | "label"
+            | "textbox"
+            | "checkbox"
+            | "radiobutton"
+            | "combobox"
+            | "listbox"
+            | "panel"
+            | "groupbox"
+            | "picturebox"
+            | "progressbar"
+            | "trackbar"
+            | "numericupdown"
+            | "datetimepicker"
+            | "richtextbox"
+            | "treeview"
+            | "datagridview"
+            | "datagrid"
+            | "listview"
+            | "tabcontrol"
+            | "tabpage"
+            | "monthcalendar"
+            | "hscrollbar"
+            | "vscrollbar"
+            | "menustrip"
+            | "toolstrip"
+            | "statusstrip"
+            | "contextmenustrip"
+            | "splitcontainer"
+            | "flowlayoutpanel"
+            | "tablelayoutpanel"
+            | "maskedtextbox"
+            | "linklabel"
+            | "bindingnavigator"
+            | "usercontrol"
+            | "webbrowser"
+            | "canvas"
+            | "paintbox"
+            | "timer"
+            | "imagelist"
+            | "tooltip"
+            | "errorprovider"
+            | "openfiledialog"
+            | "savefiledialog"
+            | "fontdialog"
+            | "colordialog"
+            | "folderbrowserdialog"
+            | "printdialog"
+            | "notifyicon"
+            | "helpprovider"
+            | "backgroundworker"
+            | "bindingsource"
+            | "dataset"
+            | "datatable"
+            | "dataadapter"
     )
 }
 

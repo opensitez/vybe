@@ -1,20 +1,22 @@
-use pest::Parser;
-use pest::iterators::Pair;
 use super::{PascalParser, Rule};
 use crate::ast::*;
+use pest::Parser;
+use pest::iterators::Pair;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
-    let pairs = PascalParser::parse(Rule::program, source)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let pairs =
+        PascalParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut name = "main".to_string();
 
     for pair in pairs {
-        if pair.as_rule() != Rule::program { continue; }
+        if pair.as_rule() != Rule::program {
+            continue;
+        }
         for inner in pair.into_inner() {
             match inner.as_rule() {
                 Rule::program_heading => {
@@ -76,14 +78,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
     // constructor invocation syntax) into the canonical `New { class: TFoo, args }`
     // AST so every language ends up with the same instantiation node.
-    let class_names: std::collections::HashSet<String> = body.iter().filter_map(|s| {
-        match &s.kind {
+    let class_names: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|s| match &s.kind {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                 Some(name.to_lowercase())
             }
             _ => None,
-        }
-    }).collect();
+        })
+        .collect();
     for stmt in body.iter_mut() {
         rewrite_constructor_calls_stmt(stmt, &class_names);
     }
@@ -95,11 +98,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // declaration allocates a fresh instance. Mirror by emitting
     // `new <TypeName>()` for any var/local whose type_hint matches a
     // walked StructDecl.
-    let struct_names: std::collections::HashSet<String> = body.iter().filter_map(|s| {
-        if let StmtKind::StructDecl { name, .. } = &s.kind {
-            Some(name.to_lowercase())
-        } else { None }
-    }).collect();
+    let struct_names: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|s| {
+            if let StmtKind::StructDecl { name, .. } = &s.kind {
+                Some(name.to_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect();
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names);
     }
@@ -107,13 +115,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Pascal allows user functions to shadow builtin type names. When that
     // happens, `Double(x)` should stay a function call rather than getting
     // frozen into a builtin cast during expression walking.
-    let free_function_names: std::collections::HashSet<String> = body.iter().filter_map(|stmt| {
-        if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
-            Some(name.to_lowercase())
-        } else {
-            None
-        }
-    }).collect();
+    let free_function_names: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| {
+            if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                Some(name.to_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect();
     for stmt in body.iter_mut() {
         rewrite_shadowed_builtin_casts_stmt(stmt, &free_function_names);
     }
@@ -129,7 +140,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
 /// Walk a single statement and stamp `init: Some(new <Type>())` on
 /// any declarator whose `type_hint` names a walked record. Recurses
 /// into block / control structures.
-fn default_init_struct_locals_stmt(stmt: &mut Statement, struct_names: &std::collections::HashSet<String>) {
+fn default_init_struct_locals_stmt(
+    stmt: &mut Statement,
+    struct_names: &std::collections::HashSet<String>,
+) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations.iter_mut() {
@@ -147,41 +161,71 @@ fn default_init_struct_locals_stmt(stmt: &mut Statement, struct_names: &std::col
             }
         }
         StmtKind::Block(inner) => {
-            for s in inner { default_init_struct_locals_stmt(s, struct_names); }
+            for s in inner {
+                default_init_struct_locals_stmt(s, struct_names);
+            }
         }
-        StmtKind::If { then_body, elifs, else_body, .. } => {
-            for s in then_body { default_init_struct_locals_stmt(s, struct_names); }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                default_init_struct_locals_stmt(s, struct_names);
+            }
             for (_, body) in elifs {
-                for s in body { default_init_struct_locals_stmt(s, struct_names); }
+                for s in body {
+                    default_init_struct_locals_stmt(s, struct_names);
+                }
             }
             if let Some(eb) = else_body {
-                for s in eb { default_init_struct_locals_stmt(s, struct_names); }
+                for s in eb {
+                    default_init_struct_locals_stmt(s, struct_names);
+                }
             }
         }
         StmtKind::For { body, .. }
         | StmtKind::ForIn { body, .. }
         | StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. } => {
-            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+            for s in body {
+                default_init_struct_locals_stmt(s, struct_names);
+            }
         }
-        StmtKind::Try { body, catches, finally, .. } => {
-            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            for s in body {
+                default_init_struct_locals_stmt(s, struct_names);
+            }
             for c in catches.iter_mut() {
-                for s in c.body.iter_mut() { default_init_struct_locals_stmt(s, struct_names); }
+                for s in c.body.iter_mut() {
+                    default_init_struct_locals_stmt(s, struct_names);
+                }
             }
             if let Some(f) = finally {
-                for s in f { default_init_struct_locals_stmt(s, struct_names); }
+                for s in f {
+                    default_init_struct_locals_stmt(s, struct_names);
+                }
             }
         }
         StmtKind::FunctionDecl { body, .. } => {
-            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+            for s in body {
+                default_init_struct_locals_stmt(s, struct_names);
+            }
         }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for m in members {
                 if let ClassMember::Method(box_stmt) = m {
                     default_init_struct_locals_stmt(box_stmt, struct_names);
                 } else if let ClassMember::Constructor { body, .. } = m {
-                    for s in body { default_init_struct_locals_stmt(s, struct_names); }
+                    for s in body {
+                        default_init_struct_locals_stmt(s, struct_names);
+                    }
                 }
             }
         }
@@ -225,7 +269,12 @@ fn rewrite_shadowed_builtin_casts_stmt(
             rewrite_shadowed_builtin_casts_expr(target, free_function_names);
             rewrite_shadowed_builtin_casts_expr(value, free_function_names);
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
             for stmt in then_body {
                 rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
@@ -248,7 +297,13 @@ fn rewrite_shadowed_builtin_casts_stmt(
                 rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
             }
         }
-        StmtKind::For { init, cond, update, body, .. } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
             if let Some(init) = init {
                 rewrite_shadowed_builtin_casts_stmt(init, free_function_names);
             }
@@ -276,7 +331,13 @@ fn rewrite_shadowed_builtin_casts_stmt(
                 rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+            ..
+        } => {
             for stmt in body {
                 rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
             }
@@ -310,7 +371,10 @@ fn rewrite_shadowed_builtin_casts_expr(
     free_function_names: &std::collections::HashSet<String>,
 ) {
     match &mut expr.kind {
-        ExprKind::Cast { expr: inner, type_name } => {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => {
             rewrite_shadowed_builtin_casts_expr(inner, free_function_names);
             if free_function_names.contains(&type_name.to_lowercase()) {
                 let arg = (**inner).clone();
@@ -319,7 +383,10 @@ fn rewrite_shadowed_builtin_casts_expr(
                     args: vec![Argument::positional(arg)],
                     optional: false,
                 };
-            } else if matches!(type_name.to_lowercase().as_str(), "integer" | "int" | "longint") {
+            } else if matches!(
+                type_name.to_lowercase().as_str(),
+                "integer" | "int" | "longint"
+            ) {
                 let arg = (**inner).clone();
                 expr.kind = ExprKind::Call {
                     callee: Box::new(Expression::ident("Trunc")),
@@ -386,7 +453,9 @@ fn rewrite_shadowed_builtin_casts_expr(
                     ObjectProperty::Spread(value) => {
                         rewrite_shadowed_builtin_casts_expr(value, free_function_names);
                     }
-                    ObjectProperty::Shorthand(_) | ObjectProperty::Method { .. } | ObjectProperty::Accessor { .. } => {}
+                    ObjectProperty::Shorthand(_)
+                    | ObjectProperty::Method { .. }
+                    | ObjectProperty::Accessor { .. } => {}
                 }
             }
         }
@@ -446,7 +515,10 @@ fn synthesize_exception_class() -> Statement {
         type_hint: Some("String".into()),
         default: None,
         pass_by: PassBy::Value,
-        is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
     };
     // Self.Message := msg
     let assign_msg = Statement::with_span(
@@ -508,71 +580,178 @@ fn synthesize_tinterfacedobject_class() -> Statement {
 
 /// Walk a statement and rewrite `ClassName.Create(args)` into `New { class, args }`
 /// when `ClassName` matches a class declared in the same module.
-fn rewrite_constructor_calls_stmt(stmt: &mut Statement, classes: &std::collections::HashSet<String>) {
+fn rewrite_constructor_calls_stmt(
+    stmt: &mut Statement,
+    classes: &std::collections::HashSet<String>,
+) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_constructor_calls_expr(e, classes),
-        StmtKind::Block(stmts) => for s in stmts { rewrite_constructor_calls_stmt(s, classes); },
+        StmtKind::Block(stmts) => {
+            for s in stmts {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+        }
         StmtKind::VarDecl { declarations, .. } => {
             for d in declarations {
-                if let Some(e) = &mut d.init { rewrite_constructor_calls_expr(e, classes); }
+                if let Some(e) = &mut d.init {
+                    rewrite_constructor_calls_expr(e, classes);
+                }
             }
         }
-        StmtKind::FunctionDecl { body, .. } => for s in body { rewrite_constructor_calls_stmt(s, classes); },
+        StmtKind::FunctionDecl { body, .. } => {
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+        }
         StmtKind::ClassDecl { members, .. } => {
-            for m in members { rewrite_constructor_calls_member(m, classes); }
+            for m in members {
+                rewrite_constructor_calls_member(m, classes);
+            }
         }
         StmtKind::StructDecl { members, .. } | StmtKind::ModuleDecl { members, .. } => {
-            for m in members { rewrite_constructor_calls_member(m, classes); }
+            for m in members {
+                rewrite_constructor_calls_member(m, classes);
+            }
         }
-        StmtKind::NamespaceDecl { body, .. } => for s in body { rewrite_constructor_calls_stmt(s, classes); },
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::NamespaceDecl { body, .. } => {
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_constructor_calls_expr(cond, classes);
-            for s in then_body { rewrite_constructor_calls_stmt(s, classes); }
+            for s in then_body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
             for (c, b) in elifs {
                 rewrite_constructor_calls_expr(c, classes);
-                for s in b { rewrite_constructor_calls_stmt(s, classes); }
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
             }
-            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(b) = else_body {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
-        StmtKind::For { init, cond, update, body } => {
-            if let Some(i) = init { rewrite_constructor_calls_stmt(i, classes); }
-            if let Some(c) = cond { rewrite_constructor_calls_expr(c, classes); }
-            if let Some(u) = update { rewrite_constructor_calls_expr(u, classes); }
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                rewrite_constructor_calls_stmt(i, classes);
+            }
+            if let Some(c) = cond {
+                rewrite_constructor_calls_expr(c, classes);
+            }
+            if let Some(u) = update {
+                rewrite_constructor_calls_expr(u, classes);
+            }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_constructor_calls_expr(iter, classes);
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
-            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+            if let Some(b) = else_body {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_constructor_calls_expr(cond, classes);
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
-            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+            if let Some(b) = else_body {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
         StmtKind::DoWhile { body, cond, .. } => {
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
             rewrite_constructor_calls_expr(cond, classes);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_constructor_calls_expr(expr, classes);
-            for c in cases { for s in &mut c.body { rewrite_constructor_calls_stmt(s, classes); } }
-            if let Some(b) = default { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+            for c in cases {
+                for s in &mut c.body {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
+            if let Some(b) = default {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
-            for c in catches { for s in &mut c.body { rewrite_constructor_calls_stmt(s, classes); } }
-            if let Some(b) = else_body { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
-            if let Some(b) = finally { for s in b { rewrite_constructor_calls_stmt(s, classes); } }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
+            for c in catches {
+                for s in &mut c.body {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
+            if let Some(b) = else_body {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
+            if let Some(b) = finally {
+                for s in b {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
         StmtKind::With { items, body, .. } => {
-            for it in items { rewrite_constructor_calls_expr(&mut it.expr, classes); }
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            for it in items {
+                rewrite_constructor_calls_expr(&mut it.expr, classes);
+            }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
         }
         StmtKind::Return(Some(e)) => rewrite_constructor_calls_expr(e, classes),
         StmtKind::Throw { expr: Some(e), .. } => rewrite_constructor_calls_expr(e, classes),
         StmtKind::Assign { targets, value } => {
-            for t in targets { rewrite_constructor_calls_expr(t, classes); }
+            for t in targets {
+                rewrite_constructor_calls_expr(t, classes);
+            }
             rewrite_constructor_calls_expr(value, classes);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -583,16 +762,29 @@ fn rewrite_constructor_calls_stmt(stmt: &mut Statement, classes: &std::collectio
     }
 }
 
-fn rewrite_constructor_calls_member(m: &mut ClassMember, classes: &std::collections::HashSet<String>) {
+fn rewrite_constructor_calls_member(
+    m: &mut ClassMember,
+    classes: &std::collections::HashSet<String>,
+) {
     match m {
         ClassMember::Field { init: Some(e), .. } => rewrite_constructor_calls_expr(e, classes),
         ClassMember::Method(stmt) => rewrite_constructor_calls_stmt(stmt, classes),
         ClassMember::Constructor { body, .. } => {
-            for s in body { rewrite_constructor_calls_stmt(s, classes); }
+            for s in body {
+                rewrite_constructor_calls_stmt(s, classes);
+            }
         }
         ClassMember::Property { getter, setter, .. } => {
-            if let Some(g) = getter { for s in g { rewrite_constructor_calls_stmt(s, classes); } }
-            if let Some(set) = setter { for s in &mut set.body { rewrite_constructor_calls_stmt(s, classes); } }
+            if let Some(g) = getter {
+                for s in g {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
+            if let Some(set) = setter {
+                for s in &mut set.body {
+                    rewrite_constructor_calls_stmt(s, classes);
+                }
+            }
         }
         ClassMember::Const { value, .. } => rewrite_constructor_calls_expr(value, classes),
         ClassMember::NestedType(stmt) => rewrite_constructor_calls_stmt(stmt, classes),
@@ -600,7 +792,10 @@ fn rewrite_constructor_calls_member(m: &mut ClassMember, classes: &std::collecti
     }
 }
 
-fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collections::HashSet<String>) {
+fn rewrite_constructor_calls_expr(
+    expr: &mut Expression,
+    classes: &std::collections::HashSet<String>,
+) {
     // Check Call(Member(ClassName, "Create"), args) BEFORE descending so the
     // Member-only rewrite below doesn't fire on the callee position first and
     // turn `TFoo.Create(42)` into a call on a New expression.
@@ -608,12 +803,17 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let ExprKind::Ident(class_name) = &object.kind {
                 if classes.contains(&class_name.to_lowercase())
-                   && field.eq_ignore_ascii_case("Create")
+                    && field.eq_ignore_ascii_case("Create")
                 {
                     let new_class = Box::new(Expression::ident(class_name));
                     let mut new_args = args.clone();
-                    for a in new_args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
-                    expr.kind = ExprKind::New { class: new_class, args: new_args };
+                    for a in new_args.iter_mut() {
+                        rewrite_constructor_calls_expr(&mut a.value, classes);
+                    }
+                    expr.kind = ExprKind::New {
+                        class: new_class,
+                        args: new_args,
+                    };
                     return;
                 }
             }
@@ -640,21 +840,29 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
         }
         ExprKind::Call { callee, args, .. } => {
             rewrite_constructor_calls_expr(callee, classes);
-            for a in args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
+            for a in args.iter_mut() {
+                rewrite_constructor_calls_expr(&mut a.value, classes);
+            }
         }
         ExprKind::New { class, args } => {
             rewrite_constructor_calls_expr(class, classes);
-            for a in args.iter_mut() { rewrite_constructor_calls_expr(&mut a.value, classes); }
+            for a in args.iter_mut() {
+                rewrite_constructor_calls_expr(&mut a.value, classes);
+            }
         }
         ExprKind::Assign { target, value } => {
             rewrite_constructor_calls_expr(target, classes);
             rewrite_constructor_calls_expr(value, classes);
         }
-        ExprKind::Array(elems) => for el in elems {
-            rewrite_constructor_calls_expr(&mut el.value, classes);
-        },
+        ExprKind::Array(elems) => {
+            for el in elems {
+                rewrite_constructor_calls_expr(&mut el.value, classes);
+            }
+        }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
-            for e in items { rewrite_constructor_calls_expr(e, classes); }
+            for e in items {
+                rewrite_constructor_calls_expr(e, classes);
+            }
         }
         ExprKind::Object(props) => {
             for p in props {
@@ -666,7 +874,9 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
         ExprKind::Interpolation(parts) => {
             for p in parts {
                 match p {
-                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => rewrite_constructor_calls_expr(e, classes),
+                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                        rewrite_constructor_calls_expr(e, classes)
+                    }
                     _ => {}
                 }
             }
@@ -679,7 +889,9 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
             rewrite_constructor_calls_expr(start, classes);
             rewrite_constructor_calls_expr(end, classes);
         }
-        ExprKind::IsType { expr: e, .. } | ExprKind::Cast { expr: e, .. } => rewrite_constructor_calls_expr(e, classes),
+        ExprKind::IsType { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+            rewrite_constructor_calls_expr(e, classes)
+        }
         _ => {}
     }
 
@@ -688,8 +900,7 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
     // it to a zero-arg `New { class, [] }`.
     if let ExprKind::Member { object, field, .. } = &expr.kind {
         if let ExprKind::Ident(class_name) = &object.kind {
-            if classes.contains(&class_name.to_lowercase())
-               && field.eq_ignore_ascii_case("Create")
+            if classes.contains(&class_name.to_lowercase()) && field.eq_ignore_ascii_case("Create")
             {
                 expr.kind = ExprKind::New {
                     class: Box::new(Expression::ident(class_name)),
@@ -723,12 +934,35 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
     for i in 0..body.len() {
         let (class_name, method_name, params, ret, mods, body_stmts, is_sub) = {
             let stmt = &body[i];
-            let StmtKind::FunctionDecl { name, params, return_type, body: b, modifiers, is_sub, .. } = &stmt.kind else { continue };
-            let Some((cls, mth)) = name.split_once('.') else { continue };
-            (cls.to_string(), mth.to_string(), params.clone(), return_type.clone(), modifiers.clone(), b.clone(), *is_sub)
+            let StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body: b,
+                modifiers,
+                is_sub,
+                ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            let Some((cls, mth)) = name.split_once('.') else {
+                continue;
+            };
+            (
+                cls.to_string(),
+                mth.to_string(),
+                params.clone(),
+                return_type.clone(),
+                modifiers.clone(),
+                b.clone(),
+                *is_sub,
+            )
         };
 
-        let Some(&ci) = class_idx.get(&class_name.to_lowercase()) else { continue };
+        let Some(&ci) = class_idx.get(&class_name.to_lowercase()) else {
+            continue;
+        };
         let members = match &mut body[ci].kind {
             StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
             _ => continue,
@@ -740,7 +974,13 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
         let mut attached = false;
         if is_create {
             for m in members.iter_mut() {
-                if let ClassMember::Constructor { params: cp, body: cb, base_args: ba, .. } = m {
+                if let ClassMember::Constructor {
+                    params: cp,
+                    body: cb,
+                    base_args: ba,
+                    ..
+                } = m
+                {
                     if cb.is_empty() {
                         *cp = params.clone();
                         let mut new_body = body_stmts.clone();
@@ -754,10 +994,18 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                                 StmtKind::Expr(e) => match &e.kind {
                                     ExprKind::SuperCall { method, args } => {
                                         let is_ctor = method.is_none()
-                                            || method.as_ref().map_or(false, |m| m.eq_ignore_ascii_case("Create"));
+                                            || method.as_ref().map_or(false, |m| {
+                                                m.eq_ignore_ascii_case("Create")
+                                            });
                                         if is_ctor {
-                                            Some(args.iter().map(|a| a.value.clone()).collect::<Vec<_>>())
-                                        } else { None }
+                                            Some(
+                                                args.iter()
+                                                    .map(|a| a.value.clone())
+                                                    .collect::<Vec<_>>(),
+                                            )
+                                        } else {
+                                            None
+                                        }
                                     }
                                     _ => None,
                                 },
@@ -780,7 +1028,16 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
             // Find a Method with matching name and empty body
             for m in members.iter_mut() {
                 if let ClassMember::Method(stmt) = m {
-                    if let StmtKind::FunctionDecl { name: mn, params: mp, body: mb, return_type: mr, modifiers: mm, is_sub: ms, .. } = &mut stmt.kind {
+                    if let StmtKind::FunctionDecl {
+                        name: mn,
+                        params: mp,
+                        body: mb,
+                        return_type: mr,
+                        modifiers: mm,
+                        is_sub: ms,
+                        ..
+                    } = &mut stmt.kind
+                    {
                         if mn.eq_ignore_ascii_case(&method_name) && mb.is_empty() {
                             *mp = params.clone();
                             *mb = body_stmts.clone();
@@ -788,7 +1045,10 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                             *mm = mods.clone();
                             *ms = is_sub;
                             let is_generator = body_has_yield(mb);
-                            if let StmtKind::FunctionDecl { is_generator: flag, .. } = &mut stmt.kind {
+                            if let StmtKind::FunctionDecl {
+                                is_generator: flag, ..
+                            } = &mut stmt.kind
+                            {
                                 *flag = is_generator;
                             }
                             attached = true;
@@ -816,12 +1076,20 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
     for (idx, stmt) in body.iter().enumerate() {
         match &stmt.kind {
             StmtKind::ClassDecl { name, parents, .. } => {
-                if !parents.iter().any(|p| p.starts_with(PASCAL_HELPER_TARGET_PREFIX)) {
+                if !parents
+                    .iter()
+                    .any(|p| p.starts_with(PASCAL_HELPER_TARGET_PREFIX))
+                {
                     target_idx.insert(name.to_lowercase(), idx);
                 }
             }
-            StmtKind::StructDecl { name, interfaces, .. } => {
-                if !interfaces.iter().any(|i| i.starts_with(PASCAL_HELPER_TARGET_PREFIX)) {
+            StmtKind::StructDecl {
+                name, interfaces, ..
+            } => {
+                if !interfaces
+                    .iter()
+                    .any(|i| i.starts_with(PASCAL_HELPER_TARGET_PREFIX))
+                {
                     target_idx.insert(name.to_lowercase(), idx);
                 }
             }
@@ -835,27 +1103,38 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
 
     for (idx, stmt) in body.iter().enumerate() {
         let helper_target = match &stmt.kind {
-            StmtKind::ClassDecl { parents, .. } => parents.iter()
+            StmtKind::ClassDecl { parents, .. } => parents
+                .iter()
                 .find_map(|p| p.strip_prefix(PASCAL_HELPER_TARGET_PREFIX))
                 .map(str::to_string),
-            StmtKind::StructDecl { interfaces, .. } => interfaces.iter()
+            StmtKind::StructDecl { interfaces, .. } => interfaces
+                .iter()
                 .find_map(|p| p.strip_prefix(PASCAL_HELPER_TARGET_PREFIX))
                 .map(str::to_string),
             _ => None,
         };
-        let Some(target_name) = helper_target else { continue };
+        let Some(target_name) = helper_target else {
+            continue;
+        };
         removals.push(idx);
 
         let Some(&target_stmt_idx) = target_idx.get(&target_name.to_lowercase()) else {
             let helper_members = match &stmt.kind {
-                StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
+                StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                    members
+                }
                 _ => continue,
             };
-            lifted_functions.extend(lower_pascal_builtin_helper_members(&target_name, helper_members));
+            lifted_functions.extend(lower_pascal_builtin_helper_members(
+                &target_name,
+                helper_members,
+            ));
             continue;
         };
         let helper_members = match &stmt.kind {
-            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members.clone(),
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                members.clone()
+            }
             _ => Vec::new(),
         };
         merges.push((target_stmt_idx, helper_members));
@@ -874,26 +1153,35 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
         body.remove(idx);
     }
 
-    let insert_at = body.iter().position(|stmt| {
-        !matches!(stmt.kind,
-            StmtKind::VarDecl { .. }
-                | StmtKind::FunctionDecl { .. }
-                | StmtKind::ClassDecl { .. }
-                | StmtKind::StructDecl { .. }
-                | StmtKind::InterfaceDecl { .. }
-                | StmtKind::EnumDecl { .. }
-                | StmtKind::ModuleDecl { .. }
-                | StmtKind::NamespaceDecl { .. }
-                | StmtKind::DelegateDecl { .. }
-        )
-    }).unwrap_or(body.len());
+    let insert_at = body
+        .iter()
+        .position(|stmt| {
+            !matches!(
+                stmt.kind,
+                StmtKind::VarDecl { .. }
+                    | StmtKind::FunctionDecl { .. }
+                    | StmtKind::ClassDecl { .. }
+                    | StmtKind::StructDecl { .. }
+                    | StmtKind::InterfaceDecl { .. }
+                    | StmtKind::EnumDecl { .. }
+                    | StmtKind::ModuleDecl { .. }
+                    | StmtKind::NamespaceDecl { .. }
+                    | StmtKind::DelegateDecl { .. }
+            )
+        })
+        .unwrap_or(body.len());
     body.splice(insert_at..insert_at, lifted_functions);
 }
 
-fn lower_pascal_builtin_helper_members(target_name: &str, members: &[ClassMember]) -> Vec<Statement> {
+fn lower_pascal_builtin_helper_members(
+    target_name: &str,
+    members: &[ClassMember],
+) -> Vec<Statement> {
     let mut lifted = Vec::new();
     for member in members {
-        let ClassMember::Method(stmt) = member else { continue };
+        let ClassMember::Method(stmt) = member else {
+            continue;
+        };
         let StmtKind::FunctionDecl {
             name,
             params,
@@ -902,7 +1190,10 @@ fn lower_pascal_builtin_helper_members(target_name: &str, members: &[ClassMember
             modifiers,
             is_sub,
             ..
-        } = &stmt.kind else { continue };
+        } = &stmt.kind
+        else {
+            continue;
+        };
         let helper_method = name.rsplit('.').next().unwrap_or(name);
         let mut lifted_params = Vec::with_capacity(params.len() + 1);
         lifted_params.push(Param {
@@ -937,10 +1228,20 @@ fn lower_pascal_builtin_helper_members(target_name: &str, members: &[ClassMember
 fn pascal_helper_function_name(target_name: &str, method_name: &str) -> String {
     let sanitize = |text: &str| {
         text.chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>()
     };
-    format!("__pascal_helper_{}_{}", sanitize(target_name), sanitize(method_name))
+    format!(
+        "__pascal_helper_{}_{}",
+        sanitize(target_name),
+        sanitize(method_name)
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -986,7 +1287,10 @@ fn walk_var_section(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if p.as_rule() == Rule::var_decl {
             let decls = walk_var_decl(p)?;
             stmts.push(Statement::with_span(
-                StmtKind::VarDecl { declarations: decls, kind: VarDeclKind::Dim },
+                StmtKind::VarDecl {
+                    declarations: decls,
+                    kind: VarDeclKind::Dim,
+                },
                 span,
             ));
         }
@@ -1030,13 +1334,16 @@ fn build_var_declarators(
     type_hint: Option<String>,
     init: Option<Expression>,
 ) -> Vec<VarDeclarator> {
-    names.into_iter().map(|n| VarDeclarator {
-        pattern: BindingPattern::Ident(n),
-        type_hint: type_hint.clone(),
-        init: init.clone(),
-        array_bounds: None,
-        with_events: false,
-    }).collect()
+    names
+        .into_iter()
+        .map(|n| VarDeclarator {
+            pattern: BindingPattern::Ident(n),
+            type_hint: type_hint.clone(),
+            init: init.clone(),
+            array_bounds: None,
+            with_events: false,
+        })
+        .collect()
 }
 
 // ── Const section ──────────────────────────────────────────────────────────
@@ -1048,7 +1355,10 @@ fn walk_const_section(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if p.as_rule() == Rule::const_decl {
             let decl = walk_const_decl(p)?;
             stmts.push(Statement::with_span(
-                StmtKind::VarDecl { declarations: vec![decl], kind: VarDeclKind::Const },
+                StmtKind::VarDecl {
+                    declarations: vec![decl],
+                    kind: VarDeclKind::Const,
+                },
                 span,
             ));
         }
@@ -1117,35 +1427,43 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::array_type => {
             // Type alias for array: type TMyArray = array[0..9] of Integer;
             // Emit as a VarDecl with type hint
-            Ok(Statement::with_span(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: Some(type_ref_to_string(&inner)),
-                    init: None,
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            }, span))
+            Ok(Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: Some(type_ref_to_string(&inner)),
+                        init: None,
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Const,
+                },
+                span,
+            ))
         }
         Rule::pointer_type => {
             // Type alias for pointer
-            let target = inner.into_inner().next()
+            let target = inner
+                .into_inner()
+                .next()
                 .map(|p| type_ref_to_string(&p))
                 .unwrap_or_default();
-            Ok(Statement::with_span(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: Some(format!("^{}", target)),
-                    init: None,
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            }, span))
+            Ok(Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: Some(format!("^{}", target)),
+                        init: None,
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Const,
+                },
+                span,
+            ))
         }
-        Rule::subrange_type => {
-            Ok(Statement::with_span(StmtKind::VarDecl {
+        Rule::subrange_type => Ok(Statement::with_span(
+            StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
                     type_hint: Some(type_ref_to_string(&inner)),
@@ -1154,23 +1472,29 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     with_events: false,
                 }],
                 kind: VarDeclKind::Const,
-            }, span))
-        }
+            },
+            span,
+        )),
         Rule::type_alias => {
             // Simple type alias: type TMyInt = Integer;
-            let aliased = inner.into_inner().next()
+            let aliased = inner
+                .into_inner()
+                .next()
                 .map(|p| type_ref_to_string(&p))
                 .unwrap_or_default();
-            Ok(Statement::with_span(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: Some(aliased),
-                    init: None,
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            }, span))
+            Ok(Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: Some(aliased),
+                        init: None,
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Const,
+                },
+                span,
+            ))
         }
         other => Err(format!("Unexpected type_def inner: {:?}", other)),
     }
@@ -1196,14 +1520,17 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
         }
     }
 
-    Ok(Statement::with_span(StmtKind::ClassDecl {
-        name: name.to_string(),
-        parents,
-        interfaces: Vec::new(),
-        members,
-        modifiers: ClassModifiers::default(),
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::ClassDecl {
+            name: name.to_string(),
+            parents,
+            interfaces: Vec::new(),
+            members,
+            modifiers: ClassModifiers::default(),
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
@@ -1218,14 +1545,17 @@ fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<St
         }
     }
 
-    Ok(Statement::with_span(StmtKind::ClassDecl {
-        name: name.to_string(),
-        parents: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
-        interfaces: Vec::new(),
-        members,
-        modifiers: ClassModifiers::default(),
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::ClassDecl {
+            name: name.to_string(),
+            parents: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
+            interfaces: Vec::new(),
+            members,
+            modifiers: ClassModifiers::default(),
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn walk_class_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -1257,13 +1587,16 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
         }
     }
 
-    Ok(Statement::with_span(StmtKind::StructDecl {
-        name: name.to_string(),
-        interfaces: Vec::new(),
-        members,
-        visibility: Visibility::Public,
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::StructDecl {
+            name: name.to_string(),
+            interfaces: Vec::new(),
+            members,
+            visibility: Visibility::Public,
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
@@ -1278,13 +1611,16 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
         }
     }
 
-    Ok(Statement::with_span(StmtKind::StructDecl {
-        name: name.to_string(),
-        interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
-        members,
-        visibility: Visibility::Public,
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::StructDecl {
+            name: name.to_string(),
+            interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
+            members,
+            visibility: Visibility::Public,
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -1336,12 +1672,15 @@ fn walk_interface_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<State
         }
     }
 
-    Ok(Statement::with_span(StmtKind::InterfaceDecl {
-        name: name.to_string(),
-        parents,
-        members,
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::InterfaceDecl {
+            name: name.to_string(),
+            parents,
+            members,
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn walk_interface_method(pair: Pair<Rule>, is_sub: bool) -> Result<InterfaceMember, String> {
@@ -1427,20 +1766,27 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
                     _ => {}
                 }
             }
-            members.push(EnumMember { name: ename, value, constructor_args: Vec::new() });
+            members.push(EnumMember {
+                name: ename,
+                value,
+                constructor_args: Vec::new(),
+            });
         }
     }
 
-    Ok(Statement::with_span(StmtKind::EnumDecl {
-        name: name.to_string(),
-        members,
-        visibility: Visibility::Public,
-        is_flags: false,
-        backing_type: None,
-        interfaces: Vec::new(),
-        body_members: Vec::new(),
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::EnumDecl {
+            name: name.to_string(),
+            members,
+            visibility: Visibility::Public,
+            is_flags: false,
+            backing_type: None,
+            interfaces: Vec::new(),
+            body_members: Vec::new(),
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 // ── Field declarations (in class/record bodies) ───────────────────────────
@@ -1463,14 +1809,17 @@ fn walk_field_decl_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
         }
     }
 
-    Ok(names.into_iter().map(|n| ClassMember::Field {
-        name: n,
-        type_hint: type_hint.clone(),
-        init: None,
-        modifiers: Modifiers::default(),
-        with_events: false,
-        array_bounds: None,
-    }).collect())
+    Ok(names
+        .into_iter()
+        .map(|n| ClassMember::Field {
+            name: n,
+            type_hint: type_hint.clone(),
+            init: None,
+            modifiers: Modifiers::default(),
+            with_events: false,
+            array_bounds: None,
+        })
+        .collect())
 }
 
 // ── Class member signatures ────────────────────────────────────────────────
@@ -1530,17 +1879,19 @@ fn walk_class_method_sig(pair: Pair<Rule>, is_destructor: bool) -> Result<ClassM
     }
 
     let is_sub = return_type.is_none();
-    Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type,
-        body: Vec::new(), // Body comes from method_impl
-        modifiers,
-        handles: Vec::new(),
-        is_async: false,
-        is_generator: false,
-        is_sub,
-    }))))
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body: Vec::new(), // Body comes from method_impl
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub,
+        },
+    ))))
 }
 
 fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -1551,7 +1902,10 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut return_type: Option<String> = None;
     let mut type_hint: Option<String> = None;
     let mut is_field = false;
-    let mut modifiers = Modifiers { is_static: true, ..Default::default() };
+    let mut modifiers = Modifiers {
+        is_static: true,
+        ..Default::default()
+    };
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -1605,11 +1959,19 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
         })
     } else {
         let is_sub = return_type.is_none();
-        Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name, params, return_type, body: Vec::new(),
-            modifiers, handles: Vec::new(),
-            is_async: false, is_generator: false, is_sub,
-        }))))
+        Ok(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body: Vec::new(),
+                modifiers,
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub,
+            },
+        ))))
     }
 }
 
@@ -1635,12 +1997,13 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                             match spec.as_rule() {
                                 Rule::property_read => {
                                     // read GetFoo → getter delegates to method
-                                    let getter_name = spec.into_inner()
+                                    let getter_name = spec
+                                        .into_inner()
                                         .find(|p| p.as_rule() == Rule::identifier)
                                         .map(|p| p.as_str().to_string())
                                         .unwrap_or_default();
-                                    getter = Some(vec![Statement::new(StmtKind::Return(
-                                        Some(Expression::new(ExprKind::Call {
+                                    getter = Some(vec![Statement::new(StmtKind::Return(Some(
+                                        Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::new(ExprKind::Member {
                                                 object: Box::new(Expression::new(ExprKind::This)),
                                                 field: getter_name,
@@ -1648,11 +2011,12 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                             })),
                                             args: Vec::new(),
                                             optional: false,
-                                        }))
-                                    ))]);
+                                        }),
+                                    )))]);
                                 }
                                 Rule::property_write => {
-                                    let setter_name = spec.into_inner()
+                                    let setter_name = spec
+                                        .into_inner()
                                         .find(|p| p.as_rule() == Rule::identifier)
                                         .map(|p| p.as_str().to_string())
                                         .unwrap_or_default();
@@ -1670,14 +2034,20 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                         param,
                                         body: vec![Statement::new(StmtKind::Expr(
                                             Expression::new(ExprKind::Call {
-                                                callee: Box::new(Expression::new(ExprKind::Member {
-                                                    object: Box::new(Expression::new(ExprKind::This)),
-                                                    field: setter_name,
-                                                    null_safe: false,
-                                                })),
-                                                args: vec![Argument::positional(Expression::ident("value"))],
+                                                callee: Box::new(Expression::new(
+                                                    ExprKind::Member {
+                                                        object: Box::new(Expression::new(
+                                                            ExprKind::This,
+                                                        )),
+                                                        field: setter_name,
+                                                        null_safe: false,
+                                                    },
+                                                )),
+                                                args: vec![Argument::positional(
+                                                    Expression::ident("value"),
+                                                )],
                                                 optional: false,
-                                            })
+                                            }),
                                         ))],
                                     });
                                 }
@@ -1745,12 +2115,21 @@ fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
             visibility: Visibility::Public,
         })
     } else {
-        let is_sub = return_type.is_none() || kind_lower == "destructor" || kind_lower == "procedure";
-        Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name, params, return_type, body: Vec::new(),
-            modifiers, handles: Vec::new(),
-            is_async: false, is_generator: false, is_sub,
-        }))))
+        let is_sub =
+            return_type.is_none() || kind_lower == "destructor" || kind_lower == "procedure";
+        Ok(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body: Vec::new(),
+                modifiers,
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub,
+            },
+        ))))
     }
 }
 
@@ -1758,7 +2137,10 @@ fn walk_record_class_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut return_type: Option<String> = None;
-    let mut modifiers = Modifiers { is_static: true, ..Default::default() };
+    let mut modifiers = Modifiers {
+        is_static: true,
+        ..Default::default()
+    };
 
     for p in pair.into_inner() {
         if p.as_rule() == Rule::method_sig_body {
@@ -1783,18 +2165,29 @@ fn walk_record_class_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
     }
 
     let is_sub = return_type.is_none();
-    Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name, params, return_type, body: Vec::new(),
-        modifiers, handles: Vec::new(),
-        is_async: false, is_generator: false, is_sub,
-    }))))
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body: Vec::new(),
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub,
+        },
+    ))))
 }
 
 fn walk_record_operator_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut return_type: Option<String> = None;
-    let modifiers = Modifiers { is_static: true, ..Default::default() };
+    let modifiers = Modifiers {
+        is_static: true,
+        ..Default::default()
+    };
 
     for p in pair.into_inner() {
         if p.as_rule() == Rule::method_sig_body {
@@ -1815,11 +2208,19 @@ fn walk_record_operator_method(pair: Pair<Rule>) -> Result<ClassMember, String> 
         }
     }
 
-    Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name, params, return_type, body: Vec::new(),
-        modifiers, handles: Vec::new(),
-        is_async: false, is_generator: false, is_sub: false,
-    }))))
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body: Vec::new(),
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+    ))))
 }
 
 fn walk_method_directives(pair: Pair<Rule>, modifiers: &mut Modifiers) {
@@ -1875,8 +2276,11 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => {
-                if id_count == 0 { class_name = p.as_str().to_string(); }
-                else { method_name = p.as_str().to_string(); }
+                if id_count == 0 {
+                    class_name = p.as_str().to_string();
+                } else {
+                    method_name = p.as_str().to_string();
+                }
                 id_count += 1;
             }
             Rule::param_clause => params = walk_param_clause(p)?,
@@ -1888,17 +2292,20 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name: format!("{}.{}", class_name, method_name),
-        params,
-        return_type: None,
-        body,
-        modifiers: Modifiers::default(),
-        handles: Vec::new(),
-        is_async: false,
-        is_generator,
-        is_sub: true,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: format!("{}.{}", class_name, method_name),
+            params,
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: true,
+        },
+        span,
+    ))
 }
 
 fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, String> {
@@ -1912,8 +2319,11 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => {
-                if id_count == 0 { class_name = p.as_str().to_string(); }
-                else { method_name = p.as_str().to_string(); }
+                if id_count == 0 {
+                    class_name = p.as_str().to_string();
+                } else {
+                    method_name = p.as_str().to_string();
+                }
                 id_count += 1;
             }
             Rule::param_clause => params = walk_param_clause(p)?,
@@ -1926,17 +2336,20 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name: format!("{}.{}", class_name, method_name),
-        params,
-        return_type,
-        body,
-        modifiers: Modifiers::default(),
-        handles: Vec::new(),
-        is_async: false,
-        is_generator,
-        is_sub: false,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: format!("{}.{}", class_name, method_name),
+            params,
+            return_type,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: false,
+        },
+        span,
+    ))
 }
 
 fn walk_constructor_method_impl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1960,7 +2373,11 @@ fn walk_destructor_method_impl(pair: Pair<Rule>) -> Result<Statement, String> {
     Err("destructor_method_impl: missing body".into())
 }
 
-fn walk_method_impl_body_proc(pair: Pair<Rule>, span: Span, _is_constructor: bool) -> Result<Statement, String> {
+fn walk_method_impl_body_proc(
+    pair: Pair<Rule>,
+    span: Span,
+    _is_constructor: bool,
+) -> Result<Statement, String> {
     let mut class_name = String::new();
     let mut method_name = String::new();
     let mut params = Vec::new();
@@ -1970,8 +2387,11 @@ fn walk_method_impl_body_proc(pair: Pair<Rule>, span: Span, _is_constructor: boo
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => {
-                if id_count == 0 { class_name = p.as_str().to_string(); }
-                else { method_name = p.as_str().to_string(); }
+                if id_count == 0 {
+                    class_name = p.as_str().to_string();
+                } else {
+                    method_name = p.as_str().to_string();
+                }
                 id_count += 1;
             }
             Rule::param_clause => params = walk_param_clause(p)?,
@@ -1983,17 +2403,20 @@ fn walk_method_impl_body_proc(pair: Pair<Rule>, span: Span, _is_constructor: boo
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name: format!("{}.{}", class_name, method_name),
-        params,
-        return_type: None,
-        body,
-        modifiers: Modifiers::default(),
-        handles: Vec::new(),
-        is_async: false,
-        is_generator,
-        is_sub: true,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: format!("{}.{}", class_name, method_name),
+            params,
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: true,
+        },
+        span,
+    ))
 }
 
 fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, String> {
@@ -2029,17 +2452,20 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type: None,
-        body,
-        modifiers,
-        handles: Vec::new(),
-        is_async: false,
-        is_generator,
-        is_sub: true,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type: None,
+            body,
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: true,
+        },
+        span,
+    ))
 }
 
 fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, String> {
@@ -2076,17 +2502,20 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type,
-        body,
-        modifiers,
-        handles: Vec::new(),
-        is_async: false,
-        is_generator,
-        is_sub: false,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: false,
+        },
+        span,
+    ))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2148,16 +2577,19 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
         }
     }
 
-    Ok(names.into_iter().map(|n| Param {
-        name: n,
-        type_hint: type_hint.clone(),
-        default: default.clone(),
-        pass_by,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: default.is_some(),
-        is_nullable: false,
-    }).collect())
+    Ok(names
+        .into_iter()
+        .map(|n| Param {
+            name: n,
+            type_hint: type_hint.clone(),
+            default: default.clone(),
+            pass_by,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: default.is_some(),
+            is_nullable: false,
+        })
+        .collect())
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2195,9 +2627,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     };
 
     let kind = match inner.as_rule() {
-        Rule::compound_statement => {
-            StmtKind::Block(walk_compound_statement(inner)?)
-        }
+        Rule::compound_statement => StmtKind::Block(walk_compound_statement(inner)?),
         Rule::inline_var_statement => walk_inline_var_statement(inner)?,
         Rule::if_statement => walk_if_statement(inner)?,
         Rule::for_statement => walk_for_statement(inner)?,
@@ -2209,7 +2639,12 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::try_statement => walk_try_statement(inner)?,
         Rule::raise_statement => walk_raise_statement(inner)?,
         Rule::yield_statement => {
-            let value = inner.into_inner().next().map(walk_expression).transpose()?.map(Box::new);
+            let value = inner
+                .into_inner()
+                .next()
+                .map(walk_expression)
+                .transpose()?
+                .map(Box::new);
             StmtKind::Expr(Expression::new(ExprKind::Yield(value)))
         }
         Rule::exit_statement => walk_exit_statement(inner)?,
@@ -2270,7 +2705,9 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let else_body = if !parts.is_empty() {
         // else_clause
         let else_clause = parts.remove(0);
-        let else_stmt = else_clause.into_inner().next()
+        let else_stmt = else_clause
+            .into_inner()
+            .next()
             .map(|p| walk_statement(p))
             .transpose()?;
         else_stmt.map(|s| flatten_stmt(s))
@@ -2297,7 +2734,9 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let (var_name, type_hint, start_expr) = walk_for_binding(binding)?;
     let end_expr = walk_expression(parts.remove(0))?; // end expression
     let body_stmt = walk_statement(parts.remove(0))?; // body statement
-    let use_char_ordinal_loop = type_hint.as_deref().is_some_and(|hint| hint.eq_ignore_ascii_case("char"))
+    let use_char_ordinal_loop = type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.eq_ignore_ascii_case("char"))
         || pascal_expr_is_char_like(&start_expr)
         || pascal_expr_is_char_like(&end_expr);
 
@@ -2350,30 +2789,29 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }),
     });
 
-
-fn pascal_expr_is_char_like(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Char(_)) => true,
-        ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
-        _ => false,
+    fn pascal_expr_is_char_like(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Char(_)) => true,
+            ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
+            _ => false,
+        }
     }
-}
 
-fn pascal_ord_call(expr: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("Ord")),
-        args: vec![Argument::positional(expr)],
-        optional: false,
-    })
-}
+    fn pascal_ord_call(expr: Expression) -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Ord")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    }
 
-fn pascal_chr_call(expr: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("Chr")),
-        args: vec![Argument::positional(expr)],
-        optional: false,
-    })
-}
+    fn pascal_chr_call(expr: Expression) -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Chr")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    }
     Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
@@ -2680,7 +3118,8 @@ fn walk_on_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
 // ── Raise ──────────────────────────────────────────────────────────────────
 
 fn walk_raise_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner()
+    let expr = pair
+        .into_inner()
         .find(|p| p.as_rule() == Rule::expression)
         .map(walk_expression)
         .transpose()?;
@@ -2691,7 +3130,8 @@ fn walk_raise_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Exit ───────────────────────────────────────────────────────────────────
 
 fn walk_exit_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner()
+    let expr = pair
+        .into_inner()
         .find(|p| p.as_rule() == Rule::expression)
         .map(walk_expression)
         .transpose()?;
@@ -2702,7 +3142,8 @@ fn walk_exit_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Halt ───────────────────────────────────────────────────────────────────
 
 fn walk_halt_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner()
+    let expr = pair
+        .into_inner()
         .find(|p| p.as_rule() == Rule::expression)
         .map(walk_expression)
         .transpose()?;
@@ -2801,19 +3242,27 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
             });
         } else if src.contains("+=") {
             return Ok(StmtKind::CompoundAssign {
-                target, op: CompoundOp::Add, value,
+                target,
+                op: CompoundOp::Add,
+                value,
             });
         } else if src.contains("-=") {
             return Ok(StmtKind::CompoundAssign {
-                target, op: CompoundOp::Sub, value,
+                target,
+                op: CompoundOp::Sub,
+                value,
             });
         } else if src.contains("*=") {
             return Ok(StmtKind::CompoundAssign {
-                target, op: CompoundOp::Mul, value,
+                target,
+                op: CompoundOp::Mul,
+                value,
             });
         } else if src.contains("/=") {
             return Ok(StmtKind::CompoundAssign {
-                target, op: CompoundOp::Div, value,
+                target,
+                op: CompoundOp::Div,
+                value,
             });
         }
 
@@ -2876,47 +3325,35 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(left.kind)
         }
 
-        Rule::relational => {
-            walk_binary_chain(pair, |op_str| {
-                match op_str {
-                    "<>" => BinOp::NotEq,
-                    "<=" => BinOp::LtEq,
-                    ">=" => BinOp::GtEq,
-                    "<" => BinOp::Lt,
-                    ">" => BinOp::Gt,
-                    "=" => BinOp::Eq,
-                    s if s.starts_with("in") => BinOp::In,
-                    _ => BinOp::Eq,
-                }
-            })
-        }
+        Rule::relational => walk_binary_chain(pair, |op_str| match op_str {
+            "<>" => BinOp::NotEq,
+            "<=" => BinOp::LtEq,
+            ">=" => BinOp::GtEq,
+            "<" => BinOp::Lt,
+            ">" => BinOp::Gt,
+            "=" => BinOp::Eq,
+            s if s.starts_with("in") => BinOp::In,
+            _ => BinOp::Eq,
+        }),
 
-        Rule::additive => {
-            walk_binary_chain(pair, |op_str| {
-                match op_str {
-                    "+" => BinOp::Add,
-                    "-" => BinOp::Sub,
-                    s if s.starts_with("or") => BinOp::Or,
-                    s if s.starts_with("xor") => BinOp::BitXor,
-                    _ => BinOp::Add,
-                }
-            })
-        }
+        Rule::additive => walk_binary_chain(pair, |op_str| match op_str {
+            "+" => BinOp::Add,
+            "-" => BinOp::Sub,
+            s if s.starts_with("or") => BinOp::Or,
+            s if s.starts_with("xor") => BinOp::BitXor,
+            _ => BinOp::Add,
+        }),
 
-        Rule::multiplicative => {
-            walk_binary_chain(pair, |op_str| {
-                match op_str {
-                    "*" => BinOp::Mul,
-                    "/" => BinOp::Div,
-                    s if s.starts_with("div") => BinOp::IDiv,
-                    s if s.starts_with("mod") => BinOp::Mod,
-                    s if s.starts_with("and") => BinOp::And,
-                    s if s.starts_with("shl") => BinOp::Shl,
-                    s if s.starts_with("shr") => BinOp::Shr,
-                    _ => BinOp::Mul,
-                }
-            })
-        }
+        Rule::multiplicative => walk_binary_chain(pair, |op_str| match op_str {
+            "*" => BinOp::Mul,
+            "/" => BinOp::Div,
+            s if s.starts_with("div") => BinOp::IDiv,
+            s if s.starts_with("mod") => BinOp::Mod,
+            s if s.starts_with("and") => BinOp::And,
+            s if s.starts_with("shl") => BinOp::Shl,
+            s if s.starts_with("shr") => BinOp::Shr,
+            _ => BinOp::Mul,
+        }),
 
         Rule::unary => {
             // Pest does not include literal token matches (like "-", "@") as inner
@@ -2930,13 +3367,26 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let operand = walk_expression(operand_pair)?;
 
             if src.starts_with('-') {
-                Ok(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(operand) })
-            } else if src.len() >= 3 && src[..3].eq_ignore_ascii_case("not")
-                && !src.chars().nth(3).map_or(false, |c| c.is_alphanumeric() || c == '_')
+                Ok(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(operand),
+                })
+            } else if src.len() >= 3
+                && src[..3].eq_ignore_ascii_case("not")
+                && !src
+                    .chars()
+                    .nth(3)
+                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
             {
-                Ok(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(operand) })
+                Ok(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(operand),
+                })
             } else if src.starts_with('@') {
-                Ok(ExprKind::Unary { op: UnaryOp::AddrOf, expr: Box::new(operand) })
+                Ok(ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: Box::new(operand),
+                })
             } else {
                 Ok(operand.kind)
             }
@@ -2965,7 +3415,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // Passthrough for operator pairs that appear in binary chains
         Rule::relational_op | Rule::additive_op | Rule::multiplicative_op | Rule::is_as_op => {
-            Err(format!("Operator {:?} should not be walked as expression", pair.as_rule()))
+            Err(format!(
+                "Operator {:?} should not be walked as expression",
+                pair.as_rule()
+            ))
         }
 
         // Literals and identifiers that might appear directly
@@ -2973,30 +3426,32 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let s = pair.as_str();
             if s.starts_with('$') {
                 Ok(ExprKind::Lit(Literal::Int(
-                    i64::from_str_radix(&s[1..], 16).unwrap_or(0)
+                    i64::from_str_radix(&s[1..], 16).unwrap_or(0),
                 )))
             } else {
                 Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
             }
         }
-        Rule::real_literal => {
-            Ok(ExprKind::Lit(Literal::Float(pair.as_str().parse().unwrap_or(0.0))))
-        }
+        Rule::real_literal => Ok(ExprKind::Lit(Literal::Float(
+            pair.as_str().parse().unwrap_or(0.0),
+        ))),
         Rule::string_literal => {
             let raw = pair.as_str();
             // Strip surrounding quotes and unescape ''
-            let inner = &raw[1..raw.len()-1];
-            Ok(ExprKind::Lit(Literal::Str(inner.replace("''", "'").to_string())))
+            let inner = &raw[1..raw.len() - 1];
+            Ok(ExprKind::Lit(Literal::Str(
+                inner.replace("''", "'").to_string(),
+            )))
         }
         Rule::char_literal => {
             // #65 → 'A'
             let s = pair.as_str();
             let code: u32 = s[1..].parse().unwrap_or(0);
-            Ok(ExprKind::Lit(Literal::Char(char::from_u32(code).unwrap_or('\0'))))
+            Ok(ExprKind::Lit(Literal::Char(
+                char::from_u32(code).unwrap_or('\0'),
+            )))
         }
-        Rule::identifier => {
-            Ok(ExprKind::Ident(pair.as_str().to_string()))
-        }
+        Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
 
         other => Err(format!("Unexpected expression rule: {:?}", other)),
     }
@@ -3109,7 +3564,8 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
 
     if op_src.starts_with('[') {
         // Index access: arr[i] or arr[i, j]
-        let index_exprs = parts.into_iter()
+        let index_exprs = parts
+            .into_iter()
             .flat_map(|p| {
                 if p.as_rule() == Rule::array_index_list {
                     p.into_inner().collect::<Vec<_>>()
@@ -3142,7 +3598,8 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
         // postfix_op, so we just look for the `arg_list` child.
         // Generic type args are captured-and-discarded — the dynamic
         // VM is type-erased.
-        let args = parts.into_iter()
+        let args = parts
+            .into_iter()
             .find(|p| p.as_rule() == Rule::arg_list)
             .map(walk_arg_list)
             .transpose()?
@@ -3152,7 +3609,11 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             if name.eq_ignore_ascii_case("Format") && args.len() == 2 {
                 if let ExprKind::Array(elements) = &args[1].value.kind {
                     let mut expanded_args = vec![args[0].clone()];
-                    expanded_args.extend(elements.iter().map(|element| Argument::positional(element.value.clone())));
+                    expanded_args.extend(
+                        elements
+                            .iter()
+                            .map(|element| Argument::positional(element.value.clone())),
+                    );
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args: expanded_args,
@@ -3225,22 +3686,34 @@ fn walk_arg_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 // ── Set literal ────────────────────────────────────────────────────────────
 
 fn walk_set_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let elements: Vec<ArrayElement> = pair.into_inner()
+    let elements: Vec<ArrayElement> = pair
+        .into_inner()
         .filter(|p| p.as_rule() == Rule::expression)
         .map(|p| {
             let value = walk_expression(p)?;
-            Ok(ArrayElement { key: None, value, spread: false, by_ref: false })
+            Ok(ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
         })
         .collect::<Result<_, String>>()?;
     Ok(ExprKind::Array(elements))
 }
 
 fn walk_tuple_array_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let elements: Vec<ArrayElement> = pair.into_inner()
+    let elements: Vec<ArrayElement> = pair
+        .into_inner()
         .filter(|p| p.as_rule() == Rule::expression)
         .map(|p| {
             let value = walk_expression(p)?;
-            Ok(ArrayElement { key: None, value, spread: false, by_ref: false })
+            Ok(ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
         })
         .collect::<Result<_, String>>()?;
     Ok(ExprKind::Array(elements))
@@ -3416,5 +3889,7 @@ fn flatten_stmt(stmt: Statement) -> Vec<Statement> {
 
 /// Get first inner pair from a compound pair.
 fn cv_first(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
-    pair.into_inner().next().ok_or_else(|| "Expected inner pair".to_string())
+    pair.into_inner()
+        .next()
+        .ok_or_else(|| "Expected inner pair".to_string())
 }

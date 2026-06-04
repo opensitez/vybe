@@ -11,10 +11,10 @@ pub fn emit_round_away_from_zero(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op(Op::F64_CONST_0, line);
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-      chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-      chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
     chunks[current].emit_else(line);
-      chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-      chunks[current].emit_op(Op::F64_CEIL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::F64_CEIL, line);
     chunks[current].emit_end(line);
 }

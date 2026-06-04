@@ -16,14 +16,20 @@ fn one_chunk(local_count: u16) -> Vec<Chunk> {
 fn emit_map_produces_bytecode() {
     let mut chunks = one_chunk(10);
     loops::emit_map(&mut chunks, 0, 1, 2, 3, 4, 0);
-    assert!(chunks[0].code.len() > 20, "map should emit substantial bytecode");
+    assert!(
+        chunks[0].code.len() > 20,
+        "map should emit substantial bytecode"
+    );
 }
 
 #[test]
 fn emit_filter_produces_bytecode() {
     let mut chunks = one_chunk(10);
     loops::emit_filter(&mut chunks, 0, 1, 2, 3, 4, 5, 0);
-    assert!(chunks[0].code.len() > 20, "filter should emit substantial bytecode");
+    assert!(
+        chunks[0].code.len() > 20,
+        "filter should emit substantial bytecode"
+    );
 }
 
 #[test]
@@ -37,7 +43,10 @@ fn emit_foreach_produces_bytecode() {
 fn emit_reduce_produces_bytecode() {
     let mut chunks = one_chunk(10);
     loops::emit_reduce(&mut chunks, 0, 1, 2, 3, 4, 0);
-    assert!(chunks[0].code.len() > 20, "reduce should emit substantial bytecode");
+    assert!(
+        chunks[0].code.len() > 20,
+        "reduce should emit substantial bytecode"
+    );
 }
 
 #[test]
@@ -61,5 +70,8 @@ fn emit_for_in_produces_loop() {
     // element is on stack here — drop it to simulate body
     chunks[0].emit_op(vybe_bytecode::opcode::Op::DROP, 0);
     loops::emit_for_in_end(&mut chunks, 0, 2, state, 0);
-    assert!(chunks[0].code.len() > 10, "for-in should emit loop bytecode");
+    assert!(
+        chunks[0].code.len() > 10,
+        "for-in should emit loop bytecode"
+    );
 }

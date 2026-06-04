@@ -7,6 +7,7 @@ mod test_classes;
 mod test_errors;
 mod test_expressions;
 mod test_functions;
+mod test_generators;
 mod test_loops;
 mod test_ops;
 mod test_stdlib;

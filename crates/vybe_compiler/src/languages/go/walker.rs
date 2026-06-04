@@ -26,27 +26,29 @@
 //! - **`panic` / `recover`**: Mapped to throw/try-catch.
 //! - **`_` blank identifier**: Ignored in assignments.
 
+use super::{GoParser, Rule};
+use crate::ast::*;
+use crate::common::channels;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
-use crate::ast::*;
-use crate::common::channels;
-use super::{GoParser, Rule};
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
-    let pairs = GoParser::parse(Rule::program, source)
-        .map_err(|e| format!("Go parse error: {}", e))?;
+    let pairs =
+        GoParser::parse(Rule::program, source).map_err(|e| format!("Go parse error: {}", e))?;
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut _package_name = String::new();
 
     for top in pairs {
-        if top.as_rule() == Rule::EOI { continue; }
+        if top.as_rule() == Rule::EOI {
+            continue;
+        }
         let inner = match top.as_rule() {
             Rule::program => top.into_inner(),
             _ => {
@@ -162,13 +164,21 @@ fn normalize_go_module(mut module: Module) -> Module {
 
     let mut normalized = Vec::with_capacity(module.body.len());
     for stmt in &module.body {
-        normalized.extend(normalize_go_statement(stmt, &mut env, &signatures, &mut state));
+        normalized.extend(normalize_go_statement(
+            stmt,
+            &mut env,
+            &signatures,
+            &mut state,
+        ));
     }
     module.body = go_lower_module_init_functions(normalized, &mut state);
     module
 }
 
-fn go_lower_module_init_functions(body: Vec<Statement>, state: &mut GoNormalizeState) -> Vec<Statement> {
+fn go_lower_module_init_functions(
+    body: Vec<Statement>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
     let mut lowered = Vec::with_capacity(body.len());
     let mut init_calls = Vec::new();
 
@@ -197,11 +207,13 @@ fn go_lower_module_init_functions(body: Vec<Statement>, state: &mut GoNormalizeS
                     is_generator,
                     is_sub,
                 }));
-                init_calls.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident(&hidden_name)),
-                    args: Vec::new(),
-                    optional: false,
-                }))));
+                init_calls.push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident(&hidden_name)),
+                        args: Vec::new(),
+                        optional: false,
+                    },
+                ))));
             }
             _ => lowered.push(stmt),
         }
@@ -242,7 +254,10 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                             signatures.insert(
                                 name.clone(),
                                 GoFunctionSignature {
-                                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                                    params: params
+                                        .iter()
+                                        .map(|param| param.type_hint.clone())
+                                        .collect(),
                                     return_type: return_type.clone(),
                                 },
                             );
@@ -292,10 +307,14 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
         let StmtKind::StructDecl { name, members, .. } = &stmt.kind else {
             continue;
         };
-        let info = infos.entry(name.clone()).or_insert_with(GoStructInfo::default);
+        let info = infos
+            .entry(name.clone())
+            .or_insert_with(GoStructInfo::default);
         for member in members {
             match member {
-                ClassMember::Field { name, type_hint, .. } => {
+                ClassMember::Field {
+                    name, type_hint, ..
+                } => {
                     info.field_order.push(name.clone());
                     info.member_names.insert(name.clone());
                     if let Some(type_name) = type_hint.clone() {
@@ -306,7 +325,10 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
                     }
                 }
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name, return_type, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl {
+                        name, return_type, ..
+                    } = &stmt.kind
+                    {
                         info.member_names.insert(name.clone());
                         info.method_names.insert(name.clone());
                         if let Some(type_name) = return_type.clone() {
@@ -385,7 +407,8 @@ fn collect_go_global_fixed_arrays(
     for stmt in body {
         if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
             for decl in declarations {
-                if let Some((name, type_name)) = go_decl_fixed_array_binding(decl, &env, signatures) {
+                if let Some((name, type_name)) = go_decl_fixed_array_binding(decl, &env, signatures)
+                {
                     globals.insert(name, type_name);
                 }
             }
@@ -430,7 +453,13 @@ fn normalize_go_function_body(
     for stmt in stmts {
         if named_result.is_none() {
             if let Some(param) = go_extract_named_result_marker(stmt) {
-                env.value_types.insert(param.name.clone(), param.type_hint.clone().unwrap_or_else(|| "object".to_string()));
+                env.value_types.insert(
+                    param.name.clone(),
+                    param
+                        .type_hint
+                        .clone()
+                        .unwrap_or_else(|| "object".to_string()),
+                );
                 named_result = Some(param);
                 continue;
             }
@@ -476,7 +505,8 @@ fn lower_go_defer_body(
         .clone()
         .unwrap_or_else(|| fresh_go_temp(state, "__go_recover"));
     let stack_name = fresh_go_temp(state, "__go_defer_stack");
-    let (lowered_body, has_defer) = lower_go_defer_statements(body, env, signatures, state, &stack_name, false);
+    let (lowered_body, has_defer) =
+        lower_go_defer_statements(body, env, signatures, state, &stack_name, false);
 
     let panic_value_decl = go_defer_temp_decl(panic_value_name.clone(), None, Expression::null());
     let has_panic_decl = go_defer_temp_decl(has_panic_name.clone(), None, Expression::bool(false));
@@ -500,7 +530,9 @@ fn lower_go_defer_body(
                     Statement::new(StmtKind::Return(Some(Expression::ident(&panic_value_name)))),
                 ],
                 elifs: Vec::new(),
-                else_body: Some(vec![Statement::new(StmtKind::Return(Some(Expression::null())))]),
+                else_body: Some(vec![Statement::new(StmtKind::Return(Some(
+                    Expression::null(),
+                )))]),
             })]),
             is_async: false,
             captures: Vec::new(),
@@ -508,7 +540,12 @@ fn lower_go_defer_body(
     );
 
     let panic_state_decls = if env.owns_panic_state {
-        vec![panic_value_decl, has_panic_decl, in_defer_decl, recover_fn_decl]
+        vec![
+            panic_value_decl,
+            has_panic_decl,
+            in_defer_decl,
+            recover_fn_decl,
+        ]
     } else {
         Vec::new()
     };
@@ -624,7 +661,9 @@ fn go_extract_named_result_marker(stmt: &Statement) -> Option<Param> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
-    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_result") || args.len() != 2 {
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_result")
+        || args.len() != 2
+    {
         return None;
     }
     let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
@@ -650,7 +689,9 @@ fn go_extract_named_type_marker(stmt: &Statement) -> Option<(String, String)> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
-    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_type") || args.len() != 2 {
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_type")
+        || args.len() != 2
+    {
         return None;
     }
     let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
@@ -665,10 +706,19 @@ fn go_lower_named_result_body(
     result: &Param,
     state: &mut GoNormalizeState,
 ) -> (Vec<Statement>, Option<Expression>) {
+    // Use a sentinel string only as a rewrite marker for go_rewrite_named_result_returns.
+    // We no longer throw/catch this sentinel at runtime — instead we use a
+    // `while(true) { ...; break }` loop so that `return X` inside any branch
+    // compiles to `result = X; break`, which emits a clean `BR(N)` that
+    // correctly unwinds the label stack.  Throwing a sentinel inside an IF
+    // body left extra BLOCK labels on the label_stack that THROW does not
+    // restore, corrupting the outer catch handler lookup.
     let sentinel = fresh_go_temp(state, "__go_named_return");
-    let catch_name = fresh_go_temp(state, "__go_named_return_exc");
     let result_name = result.name.clone();
-    let result_type = result.type_hint.clone().unwrap_or_else(|| "object".to_string());
+    let result_type = result
+        .type_hint
+        .clone()
+        .unwrap_or_else(|| "object".to_string());
 
     let rewritten_body = go_rewrite_named_result_returns(body, &result_name, &sentinel);
     let result_decl = Statement::new(StmtKind::VarDecl {
@@ -681,34 +731,24 @@ fn go_lower_named_result_body(
         }],
         kind: VarDeclKind::Let,
     });
-    let catch_body = vec![Statement::new(StmtKind::If {
-        cond: Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(Expression::ident(&catch_name)),
-            right: Box::new(Expression::string(&sentinel)),
-        }),
-        then_body: vec![Statement::new(StmtKind::Throw {
-            expr: Some(Expression::ident(&catch_name)),
-            cause: None,
-        })],
-        elifs: Vec::new(),
-        else_body: None,
-    })];
+
+    // Wrap the rewritten body in `while(true) { ...; break }`.
+    // Every `return X` in rewritten_body was turned into `result=X; break`.
+    // At end of function body (bare `return`) we also emit an implicit break.
+    // Real panics (user-thrown exceptions) propagate directly to the outer
+    // defer try/catch because no try/catch is interposed here.
+    let mut while_body = rewritten_body;
+    // Ensure the while always exits: append an implicit break so fall-through
+    // at end of body exits the loop rather than looping forever.
+    while_body.push(Statement::new(StmtKind::Break(BreakTarget::Implicit)));
 
     (
         vec![
             result_decl,
-            Statement::new(StmtKind::Try {
-                body: rewritten_body,
-                catches: vec![CatchClause {
-                    types: Vec::new(),
-                    var_name: Some(catch_name),
-                    stack_var: None,
-                    body: catch_body,
-                    when_clause: None,
-                }],
+            Statement::new(StmtKind::While {
+                cond: Expression::bool(true),
+                body: while_body,
                 else_body: None,
-                finally: None,
             }),
         ],
         Some(Expression::ident(&result_name)),
@@ -722,7 +762,11 @@ fn go_rewrite_named_result_returns(
 ) -> Vec<Statement> {
     let mut rewritten = Vec::with_capacity(body.len());
     for stmt in body {
-        rewritten.extend(go_rewrite_named_result_return_stmt(stmt, result_name, sentinel));
+        rewritten.extend(go_rewrite_named_result_return_stmt(
+            stmt,
+            result_name,
+            sentinel,
+        ));
     }
     rewritten
 }
@@ -741,52 +785,85 @@ fn go_rewrite_named_result_return_stmt(
                     value: expr,
                 }));
             }
-            rewritten.push(Statement::new(StmtKind::Throw {
-                expr: Some(Expression::string(sentinel)),
-                cause: None,
-            }));
+            // Break out of the enclosing while(true) loop cleanly.
+            // This compiles to BR(N) which correctly unwinds the label stack
+            // regardless of how many nested BLOCKs (e.g. from if-statements)
+            // are active at the break site.
+            rewritten.push(Statement::new(StmtKind::Break(BreakTarget::Implicit)));
             rewritten
         }
-        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(go_rewrite_named_result_returns(
-            body,
-            result_name,
-            sentinel,
-        )))],
-        StmtKind::If { cond, then_body, elifs, else_body } => vec![Statement::new(StmtKind::If {
+        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(
+            go_rewrite_named_result_returns(body, result_name, sentinel),
+        ))],
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => vec![Statement::new(StmtKind::If {
             cond,
             then_body: go_rewrite_named_result_returns(then_body, result_name, sentinel),
             elifs: elifs
                 .into_iter()
-                .map(|(cond, body)| (cond, go_rewrite_named_result_returns(body, result_name, sentinel)))
+                .map(|(cond, body)| {
+                    (
+                        cond,
+                        go_rewrite_named_result_returns(body, result_name, sentinel),
+                    )
+                })
                 .collect(),
-            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            else_body: else_body
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
         })],
-        StmtKind::For { init, cond, update, body } => vec![Statement::new(StmtKind::For {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => vec![Statement::new(StmtKind::For {
             init,
             cond,
             update,
             body: go_rewrite_named_result_returns(body, result_name, sentinel),
         })],
-        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => vec![Statement::new(StmtKind::ForIn {
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            of,
+            else_body,
+            is_async,
+        } => vec![Statement::new(StmtKind::ForIn {
             var,
             key,
             iter,
             body: go_rewrite_named_result_returns(body, result_name, sentinel),
             of,
-            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            else_body: else_body
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
             is_async,
         })],
-        StmtKind::While { cond, body, else_body } => vec![Statement::new(StmtKind::While {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => vec![Statement::new(StmtKind::While {
             cond,
             body: go_rewrite_named_result_returns(body, result_name, sentinel),
-            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            else_body: else_body
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
         })],
         StmtKind::DoWhile { body, cond, until } => vec![Statement::new(StmtKind::DoWhile {
             body: go_rewrite_named_result_returns(body, result_name, sentinel),
             cond,
             until,
         })],
-        StmtKind::Switch { expr, cases, default } => vec![Statement::new(StmtKind::Switch {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => vec![Statement::new(StmtKind::Switch {
             expr,
             cases: cases
                 .into_iter()
@@ -795,9 +872,15 @@ fn go_rewrite_named_result_return_stmt(
                     body: go_rewrite_named_result_returns(case.body, result_name, sentinel),
                 })
                 .collect(),
-            default: default.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            default: default
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
         })],
-        StmtKind::Try { body, catches, else_body, finally } => vec![Statement::new(StmtKind::Try {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => vec![Statement::new(StmtKind::Try {
             body: go_rewrite_named_result_returns(body, result_name, sentinel),
             catches: catches
                 .into_iter()
@@ -809,8 +892,10 @@ fn go_rewrite_named_result_return_stmt(
                     when_clause: catch.when_clause,
                 })
                 .collect(),
-            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
-            finally: finally.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            else_body: else_body
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            finally: finally
+                .map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
         })],
         _ => vec![stmt],
     }
@@ -836,12 +921,20 @@ fn lower_go_defer_statements(
             } else {
                 &empty_loop_local_names
             };
-            lowered.extend(go_lower_defer_stmt(expr, env, signatures, state, stack_name, frozen_names));
+            lowered.extend(go_lower_defer_stmt(
+                expr,
+                env,
+                signatures,
+                state,
+                stack_name,
+                frozen_names,
+            ));
             has_defer = true;
             continue;
         }
 
-        let (next_stmt, nested_has_defer) = lower_go_defer_statement(stmt, env, signatures, state, stack_name, in_loop);
+        let (next_stmt, nested_has_defer) =
+            lower_go_defer_statement(stmt, env, signatures, state, stack_name, in_loop);
         if in_loop {
             go_collect_block_declared_names(&next_stmt, &mut loop_local_names);
         }
@@ -862,19 +955,29 @@ fn lower_go_defer_statement(
 ) -> (Statement, bool) {
     match stmt.kind {
         StmtKind::Block(body) => {
-            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+            let (body, has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
             (Statement::new(StmtKind::Block(body)), has_defer)
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
-            let (next_then, mut has_defer) = lower_go_defer_statements(then_body, env, signatures, state, stack_name, in_loop);
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            let (next_then, mut has_defer) =
+                lower_go_defer_statements(then_body, env, signatures, state, stack_name, in_loop);
             let mut next_elifs = Vec::with_capacity(elifs.len());
             for (elif_cond, elif_body) in elifs {
-                let (next_body, nested_has_defer) = lower_go_defer_statements(elif_body, env, signatures, state, stack_name, in_loop);
+                let (next_body, nested_has_defer) = lower_go_defer_statements(
+                    elif_body, env, signatures, state, stack_name, in_loop,
+                );
                 next_elifs.push((elif_cond, next_body));
                 has_defer |= nested_has_defer;
             }
             let next_else = if let Some(body) = else_body {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
@@ -890,54 +993,100 @@ fn lower_go_defer_statement(
                 has_defer,
             )
         }
-        StmtKind::For { init, cond, update, body } => {
-            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, true);
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let (body, has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, true);
             (
-                Statement::new(StmtKind::For { init, cond, update, body }),
+                Statement::new(StmtKind::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                }),
                 has_defer,
             )
         }
-        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => {
-            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, true);
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            of,
+            else_body,
+            is_async,
+        } => {
+            let (body, mut has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, true);
             let next_else = if let Some(body) = else_body {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
                 None
             };
             (
-                Statement::new(StmtKind::ForIn { var, key, iter, body, of, else_body: next_else, is_async }),
+                Statement::new(StmtKind::ForIn {
+                    var,
+                    key,
+                    iter,
+                    body,
+                    of,
+                    else_body: next_else,
+                    is_async,
+                }),
                 has_defer,
             )
         }
-        StmtKind::While { cond, body, else_body } => {
-            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, true);
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            let (body, mut has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, true);
             let next_else = if let Some(body) = else_body {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
                 None
             };
             (
-                Statement::new(StmtKind::While { cond, body, else_body: next_else }),
+                Statement::new(StmtKind::While {
+                    cond,
+                    body,
+                    else_body: next_else,
+                }),
                 has_defer,
             )
         }
         StmtKind::DoWhile { body, cond, until } => {
-            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, true);
+            let (body, has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, true);
             (
                 Statement::new(StmtKind::DoWhile { body, cond, until }),
                 has_defer,
             )
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             let mut has_defer = false;
             let next_cases = cases
                 .into_iter()
                 .map(|case| {
-                    let (body, nested_has_defer) = lower_go_defer_statements(case.body, env, signatures, state, stack_name, in_loop);
+                    let (body, nested_has_defer) = lower_go_defer_statements(
+                        case.body, env, signatures, state, stack_name, in_loop,
+                    );
                     has_defer |= nested_has_defer;
                     SwitchCase {
                         conditions: case.conditions,
@@ -946,23 +1095,36 @@ fn lower_go_defer_statement(
                 })
                 .collect();
             let next_default = if let Some(body) = default {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
                 None
             };
             (
-                Statement::new(StmtKind::Switch { expr, cases: next_cases, default: next_default }),
+                Statement::new(StmtKind::Switch {
+                    expr,
+                    cases: next_cases,
+                    default: next_default,
+                }),
                 has_defer,
             )
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
-            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let (body, mut has_defer) =
+                lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
             let next_catches = catches
                 .into_iter()
                 .map(|catch| {
-                    let (body, nested_has_defer) = lower_go_defer_statements(catch.body, env, signatures, state, stack_name, in_loop);
+                    let (body, nested_has_defer) = lower_go_defer_statements(
+                        catch.body, env, signatures, state, stack_name, in_loop,
+                    );
                     has_defer |= nested_has_defer;
                     CatchClause {
                         types: catch.types,
@@ -974,14 +1136,16 @@ fn lower_go_defer_statement(
                 })
                 .collect();
             let next_else = if let Some(body) = else_body {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
                 None
             };
             let next_finally = if let Some(body) = finally {
-                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
+                let (body, nested_has_defer) =
+                    lower_go_defer_statements(body, env, signatures, state, stack_name, in_loop);
                 has_defer |= nested_has_defer;
                 Some(body)
             } else {
@@ -1008,7 +1172,8 @@ fn go_extract_defer_expr(stmt: &Statement) -> Option<Expression> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
-    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_defer") || args.len() != 1 {
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_defer") || args.len() != 1
+    {
         return None;
     }
     Some(args[0].value.clone())
@@ -1026,14 +1191,25 @@ fn go_lower_defer_stmt(
     let mut captures = Vec::new();
 
     let deferred_expr = match expr.kind {
-        ExprKind::Call { callee, args, optional } => {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
             let deferred_callee = match callee.as_ref() {
                 Expression {
-                    kind: ExprKind::Member { object, field, null_safe },
+                    kind:
+                        ExprKind::Member {
+                            object,
+                            field,
+                            null_safe,
+                        },
                     ..
                 } => {
                     let receiver_type = go_expr_type_hint(object, env, signatures);
-                    let deferred_object = if matches!(object.as_ref().kind, ExprKind::Ident(_)) && receiver_type.is_none() {
+                    let deferred_object = if matches!(object.as_ref().kind, ExprKind::Ident(_))
+                        && receiver_type.is_none()
+                    {
                         object.as_ref().clone()
                     } else {
                         let temp_name = fresh_go_temp(state, "__go_defer_recv");
@@ -1052,7 +1228,8 @@ fn go_lower_defer_stmt(
                     })
                 }
                 _ => {
-                    let deferred_value = go_freeze_defer_lambda_captures(callee.as_ref().clone(), frozen_names);
+                    let deferred_value =
+                        go_freeze_defer_lambda_captures(callee.as_ref().clone(), frozen_names);
                     let temp_name = fresh_go_temp(state, "__go_defer_fn");
                     stmts.push(go_defer_temp_decl(
                         temp_name.clone(),
@@ -1164,7 +1341,8 @@ fn go_rewrite_immediate_lambda_ref_captures(
         body,
         is_async,
         captures,
-    } = &callee.kind else {
+    } = &callee.kind
+    else {
         return None;
     };
 
@@ -1202,9 +1380,9 @@ fn go_rewrite_immediate_lambda_ref_captures(
             is_optional: false,
             is_nullable: false,
         });
-        next_args.push(Argument::positional(Expression::new(ExprKind::RefOf(Box::new(
-            PlaceExpr::Ident(name.clone()),
-        )))));
+        next_args.push(Argument::positional(Expression::new(ExprKind::RefOf(
+            Box::new(PlaceExpr::Ident(name.clone())),
+        ))));
         replacements.insert(name, temp_name);
     }
 
@@ -1243,7 +1421,12 @@ fn go_collect_stmt_declared_names_recursive(stmt: &Statement, names: &mut HashSe
                 go_collect_stmt_declared_names_recursive(stmt, names);
             }
         }
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             for stmt in then_body {
                 go_collect_stmt_declared_names_recursive(stmt, names);
             }
@@ -1266,7 +1449,13 @@ fn go_collect_stmt_declared_names_recursive(stmt: &Statement, names: &mut HashSe
                 go_collect_stmt_declared_names_recursive(stmt, names);
             }
         }
-        StmtKind::ForIn { var, key, body, else_body, .. } => {
+        StmtKind::ForIn {
+            var,
+            key,
+            body,
+            else_body,
+            ..
+        } => {
             names.insert(var.clone());
             if let Some(key) = key {
                 names.insert(key.clone());
@@ -1280,7 +1469,9 @@ fn go_collect_stmt_declared_names_recursive(stmt: &Statement, names: &mut HashSe
                 }
             }
         }
-        StmtKind::While { body, else_body, .. } => {
+        StmtKind::While {
+            body, else_body, ..
+        } => {
             for stmt in body {
                 go_collect_stmt_declared_names_recursive(stmt, names);
             }
@@ -1348,7 +1539,12 @@ fn go_collect_stmt_ref_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 go_collect_stmt_ref_idents(stmt, names);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             go_collect_expr_ref_idents(cond, names);
             for stmt in then_body {
                 go_collect_stmt_ref_idents(stmt, names);
@@ -1365,7 +1561,12 @@ fn go_collect_stmt_ref_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 go_collect_stmt_ref_idents(init, names);
             }
@@ -1379,7 +1580,12 @@ fn go_collect_stmt_ref_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 go_collect_stmt_ref_idents(stmt, names);
             }
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             go_collect_expr_ref_idents(iter, names);
             for stmt in body {
                 go_collect_stmt_ref_idents(stmt, names);
@@ -1390,7 +1596,11 @@ fn go_collect_stmt_ref_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             go_collect_expr_ref_idents(cond, names);
             for stmt in body {
                 go_collect_stmt_ref_idents(stmt, names);
@@ -1407,7 +1617,12 @@ fn go_collect_stmt_ref_idents(stmt: &Statement, names: &mut HashSet<String>) {
             }
             go_collect_expr_ref_idents(cond, names);
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             for stmt in body {
                 go_collect_stmt_ref_idents(stmt, names);
             }
@@ -1441,15 +1656,18 @@ fn go_collect_expr_ref_idents(expr: &Expression, names: &mut HashSet<String>) {
                 names.insert(name.clone());
             }
         }
-        ExprKind::Unary { op: UnaryOp::AddrOf, expr } => {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => {
             if let ExprKind::Ident(name) = &expr.kind {
                 names.insert(name.clone());
             }
             go_collect_expr_ref_idents(expr, names);
         }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::RefLoad(expr)
-        | ExprKind::Cast { expr, .. } => go_collect_expr_ref_idents(expr, names),
+        ExprKind::Unary { expr, .. } | ExprKind::RefLoad(expr) | ExprKind::Cast { expr, .. } => {
+            go_collect_expr_ref_idents(expr, names)
+        }
         ExprKind::Binary { left, right, .. } => {
             go_collect_expr_ref_idents(left, names);
             go_collect_expr_ref_idents(right, names);
@@ -1479,9 +1697,14 @@ fn go_collect_expr_ref_idents(expr: &Expression, names: &mut HashSet<String>) {
     }
 }
 
-fn go_rewrite_lambda_ref_body(body: &LambdaBody, replacements: &HashMap<String, String>) -> LambdaBody {
+fn go_rewrite_lambda_ref_body(
+    body: &LambdaBody,
+    replacements: &HashMap<String, String>,
+) -> LambdaBody {
     match body {
-        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(go_rewrite_expr_ref_idents(expr, replacements))),
+        LambdaBody::Expr(expr) => {
+            LambdaBody::Expr(Box::new(go_rewrite_expr_ref_idents(expr, replacements)))
+        }
         LambdaBody::Block(stmts) => LambdaBody::Block(
             stmts
                 .iter()
@@ -1491,15 +1714,26 @@ fn go_rewrite_lambda_ref_body(body: &LambdaBody, replacements: &HashMap<String, 
     }
 }
 
-fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, String>) -> Statement {
+fn go_rewrite_stmt_ref_idents(
+    stmt: &Statement,
+    replacements: &HashMap<String, String>,
+) -> Statement {
     match &stmt.kind {
-        StmtKind::Expr(expr) => Statement::new(StmtKind::Expr(go_rewrite_expr_ref_idents(expr, replacements))),
+        StmtKind::Expr(expr) => Statement::new(StmtKind::Expr(go_rewrite_expr_ref_idents(
+            expr,
+            replacements,
+        ))),
         StmtKind::Return(expr) => Statement::new(StmtKind::Return(
-            expr.as_ref().map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
+            expr.as_ref()
+                .map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
         )),
         StmtKind::Throw { expr, cause } => Statement::new(StmtKind::Throw {
-            expr: expr.as_ref().map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
-            cause: cause.as_ref().map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
+            expr: expr
+                .as_ref()
+                .map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
+            cause: cause
+                .as_ref()
+                .map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
         }),
         StmtKind::Assign { targets, value } => Statement::new(StmtKind::Assign {
             targets: targets
@@ -1508,11 +1742,13 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
                 .collect(),
             value: go_rewrite_expr_ref_idents(value, replacements),
         }),
-        StmtKind::CompoundAssign { target, op, value } => Statement::new(StmtKind::CompoundAssign {
-            target: go_rewrite_expr_ref_idents(target, replacements),
-            op: *op,
-            value: go_rewrite_expr_ref_idents(value, replacements),
-        }),
+        StmtKind::CompoundAssign { target, op, value } => {
+            Statement::new(StmtKind::CompoundAssign {
+                target: go_rewrite_expr_ref_idents(target, replacements),
+                op: *op,
+                value: go_rewrite_expr_ref_idents(value, replacements),
+            })
+        }
         StmtKind::VarDecl { declarations, kind } => Statement::new(StmtKind::VarDecl {
             declarations: declarations
                 .iter()
@@ -1534,7 +1770,12 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
                 .map(|stmt| go_rewrite_stmt_ref_idents(stmt, replacements))
                 .collect(),
         )),
-        StmtKind::If { cond, then_body, elifs, else_body } => Statement::new(StmtKind::If {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => Statement::new(StmtKind::If {
             cond: go_rewrite_expr_ref_idents(cond, replacements),
             then_body: then_body
                 .iter()
@@ -1557,18 +1798,35 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
                     .collect()
             }),
         }),
-        StmtKind::For { init, cond, update, body } => Statement::new(StmtKind::For {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => Statement::new(StmtKind::For {
             init: init
                 .as_ref()
                 .map(|stmt| Box::new(go_rewrite_stmt_ref_idents(stmt, replacements))),
-            cond: cond.as_ref().map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
-            update: update.as_ref().map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
+            cond: cond
+                .as_ref()
+                .map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
+            update: update
+                .as_ref()
+                .map(|expr| go_rewrite_expr_ref_idents(expr, replacements)),
             body: body
                 .iter()
                 .map(|stmt| go_rewrite_stmt_ref_idents(stmt, replacements))
                 .collect(),
         }),
-        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => Statement::new(StmtKind::ForIn {
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            of,
+            else_body,
+            is_async,
+        } => Statement::new(StmtKind::ForIn {
             var: var.clone(),
             key: key.clone(),
             iter: go_rewrite_expr_ref_idents(iter, replacements),
@@ -1584,7 +1842,11 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
             }),
             is_async: *is_async,
         }),
-        StmtKind::While { cond, body, else_body } => Statement::new(StmtKind::While {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => Statement::new(StmtKind::While {
             cond: go_rewrite_expr_ref_idents(cond, replacements),
             body: body
                 .iter()
@@ -1604,7 +1866,12 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
             cond: go_rewrite_expr_ref_idents(cond, replacements),
             until: *until,
         }),
-        StmtKind::Try { body, catches, else_body, finally } => Statement::new(StmtKind::Try {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => Statement::new(StmtKind::Try {
             body: body
                 .iter()
                 .map(|stmt| go_rewrite_stmt_ref_idents(stmt, replacements))
@@ -1641,7 +1908,10 @@ fn go_rewrite_stmt_ref_idents(stmt: &Statement, replacements: &HashMap<String, S
     }
 }
 
-fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, String>) -> Expression {
+fn go_rewrite_expr_ref_idents(
+    expr: &Expression,
+    replacements: &HashMap<String, String>,
+) -> Expression {
     match &expr.kind {
         ExprKind::RefOf(place) => {
             if let PlaceExpr::Ident(name) = place.as_ref() {
@@ -1651,7 +1921,10 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
             }
             expr.clone()
         }
-        ExprKind::Unary { op: UnaryOp::AddrOf, expr: inner } => {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: inner,
+        } => {
             if let ExprKind::Ident(name) = &inner.kind {
                 if let Some(replacement) = replacements.get(name) {
                     return Expression::ident(replacement);
@@ -1666,8 +1939,13 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
             op: *op,
             expr: Box::new(go_rewrite_expr_ref_idents(inner, replacements)),
         }),
-        ExprKind::RefLoad(inner) => Expression::new(ExprKind::RefLoad(Box::new(go_rewrite_expr_ref_idents(inner, replacements)))),
-        ExprKind::Cast { expr: inner, type_name } => Expression::new(ExprKind::Cast {
+        ExprKind::RefLoad(inner) => Expression::new(ExprKind::RefLoad(Box::new(
+            go_rewrite_expr_ref_idents(inner, replacements),
+        ))),
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => Expression::new(ExprKind::Cast {
             expr: Box::new(go_rewrite_expr_ref_idents(inner, replacements)),
             type_name: type_name.clone(),
         }),
@@ -1681,12 +1959,20 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
             then: Box::new(go_rewrite_expr_ref_idents(then, replacements)),
             else_: Box::new(go_rewrite_expr_ref_idents(else_, replacements)),
         }),
-        ExprKind::Member { object, field, null_safe } => Expression::new(ExprKind::Member {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
             object: Box::new(go_rewrite_expr_ref_idents(object, replacements)),
             field: field.clone(),
             null_safe: *null_safe,
         }),
-        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Index {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
             object: Box::new(go_rewrite_expr_ref_idents(object, replacements)),
             index: Box::new(go_rewrite_expr_ref_idents(index, replacements)),
             null_safe: *null_safe,
@@ -1695,7 +1981,11 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
             target: Box::new(go_rewrite_expr_ref_idents(target, replacements)),
             value: Box::new(go_rewrite_expr_ref_idents(value, replacements)),
         }),
-        ExprKind::Call { callee, args, optional } => Expression::new(ExprKind::Call {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => Expression::new(ExprKind::Call {
             callee: Box::new(go_rewrite_expr_ref_idents(callee, replacements)),
             args: args
                 .iter()
@@ -1730,7 +2020,9 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
                         key: go_rewrite_expr_ref_idents(key, replacements),
                         value: go_rewrite_expr_ref_idents(value, replacements),
                     },
-                    ObjectProperty::Spread(value) => ObjectProperty::Spread(go_rewrite_expr_ref_idents(value, replacements)),
+                    ObjectProperty::Spread(value) => {
+                        ObjectProperty::Spread(go_rewrite_expr_ref_idents(value, replacements))
+                    }
                     ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
                         key: go_rewrite_expr_ref_idents(key, replacements),
                         value: go_rewrite_expr_ref_idents(value, replacements),
@@ -1751,7 +2043,12 @@ fn go_rewrite_expr_ref_idents(expr: &Expression, replacements: &HashMap<String, 
                 .map(|value| go_rewrite_expr_ref_idents(value, replacements))
                 .collect(),
         )),
-        ExprKind::Lambda { params, body, is_async, captures } => Expression::new(ExprKind::Lambda {
+        ExprKind::Lambda {
+            params,
+            body,
+            is_async,
+            captures,
+        } => Expression::new(ExprKind::Lambda {
             params: params.clone(),
             body: go_rewrite_lambda_ref_body(body, replacements),
             is_async: *is_async,
@@ -1767,7 +2064,8 @@ fn go_freeze_defer_lambda_captures(expr: Expression, frozen_names: &HashSet<Stri
         body,
         is_async,
         mut captures,
-    } = expr.kind else {
+    } = expr.kind
+    else {
         return expr;
     };
 
@@ -1832,7 +2130,12 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
             go_collect_expr_idents(target, names);
             go_collect_expr_idents(value, names);
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             go_collect_expr_idents(cond, names);
             for stmt in then_body {
                 go_collect_stmt_idents(stmt, names);
@@ -1849,7 +2152,12 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 go_collect_stmt_idents(init, names);
             }
@@ -1863,7 +2171,12 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 go_collect_stmt_idents(stmt, names);
             }
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             go_collect_expr_idents(iter, names);
             for stmt in body {
                 go_collect_stmt_idents(stmt, names);
@@ -1874,7 +2187,11 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             go_collect_expr_idents(cond, names);
             for stmt in body {
                 go_collect_stmt_idents(stmt, names);
@@ -1896,7 +2213,11 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 go_collect_stmt_idents(stmt, names);
             }
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             go_collect_expr_idents(expr, names);
             for case in cases {
                 for condition in &case.conditions {
@@ -1906,7 +2227,9 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                             go_collect_expr_idents(from, names);
                             go_collect_expr_idents(to, names);
                         }
-                        CaseCondition::Comparison { expr, .. } => go_collect_expr_idents(expr, names),
+                        CaseCondition::Comparison { expr, .. } => {
+                            go_collect_expr_idents(expr, names)
+                        }
                     }
                 }
                 for stmt in &case.body {
@@ -1919,7 +2242,12 @@ fn go_collect_stmt_idents(stmt: &Statement, names: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             for stmt in body {
                 go_collect_stmt_idents(stmt, names);
             }
@@ -1958,9 +2286,9 @@ fn go_collect_expr_idents(expr: &Expression, names: &mut HashSet<String>) {
         ExprKind::Ident(name) => {
             names.insert(name.clone());
         }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::RefLoad(expr)
-        | ExprKind::Cast { expr, .. } => go_collect_expr_idents(expr, names),
+        ExprKind::Unary { expr, .. } | ExprKind::RefLoad(expr) | ExprKind::Cast { expr, .. } => {
+            go_collect_expr_idents(expr, names)
+        }
         ExprKind::AddressOf(name) => {
             names.insert(name.clone());
         }
@@ -2077,10 +2405,18 @@ fn normalize_go_statement(
             };
             for param in params {
                 if let Some(type_hint) = param.type_hint.as_ref() {
-                    fn_env.value_types.insert(param.name.clone(), type_hint.clone());
+                    fn_env
+                        .value_types
+                        .insert(param.name.clone(), type_hint.clone());
                 }
-                if let Some(type_hint) = param.type_hint.as_deref().filter(|hint| go_is_fixed_array_type(hint)) {
-                    fn_env.fixed_arrays.insert(param.name.clone(), type_hint.to_string());
+                if let Some(type_hint) = param
+                    .type_hint
+                    .as_deref()
+                    .filter(|hint| go_is_fixed_array_type(hint))
+                {
+                    fn_env
+                        .fixed_arrays
+                        .insert(param.name.clone(), type_hint.to_string());
                 }
             }
 
@@ -2103,21 +2439,22 @@ fn normalize_go_statement(
                 if let Some(pattern) = go_single_named_binding_pattern(&next_decl.pattern) {
                     next_decl.pattern = pattern;
                 }
-                next_decl.init = decl
-                    .init
-                    .as_ref()
-                    .map(|expr| {
-                        if go_is_two_value_binding_pattern(&decl.pattern) {
-                            if let Some(tuple_expr) = go_normalize_map_lookup_tuple_expr(expr, env, signatures, state) {
-                                return tuple_expr;
-                            }
+                next_decl.init = decl.init.as_ref().map(|expr| {
+                    if go_is_two_value_binding_pattern(&decl.pattern) {
+                        if let Some(tuple_expr) =
+                            go_normalize_map_lookup_tuple_expr(expr, env, signatures, state)
+                        {
+                            return tuple_expr;
                         }
-                        normalize_go_expr(expr, env, signatures, state)
-                    });
-                next_decl.array_bounds = decl
-                    .array_bounds
-                    .as_ref()
-                    .map(|bounds| bounds.iter().map(|expr| normalize_go_expr(expr, env, signatures, state)).collect());
+                    }
+                    normalize_go_expr(expr, env, signatures, state)
+                });
+                next_decl.array_bounds = decl.array_bounds.as_ref().map(|bounds| {
+                    bounds
+                        .iter()
+                        .map(|expr| normalize_go_expr(expr, env, signatures, state))
+                        .collect()
+                });
 
                 if next_decl.init.is_none()
                     && next_decl
@@ -2125,10 +2462,7 @@ fn normalize_go_statement(
                         .as_deref()
                         .is_some_and(go_is_fixed_array_type)
                 {
-                    next_decl.init = next_decl
-                        .type_hint
-                        .as_deref()
-                        .map(go_zero_value_expr);
+                    next_decl.init = next_decl.type_hint.as_deref().map(go_zero_value_expr);
                 } else if next_decl.init.is_none() {
                     if let Some(type_name) = next_decl.type_hint.as_deref() {
                         if let Some(underlying) = env.named_types.get(type_name) {
@@ -2142,7 +2476,9 @@ fn normalize_go_statement(
                     next_decl.init = Some(go_wrap_fixed_array_copy(init_expr, env, signatures));
                 }
 
-                if let Some((name, type_name)) = go_decl_fixed_array_binding(&next_decl, env, signatures) {
+                if let Some((name, type_name)) =
+                    go_decl_fixed_array_binding(&next_decl, env, signatures)
+                {
                     env.fixed_arrays.insert(name, type_name);
                 }
                 if let Some((name, type_name)) = go_decl_binding_type(&next_decl, env, signatures) {
@@ -2214,8 +2550,9 @@ fn normalize_go_statement(
                     } else {
                         env.slice_views.remove(name);
                     }
-                    if let Some(cap_expr) = go_make_slice_capacity_expr(value, env, signatures, state)
-                        .or_else(|| go_bound_slice_capacity_expr(&next_value, env))
+                    if let Some(cap_expr) =
+                        go_make_slice_capacity_expr(value, env, signatures, state)
+                            .or_else(|| go_bound_slice_capacity_expr(&next_value, env))
                     {
                         env.slice_caps.insert(name.clone(), cap_expr);
                     }
@@ -2229,11 +2566,13 @@ fn normalize_go_statement(
                 value: next_value,
             })]
         }
-        StmtKind::CompoundAssign { target, op, value } => vec![Statement::new(StmtKind::CompoundAssign {
-            target: normalize_go_lvalue_expr(target, env, signatures, state),
-            op: *op,
-            value: normalize_go_expr(value, env, signatures, state),
-        })],
+        StmtKind::CompoundAssign { target, op, value } => {
+            vec![Statement::new(StmtKind::CompoundAssign {
+                target: normalize_go_lvalue_expr(target, env, signatures, state),
+                op: *op,
+                value: normalize_go_expr(value, env, signatures, state),
+            })]
+        }
         StmtKind::Return(expr) => {
             let next_expr = expr.as_ref().map(|value| {
                 let normalized = normalize_go_expr(value, env, signatures, state);
@@ -2274,7 +2613,11 @@ fn normalize_go_statement(
                 else_body: next_else,
             })]
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             let next_cases = cases
                 .iter()
                 .map(|case| SwitchCase {
@@ -2282,9 +2625,9 @@ fn normalize_go_statement(
                         .conditions
                         .iter()
                         .map(|condition| match condition {
-                            CaseCondition::Value(value) => {
-                                CaseCondition::Value(normalize_go_expr(value, env, signatures, state))
-                            }
+                            CaseCondition::Value(value) => CaseCondition::Value(normalize_go_expr(
+                                value, env, signatures, state,
+                            )),
                             _ => condition.clone(),
                         })
                         .collect(),
@@ -2307,7 +2650,12 @@ fn normalize_go_statement(
         } => {
             let mut loop_env = env.clone();
             let next_init = init.as_ref().map(|stmt| {
-                Box::new(normalize_go_single_statement(stmt, &mut loop_env, signatures, state))
+                Box::new(normalize_go_single_statement(
+                    stmt,
+                    &mut loop_env,
+                    signatures,
+                    state,
+                ))
             });
             let next_cond = cond
                 .as_ref()
@@ -2336,7 +2684,15 @@ fn normalize_go_statement(
             if *of && go_expr_type_hint(&next_iter, env, signatures).as_deref() == Some("string") {
                 lower_go_string_range(var, key.as_deref(), next_iter, body, env, signatures, state)
             } else if *of && go_expr_is_fixed_array(&next_iter, env, signatures) {
-                lower_go_fixed_array_range(var, key.as_deref(), next_iter, body, env, signatures, state)
+                lower_go_fixed_array_range(
+                    var,
+                    key.as_deref(),
+                    next_iter,
+                    body,
+                    env,
+                    signatures,
+                    state,
+                )
             } else {
                 vec![Statement::new(StmtKind::ForIn {
                     var: var.clone(),
@@ -2351,7 +2707,11 @@ fn normalize_go_statement(
                 })]
             }
         }
-        StmtKind::While { cond, body, else_body } => vec![Statement::new(StmtKind::While {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => vec![Statement::new(StmtKind::While {
             cond: normalize_go_expr(cond, env, signatures, state),
             body: normalize_go_block(body, env, signatures, state),
             else_body: else_body
@@ -2385,7 +2745,8 @@ fn normalize_go_statement(
                 .iter()
                 .map(|member| match member {
                     ClassMember::Method(stmt) => {
-                        let normalized_method = normalize_go_single_statement(stmt, env, signatures, state);
+                        let normalized_method =
+                            normalize_go_single_statement(stmt, env, signatures, state);
                         ClassMember::Method(Box::new(normalized_method))
                     }
                     ClassMember::Field {
@@ -2398,7 +2759,9 @@ fn normalize_go_statement(
                     } => ClassMember::Field {
                         name: name.clone(),
                         type_hint: type_hint.clone(),
-                        init: init.as_ref().map(|expr| normalize_go_expr(expr, env, signatures, state)),
+                        init: init
+                            .as_ref()
+                            .map(|expr| normalize_go_expr(expr, env, signatures, state)),
                         modifiers: modifiers.clone(),
                         with_events: *with_events,
                         array_bounds: array_bounds.as_ref().map(|bounds| {
@@ -2487,7 +2850,10 @@ fn normalize_go_expr(
                 })
             }
         }
-        ExprKind::Unary { op: UnaryOp::AddrOf, expr } => {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => {
             let next_expr = normalize_go_expr(expr, env, signatures, state);
             if let Some(place) = go_expr_to_place(&next_expr) {
                 Expression::new(ExprKind::RefOf(Box::new(place)))
@@ -2498,9 +2864,12 @@ fn normalize_go_expr(
                 })
             }
         }
-        ExprKind::Unary { op: UnaryOp::Deref, expr } => {
-            Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(expr, env, signatures, state))))
-        }
+        ExprKind::Unary {
+            op: UnaryOp::Deref,
+            expr,
+        } => Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(
+            expr, env, signatures, state,
+        )))),
         ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
             op: *op,
             expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
@@ -2516,12 +2885,15 @@ fn normalize_go_expr(
             null_safe,
         } => {
             let next_object = normalize_go_expr(object, env, signatures, state);
-            let rewritten = go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
-            rewritten.unwrap_or_else(|| Expression::new(ExprKind::Member {
-                object: Box::new(normalize_go_expr(object, env, signatures, state)),
-                field: field.clone(),
-                null_safe: *null_safe,
-            }))
+            let rewritten =
+                go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
+            rewritten.unwrap_or_else(|| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(normalize_go_expr(object, env, signatures, state)),
+                    field: field.clone(),
+                    null_safe: *null_safe,
+                })
+            })
         }
         ExprKind::Index {
             object,
@@ -2530,7 +2902,9 @@ fn normalize_go_expr(
         } => {
             let next_object = normalize_go_expr(object, env, signatures, state);
             let next_index = normalize_go_expr(index, env, signatures, state);
-            if let Some(rewritten) = go_rewrite_slice_view_index(&next_object, next_index.clone(), env) {
+            if let Some(rewritten) =
+                go_rewrite_slice_view_index(&next_object, next_index.clone(), env)
+            {
                 return rewritten;
             }
             if go_expr_type_hint(&next_object, env, signatures).as_deref() == Some("string") {
@@ -2620,7 +2994,10 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("make") {
-                if let Some(type_name) = next_args.first().and_then(|arg| go_type_name_from_expr(&arg.value)) {
+                if let Some(type_name) = next_args
+                    .first()
+                    .and_then(|arg| go_type_name_from_expr(&arg.value))
+                {
                     if go_is_channel_type(&type_name) {
                         let capacity = next_args.get(1).map(|arg| arg.value.clone());
                         return Expression::new(ExprKind::Cast {
@@ -2651,7 +3028,10 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("new") {
-                if let Some(type_name) = next_args.first().and_then(|arg| go_type_name_from_expr(&arg.value)) {
+                if let Some(type_name) = next_args
+                    .first()
+                    .and_then(|arg| go_type_name_from_expr(&arg.value))
+                {
                     return Expression::new(ExprKind::Unary {
                         op: UnaryOp::AddrOf,
                         expr: Box::new(go_zero_value_for_type(&type_name, env)),
@@ -2836,19 +3216,33 @@ fn normalize_go_expr(
             };
             for param in params {
                 if let Some(type_hint) = param.type_hint.as_ref() {
-                    lambda_env.value_types.insert(param.name.clone(), type_hint.clone());
+                    lambda_env
+                        .value_types
+                        .insert(param.name.clone(), type_hint.clone());
                 }
-                if let Some(type_hint) = param.type_hint.as_deref().filter(|hint| go_is_fixed_array_type(hint)) {
-                    lambda_env.fixed_arrays.insert(param.name.clone(), type_hint.to_string());
+                if let Some(type_hint) = param
+                    .type_hint
+                    .as_deref()
+                    .filter(|hint| go_is_fixed_array_type(hint))
+                {
+                    lambda_env
+                        .fixed_arrays
+                        .insert(param.name.clone(), type_hint.to_string());
                 }
             }
             let next_body = match body {
-                LambdaBody::Expr(expr) => {
-                    LambdaBody::Expr(Box::new(normalize_go_expr(expr, &lambda_env, signatures, state)))
-                }
-                LambdaBody::Block(stmts) => {
-                    LambdaBody::Block(normalize_go_function_body(stmts, &mut lambda_env, signatures, state))
-                }
+                LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(normalize_go_expr(
+                    expr,
+                    &lambda_env,
+                    signatures,
+                    state,
+                ))),
+                LambdaBody::Block(stmts) => LambdaBody::Block(normalize_go_function_body(
+                    stmts,
+                    &mut lambda_env,
+                    signatures,
+                    state,
+                )),
             };
             Expression::new(ExprKind::Lambda {
                 params: params.clone(),
@@ -2887,7 +3281,9 @@ fn lower_go_fixed_array_range(
 
     let mut body_env = env.clone();
     if !iter_type.is_empty() {
-        body_env.fixed_arrays.insert(iter_name.clone(), iter_type.clone());
+        body_env
+            .fixed_arrays
+            .insert(iter_name.clone(), iter_type.clone());
     }
 
     let mut lowered_body = Vec::new();
@@ -2954,7 +3350,12 @@ fn lower_go_fixed_array_range(
     }
 
     for stmt in body {
-        lowered_body.extend(normalize_go_statement(stmt, &mut body_env, signatures, state));
+        lowered_body.extend(normalize_go_statement(
+            stmt,
+            &mut body_env,
+            signatures,
+            state,
+        ));
     }
 
     let for_stmt = Statement::new(StmtKind::For {
@@ -3011,7 +3412,9 @@ fn lower_go_string_range(
     });
 
     let mut body_env = env.clone();
-    body_env.value_types.insert(iter_name.clone(), "string".to_string());
+    body_env
+        .value_types
+        .insert(iter_name.clone(), "string".to_string());
 
     let mut lowered_body = Vec::new();
     match key {
@@ -3077,7 +3480,12 @@ fn lower_go_string_range(
     }
 
     for stmt in body {
-        lowered_body.extend(normalize_go_statement(stmt, &mut body_env, signatures, state));
+        lowered_body.extend(normalize_go_statement(
+            stmt,
+            &mut body_env,
+            signatures,
+            state,
+        ));
     }
 
     let for_stmt = Statement::new(StmtKind::For {
@@ -3129,7 +3537,10 @@ fn go_wrap_fixed_array_copy(
 }
 
 fn go_requires_fixed_array_copy(expr: &Expression) -> bool {
-    matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. })
+    matches!(
+        expr.kind,
+        ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. }
+    )
 }
 
 fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
@@ -3176,7 +3587,9 @@ fn go_recover_iife_expr(env: &GoNormalizeEnv) -> Expression {
                     Statement::new(StmtKind::Return(Some(Expression::ident(panic_value_name)))),
                 ],
                 elifs: Vec::new(),
-                else_body: Some(vec![Statement::new(StmtKind::Return(Some(Expression::null())))]),
+                else_body: Some(vec![Statement::new(StmtKind::Return(Some(
+                    Expression::null(),
+                )))]),
             })]),
             is_async: false,
             captures: Vec::new(),
@@ -3263,7 +3676,9 @@ fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSlice
                 .unwrap_or_else(|| Expression::int(0));
             let start = go_add_expr(
                 parent_start.clone(),
-                args.first().map(|arg| arg.value.clone()).unwrap_or_else(|| Expression::int(0)),
+                args.first()
+                    .map(|arg| arg.value.clone())
+                    .unwrap_or_else(|| Expression::int(0)),
             );
             let end = if let Some(end_arg) = args.get(1) {
                 Some(go_add_expr(parent_start, end_arg.value.clone()))
@@ -3272,7 +3687,9 @@ fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSlice
             };
 
             Some(GoSliceViewInfo {
-                base: parent.map(|view| view.base).unwrap_or_else(|| object.as_ref().clone()),
+                base: parent
+                    .map(|view| view.base)
+                    .unwrap_or_else(|| object.as_ref().clone()),
                 start,
                 end,
             })
@@ -3297,7 +3714,10 @@ fn go_lower_copy_expr(
     let count_name = fresh_go_temp(state, "__go_copy_count");
     let index_name = fresh_go_temp(state, "__go_copy_idx");
 
-    let count_expr = go_copy_count_expr(Expression::ident(&target_name), Expression::ident(&source_name));
+    let count_expr = go_copy_count_expr(
+        Expression::ident(&target_name),
+        Expression::ident(&source_name),
+    );
     let loop_cond = Expression::new(ExprKind::Binary {
         op: BinOp::Lt,
         left: Box::new(Expression::ident(&index_name)),
@@ -3311,18 +3731,20 @@ fn go_lower_copy_expr(
             right: Box::new(Expression::int(1)),
         })),
     });
-    let loop_body = vec![Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
-        target: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(Expression::ident(&target_name)),
-            index: Box::new(Expression::ident(&index_name)),
-            null_safe: false,
-        })),
-        value: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(Expression::ident(&source_name)),
-            index: Box::new(Expression::ident(&index_name)),
-            null_safe: false,
-        })),
-    })))];
+    let loop_body = vec![Statement::new(StmtKind::Expr(Expression::new(
+        ExprKind::Assign {
+            target: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(Expression::ident(&target_name)),
+                index: Box::new(Expression::ident(&index_name)),
+                null_safe: false,
+            })),
+            value: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(Expression::ident(&source_name)),
+                index: Box::new(Expression::ident(&index_name)),
+                null_safe: false,
+            })),
+        },
+    )))];
 
     let mut body = vec![
         Statement::new(StmtKind::VarDecl {
@@ -3372,7 +3794,9 @@ fn go_lower_copy_expr(
             body: loop_body,
         }),
     ];
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(&count_name)))));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(
+        &count_name,
+    )))));
 
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
@@ -3389,18 +3813,29 @@ fn go_lower_copy_expr(
 fn go_expr_to_place(expr: &Expression) -> Option<PlaceExpr> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(PlaceExpr::Ident(name.clone())),
-        ExprKind::Member { object, field, null_safe } => Some(PlaceExpr::Member {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Some(PlaceExpr::Member {
             object: object.clone(),
             field: field.clone(),
             null_safe: *null_safe,
         }),
-        ExprKind::Index { object, index, null_safe } => Some(PlaceExpr::Index {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Some(PlaceExpr::Index {
             object: object.clone(),
             index: index.clone(),
             null_safe: *null_safe,
         }),
         ExprKind::RefLoad(expr) => Some(PlaceExpr::Deref(expr.clone())),
-        ExprKind::Unary { op: UnaryOp::Deref, expr } => Some(PlaceExpr::Deref(expr.clone())),
+        ExprKind::Unary {
+            op: UnaryOp::Deref,
+            expr,
+        } => Some(PlaceExpr::Deref(expr.clone())),
         _ => None,
     }
 }
@@ -3413,16 +3848,22 @@ fn normalize_go_lvalue_expr(
 ) -> Expression {
     match &expr.kind {
         ExprKind::Ident(name) => Expression::ident(name),
-        ExprKind::Index { object, index, null_safe } => {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => {
             let next_object = normalize_go_expr(object, env, signatures, state);
             let next_index = normalize_go_expr(index, env, signatures, state);
-            go_rewrite_slice_view_index(&next_object, next_index.clone(), env).unwrap_or_else(|| {
-                Expression::new(ExprKind::Index {
-                    object: Box::new(next_object),
-                    index: Box::new(next_index),
-                    null_safe: *null_safe,
-                })
-            })
+            go_rewrite_slice_view_index(&next_object, next_index.clone(), env).unwrap_or_else(
+                || {
+                    Expression::new(ExprKind::Index {
+                        object: Box::new(next_object),
+                        index: Box::new(next_index),
+                        null_safe: *null_safe,
+                    })
+                },
+            )
         }
         ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
             target: Box::new(normalize_go_lvalue_expr(target, env, signatures, state)),
@@ -3534,7 +3975,11 @@ fn go_expr_type_hint(
                     .get(name)
                     .cloned()
                     .or_else(|| env.fixed_arrays.get(name).cloned()),
-                PlaceExpr::Member { object, field, null_safe } => go_expr_type_hint(
+                PlaceExpr::Member {
+                    object,
+                    field,
+                    null_safe,
+                } => go_expr_type_hint(
                     &Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: field.clone(),
@@ -3543,7 +3988,11 @@ fn go_expr_type_hint(
                     env,
                     signatures,
                 ),
-                PlaceExpr::Index { object, index, null_safe } => go_expr_type_hint(
+                PlaceExpr::Index {
+                    object,
+                    index,
+                    null_safe,
+                } => go_expr_type_hint(
                     &Expression::new(ExprKind::Index {
                         object: object.clone(),
                         index: index.clone(),
@@ -3552,51 +4001,74 @@ fn go_expr_type_hint(
                     env,
                     signatures,
                 ),
-                PlaceExpr::Deref(expr) => go_expr_type_hint(expr, env, signatures).map(|type_name| {
-                    type_name
-                        .trim()
-                        .trim_start_matches('*')
-                        .trim_start_matches('^')
-                        .trim()
-                        .to_string()
-                }),
+                PlaceExpr::Deref(expr) => {
+                    go_expr_type_hint(expr, env, signatures).map(|type_name| {
+                        type_name
+                            .trim()
+                            .trim_start_matches('*')
+                            .trim_start_matches('^')
+                            .trim()
+                            .to_string()
+                    })
+                }
             }?;
             Some(format!("*{}", pointee_type.trim()))
         }
-        ExprKind::Unary { op: UnaryOp::AddrOf, expr } => go_expr_type_hint(expr, env, signatures)
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => go_expr_type_hint(expr, env, signatures)
             .map(|type_name| format!("*{}", type_name.trim())),
-        ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => go_expr_type_hint(expr, env, signatures)
-            .map(|type_name| {
-                type_name
-                    .trim()
-                    .trim_start_matches('*')
-                    .trim_start_matches('^')
-                    .trim()
-                    .to_string()
-            }),
+        ExprKind::Unary {
+            op: UnaryOp::Deref,
+            expr,
+        }
+        | ExprKind::RefLoad(expr) => go_expr_type_hint(expr, env, signatures).map(|type_name| {
+            type_name
+                .trim()
+                .trim_start_matches('*')
+                .trim_start_matches('^')
+                .trim()
+                .to_string()
+        }),
         ExprKind::Member { object, field, .. } => go_expr_type_hint(object, env, signatures)
-            .and_then(|type_name| go_resolve_struct_member_type(&type_name, field, env, &mut HashSet::new())),
-        ExprKind::IsType { .. } => Some("bool".to_string()),
-        ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
             .and_then(|type_name| {
+                go_resolve_struct_member_type(&type_name, field, env, &mut HashSet::new())
+            }),
+        ExprKind::IsType { .. } => Some("bool".to_string()),
+        ExprKind::Index { object, .. } => {
+            go_expr_type_hint(object, env, signatures).and_then(|type_name| {
                 if type_name == "string" {
                     Some("byte".to_string())
                 } else {
                     go_array_element_type(&type_name).or_else(|| go_map_value_type(&type_name))
                 }
-            }),
+            })
+        }
         ExprKind::Assign { value, .. } => go_expr_type_hint(value, env, signatures),
         ExprKind::Ternary { then, else_, .. } => {
             let then_type = go_expr_type_hint(then, env, signatures);
             let else_type = go_expr_type_hint(else_, env, signatures);
-            if then_type == else_type { then_type } else { then_type.or(else_type) }
+            if then_type == else_type {
+                then_type
+            } else {
+                then_type.or(else_type)
+            }
         }
         ExprKind::Binary { op, left, right } => {
             let left_type = go_expr_type_hint(left, env, signatures);
             let right_type = go_expr_type_hint(right, env, signatures);
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::IDiv | BinOp::Mod
-                | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::IDiv
+                | BinOp::Mod
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => {
                     if left_type.as_deref().is_some_and(go_is_integer_type)
                         && right_type.as_deref().is_some_and(go_is_integer_type)
                     {
@@ -3618,17 +4090,21 @@ fn go_expr_type_hint(
             }
         }
         ExprKind::Call { callee, args, .. } => match &callee.kind {
-            ExprKind::Ident(name) if name == "__go_fixed_array_clone" => {
-                args.first().and_then(|arg| go_expr_type_hint(&arg.value, env, signatures))
-            }
+            ExprKind::Ident(name) if name == "__go_fixed_array_clone" => args
+                .first()
+                .and_then(|arg| go_expr_type_hint(&arg.value, env, signatures)),
             ExprKind::Ident(name) if name == "__go_fixed_array_equal" => Some("bool".to_string()),
-            ExprKind::Ident(name) if name == "__go_regex_split_pat_first" => Some("[]string".to_string()),
+            ExprKind::Ident(name) if name == "__go_regex_split_pat_first" => {
+                Some("[]string".to_string())
+            }
             ExprKind::Ident(name) if name == "__go_map_has" => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__go_to_int" => Some("int".to_string()),
-            ExprKind::Ident(name) if name == "__go_str_from_char_code" => Some("string".to_string()),
-            ExprKind::Ident(name) if name == "__go_type_assert" => {
-                args.get(1).and_then(|arg| go_type_name_from_expr(&arg.value))
+            ExprKind::Ident(name) if name == "__go_str_from_char_code" => {
+                Some("string".to_string())
             }
+            ExprKind::Ident(name) if name == "__go_type_assert" => args
+                .get(1)
+                .and_then(|arg| go_type_name_from_expr(&arg.value)),
             ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
             _ => None,
@@ -3802,7 +4278,11 @@ fn go_normalize_typed_composite_expr(
                     let value = elements
                         .get(index)
                         .map(|element| element.value.clone())
-                        .or_else(|| info.member_types.get(field_name).map(|field_type| go_zero_value_for_type(field_type, env)));
+                        .or_else(|| {
+                            info.member_types
+                                .get(field_name)
+                                .map(|field_type| go_zero_value_for_type(field_type, env))
+                        });
                     if let Some(value) = value {
                         props.push(ObjectProperty::KeyValue {
                             key: Expression::string(field_name),
@@ -3843,10 +4323,11 @@ fn go_decl_fixed_array_binding(
     let BindingPattern::Ident(name) = &decl.pattern else {
         return None;
     };
-    let type_name = decl
-        .type_hint
-        .clone()
-        .or_else(|| decl.init.as_ref().and_then(|expr| go_expr_type_hint(expr, env, signatures)))?;
+    let type_name = decl.type_hint.clone().or_else(|| {
+        decl.init
+            .as_ref()
+            .and_then(|expr| go_expr_type_hint(expr, env, signatures))
+    })?;
     go_is_fixed_array_type(&type_name).then(|| (name.clone(), type_name))
 }
 
@@ -3861,7 +4342,11 @@ fn go_decl_binding_type(
 
     decl.type_hint
         .clone()
-        .or_else(|| decl.init.as_ref().and_then(|expr| go_expr_type_hint(expr, env, signatures)))
+        .or_else(|| {
+            decl.init
+                .as_ref()
+                .and_then(|expr| go_expr_type_hint(expr, env, signatures))
+        })
         .map(|type_name| (name.clone(), type_name))
 }
 
@@ -3900,9 +4385,19 @@ fn go_is_fixed_array_type(type_name: &str) -> bool {
 fn go_is_integer_type(type_name: &str) -> bool {
     matches!(
         type_name.trim(),
-        "int" | "int8" | "int16" | "int32" | "int64"
-            | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
-            | "byte" | "rune"
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "byte"
+            | "rune"
     )
 }
 
@@ -3931,7 +4426,11 @@ fn go_normalize_type_conversion(
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Expression {
-    if let Some(underlying) = env.named_types.get(type_name).filter(|underlying| underlying.as_str() != type_name) {
+    if let Some(underlying) = env
+        .named_types
+        .get(type_name)
+        .filter(|underlying| underlying.as_str() != type_name)
+    {
         let normalized = go_normalize_type_conversion(underlying, expr, env, signatures);
         return Expression::new(ExprKind::Cast {
             expr: Box::new(normalized),
@@ -4084,7 +4583,13 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }
 
     for param in named_results.iter().rev() {
-        body_stmts.insert(0, go_named_result_marker_stmt(&param.name, param.type_hint.as_deref().unwrap_or("object")));
+        body_stmts.insert(
+            0,
+            go_named_result_marker_stmt(
+                &param.name,
+                param.type_hint.as_deref().unwrap_or("object"),
+            ),
+        );
     }
 
     Ok(Statement::new(StmtKind::FunctionDecl {
@@ -4140,20 +4645,33 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }
 
     for param in named_results.iter().rev() {
-        body_stmts.insert(0, go_named_result_marker_stmt(&param.name, param.type_hint.as_deref().unwrap_or("object")));
+        body_stmts.insert(
+            0,
+            go_named_result_marker_stmt(
+                &param.name,
+                param.type_hint.as_deref().unwrap_or("object"),
+            ),
+        );
     }
 
     // Prepend receiver as first parameter
-    params.insert(0, Param {
-        name: if receiver_name.is_empty() { "self".to_string() } else { receiver_name },
-        type_hint: Some(receiver_type.clone()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    });
+    params.insert(
+        0,
+        Param {
+            name: if receiver_name.is_empty() {
+                "self".to_string()
+            } else {
+                receiver_name
+            },
+            type_hint: Some(receiver_type.clone()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+    );
 
     let method_stmt = Statement::new(StmtKind::FunctionDecl {
         name: method_name,
@@ -4224,14 +4742,20 @@ fn walk_signature(pair: Pair<Rule>) -> Result<GoSignatureInfo, String> {
 fn go_named_result_marker_stmt(name: &str, type_name: &str) -> Statement {
     Statement::new(StmtKind::Expr(go_builtin_call(
         "__go_named_result",
-        vec![Expression::string(name), go_type_arg_expr(type_name.to_string())],
+        vec![
+            Expression::string(name),
+            go_type_arg_expr(type_name.to_string()),
+        ],
     )))
 }
 
 fn go_named_type_marker_stmt(name: &str, type_name: &str) -> Statement {
     Statement::new(StmtKind::Expr(go_builtin_call(
         "__go_named_type",
-        vec![Expression::string(name), go_type_arg_expr(type_name.to_string())],
+        vec![
+            Expression::string(name),
+            go_type_arg_expr(type_name.to_string()),
+        ],
     )))
 }
 
@@ -4358,8 +4882,12 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 let mut iota_index = 0i64;
                 for spec in inner.into_inner() {
                     if spec.as_rule() == Rule::const_spec {
-                        let (mut decls, next_inits, next_type_hint) =
-                            walk_const_spec(spec, iota_index, prev_inits.clone(), prev_type_hint.clone())?;
+                        let (mut decls, next_inits, next_type_hint) = walk_const_spec(
+                            spec,
+                            iota_index,
+                            prev_inits.clone(),
+                            prev_type_hint.clone(),
+                        )?;
                         declarations.append(&mut decls);
                         prev_inits = Some(next_inits);
                         prev_type_hint = next_type_hint;
@@ -4397,26 +4925,33 @@ fn walk_const_spec(
 
     if names.len() > 1 && !next_inits.is_empty() {
         let pattern = BindingPattern::Array(
-            names.into_iter().map(|name| {
-                if name == "_" {
-                    ArrayPatternElem::Hole
-                } else {
-                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-                }
-            }).collect(),
+            names
+                .into_iter()
+                .map(|name| {
+                    if name == "_" {
+                        ArrayPatternElem::Hole
+                    } else {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                    }
+                })
+                .collect(),
         );
         let init = if next_inits.len() == 1 {
             next_inits[0].clone()
         } else {
             Expression::new(ExprKind::Tuple(next_inits.clone()))
         };
-        return Ok((vec![VarDeclarator {
-            pattern,
-            init: Some(init),
-            type_hint: effective_type_hint.clone(),
-            array_bounds: None,
-            with_events: false,
-        }], raw_inits, effective_type_hint));
+        return Ok((
+            vec![VarDeclarator {
+                pattern,
+                init: Some(init),
+                type_hint: effective_type_hint.clone(),
+                array_bounds: None,
+                with_events: false,
+            }],
+            raw_inits,
+            effective_type_hint,
+        ));
     }
 
     let mut declarations = Vec::new();
@@ -4436,7 +4971,9 @@ fn walk_const_spec(
     Ok((declarations, raw_inits, effective_type_hint))
 }
 
-fn parse_go_var_spec(pair: Pair<Rule>) -> Result<(Vec<String>, Option<String>, Vec<Expression>), String> {
+fn parse_go_var_spec(
+    pair: Pair<Rule>,
+) -> Result<(Vec<String>, Option<String>, Vec<Expression>), String> {
     let mut names = Vec::new();
     let mut type_hint: Option<String> = None;
     let mut init_values = Vec::new();
@@ -4445,7 +4982,9 @@ fn parse_go_var_spec(pair: Pair<Rule>) -> Result<(Vec<String>, Option<String>, V
         match inner.as_rule() {
             Rule::ident_list => {
                 for id in inner.into_inner() {
-                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) || id.as_str() == "_" {
+                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident)
+                        || id.as_str() == "_"
+                    {
                         names.push(id.as_str().to_string());
                     }
                 }
@@ -4478,22 +5017,37 @@ fn go_rewrite_iota_expr(expr: &Expression, iota_index: i64) -> Expression {
             then: Box::new(go_rewrite_iota_expr(then, iota_index)),
             else_: Box::new(go_rewrite_iota_expr(else_, iota_index)),
         }),
-        ExprKind::Call { callee, args, optional } => Expression::new(ExprKind::Call {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => Expression::new(ExprKind::Call {
             callee: Box::new(go_rewrite_iota_expr(callee, iota_index)),
-            args: args.iter().map(|arg| Argument {
-                value: go_rewrite_iota_expr(&arg.value, iota_index),
-                name: arg.name.clone(),
-                by_ref: arg.by_ref,
-                spread: arg.spread,
-            }).collect(),
+            args: args
+                .iter()
+                .map(|arg| Argument {
+                    value: go_rewrite_iota_expr(&arg.value, iota_index),
+                    name: arg.name.clone(),
+                    by_ref: arg.by_ref,
+                    spread: arg.spread,
+                })
+                .collect(),
             optional: *optional,
         }),
-        ExprKind::Member { object, field, null_safe } => Expression::new(ExprKind::Member {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
             object: Box::new(go_rewrite_iota_expr(object, iota_index)),
             field: field.clone(),
             null_safe: *null_safe,
         }),
-        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Index {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
             object: Box::new(go_rewrite_iota_expr(object, iota_index)),
             index: Box::new(go_rewrite_iota_expr(index, iota_index)),
             null_safe: *null_safe,
@@ -4506,7 +5060,10 @@ fn go_rewrite_iota_expr(expr: &Expression, iota_index: i64) -> Expression {
     }
 }
 
-fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclarator>, Option<String>), String> {
+fn walk_var_spec(
+    pair: Pair<Rule>,
+    _kind: VarDeclKind,
+) -> Result<(Vec<VarDeclarator>, Option<String>), String> {
     let mut names = Vec::new();
     let mut type_hint: Option<String> = None;
     let mut init_values = Vec::new();
@@ -4515,7 +5072,9 @@ fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclara
         match inner.as_rule() {
             Rule::ident_list => {
                 for id in inner.into_inner() {
-                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) || id.as_str() == "_" {
+                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident)
+                        || id.as_str() == "_"
+                    {
                         names.push(id.as_str().to_string());
                     }
                 }
@@ -4534,26 +5093,32 @@ fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclara
 
     if names.len() > 1 && !init_values.is_empty() {
         let pattern = BindingPattern::Array(
-            names.into_iter().map(|name| {
-                if name == "_" {
-                    ArrayPatternElem::Hole
-                } else {
-                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-                }
-            }).collect(),
+            names
+                .into_iter()
+                .map(|name| {
+                    if name == "_" {
+                        ArrayPatternElem::Hole
+                    } else {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                    }
+                })
+                .collect(),
         );
         let init = if init_values.len() == 1 {
             init_values.into_iter().next().unwrap()
         } else {
             Expression::new(ExprKind::Tuple(init_values))
         };
-        return Ok((vec![VarDeclarator {
-            pattern,
-            init: Some(init),
-            type_hint,
-            array_bounds: None,
-            with_events: false,
-        }], None));
+        return Ok((
+            vec![VarDeclarator {
+                pattern,
+                init: Some(init),
+                type_hint,
+                array_bounds: None,
+                with_events: false,
+            }],
+            None,
+        ));
     }
 
     let mut declarations = Vec::new();
@@ -4586,7 +5151,9 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                     match spec_inner.as_rule() {
                         Rule::ident_name => name = spec_inner.as_str().to_string(),
                         Rule::type_annotation => {
-                            if let Some(type_stmt) = walk_named_type_annotation(name.clone(), spec_inner.clone())? {
+                            if let Some(type_stmt) =
+                                walk_named_type_annotation(name.clone(), spec_inner.clone())?
+                            {
                                 return Ok(Some(type_stmt));
                             }
                             type_str = walk_type(spec_inner);
@@ -4656,9 +5223,7 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                     init: None,
                     modifiers: Modifiers::default(),
                     with_events: false,
-                    array_bounds: field_type
-                        .as_deref()
-                        .and_then(go_fixed_array_bounds_exprs),
+                    array_bounds: field_type.as_deref().and_then(go_fixed_array_bounds_exprs),
                 });
             }
         }
@@ -4749,7 +5314,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     if rule == Rule::statement {
         if let Some(inner) = pair.into_inner().next() {
             let mut s = walk_statement(inner)?;
-            if s.span.start_line == 0 { s.span = span; }
+            if s.span.start_line == 0 {
+                s.span = span;
+            }
             return Ok(s);
         }
         return Ok(Statement::with_span(StmtKind::Empty, span));
@@ -4892,7 +5459,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<StmtKind, String> {
         } else {
             Expression::new(ExprKind::Tuple(values))
         };
-        if targets.iter().all(|target| matches!(target.kind, ExprKind::Ident(_))) && !matches!(value.kind, ExprKind::Tuple(_)) {
+        if targets
+            .iter()
+            .all(|target| matches!(target.kind, ExprKind::Ident(_)))
+            && !matches!(value.kind, ExprKind::Tuple(_))
+        {
             let patterns = targets
                 .iter()
                 .map(|target| match &target.kind {
@@ -4954,13 +5525,16 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if names.len() == 2 && values.len() == 1 {
         if let Some((expr, type_name)) = go_extract_type_assert_expr(&values[0]) {
             let pattern = BindingPattern::Array(
-                names.into_iter().map(|name| {
-                    if name == "_" {
-                        ArrayPatternElem::Hole
-                    } else {
-                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-                    }
-                }).collect(),
+                names
+                    .into_iter()
+                    .map(|name| {
+                        if name == "_" {
+                            ArrayPatternElem::Hole
+                        } else {
+                            ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                        }
+                    })
+                    .collect(),
             );
             declarations.push(VarDeclarator {
                 pattern,
@@ -4984,13 +5558,16 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     if names.len() > 1 && !values.is_empty() {
         let pattern = BindingPattern::Array(
-            names.into_iter().map(|name| {
-                if name == "_" {
-                    ArrayPatternElem::Hole
-                } else {
-                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-                }
-            }).collect(),
+            names
+                .into_iter()
+                .map(|name| {
+                    if name == "_" {
+                        ArrayPatternElem::Hole
+                    } else {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                    }
+                })
+                .collect(),
         );
         let value = if values.len() == 1 {
             values.into_iter().next().unwrap()
@@ -5053,7 +5630,11 @@ fn walk_inc_dec(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if let Some(target) = expr {
         Ok(StmtKind::CompoundAssign {
             target,
-            op: if is_inc { CompoundOp::Add } else { CompoundOp::Sub },
+            op: if is_inc {
+                CompoundOp::Add
+            } else {
+                CompoundOp::Sub
+            },
             value: Expression::new(ExprKind::Lit(Literal::Int(1))),
         })
     } else {
@@ -5215,11 +5796,13 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     CaseCondition::Value(expr) => Some(expr),
                     _ => None,
                 })
-                .reduce(|left, right| Expression::new(ExprKind::Binary {
-                    op: BinOp::Or,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                }))
+                .reduce(|left, right| {
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    })
+                })
                 .unwrap_or_else(|| Expression::bool(false));
             if first_case.is_none() {
                 first_case = Some((cond, case.body));
@@ -5240,9 +5823,9 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     } else {
         StmtKind::Switch {
-        expr: expr.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-        cases,
-        default,
+            expr: expr.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+            cases,
+            default,
         }
     };
 
@@ -5349,7 +5932,10 @@ fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     };
 
     if let Some(pre) = pre_stmt {
-        Ok(StmtKind::Block(vec![*pre, Statement::new(type_switch_stmt)]))
+        Ok(StmtKind::Block(vec![
+            *pre,
+            Statement::new(type_switch_stmt),
+        ]))
     } else {
         Ok(type_switch_stmt)
     }
@@ -5369,7 +5955,9 @@ fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 arms.push(arm);
                             }
                         }
-                        Rule::select_default_clause => default_body = Some(walk_select_default_clause(clause)?),
+                        Rule::select_default_clause => {
+                            default_body = Some(walk_select_default_clause(clause)?)
+                        }
                         _ => {}
                     }
                 }
@@ -5421,7 +6009,9 @@ fn go_select_ready_cond(channel: Expression, is_send: bool) -> Expression {
     })
 }
 
-fn walk_select_case_clause(pair: Pair<Rule>) -> Result<Option<(Expression, Vec<Statement>)>, String> {
+fn walk_select_case_clause(
+    pair: Pair<Rule>,
+) -> Result<Option<(Expression, Vec<Statement>)>, String> {
     let mut prefix = Vec::new();
     let mut body = Vec::new();
     let mut cond = None;
@@ -5524,7 +6114,10 @@ fn go_short_var_decl_from_parts(names: Vec<String>, value: Expression) -> Statem
                     })
                     .collect(),
             ),
-            init: Some(Expression::new(ExprKind::Tuple(vec![value, Expression::bool(true)]))),
+            init: Some(Expression::new(ExprKind::Tuple(vec![
+                value,
+                Expression::bool(true),
+            ]))),
             type_hint: None,
             array_bounds: None,
             with_events: false,
@@ -5716,11 +6309,17 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     if is_range {
         let var = if range_vars.len() > 1 {
-            range_vars.get(1).cloned().unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
+            range_vars
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
         } else if range_vars.len() == 1 {
             BindingPattern::Ident("_".to_string())
         } else {
-            range_vars.get(0).cloned().unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
+            range_vars
+                .get(0)
+                .cloned()
+                .unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
         };
         let var_name = match var {
             BindingPattern::Ident(name) => name,
@@ -5780,13 +6379,18 @@ fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if values.len() == 1 {
         Ok(StmtKind::Return(Some(values.into_iter().next().unwrap())))
     } else if values.len() > 1 {
-        let arr_elems: Vec<ArrayElement> = values.into_iter().map(|v| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
-        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(arr_elems)))))
+        let arr_elems: Vec<ArrayElement> = values
+            .into_iter()
+            .map(|v| ArrayElement {
+                key: None,
+                value: v,
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(
+            arr_elems,
+        )))))
     } else {
         Ok(StmtKind::Return(None))
     }
@@ -5826,15 +6430,18 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Expressions ─────────────────────────────────────────────────────────────────────────
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
-    if matches!(pair.as_rule(), Rule::expression | Rule::if_expression | Rule::range_expression) {
+    if matches!(
+        pair.as_rule(),
+        Rule::expression | Rule::if_expression | Rule::range_expression
+    ) {
         let mut operands = Vec::new();
         let mut operators: Vec<String> = Vec::new();
 
         for inner in pair.into_inner() {
             match inner.as_rule() {
-                Rule::unary_expression | Rule::if_unary_expression | Rule::range_unary_expression => {
-                    operands.push(walk_unary_expression(inner)?)
-                }
+                Rule::unary_expression
+                | Rule::if_unary_expression
+                | Rule::range_unary_expression => operands.push(walk_unary_expression(inner)?),
                 Rule::binary_op => {
                     let op = inner.as_str().to_string();
                     while operators
@@ -5856,9 +6463,15 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         if let Some(result) = operands.pop() {
             return Ok(result);
         }
-    } else if matches!(pair.as_rule(), Rule::unary_expression | Rule::if_unary_expression | Rule::range_unary_expression) {
+    } else if matches!(
+        pair.as_rule(),
+        Rule::unary_expression | Rule::if_unary_expression | Rule::range_unary_expression
+    ) {
         return walk_unary_expression(pair);
-    } else if matches!(pair.as_rule(), Rule::primary | Rule::if_primary | Rule::range_primary) {
+    } else if matches!(
+        pair.as_rule(),
+        Rule::primary | Rule::if_primary | Rule::range_primary
+    ) {
         return walk_primary(pair);
     }
     Ok(Expression::new(ExprKind::Lit(Literal::Null)))
@@ -5874,7 +6487,9 @@ fn walk_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::unary_expression | Rule::if_unary_expression | Rule::range_unary_expression => {
                 operand = Some(walk_unary_expression(inner)?)
             }
-            Rule::primary | Rule::if_primary | Rule::range_primary => operand = Some(walk_primary(inner)?),
+            Rule::primary | Rule::if_primary | Rule::range_primary => {
+                operand = Some(walk_primary(inner)?)
+            }
             _ => {}
         }
     }
@@ -5896,7 +6511,9 @@ fn walk_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         };
         Ok(Expression::new(ExprKind::Unary {
             op: un_op,
-            expr: Box::new(operand.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))),
+            expr: Box::new(
+                operand.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null))),
+            ),
         }))
     } else {
         operand.ok_or_else(|| "Empty unary expression".to_string())
@@ -5997,7 +6614,8 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     null_safe: false,
                 }),
                 PrimaryChain::Slice { start, end } => {
-                    let start_expr = start.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(0))));
+                    let start_expr =
+                        start.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(0))));
                     let mut args = vec![Argument {
                         value: start_expr,
                         name: None,
@@ -6040,7 +6658,10 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
 enum PrimaryChain {
     Member(String),
     Index(Expression),
-    Slice { start: Option<Expression>, end: Option<Expression> },
+    Slice {
+        start: Option<Expression>,
+        end: Option<Expression>,
+    },
     Call(Vec<Argument>),
     TypeAssert(String),
 }
@@ -6061,7 +6682,9 @@ fn walk_operand(pair: Pair<Rule>) -> Result<Expression, String> {
                     _ => return Ok(Expression::new(ExprKind::Ident(name.to_string()))),
                 }
             }
-            Rule::expression | Rule::if_expression | Rule::range_expression => return walk_expression(inner),
+            Rule::expression | Rule::if_expression | Rule::range_expression => {
+                return walk_expression(inner);
+            }
             Rule::composite_literal => return walk_composite_literal(inner),
             Rule::function_literal => return walk_function_literal(inner),
             _ => {}
@@ -6123,7 +6746,12 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                     if let Ok(n) = i64::from_str_radix(&s[2..], 8) {
                         return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
                     }
-                } else if s.contains('.') || s.contains('e') || s.contains('E') || s.contains('p') || s.contains('P') {
+                } else if s.contains('.')
+                    || s.contains('e')
+                    || s.contains('E')
+                    || s.contains('p')
+                    || s.contains('P')
+                {
                     if let Ok(f) = s.parse::<f64>() {
                         return Ok(Expression::new(ExprKind::Lit(Literal::Float(f))));
                     }
@@ -6132,10 +6760,14 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::string_literal => {
-                return Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(inner.as_str())))));
+                return Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(
+                    inner.as_str(),
+                )))));
             }
             Rule::bool_literal => {
-                return Ok(Expression::new(ExprKind::Lit(Literal::Bool(inner.as_str() == "true"))));
+                return Ok(Expression::new(ExprKind::Lit(Literal::Bool(
+                    inner.as_str() == "true",
+                ))));
             }
             Rule::nil_literal => {
                 return Ok(Expression::new(ExprKind::Lit(Literal::Null)));
@@ -6175,12 +6807,12 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         // Build a dict/object literal
         let mut props = Vec::new();
         for (key, val) in elements {
-            props.push(ObjectProperty::KeyValue {
-                key,
-                value: val,
-            });
+            props.push(ObjectProperty::KeyValue { key, value: val });
         }
-        Ok(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), &type_name))
+        Ok(go_typed_composite_expr(
+            Expression::new(ExprKind::Object(props)),
+            &type_name,
+        ))
     } else if go_is_array_like_type(&type_name) {
         let elem_type = go_array_element_type(&type_name);
         let mut values = Vec::new();
@@ -6204,36 +6836,54 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             values[index] = value;
             next_index = index + 1;
         }
-        let arr_elems: Vec<ArrayElement> = values.into_iter().map(|value| ArrayElement {
-            key: None,
-            value,
-            spread: false,
-            by_ref: false,
-        }).collect();
-        Ok(go_typed_composite_expr(Expression::new(ExprKind::Array(arr_elems)), &type_name))
-    } else if !type_name.is_empty() && elements.iter().all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null))) {
+        let arr_elems: Vec<ArrayElement> = values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        Ok(go_typed_composite_expr(
+            Expression::new(ExprKind::Array(arr_elems)),
+            &type_name,
+        ))
+    } else if !type_name.is_empty()
+        && elements
+            .iter()
+            .all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null)))
+    {
         let mut props = Vec::new();
         for (key, val) in elements {
             let key = match key.kind {
                 ExprKind::Ident(name) => Expression::new(ExprKind::Lit(Literal::Str(name))),
-                ExprKind::Lit(Literal::Int(n)) => Expression::new(ExprKind::Lit(Literal::Str(n.to_string()))),
+                ExprKind::Lit(Literal::Int(n)) => {
+                    Expression::new(ExprKind::Lit(Literal::Str(n.to_string())))
+                }
                 _ => key,
             };
-            props.push(ObjectProperty::KeyValue {
-                key,
-                value: val,
-            });
+            props.push(ObjectProperty::KeyValue { key, value: val });
         }
-        Ok(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), &type_name))
+        Ok(go_typed_composite_expr(
+            Expression::new(ExprKind::Object(props)),
+            &type_name,
+        ))
     } else {
         // Untyped composite literal fallback.
-        let arr_elems: Vec<ArrayElement> = elements.into_iter().map(|(_, v)| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
-        Ok(go_typed_composite_expr(Expression::new(ExprKind::Array(arr_elems)), &type_name))
+        let arr_elems: Vec<ArrayElement> = elements
+            .into_iter()
+            .map(|(_, v)| ArrayElement {
+                key: None,
+                value: v,
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        Ok(go_typed_composite_expr(
+            Expression::new(ExprKind::Array(arr_elems)),
+            &type_name,
+        ))
     }
 }
 
@@ -6307,17 +6957,23 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
 
     if let Some(len) = go_fixed_array_len(trimmed, 0) {
         if let Some(elem_type) = go_array_element_type(trimmed) {
-            let elements = (0..len).map(|_| ArrayElement {
-                key: None,
-                value: go_zero_value_expr(&elem_type),
-                spread: false,
-                by_ref: false,
-            }).collect();
+            let elements = (0..len)
+                .map(|_| ArrayElement {
+                    key: None,
+                    value: go_zero_value_expr(&elem_type),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect();
             return go_typed_composite_expr(Expression::new(ExprKind::Array(elements)), trimmed);
         }
     }
 
-    if lower.starts_with("[]") || lower.starts_with("map[") || lower.starts_with("chan ") || lower.starts_with('*') {
+    if lower.starts_with("[]")
+        || lower.starts_with("map[")
+        || lower.starts_with("chan ")
+        || lower.starts_with('*')
+    {
         return Expression::new(ExprKind::Lit(Literal::Null));
     }
 
@@ -6325,16 +6981,18 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
         "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
         "string" => Expression::new(ExprKind::Lit(Literal::Str(String::new()))),
         "float32" | "float64" => Expression::new(ExprKind::Lit(Literal::Float(0.0))),
-        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" => {
-            Expression::new(ExprKind::Lit(Literal::Int(0)))
-        }
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
+        | "uint64" | "uintptr" | "byte" | "rune" => Expression::new(ExprKind::Lit(Literal::Int(0))),
         _ => go_typed_composite_expr(Expression::new(ExprKind::Object(Vec::new())), trimmed),
     }
 }
 
 fn go_zero_value_for_type(type_name: &str, env: &GoNormalizeEnv) -> Expression {
-    if let Some(underlying) = env.named_types.get(type_name).filter(|underlying| underlying.as_str() != type_name) {
+    if let Some(underlying) = env
+        .named_types
+        .get(type_name)
+        .filter(|underlying| underlying.as_str() != type_name)
+    {
         return Expression::new(ExprKind::Cast {
             expr: Box::new(go_zero_value_for_type(underlying, env)),
             type_name: type_name.to_string(),
@@ -6394,8 +7052,12 @@ fn walk_element_list(pair: Pair<Rule>) -> Result<Vec<(Expression, Expression)>, 
 fn go_keyed_element_key(pair: Pair<Rule>) -> Result<Expression, String> {
     match pair.as_rule() {
         Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
-        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
-        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(pair.as_str() == "true")))),
+        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(
+            pair.as_str(),
+        ))))),
+        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(
+            pair.as_str() == "true",
+        )))),
         Rule::numeric_literal => {
             let literal = pair.as_str().replace('_', "");
             if let Ok(n) = literal.parse::<i64>() {
@@ -6424,8 +7086,12 @@ fn go_keyed_element_value(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::expression => walk_expression(pair),
         Rule::literal_value => walk_literal_value_expr(pair),
         Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
-        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
-        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(pair.as_str() == "true")))),
+        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(
+            pair.as_str(),
+        ))))),
+        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(
+            pair.as_str() == "true",
+        )))),
         Rule::numeric_literal => go_keyed_element_key(pair),
         _ => Ok(Expression::new(ExprKind::Lit(Literal::Null))),
     }
@@ -6439,7 +7105,10 @@ fn walk_literal_value_expr(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
 
-    if elements.iter().all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null))) {
+    if elements
+        .iter()
+        .all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null)))
+    {
         let mut props = Vec::new();
         for (key, value) in elements {
             let key = match key.kind {
@@ -6598,17 +7267,37 @@ fn go_extract_type_assert_expr(expr: &Expression) -> Option<(Expression, String)
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
-    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_type_assert") || args.len() != 2 {
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_type_assert")
+        || args.len() != 2
+    {
         return None;
     }
-    Some((args[0].value.clone(), go_type_name_from_expr(&args[1].value)?))
+    Some((
+        args[0].value.clone(),
+        go_type_name_from_expr(&args[1].value)?,
+    ))
 }
 
 fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
-    if !matches!(type_name.trim(),
-        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" | "float32" | "float64"
-        | "string" | "bool"
+    if !matches!(
+        type_name.trim(),
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "byte"
+            | "rune"
+            | "float32"
+            | "float64"
+            | "string"
+            | "bool"
     ) {
         return Expression::new(ExprKind::Cast {
             expr: Box::new(expr),
@@ -6645,10 +7334,8 @@ fn go_type_switch_case_cond(expr: Expression, case_types: &[String]) -> Expressi
 
 fn go_build_is_type(expr: Expression, type_name: &str) -> Expression {
     let typeof_tag = match type_name.trim() {
-        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" | "float32" | "float64" => {
-            Some("number")
-        }
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
+        | "uint64" | "uintptr" | "byte" | "rune" | "float32" | "float64" => Some("number"),
         "string" => Some("string"),
         "bool" => Some("boolean"),
         _ => None,
@@ -6731,7 +7418,10 @@ fn go_is_channel_type(type_name: &str) -> bool {
 fn go_array_make_expr(len_expr: Expression, init_expr: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("Array")),
-        args: vec![Argument::positional(len_expr), Argument::positional(init_expr)],
+        args: vec![
+            Argument::positional(len_expr),
+            Argument::positional(init_expr),
+        ],
         optional: false,
     })
 }
@@ -6748,7 +7438,9 @@ fn go_make_slice_capacity_expr(
     if go_expr_call_name(callee).as_deref() != Some("make") {
         return None;
     }
-    let type_name = args.first().and_then(|arg| go_type_name_from_expr(&arg.value))?;
+    let type_name = args
+        .first()
+        .and_then(|arg| go_type_name_from_expr(&arg.value))?;
     if !go_is_slice_type(&type_name) {
         return None;
     }
@@ -6766,7 +7458,9 @@ fn go_bound_slice_capacity_expr(expr: &Expression, env: &GoNormalizeEnv) -> Opti
             if go_expr_call_name(callee).as_deref() != Some("make") {
                 return None;
             }
-            let type_name = args.first().and_then(|arg| go_type_name_from_expr(&arg.value))?;
+            let type_name = args
+                .first()
+                .and_then(|arg| go_type_name_from_expr(&arg.value))?;
             if !go_is_slice_type(&type_name) {
                 return None;
             }
@@ -6815,5 +7509,10 @@ fn to_span(pair: &Pair<Rule>) -> Span {
     let s = pair.as_span();
     let (sl, sc) = s.start_pos().line_col();
     let (el, ec) = s.end_pos().line_col();
-    Span { start_line: sl as u32, start_col: sc as u32, end_line: el as u32, end_col: ec as u32 }
+    Span {
+        start_line: sl as u32,
+        start_col: sc as u32,
+        end_line: el as u32,
+        end_col: ec as u32,
+    }
 }

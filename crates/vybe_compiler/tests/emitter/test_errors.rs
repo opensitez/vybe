@@ -33,5 +33,8 @@ fn try_catch_roundtrip() {
     errors::patch_catch(&mut chunk, catch_jump);
     // ... handler would go here ...
     chunk.patch_jump(skip);
-    assert!(chunk.code.len() > 5, "full try/catch should emit multiple opcodes");
+    assert!(
+        chunk.code.len() > 5,
+        "full try/catch should emit multiple opcodes"
+    );
 }

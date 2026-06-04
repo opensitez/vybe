@@ -1,6 +1,6 @@
-mod walker;
 pub mod emitter;
 pub mod normalize_class;
+mod walker;
 
 use pest_derive::Parser;
 

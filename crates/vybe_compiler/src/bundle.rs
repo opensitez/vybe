@@ -2,10 +2,10 @@
 //! compile and run — whether loaded from a single source file or a multi-file
 //! project. The caller never cares which.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::languages::Language;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use vybe_bytecode::{ExportEntry, ModuleRecord};
 
 /// How the program starts.
@@ -73,7 +73,10 @@ impl Bundle {
                 php_entry_path_override,
             )?;
             let blocks = expanded.blocks.clone();
-            (normalize_php_source_for_parser(&expanded.into_code()), Some(blocks))
+            (
+                normalize_php_source_for_parser(&expanded.into_code()),
+                Some(blocks),
+            )
         } else if self.language.name == "cobol" {
             (
                 self.sources
@@ -85,7 +88,8 @@ impl Bundle {
             )
         } else {
             (
-                self.sources.iter()
+                self.sources
+                    .iter()
                     .map(|s| s.code.as_str())
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -116,17 +120,19 @@ impl Bundle {
         // If the project starts with a static method (e.g. C# Program.Main()),
         // inject a call:  ClassName.MethodName()
         if let EntryPoint::Method(ref class_name, ref method_name) = self.entry_point {
-            module.body.push(Statement::new(StmtKind::Expr(
-                Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::ident(class_name)),
-                        field: method_name.clone(),
-                        null_safe: false,
-                    })),
-                    args: vec![],
-                    optional: false,
-                })
-            )));
+            module
+                .body
+                .push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(class_name)),
+                            field: method_name.clone(),
+                            null_safe: false,
+                        })),
+                        args: vec![],
+                        optional: false,
+                    },
+                ))));
         }
 
         // If the project starts with a form, inject startup AST:
@@ -147,22 +153,24 @@ impl Bundle {
                 }],
                 kind: VarDeclKind::Dim,
             }));
-            module.body.push(Statement::new(StmtKind::Expr(
-                Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::ident("Application")),
-                        field: "Run".to_string(),
-                        null_safe: false,
-                    })),
-                    args: vec![Argument {
-                        value: Expression::ident("__f"),
-                        name: None,
-                        spread: false,
-                        by_ref: false,
-                    }],
-                    optional: false,
-                })
-            )));
+            module
+                .body
+                .push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident("Application")),
+                            field: "Run".to_string(),
+                            null_safe: false,
+                        })),
+                        args: vec![Argument {
+                            value: Expression::ident("__f"),
+                            name: None,
+                            spread: false,
+                            by_ref: false,
+                        }],
+                        optional: false,
+                    },
+                ))));
         }
 
         Ok(module)
@@ -218,11 +226,11 @@ impl Bundle {
         // one lookup. Walks the `Indirect` chain from Adapter modules
         // through to a Synthetic `Function` export.
         let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
-        
+
         // Add shared GUI namespace automatically to all languages
         // (replaces per-language profile duplication)
         add_shared_gui_namespace(&mut profile);
-        
+
         let module_exports = flatten_module_exports(modules);
         let compile_result = crate::compiler::Compiler::with_profile(profile)
             .with_module_exports(module_exports)
@@ -234,7 +242,11 @@ impl Bundle {
         for wf in &self.wasm_files {
             let wasm_chunks = vybe_bytecode::wasm::read_wasm(&wf.data)
                 .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
-            eprintln!("[vybex] Loaded {} chunks from {}", wasm_chunks.len(), wf.path.display());
+            eprintln!(
+                "[vybex] Loaded {} chunks from {}",
+                wasm_chunks.len(),
+                wf.path.display()
+            );
             // Register WASM functions as globals so source code can call them
             for wc in &wasm_chunks {
                 if !wc.name.is_empty() && wc.name != "<script>" {
@@ -245,7 +257,10 @@ impl Bundle {
             chunks.extend(wasm_chunks);
         }
 
-        Ok(CompiledBundle { chunks, host_imports })
+        Ok(CompiledBundle {
+            chunks,
+            host_imports,
+        })
     }
 }
 
@@ -325,18 +340,15 @@ fn annotate_php_parse_error(err: &str, blocks: &[ExpandedPhpBlock]) -> String {
     let Some(expanded_line) = extract_php_parse_error_line(err) else {
         return err.to_string();
     };
-    let Some(block) = blocks.iter().rev().find(|block| {
-        expanded_line >= block.start_line && expanded_line <= block.end_line
-    }) else {
+    let Some(block) = blocks
+        .iter()
+        .rev()
+        .find(|block| expanded_line >= block.start_line && expanded_line <= block.end_line)
+    else {
         return err.to_string();
     };
     let source_line = expanded_line - block.start_line + 1;
-    format!(
-        "{}\nsource: {}:{}",
-        err,
-        block.path.display(),
-        source_line,
-    )
+    format!("{}\nsource: {}:{}", err, block.path.display(), source_line,)
 }
 
 #[allow(dead_code)]
@@ -358,13 +370,16 @@ fn expand_php_bundle_sources_with_map_and_entry_path(
     let mut expanded = ExpandedPhpSource::default();
     for source in sources {
         let entry_path = entry_path_override.unwrap_or(&source.path);
-        append_expanded_source(&mut expanded, expand_php_source_file(
-            entry_path,
-            &source.path,
-            &source.code,
-            &mut included_once,
-            &mut constants,
-        )?);
+        append_expanded_source(
+            &mut expanded,
+            expand_php_source_file(
+                entry_path,
+                &source.path,
+                &source.code,
+                &mut included_once,
+                &mut constants,
+            )?,
+        );
     }
     Ok(expanded)
 }
@@ -402,7 +417,8 @@ fn expand_php_source_file(
         }
 
         if brace_depth == 0
-            && let Some((name, value)) = parse_php_alias_assignment(trimmed, source_path, &aliases, constants)
+            && let Some((name, value)) =
+                parse_php_alias_assignment(trimmed, source_path, &aliases, constants)
         {
             aliases.insert(name, value);
             record_expanded_line(&mut out, source_path, line.to_string());
@@ -410,7 +426,9 @@ fn expand_php_source_file(
             continue;
         }
 
-        if let Some((name, value)) = parse_php_constant_assignment(trimmed, source_path, &aliases, constants) {
+        if let Some((name, value)) =
+            parse_php_constant_assignment(trimmed, source_path, &aliases, constants)
+        {
             constants.insert(name, value);
             record_expanded_line(&mut out, source_path, line.to_string());
             brace_depth = update_php_brace_depth(brace_depth, line);
@@ -424,19 +442,23 @@ fn expand_php_source_file(
                 .is_some_and(|name| !constants.contains_key(&name))
             {
                 brace_depth = update_php_brace_depth(brace_depth, line);
-                previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                previous_nonempty_line =
+                    next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                 continue;
             }
             if brace_depth > 0 {
                 record_expanded_line(&mut out, source_path, line.to_string());
                 brace_depth = update_php_brace_depth(brace_depth, line);
-                previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                previous_nonempty_line =
+                    next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                 continue;
             }
-            let Some(resolved) = eval_php_path_expression(expr, source_path, &aliases, constants) else {
+            let Some(resolved) = eval_php_path_expression(expr, source_path, &aliases, constants)
+            else {
                 if is_dynamic_php_include_expression(expr, constants) {
                     brace_depth = update_php_brace_depth(brace_depth, line);
-                    previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                    previous_nonempty_line =
+                        next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                     continue;
                 }
                 return Err(format!(
@@ -445,11 +467,14 @@ fn expand_php_source_file(
                     trimmed,
                 ));
             };
-            let include_path = resolve_php_include_path_with_entry(entry_path, source_path, &resolved);
+            let include_path =
+                resolve_php_include_path_with_entry(entry_path, source_path, &resolved);
             let canonical = std::fs::canonicalize(&include_path).unwrap_or(include_path.clone());
 
             let should_expand = match kind {
-                PhpIncludeKind::IncludeOnce | PhpIncludeKind::RequireOnce => included_once.insert(canonical.clone()),
+                PhpIncludeKind::IncludeOnce | PhpIncludeKind::RequireOnce => {
+                    included_once.insert(canonical.clone())
+                }
                 PhpIncludeKind::Include | PhpIncludeKind::Require => true,
             };
 
@@ -458,41 +483,54 @@ fn expand_php_source_file(
                     Ok(source) => source,
                     Err(err) => {
                         if err.kind() == std::io::ErrorKind::NotFound
-                            && recent_optional_guards.iter().any(|guarded| guarded == &canonical)
+                            && recent_optional_guards
+                                .iter()
+                                .any(|guarded| guarded == &canonical)
                         {
                             continue;
                         }
                         if err.kind() == std::io::ErrorKind::NotFound
-                            && recent_optional_plugin_dirs.iter().any(|guarded| canonical.starts_with(guarded))
+                            && recent_optional_plugin_dirs
+                                .iter()
+                                .any(|guarded| canonical.starts_with(guarded))
                         {
                             continue;
                         }
-                        return Err(format!("PHP include error reading {}: {}", canonical.display(), err));
+                        return Err(format!(
+                            "PHP include error reading {}: {}",
+                            canonical.display(),
+                            err
+                        ));
                     }
                 };
 
                 if brace_depth > 0 && php_include_contains_inline_html(&include_source) {
                     record_expanded_line(&mut out, source_path, line.to_string());
                     brace_depth = update_php_brace_depth(brace_depth, line);
-                    previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                    previous_nonempty_line =
+                        next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                     continue;
                 }
 
                 if php_include_contains_top_level_return(&include_source) {
                     record_expanded_line(&mut out, source_path, line.to_string());
                     brace_depth = update_php_brace_depth(brace_depth, line);
-                    previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                    previous_nonempty_line =
+                        next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                     continue;
                 }
 
                 let normalized_include = normalize_php_include_for_inlining(&include_source);
-                append_expanded_source(&mut out, expand_php_source_file(
-                    entry_path,
-                    &canonical,
-                    &normalized_include,
-                    included_once,
-                    constants,
-                )?);
+                append_expanded_source(
+                    &mut out,
+                    expand_php_source_file(
+                        entry_path,
+                        &canonical,
+                        &normalized_include,
+                        included_once,
+                        constants,
+                    )?,
+                );
             }
             brace_depth = update_php_brace_depth(brace_depth, line);
             continue;
@@ -511,7 +549,9 @@ fn expand_php_source_file(
                 lines.next();
                 scanned_lines += 1;
                 let candidate = header_lines.join("\n");
-                if let Some(normalized) = normalize_multiline_php_alternative_control_syntax(&candidate) {
+                if let Some(normalized) =
+                    normalize_multiline_php_alternative_control_syntax(&candidate)
+                {
                     normalized_block = Some(normalized);
                     break;
                 }
@@ -523,12 +563,17 @@ fn expand_php_source_file(
             }
             for original_line in &header_lines {
                 brace_depth = update_php_brace_depth(brace_depth, original_line);
-                previous_nonempty_line = next_previous_nonempty_line(original_line.trim(), &previous_nonempty_line);
+                previous_nonempty_line =
+                    next_previous_nonempty_line(original_line.trim(), &previous_nonempty_line);
             }
             continue;
         }
 
-        record_expanded_line(&mut out, source_path, normalize_php_alternative_control_syntax(line));
+        record_expanded_line(
+            &mut out,
+            source_path,
+            normalize_php_alternative_control_syntax(line),
+        );
         brace_depth = update_php_brace_depth(brace_depth, line);
         previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
     }
@@ -599,7 +644,11 @@ fn resolve_php_include_path(source_path: &Path, resolved: &str) -> PathBuf {
     resolve_php_include_path_with_entry(source_path, source_path, resolved)
 }
 
-fn resolve_php_include_path_with_entry(entry_path: &Path, source_path: &Path, resolved: &str) -> PathBuf {
+fn resolve_php_include_path_with_entry(
+    entry_path: &Path,
+    source_path: &Path,
+    resolved: &str,
+) -> PathBuf {
     let candidate = PathBuf::from(resolved);
     if candidate.is_absolute() {
         candidate
@@ -618,7 +667,12 @@ fn resolve_php_include_path_with_entry(entry_path: &Path, source_path: &Path, re
 
 fn is_explicit_relative_php_include(path: &Path) -> bool {
     let raw = path.to_string_lossy();
-    raw == "." || raw == ".." || raw.starts_with("./") || raw.starts_with("../") || raw.starts_with(".\\") || raw.starts_with("..\\")
+    raw == "."
+        || raw == ".."
+        || raw.starts_with("./")
+        || raw.starts_with("../")
+        || raw.starts_with(".\\")
+        || raw.starts_with("..\\")
 }
 
 fn parse_php_alias_assignment(
@@ -633,7 +687,11 @@ fn parse_php_alias_assignment(
     }
     let (lhs, rhs) = statement.split_once('=')?;
     let name = lhs.trim().strip_prefix('$')?.trim();
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return None;
     }
     let value = eval_php_path_expression(rhs.trim(), source_path, aliases, constants)?;
@@ -662,7 +720,11 @@ fn parse_php_constant_assignment(
     let declaration = statement.strip_prefix("const ")?.trim();
     let (name, expr) = declaration.split_once('=')?;
     let name = name.trim();
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return None;
     }
     let value = eval_php_path_expression(expr.trim(), source_path, aliases, constants)?;
@@ -739,7 +801,10 @@ fn is_dynamic_php_include_expression(expr: &str, constants: &HashMap<String, Str
         .map(str::trim)
         .unwrap_or(expr);
     let parts = split_php_concat(expr);
-    !parts.is_empty() && parts.into_iter().all(|part| is_dynamic_php_path_atom(part.trim(), constants))
+    !parts.is_empty()
+        && parts
+            .into_iter()
+            .all(|part| is_dynamic_php_path_atom(part.trim(), constants))
 }
 
 fn is_dynamic_php_path_atom(atom: &str, constants: &HashMap<String, String>) -> bool {
@@ -747,10 +812,18 @@ fn is_dynamic_php_path_atom(atom: &str, constants: &HashMap<String, String>) -> 
     if atom.is_empty() {
         return true;
     }
-    if atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')).is_some() {
+    if atom
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .is_some()
+    {
         return true;
     }
-    if atom.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).is_some() {
+    if atom
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .is_some()
+    {
         return true;
     }
     if atom.eq("__DIR__") || atom.eq("__FILE__") {
@@ -766,7 +839,10 @@ fn is_dynamic_php_path_atom(atom: &str, constants: &HashMap<String, String>) -> 
     if atom.ends_with(')') && atom.contains('(') {
         return true;
     }
-    if atom.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if atom
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return true;
     }
     false
@@ -840,7 +916,9 @@ fn extract_php_plugin_active_guards(
     constants: &HashMap<String, String>,
 ) -> Vec<PathBuf> {
     let line = line.trim();
-    if (!line.starts_with("if") && !line.starts_with("elseif")) || line.contains("! is_plugin_active") {
+    if (!line.starts_with("if") && !line.starts_with("elseif"))
+        || line.contains("! is_plugin_active")
+    {
         return Vec::new();
     }
 
@@ -860,7 +938,8 @@ fn extract_php_plugin_active_guards(
         return Vec::new();
     };
 
-    let plugin_path = PathBuf::from(plugin_root.trim_end_matches('/')).join(plugin_rel.trim_start_matches('/'));
+    let plugin_path =
+        PathBuf::from(plugin_root.trim_end_matches('/')).join(plugin_rel.trim_start_matches('/'));
     let plugin_dir = plugin_path.parent().unwrap_or(&plugin_path).to_path_buf();
     vec![std::fs::canonicalize(&plugin_dir).unwrap_or(plugin_dir)]
 }
@@ -896,7 +975,10 @@ fn update_php_brace_depth(mut depth: usize, line: &str) -> usize {
     depth
 }
 
-fn next_previous_nonempty_line<'a>(trimmed: &'a str, current: &'a Option<String>) -> Option<String> {
+fn next_previous_nonempty_line<'a>(
+    trimmed: &'a str,
+    current: &'a Option<String>,
+) -> Option<String> {
     if trimmed.is_empty() {
         current.clone()
     } else {
@@ -926,7 +1008,12 @@ fn eval_php_path_expression(
 ) -> Option<String> {
     let mut out = String::new();
     for part in split_php_concat(expr) {
-        out.push_str(&eval_php_path_atom(part.trim(), source_path, aliases, constants)?);
+        out.push_str(&eval_php_path_atom(
+            part.trim(),
+            source_path,
+            aliases,
+            constants,
+        )?);
     }
     Some(out)
 }
@@ -1050,7 +1137,10 @@ fn eval_php_path_atom(
     if let Some(name) = atom.strip_prefix('$') {
         return aliases.get(name).cloned();
     }
-    if atom.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if atom
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         if let Some(value) = constants.get(atom) {
             return Some(value.clone());
         }
@@ -1100,7 +1190,10 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
                 }
                 out.push_str(html);
             }
-            MixedPhpIncludeSegment::Echo { expr, has_close_tag } => {
+            MixedPhpIncludeSegment::Echo {
+                expr,
+                has_close_tag,
+            } => {
                 let expr = expr.trim();
                 if !expr.is_empty() {
                     if !in_php {
@@ -1118,7 +1211,10 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
                     }
                 }
             }
-            MixedPhpIncludeSegment::Code { code, has_close_tag } => {
+            MixedPhpIncludeSegment::Code {
+                code,
+                has_close_tag,
+            } => {
                 if !in_php {
                     out.push_str("<?php");
                     in_php = true;
@@ -1145,19 +1241,24 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
 }
 
 fn php_include_contains_inline_html(source: &str) -> bool {
-    split_mixed_php_include_source(source).into_iter().any(|segment| match segment {
-        MixedPhpIncludeSegment::Html(html) => !html.trim().is_empty(),
-        _ => false,
-    })
+    split_mixed_php_include_source(source)
+        .into_iter()
+        .any(|segment| match segment {
+            MixedPhpIncludeSegment::Html(html) => !html.trim().is_empty(),
+            _ => false,
+        })
 }
 
 fn php_include_contains_top_level_return(source: &str) -> bool {
-    split_mixed_php_include_source(source).into_iter().any(|segment| match segment {
-        MixedPhpIncludeSegment::Code { code, .. } | MixedPhpIncludeSegment::Echo { expr: code, .. } => {
-            php_code_contains_top_level_return(code)
-        }
-        MixedPhpIncludeSegment::Html(_) => false,
-    })
+    split_mixed_php_include_source(source)
+        .into_iter()
+        .any(|segment| match segment {
+            MixedPhpIncludeSegment::Code { code, .. }
+            | MixedPhpIncludeSegment::Echo { expr: code, .. } => {
+                php_code_contains_top_level_return(code)
+            }
+            MixedPhpIncludeSegment::Html(_) => false,
+        })
 }
 
 fn php_code_contains_top_level_return(code: &str) -> bool {
@@ -1218,7 +1319,8 @@ fn php_code_contains_top_level_return(code: &str) -> bool {
                     b'r' if bytes[index..].starts_with(b"return") => {
                         let prev_ok = index == 0 || !is_ident_byte(bytes[index - 1]);
                         let next_index = index + b"return".len();
-                        let next_ok = next_index >= bytes.len() || !is_ident_byte(bytes[next_index]);
+                        let next_ok =
+                            next_index >= bytes.len() || !is_ident_byte(bytes[next_index]);
                         if brace_depth == 0 && prev_ok && next_ok {
                             return true;
                         }
@@ -1280,14 +1382,20 @@ fn rewrite_php_magic_constants(source: &str, source_path: &Path) -> String {
     for segment in split_mixed_php_include_source(source) {
         match segment {
             MixedPhpIncludeSegment::Html(html) => out.push_str(html),
-            MixedPhpIncludeSegment::Echo { expr, has_close_tag } => {
+            MixedPhpIncludeSegment::Echo {
+                expr,
+                has_close_tag,
+            } => {
                 out.push_str("<?=");
                 out.push_str(&rewrite_php_magic_constants_in_code(expr, source_path));
                 if has_close_tag {
                     out.push_str("?>");
                 }
             }
-            MixedPhpIncludeSegment::Code { code, has_close_tag } => {
+            MixedPhpIncludeSegment::Code {
+                code,
+                has_close_tag,
+            } => {
                 out.push_str("<?php");
                 out.push_str(&rewrite_php_magic_constants_in_code(code, source_path));
                 if has_close_tag {
@@ -1365,9 +1473,15 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
                     state = ScanState::DoubleQuote;
                 } else if bytes[index] == b'#' {
                     state = ScanState::LineComment;
-                } else if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                } else if index + 1 < bytes.len()
+                    && bytes[index] == b'/'
+                    && bytes[index + 1] == b'/'
+                {
                     state = ScanState::LineComment;
-                } else if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                } else if index + 1 < bytes.len()
+                    && bytes[index] == b'/'
+                    && bytes[index + 1] == b'*'
+                {
                     state = ScanState::BlockComment;
                 }
                 out.push(bytes[index] as char);
@@ -1451,11 +1565,21 @@ fn split_mixed_php_include_source(source: &str) -> Vec<MixedPhpIncludeSegment<'_
         let has_close_tag = close < source.len();
         let code = &source[code_start..close];
         if is_echo {
-            segments.push(MixedPhpIncludeSegment::Echo { expr: code, has_close_tag });
+            segments.push(MixedPhpIncludeSegment::Echo {
+                expr: code,
+                has_close_tag,
+            });
         } else {
-            segments.push(MixedPhpIncludeSegment::Code { code, has_close_tag });
+            segments.push(MixedPhpIncludeSegment::Code {
+                code,
+                has_close_tag,
+            });
         }
-        cursor = if has_close_tag { (close + 2).min(source.len()) } else { close };
+        cursor = if has_close_tag {
+            (close + 2).min(source.len())
+        } else {
+            close
+        };
     }
 
     if cursor < source.len() {
@@ -1489,11 +1613,16 @@ fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
     };
 
     let tag_start = index;
-    if !matches!(bytes.get(index).copied(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')) {
+    if !matches!(
+        bytes.get(index).copied(),
+        Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')
+    ) {
         return None;
     }
     index += 1;
-    while index < bytes.len() && matches!(bytes[index], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_') {
+    while index < bytes.len()
+        && matches!(bytes[index], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+    {
         index += 1;
     }
     let tag = &bytes[tag_start..index];
@@ -1751,7 +1880,10 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
     }
 
     let end_keyword = code.strip_suffix(';').map(str::trim_end).unwrap_or(code);
-    if matches!(end_keyword, "endif" | "endforeach" | "endfor" | "endwhile" | "endswitch") {
+    if matches!(
+        end_keyword,
+        "endif" | "endforeach" | "endfor" | "endwhile" | "endswitch"
+    ) {
         return match tag_mode {
             TagMode::Wrapped => format!("{}<?php }} ?>{}", indent, close_suffix),
             TagMode::OpenOnly => format!("{}<?php }}{}", indent, comment_suffix),
@@ -1784,13 +1916,13 @@ fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
         && !body.contains("?>")
 }
 
-    fn should_stop_multiline_php_header_scan(line: &str) -> bool {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("case ")
+fn should_stop_multiline_php_header_scan(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("case ")
         || trimmed.starts_with("default:")
         || line.contains('{')
         || line.contains('}')
-    }
+}
 
 fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<String> {
     let lines: Vec<&str> = block.lines().collect();
@@ -1815,7 +1947,10 @@ fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<Str
         .unwrap_or(first_trimmed);
     let last_trimmed = lines.last()?.trim();
     let (last_body, close_suffix) = if let Some(close_index) = last_trimmed.find("?>") {
-        (last_trimmed[..close_index].trim_end(), &last_trimmed[close_index + 2..])
+        (
+            last_trimmed[..close_index].trim_end(),
+            &last_trimmed[close_index + 2..],
+        )
     } else {
         (last_trimmed, "")
     };
@@ -1843,7 +1978,10 @@ fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<Str
     let last_indent = &last_line[..last_indent_len];
     let last_prefix = last_body.trim_end().strip_suffix(':')?.trim_end();
 
-    let mut normalized_lines = lines.iter().map(|line| line.to_string()).collect::<Vec<_>>();
+    let mut normalized_lines = lines
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
     let mut normalized_last = format!("{}{} {{", last_indent, last_prefix);
     if last_trimmed.contains("?>") {
         normalized_last.push_str(" ?>");
@@ -1872,7 +2010,9 @@ fn normalize_php_source_for_parser(source: &str) -> String {
                 lines.next();
                 scanned_lines += 1;
                 let candidate = header_lines.join("\n");
-                if let Some(normalized) = normalize_multiline_php_alternative_control_syntax(&candidate) {
+                if let Some(normalized) =
+                    normalize_multiline_php_alternative_control_syntax(&candidate)
+                {
                     normalized_block = Some(normalized);
                     break;
                 }
@@ -1961,11 +2101,17 @@ fn rewrite_php_execution_operator(source: &str) -> String {
                     state = State::SingleQuoted;
                 } else if bytes[index] == b'"' {
                     state = State::DoubleQuoted;
-                } else if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+                } else if bytes[index] == b'/'
+                    && index + 1 < bytes.len()
+                    && bytes[index + 1] == b'/'
+                {
                     state = State::LineComment;
                 } else if bytes[index] == b'#' {
                     state = State::LineComment;
-                } else if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+                } else if bytes[index] == b'/'
+                    && index + 1 < bytes.len()
+                    && bytes[index + 1] == b'*'
+                {
                     state = State::BlockComment;
                 }
 
@@ -2083,11 +2229,19 @@ mod tests {
         let captured = output.clone();
 
         vybe_host::register_all(&mut vm);
-        vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let line = args.iter().map(|value| format!("{}", value)).collect::<Vec<_>>().join(" ");
-            captured.lock().unwrap().push(line);
-            Value::Null
-        }));
+        vm.register_host_fn(
+            "wasi:cli",
+            "log",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let line = args
+                    .iter()
+                    .map(|value| format!("{}", value))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                captured.lock().unwrap().push(line);
+                Value::Null
+            }),
+        );
         vybe_host::setup_namespaces(&mut vm);
         vm.run(compiled.chunks).expect("run bundle");
 
@@ -2096,7 +2250,8 @@ mod tests {
 
     #[test]
     fn php_bundle_expands_require_once_with_dir_alias() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_{}", uuid::Uuid::new_v4()));
+        let temp_root =
+            std::env::temp_dir().join(format!("vybex_php_bundle_{}", uuid::Uuid::new_v4()));
         let public_dir = temp_root.join("public");
         std::fs::create_dir_all(&public_dir).expect("create temp dirs");
 
@@ -2112,7 +2267,10 @@ mod tests {
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2125,7 +2283,10 @@ mod tests {
 
     #[test]
     fn php_bundle_rewrites_magic_dir_and_file_constants_for_runtime() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_magic_consts_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_magic_consts_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2136,23 +2297,32 @@ mod tests {
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
         let outputs = run_php_bundle_prints(&bundle);
-        assert_eq!(outputs, vec![
-            temp_root.to_string_lossy().into_owned(),
-            entry_path.to_string_lossy().into_owned(),
-        ]);
+        assert_eq!(
+            outputs,
+            vec![
+                temp_root.to_string_lossy().into_owned(),
+                entry_path.to_string_lossy().into_owned(),
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
     fn cobol_bundle_rewrites_assign_to_paths_relative_to_source() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_cobol_bundle_assign_to_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_cobol_bundle_assign_to_{}",
+            uuid::Uuid::new_v4()
+        ));
         let data_dir = temp_root.join("fixtures");
         std::fs::create_dir_all(&data_dir).expect("create temp dirs");
 
@@ -2177,26 +2347,36 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
         let combined = rewrite_cobol_assign_paths(&bundle.sources[0].code, &bundle.sources[0].path);
-        assert!(combined.contains(&format!("ASSIGN TO \"{}\"", data_dir.join("customers.dat").to_string_lossy())));
+        assert!(combined.contains(&format!(
+            "ASSIGN TO \"{}\"",
+            data_dir.join("customers.dat").to_string_lossy()
+        )));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
     fn php_bundle_expands_require_once_with_defined_constants() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_define_{}", uuid::Uuid::new_v4()));
+        let temp_root =
+            std::env::temp_dir().join(format!("vybex_php_bundle_define_{}", uuid::Uuid::new_v4()));
         let includes_dir = temp_root.join("includes");
         std::fs::create_dir_all(&includes_dir).expect("create temp dirs");
 
         let lib_path = includes_dir.join("shared.php");
-        std::fs::write(&lib_path, "<?php\nfunction shared_constant_helper() { return 7; }\n")
-            .expect("write lib");
+        std::fs::write(
+            &lib_path,
+            "<?php\nfunction shared_constant_helper() { return 7; }\n",
+        )
+        .expect("write lib");
 
         let entry_path = temp_root.join("entry.php");
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\ndefine('WPINC', 'includes');\nrequire_once ABSPATH . WPINC . '/shared.php';\necho shared_constant_helper();\n";
@@ -2206,7 +2386,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2219,7 +2402,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_resolves_nested_bare_relative_include_from_entry_dir() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_entry_relative_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_entry_relative_{}",
+            uuid::Uuid::new_v4()
+        ));
         let classes_dir = temp_root.join("classes");
         let views_dir = temp_root.join("views/users");
         std::fs::create_dir_all(&classes_dir).expect("create classes dir");
@@ -2229,23 +2415,33 @@ PROCEDURE DIVISION.
         let controller_path = classes_dir.join("UserController.php");
         let view_path = views_dir.join("list.php");
 
-        std::fs::write(&entry_path, "<?php\nrequire_once 'classes/UserController.php';\n")
-            .expect("write entry");
+        std::fs::write(
+            &entry_path,
+            "<?php\nrequire_once 'classes/UserController.php';\n",
+        )
+        .expect("write entry");
         std::fs::write(&controller_path, "<?php\nfunction render_users() {\n    include 'views/users/list.php';\n    return users_view_value();\n}\n")
             .expect("write controller");
-        std::fs::write(&view_path, "<?php\nfunction users_view_value() { return 42; }\n")
-            .expect("write view");
+        std::fs::write(
+            &view_path,
+            "<?php\nfunction users_view_value() { return 42; }\n",
+        )
+        .expect("write view");
 
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: std::fs::read_to_string(&entry_path).expect("read entry") }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: std::fs::read_to_string(&entry_path).expect("read entry"),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
-        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded =
+            expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
         let expanded_code = expanded.into_code();
         assert!(expanded_code.contains("function render_users()"));
         assert!(expanded_code.contains("function users_view_value()"));
@@ -2255,7 +2451,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_nested_mixed_html_include_inside_class_method() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_nested_mixed_include_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_nested_mixed_include_{}",
+            uuid::Uuid::new_v4()
+        ));
         let classes_dir = temp_root.join("classes");
         let views_dir = temp_root.join("views/issues");
         std::fs::create_dir_all(&classes_dir).expect("create classes dir");
@@ -2277,7 +2476,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2285,7 +2487,8 @@ PROCEDURE DIVISION.
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == "IssueController")));
 
-        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded =
+            expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
         let expanded_code = expanded.into_code();
         assert!(expanded_code.contains("include 'views/issues/edit.php';"));
         assert!(!expanded_code.contains("<div>"));
@@ -2295,7 +2498,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_nested_pure_php_require_once_inside_class_method() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_nested_require_once_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_nested_require_once_{}",
+            uuid::Uuid::new_v4()
+        ));
         let classes_dir = temp_root.join("classes");
         let vendor_dir = temp_root.join("vendor");
         std::fs::create_dir_all(&classes_dir).expect("create classes dir");
@@ -2317,12 +2523,16 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
-        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded =
+            expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
         let expanded_code = expanded.into_code();
         assert!(expanded_code.contains("require_once __DIR__ . '/../vendor/Loader.php';"));
         assert!(!expanded_code.contains("class Loader {}"));
@@ -2332,7 +2542,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_dynamic_variable_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_dynamic_include_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_dynamic_include_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2343,7 +2556,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2357,7 +2573,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_top_level_returning_require_once() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_returning_require_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_returning_require_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let autoload_path = temp_root.join("autoload.php");
@@ -2375,12 +2594,16 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
-        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded =
+            expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
         let expanded_code = expanded.into_code();
         assert!(expanded_code.contains("require_once 'autoload.php';"));
         assert!(!expanded_code.contains("return loader_value();"));
@@ -2391,13 +2614,19 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_parses_define_with_trailing_inline_comment() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_define_comment_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_define_comment_{}",
+            uuid::Uuid::new_v4()
+        ));
         let includes_dir = temp_root.join("wp-content");
         std::fs::create_dir_all(&includes_dir).expect("create temp dirs");
 
         let lib_path = includes_dir.join("db-error.php");
-        std::fs::write(&lib_path, "<?php\nfunction db_error_helper() { return 9; }\n")
-            .expect("write lib");
+        std::fs::write(
+            &lib_path,
+            "<?php\nfunction db_error_helper() { return 9; }\n",
+        )
+        .expect("write lib");
 
         let entry_path = temp_root.join("entry.php");
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\ndefine('WP_CONTENT_DIR', ABSPATH . 'wp-content'); // trailing comment\nrequire_once WP_CONTENT_DIR . '/db-error.php';\necho db_error_helper();\n";
@@ -2407,7 +2636,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2420,7 +2652,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_unknown_constant_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_unknown_const_include_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_unknown_const_include_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2431,7 +2666,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2444,7 +2682,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_missing_include_when_guarded_by_file_exists() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_optional_missing_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_optional_missing_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2455,7 +2696,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2468,7 +2712,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_function_local_alias_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_local_alias_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_local_alias_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2479,7 +2726,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2493,7 +2743,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_mixed_static_dynamic_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_mixed_dynamic_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_mixed_dynamic_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2504,7 +2757,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2518,7 +2774,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_interpolated_double_quoted_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_interpolated_include_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_interpolated_include_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2529,7 +2788,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2542,7 +2804,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_does_not_treat_includes_prefixed_function_calls_as_include_statements() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_include_prefix_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_include_prefix_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2553,7 +2818,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2565,7 +2833,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_helper_call_include_paths() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_helper_call_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_helper_call_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2576,7 +2847,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2589,7 +2863,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_include_after_missing_positive_defined_guard() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_defined_guard_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_defined_guard_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2600,7 +2877,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2613,7 +2893,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_skips_missing_plugin_include_when_guarded_by_is_plugin_active() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_plugin_guard_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_plugin_guard_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2624,7 +2907,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2637,18 +2923,23 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_normalizes_alternative_template_if_syntax() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_{}", uuid::Uuid::new_v4()));
+        let temp_root =
+            std::env::temp_dir().join(format!("vybex_php_bundle_alt_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
-        let entry_src = "<?php\n$value = true;\n?>\n<?php if ($value): ?>\n<div>ok</div>\n<?php endif; ?>\n";
+        let entry_src =
+            "<?php\n$value = true;\n?>\n<?php if ($value): ?>\n<div>ok</div>\n<?php endif; ?>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2660,18 +2951,25 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_normalizes_bare_alternative_while_syntax() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_while_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_while_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
-        let entry_src = "<?php\n$i = 0;\nwhile ($i < 1) : ?>\n<div>ok</div>\n<?php\n$i++;\nendwhile;\n";
+        let entry_src =
+            "<?php\n$i = 0;\nwhile ($i < 1) : ?>\n<div>ok</div>\n<?php\n$i++;\nendwhile;\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2683,7 +2981,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_normalizes_bare_alternative_foreach_syntax() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_foreach_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2694,7 +2995,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2706,7 +3010,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_normalizes_wrapped_alternative_foreach_with_template_suffix() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_suffix_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_foreach_suffix_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2717,7 +3024,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2729,7 +3039,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_normalizes_multiline_alternative_foreach_header() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_multiline_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_foreach_multiline_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2740,7 +3053,10 @@ PROCEDURE DIVISION.
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2752,7 +3068,10 @@ PROCEDURE DIVISION.
 
     #[test]
     fn php_bundle_prepares_mixed_template_with_inner_function_and_template_loops() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_keynote_template_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_keynote_template_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2787,7 +3106,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2799,18 +3121,25 @@ $notesTree = [
 
     #[test]
     fn php_bundle_normalizes_bare_alternative_endif_with_comment() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_endif_comment_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_endif_comment_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
-        let entry_src = "<?php\nif (true) :\n?>\n<div>ok</div>\n<?php\nendif; // keep parser aligned\n";
+        let entry_src =
+            "<?php\nif (true) :\n?>\n<div>ok</div>\n<?php\nendif; // keep parser aligned\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2822,7 +3151,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_strips_included_close_tag_before_inline_html() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_close_tag_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_close_tag_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let header_path = temp_root.join("header.php");
@@ -2837,35 +3169,51 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
         let module = bundle.prepared_module().expect("prepared module");
-        let echoed_text: String = module.body.iter().filter_map(|stmt| {
-            if let StmtKind::Echo(exprs) = &stmt.kind {
-                if exprs.len() == 1 {
-                    if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
-                        return Some(text.clone());
+        let echoed_text: String = module
+            .body
+            .iter()
+            .filter_map(|stmt| {
+                if let StmtKind::Echo(exprs) = &stmt.kind {
+                    if exprs.len() == 1 {
+                        if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
+                            return Some(text.clone());
+                        }
                     }
                 }
-            }
-            None
-        }).collect();
-        assert!(!echoed_text.contains("?>"), "bundled inline HTML should not contain a literal close tag: {echoed_text}");
+                None
+            })
+            .collect();
+        assert!(
+            !echoed_text.contains("?>"),
+            "bundled inline HTML should not contain a literal close tag: {echoed_text}"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
     fn php_bundle_ignores_boundary_whitespace_from_included_code_file() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_boundary_ws_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_boundary_ws_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let helper_path = temp_root.join("helper.php");
-        std::fs::write(&helper_path, "\n<?php\nfunction helper_value() { return 1; }\n")
-            .expect("write helper");
+        std::fs::write(
+            &helper_path,
+            "\n<?php\nfunction helper_value() { return 1; }\n",
+        )
+        .expect("write helper");
 
         let entry_path = temp_root.join("entry.php");
         let entry_src = "<?php\ninclude 'helper.php';\nheader('Location: /next.php');\n";
@@ -2875,30 +3223,41 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
 
         let module = bundle.prepared_module().expect("prepared module");
-        let echoed_text: String = module.body.iter().filter_map(|stmt| {
-            if let StmtKind::Echo(exprs) = &stmt.kind {
-                if exprs.len() == 1 {
-                    if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
-                        return Some(text.clone());
+        let echoed_text: String = module
+            .body
+            .iter()
+            .filter_map(|stmt| {
+                if let StmtKind::Echo(exprs) = &stmt.kind {
+                    if exprs.len() == 1 {
+                        if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
+                            return Some(text.clone());
+                        }
                     }
                 }
-            }
-            None
-        }).collect();
-        assert!(echoed_text.is_empty(), "boundary whitespace from included code file should not become output: {echoed_text:?}");
+                None
+            })
+            .collect();
+        assert!(
+            echoed_text.is_empty(),
+            "boundary whitespace from included code file should not become output: {echoed_text:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
     fn php_bundle_preserves_heredoc_xml_close_tags() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_heredoc_{}", uuid::Uuid::new_v4()));
+        let temp_root =
+            std::env::temp_dir().join(format!("vybex_php_bundle_heredoc_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let include_path = temp_root.join("ixr.php");
@@ -2913,7 +3272,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2928,7 +3290,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_does_not_rewrite_braced_switch_case_labels() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_switch_case_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_switch_case_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -2939,7 +3304,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2966,7 +3334,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "kses".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: kses_path, code: entry_src }],
+            sources: vec![SourceFile {
+                path: kses_path,
+                code: entry_src,
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -2990,7 +3361,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "wordpress-index".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: index_path, code: entry_src }],
+            sources: vec![SourceFile {
+                path: index_path,
+                code: entry_src,
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3014,7 +3388,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "widgets".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: widgets_path, code: source }],
+            sources: vec![SourceFile {
+                path: widgets_path,
+                code: source,
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3033,12 +3410,16 @@ $notesTree = [
             .join("wordpress")
             .join("wp-includes")
             .join("media-template.php");
-        let source = std::fs::read_to_string(&media_template_path).expect("read media-template.php");
+        let source =
+            std::fs::read_to_string(&media_template_path).expect("read media-template.php");
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "media-template".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: media_template_path, code: source }],
+            sources: vec![SourceFile {
+                path: media_template_path,
+                code: source,
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3048,7 +3429,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_rewrites_backtick_execution_operator() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_backtick_exec_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_backtick_exec_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -3059,7 +3443,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3071,7 +3458,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_prepares_doc_comment_with_php_tag_example() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_comment_tags_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_comment_tags_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -3082,7 +3472,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3094,7 +3487,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_prepares_readonly_named_function() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_readonly_fn_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_readonly_fn_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -3105,7 +3501,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3117,7 +3516,10 @@ $notesTree = [
 
     #[test]
     fn php_bundle_normalizes_chained_endif_if_same_line() {
-        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_chain_{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "vybex_php_bundle_alt_chain_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
@@ -3128,7 +3530,10 @@ $notesTree = [
         let bundle = Bundle {
             name: "entry".to_string(),
             language: lang,
-            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            sources: vec![SourceFile {
+                path: entry_path.clone(),
+                code: entry_src.to_string(),
+            }],
             wasm_files: vec![],
             entry_point: EntryPoint::Auto,
         };
@@ -3288,24 +3693,26 @@ fn resolve_export(
             // as a function marker or immutable value.
             Some((specifier.to_string(), name.to_string()))
         }
-        ExportEntry::Indirect { from, name: src_name } => {
-            resolve_export(modules, from, src_name, visited)
-        }
+        ExportEntry::Indirect {
+            from,
+            name: src_name,
+        } => resolve_export(modules, from, src_name, visited),
     }
 }
 
 /// Add shared vybe namespace to all language profiles.
-/// This eliminates per-language profile duplication by registering `vybe` as a 
+/// This eliminates per-language profile duplication by registering `vybe` as a
 /// package-root that gives access to vybe:* modules (gui, types, collections, etc.)
 /// Users write: vybe.gui.createForm(), vybe.types.convert(), etc.
 fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
     use crate::profile::EsmDefault;
-    
+
     // Check if `vybe` is already defined as a package-root (shouldn't happen, but be safe)
-    let already_has_vybe = profile.esm_defaults.iter().any(|d| {
-        matches!(d, EsmDefault::PackageRoot { prefix, .. } if prefix == "vybe")
-    });
-    
+    let already_has_vybe = profile
+        .esm_defaults
+        .iter()
+        .any(|d| matches!(d, EsmDefault::PackageRoot { prefix, .. } if prefix == "vybe"));
+
     if !already_has_vybe {
         profile.esm_defaults.push(EsmDefault::PackageRoot {
             prefix: "vybe".to_string(),
@@ -3313,4 +3720,3 @@ fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
         });
     }
 }
-

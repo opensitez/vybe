@@ -21,8 +21,8 @@
 
 use super::types::*;
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use crate::compiler::Compiler;
 use crate::common::classes::{access_from_visibility, from_method_stmt};
+use crate::compiler::Compiler;
 use crate::languages::cobol;
 use crate::languages::js;
 
@@ -96,7 +96,12 @@ fn normalize_from_ast_legacy(
                 }
             }
             ClassMember::Method(stmt) => {
-                if let StmtKind::FunctionDecl { name: method_name, modifiers, .. } = &stmt.kind {
+                if let StmtKind::FunctionDecl {
+                    name: method_name,
+                    modifiers,
+                    ..
+                } = &stmt.kind
+                {
                     if let Some(method) = from_method_stmt(
                         stmt.span.clone(),
                         stmt,

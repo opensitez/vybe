@@ -24,7 +24,9 @@ foreach (var t in temps) Console.WriteLine(t);
 
     let module = csharp::parse(src).expect("parse");
     let profile = parse_profile(csharp::profile_source()).expect("profile");
-    let chunks = Compiler::with_profile(profile).compile(&module).expect("compile");
+    let chunks = Compiler::with_profile(profile)
+        .compile(&module)
+        .expect("compile");
 
     for (index, chunk) in chunks.iter().enumerate() {
         println!("\n-- chunk {index}: {} --", chunk.name);

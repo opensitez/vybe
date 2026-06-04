@@ -5,7 +5,9 @@
 //! consume OO COBOL without needing a dedicated semantic lowering pass yet.
 
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use crate::common::classes::{from_method_stmt, Access, BaseCall, NormalClass, NormalConstructor, NormalField};
+use crate::common::classes::{
+    Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
+};
 
 pub fn normalize_class(
     span: Span,
@@ -24,7 +26,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: field_name, type_hint, init, modifiers: field_modifiers, array_bounds, .. } => {
+            ClassMember::Field {
+                name: field_name,
+                type_hint,
+                init,
+                modifiers: field_modifiers,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: field_name.clone(),
@@ -41,7 +50,14 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: source_name, modifiers: method_modifiers, params, body, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: source_name,
+                    modifiers: method_modifiers,
+                    params,
+                    body,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
 
@@ -51,14 +67,20 @@ pub fn normalize_class(
                         span: span.clone(),
                         params: params.clone(),
                         body: body.clone(),
-                        base_call: if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        base_call: if parents.is_empty() {
+                            BaseCall::None
+                        } else {
+                            BaseCall::Auto
+                        },
                         named_name: None,
                     });
                     continue;
                 }
 
                 let canonical_name = source_name.to_ascii_lowercase();
-                if let Some(method) = from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public) {
+                if let Some(method) =
+                    from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public)
+                {
                     if method_modifiers.is_static {
                         static_methods.push(method);
                     } else {
@@ -67,10 +89,10 @@ pub fn normalize_class(
                 }
             }
             other @ (ClassMember::Constructor { .. }
-                | ClassMember::Property { .. }
-                | ClassMember::Event { .. }
-                | ClassMember::Const { .. }
-                | ClassMember::NestedType(_)) => {
+            | ClassMember::Property { .. }
+            | ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }

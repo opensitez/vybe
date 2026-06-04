@@ -4,5 +4,6 @@
 //! directly to portable bytecode plus standard `ecma:*` imports where WASM
 //! lacks the required math primitives.
 
+pub mod dispatch;
 pub mod financial_adapter;
 pub mod misc_adapter;

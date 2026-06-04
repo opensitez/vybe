@@ -21,10 +21,12 @@
 //!   - `include?` → `contains`.
 //!   - `call` → callable protocol.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
+use crate::ast::{
+    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility,
+};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -48,7 +50,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers: m,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -65,7 +74,12 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: src_name, modifiers: m, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: src_name,
+                    modifiers: m,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
                 let (canonical, special_kind) = canonicalize_method(ClassLang::Ruby, src_name);
@@ -86,14 +100,22 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, visibility, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                visibility,
+                ..
+            } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // Ruby: `super` without args passes through the
                         // current method's args; bare `super()` with
@@ -109,21 +131,50 @@ pub fn normalize_class(
                 // calls go through `new` which the stdlib handles.
                 let _ = visibility;
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
                 // Ruby attr_accessor/reader/writer produces these via
                 // the walker's `walk_attr_decl`.
                 let (canonical, _) = canonicalize_method(ClassLang::Ruby, pname);
                 let access = access_from_visibility(m.visibility);
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
@@ -134,7 +185,9 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            other @ (ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }
@@ -180,26 +233,35 @@ mod tests {
     use super::*;
     use crate::ast::Modifiers;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
-            name: src_name.into(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        })))
+        ClassMember::Method(Box::new(crate::ast::Statement::new(
+            StmtKind::FunctionDecl {
+                name: src_name.into(),
+                params: vec![],
+                return_type: None,
+                body: vec![],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        )))
     }
 
     #[test]
     fn to_s_maps_to_canonical_tostring() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("to_s")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("to_s")],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "tostring");
         assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::ToString);
@@ -208,7 +270,12 @@ mod tests {
     #[test]
     fn spaceship_operator_maps_to_compare() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("<=>")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("<=>")],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "compare");
         assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::Compare);
@@ -217,7 +284,12 @@ mod tests {
     #[test]
     fn each_maps_to_iterator() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("each")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("each")],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "iterator");
         assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::Iterator);
@@ -226,13 +298,23 @@ mod tests {
     #[test]
     fn index_operators_map_to_getitem_setitem() {
         let get_nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("[]")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("[]")],
+            &ClassModifiers::default(),
         );
         assert_eq!(get_nc.instance_methods[0].canonical_name, "getitem");
         assert_eq!(get_nc.special_methods[0].kind, SpecialMethodKind::GetItem);
 
         let set_nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("[]=")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("[]=")],
+            &ClassModifiers::default(),
         );
         assert_eq!(set_nc.instance_methods[0].canonical_name, "setitem");
         assert_eq!(set_nc.special_methods[0].kind, SpecialMethodKind::SetItem);
@@ -241,13 +323,23 @@ mod tests {
     #[test]
     fn size_and_length_both_map_to_len() {
         let nc_size = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("size")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("size")],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc_size.instance_methods[0].canonical_name, "len");
         assert_eq!(nc_size.special_methods[0].kind, SpecialMethodKind::Len);
 
         let nc_length = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("length")], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("length")],
+            &ClassModifiers::default(),
         );
         assert_eq!(nc_length.instance_methods[0].canonical_name, "len");
     }

@@ -4,6 +4,7 @@
 //! and are reached through `common:cobol.*` dispatcher entries from the
 //! COBOL profile.
 
+pub mod dispatch;
 pub mod arithmetic;
 pub mod control;
 pub mod data;

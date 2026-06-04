@@ -73,8 +73,8 @@ sleep           = { emit = "host:wasi:clocks:sleep",         min_args = 1, max_a
 exit            = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
 system          = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 1 }
 raise           = { emit = "throw",                          min_args = 0, max_args = 1 }
-sprintf         = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
-format          = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
+sprintf         = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
+format          = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 open            = { emit = "host:wasi:filesystem:open",      min_args = 1, max_args = 3 }
 require         = { emit = "noop",                           min_args = 1, max_args = 1 }
 require_relative = { emit = "noop",                          min_args = 1, max_args = 1 }

@@ -1,8 +1,7 @@
-/// Tests for the WASM stdlib — pure bytecode implementations that run on any runtime.
-
-use vybe_bytecode::{VM, Value, Chunk, Op};
-use vybe_compiler::emitter::stdlib::build_stdlib;
 use std::sync::Arc;
+/// Tests for the WASM stdlib — pure bytecode implementations that run on any runtime.
+use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_compiler::emitter::stdlib::build_stdlib;
 
 /// Link a pre-built stdlib into a VM and run the script chunk.
 /// Callers build the stdlib themselves (so they can read out chunk indices
@@ -24,7 +23,6 @@ fn stdlib_range_basic() {
     let stdlib = build_stdlib(&mut script);
     let range_idx = stdlib.get("__stdlib_range").unwrap();
     let chunk_idx = range_idx + 1; // +1 because script is chunk 0
-
 
     // range(0, 5, 1)
     let zero = script.add_constant(Value::I32(0));
@@ -51,7 +49,6 @@ fn stdlib_range_step() {
     let stdlib = build_stdlib(&mut script);
     let range_idx = stdlib.get("__stdlib_range").unwrap() + 1;
 
-
     // range(0, 10, 2) → [0,2,4,6,8]
     let zero = script.add_constant(Value::I32(0));
     let ten = script.add_constant(Value::I32(10));
@@ -66,7 +63,11 @@ fn stdlib_range_step() {
     script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, stdlib.chunks);
-    assert_eq!(result.as_i32(), 5, "range(0,10,2) should produce 5 elements");
+    assert_eq!(
+        result.as_i32(),
+        5,
+        "range(0,10,2) should produce 5 elements"
+    );
 }
 
 // ── reversed ────────────────────────────────────────────────
@@ -77,7 +78,6 @@ fn stdlib_reversed() {
     script.local_count = 3;
     let stdlib = build_stdlib(&mut script);
     let rev_idx = stdlib.get("__stdlib_reversed").unwrap() + 1;
-
 
     // reversed([1, 2, 3]) → [3, 2, 1]
     let v1 = script.add_constant(Value::I32(1));
@@ -101,7 +101,11 @@ fn stdlib_reversed() {
     script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, stdlib.chunks);
-    assert_eq!(result.as_i32(), 3, "first element of reversed [1,2,3] should be 3");
+    assert_eq!(
+        result.as_i32(),
+        3,
+        "first element of reversed [1,2,3] should be 3"
+    );
 }
 
 // ── sorted ──────────────────────────────────────────────────
@@ -112,7 +116,6 @@ fn stdlib_sorted() {
     script.local_count = 3;
     let stdlib = build_stdlib(&mut script);
     let sort_idx = stdlib.get("__stdlib_sorted").unwrap() + 1;
-
 
     // sorted([3, 1, 2]) → [1, 2, 3]
     let v3 = script.add_constant(Value::I32(3));
@@ -136,7 +139,11 @@ fn stdlib_sorted() {
     script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, stdlib.chunks);
-    assert_eq!(result.as_i32(), 1, "first element of sorted [3,1,2] should be 1");
+    assert_eq!(
+        result.as_i32(),
+        1,
+        "first element of sorted [3,1,2] should be 1"
+    );
 }
 
 #[test]
@@ -145,7 +152,6 @@ fn stdlib_sorted_preserves_original() {
     script.local_count = 3;
     let stdlib = build_stdlib(&mut script);
     let sort_idx = stdlib.get("__stdlib_sorted").unwrap() + 1;
-
 
     // sorted should not mutate the original
     let v3 = script.add_constant(Value::I32(3));
@@ -182,7 +188,6 @@ fn stdlib_min() {
     let stdlib = build_stdlib(&mut script);
     let min_idx = stdlib.get("__stdlib_min").unwrap() + 1;
 
-
     let v5 = script.add_constant(Value::I32(5));
     let v2 = script.add_constant(Value::I32(2));
     let v8 = script.add_constant(Value::I32(8));
@@ -209,7 +214,6 @@ fn stdlib_max() {
     script.local_count = 3;
     let stdlib = build_stdlib(&mut script);
     let max_idx = stdlib.get("__stdlib_max").unwrap() + 1;
-
 
     let v5 = script.add_constant(Value::I32(5));
     let v2 = script.add_constant(Value::I32(2));
@@ -240,7 +244,6 @@ fn stdlib_pow() {
     let stdlib = build_stdlib(&mut script);
     let pow_idx = stdlib.get("__stdlib_pow").unwrap() + 1;
 
-
     // 2^10 = 1024
     script.emit_op_u16(Op::REF_FUNC, pow_idx as u16, 0);
     script.emit(0, 0);
@@ -263,7 +266,6 @@ fn stdlib_enumerate() {
     script.local_count = 3;
     let stdlib = build_stdlib(&mut script);
     let enum_idx = stdlib.get("__stdlib_enumerate").unwrap() + 1;
-
 
     // enumerate(["a", "b"]) → [[0,"a"], [1,"b"]]
     let va = script.add_constant(Value::String(Arc::from("a")));
@@ -295,7 +297,6 @@ fn stdlib_zip() {
     script.local_count = 4;
     let stdlib = build_stdlib(&mut script);
     let zip_idx = stdlib.get("__stdlib_zip").unwrap() + 1;
-
 
     // zip([1,2], [3,4]) → [[1,3], [2,4]]
     let v1 = script.add_constant(Value::I32(1));
@@ -334,7 +335,11 @@ fn stdlib_zip() {
 fn stdlib_has_all_functions() {
     let mut script = Chunk::new("<script>");
     let stdlib = build_stdlib(&mut script);
-    assert!(stdlib.chunks.len() >= 24, "stdlib should export >= 24 chunks, got {}", stdlib.chunks.len());
+    assert!(
+        stdlib.chunks.len() >= 24,
+        "stdlib should export >= 24 chunks, got {}",
+        stdlib.chunks.len()
+    );
     assert!(stdlib.get("__stdlib_range").is_some());
     assert!(stdlib.get("__stdlib_sorted").is_some());
     assert!(stdlib.get("__stdlib_reversed").is_some());

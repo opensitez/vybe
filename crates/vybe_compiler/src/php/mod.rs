@@ -6,4 +6,3 @@
 
 pub use crate::languages::php as frontend;
 pub use crate::languages::php::emitter;
-

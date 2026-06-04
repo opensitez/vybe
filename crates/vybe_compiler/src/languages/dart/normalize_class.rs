@@ -22,7 +22,7 @@
 use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -46,7 +46,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers: m,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -63,11 +70,17 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: src_name, modifiers: m, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: src_name,
+                    modifiers: m,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
                 let (canonical, special_kind) = canonicalize_method(ClassLang::Dart, src_name);
-                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public) else {
+                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
+                else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
@@ -83,14 +96,21 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // Dart: subclass ctor without explicit `: super(...)`
                         // auto-calls the no-arg super ctor in real Dart, but
@@ -102,18 +122,47 @@ pub fn normalize_class(
                     named_name: None, // TODO: plumb Dart named ctors when walker marks them
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
                 let (canonical, _) = canonicalize_method(ClassLang::Dart, pname);
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, body.clone(),
-                    Access::Public, false, false, false, Modifiers::default(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
-                    Access::Public, false, false, false, Modifiers::default(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        body.clone(),
+                        Access::Public,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        Access::Public,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
@@ -124,7 +173,9 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            other @ (ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }
@@ -165,26 +216,34 @@ mod tests {
     use super::*;
     use crate::ast::Modifiers;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
-            name: src_name.into(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        })))
+        ClassMember::Method(Box::new(crate::ast::Statement::new(
+            StmtKind::FunctionDecl {
+                name: src_name.into(),
+                params: vec![],
+                return_type: None,
+                body: vec![],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        )))
     }
 
     #[test]
     fn toString_canonicalises_to_tostring() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("toString")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("toString")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "tostring");
@@ -194,7 +253,11 @@ mod tests {
     #[test]
     fn operator_plus_maps_to_add() {
         let nc = normalize_class(
-            dummy_span(), "Vec", &[], &[], &[make_method("operator+")],
+            dummy_span(),
+            "Vec",
+            &[],
+            &[],
+            &[make_method("operator+")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "add");
@@ -204,7 +267,11 @@ mod tests {
     #[test]
     fn hashCode_maps_to_hash() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("hashCode")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("hashCode")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "hash");

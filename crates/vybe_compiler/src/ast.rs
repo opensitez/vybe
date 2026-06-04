@@ -28,7 +28,18 @@ pub struct Module {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
-    VB, JavaScript, CSharp, Python, Ruby, PHP, Dart, Pascal, Cobol, Fortran, Go, Unknown,
+    VB,
+    JavaScript,
+    CSharp,
+    Python,
+    Ruby,
+    PHP,
+    Dart,
+    Pascal,
+    Cobol,
+    Fortran,
+    Go,
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +54,11 @@ pub enum ImportKind {
     Simple { path: String, alias: Option<String> },
     /// `from os import path, getcwd` / `import { x, y } from "mod"`
     /// Python: level > 0 for relative imports (`from ...pkg import x` → level=3)
-    Named { path: String, names: Vec<ImportName>, level: usize },
+    Named {
+        path: String,
+        names: Vec<ImportName>,
+        level: usize,
+    },
     /// `import * as ns from "mod"` / `from os import *`
     Wildcard { path: String, alias: Option<String> },
     /// `import defaultExport from "mod"` (JS)
@@ -80,8 +95,15 @@ pub struct RecordFieldFormat {
 }
 
 impl Statement {
-    pub fn new(kind: StmtKind) -> Self { Self { kind, span: Span::default() } }
-    pub fn with_span(kind: StmtKind, span: Span) -> Self { Self { kind, span } }
+    pub fn new(kind: StmtKind) -> Self {
+        Self {
+            kind,
+            span: Span::default(),
+        }
+    }
+    pub fn with_span(kind: StmtKind, span: Span) -> Self {
+        Self { kind, span }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,14 +115,12 @@ pub enum StmtKind {
     Block(Vec<Statement>),
 
     // ── Variable declarations ────────────────────────────────────────────
-
     VarDecl {
         declarations: Vec<VarDeclarator>,
         kind: VarDeclKind,
     },
 
     // ── Functions (compiler_common::functions) ───────────────────────────
-
     FunctionDecl {
         name: String,
         params: Vec<Param>,
@@ -115,7 +135,6 @@ pub enum StmtKind {
     },
 
     // ── Classes (compiler_common::classes) ───────────────────────────────
-
     ClassDecl {
         name: String,
         /// VB: single parent. Python: multiple bases. JS: single extends (as expression).
@@ -172,7 +191,6 @@ pub enum StmtKind {
     },
 
     // ── Control flow (br_if, br, loop opcodes) ──────────────────────────
-
     If {
         cond: Expression,
         then_body: Vec<Statement>,
@@ -226,7 +244,6 @@ pub enum StmtKind {
     },
 
     // ── Exception handling (compiler_common::errors) ─────────────────────
-
     Try {
         body: Vec<Statement>,
         catches: Vec<CatchClause>,
@@ -235,7 +252,6 @@ pub enum StmtKind {
     },
 
     // ── With / Using / Lock ─────────────────────────────────────────────
-
     /// Python: `with a() as x, b() as y:` — multiple items
     /// VB: `With obj ... End With` — single item, no var
     With {
@@ -256,15 +272,16 @@ pub enum StmtKind {
     },
 
     // ── Jumps ────────────────────────────────────────────────────────────
-
     Return(Option<Expression>),
     Break(BreakTarget),
     Continue(ContinueTarget),
     /// Python: `raise X from Y` — cause is the chained exception
-    Throw { expr: Option<Expression>, cause: Option<Expression> },
+    Throw {
+        expr: Option<Expression>,
+        cause: Option<Expression>,
+    },
 
     // ── Assignment ───────────────────────────────────────────────────────
-
     /// Python: `a = b = c = 5` — multiple targets
     Assign {
         targets: Vec<Expression>,
@@ -278,7 +295,6 @@ pub enum StmtKind {
     },
 
     // ── Array operations ─────────────────────────────────────────────────
-
     ReDim {
         preserve: bool,
         array: String,
@@ -301,7 +317,6 @@ pub enum StmtKind {
     //
     // The compiler routes these through `compiler_common::gui::emit_bind_event`
     // so the bytecode is identical regardless of source language.
-
     AddHandler {
         /// Control instance — any expression that evaluates to a GUI object.
         control: Expression,
@@ -324,14 +339,12 @@ pub enum StmtKind {
     },
 
     // ── Error handling (VB6 legacy) ──────────────────────────────────────
-
     OnErrorResumeNext,
     OnErrorGoTo(String),
     GoTo(String),
     Label(String),
 
     // ── File I/O (VB6 legacy) ────────────────────────────────────────────
-
     OpenFile {
         path: Expression,
         mode: FileMode,
@@ -373,7 +386,6 @@ pub enum StmtKind {
     },
 
     // ── Module system (JS) ───────────────────────────────────────────────
-
     Export {
         declaration: Option<Box<Statement>>,
         names: Vec<ExportName>,
@@ -389,7 +401,6 @@ pub enum StmtKind {
     },
 
     // ── Labeled statement (JS) ──────────────────────────────────────────
-
     /// `myLabel: for (...) {}` — wraps a statement with a label for break/continue
     Labeled {
         label: String,
@@ -397,11 +408,16 @@ pub enum StmtKind {
     },
 
     // ── Other ────────────────────────────────────────────────────────────
-
     Empty,
-    ScopeDecl { kind: ScopeDeclKind, names: Vec<String> },
+    ScopeDecl {
+        kind: ScopeDeclKind,
+        names: Vec<String>,
+    },
     Delete(Vec<Expression>),
-    Assert { test: Expression, msg: Option<Expression> },
+    Assert {
+        test: Expression,
+        msg: Option<Expression>,
+    },
     Echo(Vec<Expression>),
 
     /// Python `match subject: case pattern: ...` — statement-level with full patterns
@@ -521,21 +537,48 @@ impl ArrayIndexSemantics {
 }
 
 impl Expression {
-    pub fn new(kind: ExprKind) -> Self { Self { kind, span: Span::default() } }
-    pub fn with_span(kind: ExprKind, span: Span) -> Self { Self { kind, span } }
-    pub fn ident(name: &str) -> Self { Self::new(ExprKind::Ident(name.to_string())) }
-    pub fn int(n: i64) -> Self { Self::new(ExprKind::Lit(Literal::Int(n))) }
-    pub fn float(n: f64) -> Self { Self::new(ExprKind::Lit(Literal::Float(n))) }
-    pub fn string(s: &str) -> Self { Self::new(ExprKind::Lit(Literal::Str(s.to_string()))) }
-    pub fn bool(b: bool) -> Self { Self::new(ExprKind::Lit(Literal::Bool(b))) }
-    pub fn null() -> Self { Self::new(ExprKind::Lit(Literal::Null)) }
+    pub fn new(kind: ExprKind) -> Self {
+        Self {
+            kind,
+            span: Span::default(),
+        }
+    }
+    pub fn with_span(kind: ExprKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+    pub fn ident(name: &str) -> Self {
+        Self::new(ExprKind::Ident(name.to_string()))
+    }
+    pub fn int(n: i64) -> Self {
+        Self::new(ExprKind::Lit(Literal::Int(n)))
+    }
+    pub fn float(n: f64) -> Self {
+        Self::new(ExprKind::Lit(Literal::Float(n)))
+    }
+    pub fn string(s: &str) -> Self {
+        Self::new(ExprKind::Lit(Literal::Str(s.to_string())))
+    }
+    pub fn bool(b: bool) -> Self {
+        Self::new(ExprKind::Lit(Literal::Bool(b)))
+    }
+    pub fn null() -> Self {
+        Self::new(ExprKind::Lit(Literal::Null))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum PlaceExpr {
     Ident(String),
-    Member { object: Box<Expression>, field: String, null_safe: bool },
-    Index { object: Box<Expression>, index: Box<Expression>, null_safe: bool },
+    Member {
+        object: Box<Expression>,
+        field: String,
+        null_safe: bool,
+    },
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+        null_safe: bool,
+    },
     Deref(Box<Expression>),
 }
 
@@ -547,32 +590,55 @@ pub enum ExprKind {
     Super,
 
     // ── Operators (compiler_common::expressions) ─────────────────────────
-
-    Binary { op: BinOp, left: Box<Expression>, right: Box<Expression> },
-    Unary { op: UnaryOp, expr: Box<Expression> },
+    Binary {
+        op: BinOp,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expression>,
+    },
     RefOf(Box<PlaceExpr>),
     RefLoad(Box<Expression>),
-    Ternary { cond: Box<Expression>, then: Box<Expression>, else_: Box<Expression> },
+    Ternary {
+        cond: Box<Expression>,
+        then: Box<Expression>,
+        else_: Box<Expression>,
+    },
 
     // ── Access (struct_get / struct_set) ─────────────────────────────────
-
-    Member { object: Box<Expression>, field: String, null_safe: bool },
-    Index { object: Box<Expression>, index: Box<Expression>, null_safe: bool },
+    Member {
+        object: Box<Expression>,
+        field: String,
+        null_safe: bool,
+    },
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+        null_safe: bool,
+    },
 
     // ── Calls (call opcode) ─────────────────────────────────────────────
-
-    Call { callee: Box<Expression>, args: Vec<Argument>, optional: bool },
+    Call {
+        callee: Box<Expression>,
+        args: Vec<Argument>,
+        optional: bool,
+    },
 
     // ── Object creation (compiler_common::classes) ──────────────────────
-
-    New { class: Box<Expression>, args: Vec<Argument> },
+    New {
+        class: Box<Expression>,
+        args: Vec<Argument>,
+    },
 
     // ── Assignment as expression ─────────────────────────────────────────
-
-    Assign { target: Box<Expression>, value: Box<Expression> },
+    Assign {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
 
     // ── Functions as values (ref_func) ──────────────────────────────────
-
     Lambda {
         params: Vec<Param>,
         body: LambdaBody,
@@ -582,7 +648,6 @@ pub enum ExprKind {
     },
 
     // ── Collections (compiler_common::collections, dict) ────────────────
-
     Array(Vec<ArrayElement>),
     /// Python `(1, 2, 3)` — immutable sequence
     Tuple(Vec<Expression>),
@@ -591,37 +656,42 @@ pub enum ExprKind {
     Object(Vec<ObjectProperty>),
 
     // ── String interpolation ─────────────────────────────────────────────
-
     Interpolation(Vec<InterpolPart>),
 
     // ── Type operations ──────────────────────────────────────────────────
-
-    IsType { expr: Box<Expression>, type_name: String },
-    Cast { expr: Box<Expression>, type_name: String },
+    IsType {
+        expr: Box<Expression>,
+        type_name: String,
+    },
+    Cast {
+        expr: Box<Expression>,
+        type_name: String,
+    },
     TypeOf(Box<Expression>),
     DefaultOf(String),
 
     // ── Null handling (compiler_common::expressions) ─────────────────────
-
-    NullCoalesce { left: Box<Expression>, right: Box<Expression> },
+    NullCoalesce {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
 
     // ── Spread / rest ────────────────────────────────────────────────────
-
     Spread(Box<Expression>),
 
     // ── Async (compiler_common::functions) ───────────────────────────────
-
     Await(Box<Expression>),
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
 
     // ── VB / .NET ────────────────────────────────────────────────────────
-
     AddressOf(String),
-    SuperCall { method: Option<String>, args: Vec<Argument> },
+    SuperCall {
+        method: Option<String>,
+        args: Vec<Argument>,
+    },
 
     // ── Python ───────────────────────────────────────────────────────────
-
     Comprehension {
         kind: ComprehensionKind,
         element: Box<Expression>,
@@ -632,10 +702,12 @@ pub enum ExprKind {
         upper: Option<Box<Expression>>,
         step: Option<Box<Expression>>,
     },
-    Walrus { target: Box<Expression>, value: Box<Expression> },
+    Walrus {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
 
     // ── JS ───────────────────────────────────────────────────────────────
-
     Void(Box<Expression>),
     Delete(Box<Expression>),
     Destructure(DestructurePattern),
@@ -648,18 +720,22 @@ pub enum ExprKind {
         members: Vec<ClassMember>,
     },
     /// `function(...) { }` as an expression: `let f = function() { ... }`
-    FunctionExpr(Box<Statement>),  // always StmtKind::FunctionDecl
+    FunctionExpr(Box<Statement>), // always StmtKind::FunctionDecl
 
     // ── Range ────────────────────────────────────────────────────────────
-
-    Range { start: Box<Expression>, end: Box<Expression>, inclusive: bool },
+    Range {
+        start: Box<Expression>,
+        end: Box<Expression>,
+        inclusive: bool,
+    },
 
     // ── PHP ──────────────────────────────────────────────────────────────
-
-    StaticAccess { class: Box<Expression>, member: Box<Expression> },
+    StaticAccess {
+        class: Box<Expression>,
+        member: Box<Expression>,
+    },
 
     // ── Match expression (PHP/Python) ────────────────────────────────────
-
     Match {
         subject: Box<Expression>,
         arms: Vec<MatchArm>,
@@ -696,7 +772,13 @@ pub struct VarDeclarator {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum VarDeclKind { Dim, Let, Const, Var, Static }
+pub enum VarDeclKind {
+    Dim,
+    Let,
+    Const,
+    Var,
+    Static,
+}
 
 #[derive(Debug, Clone)]
 pub enum BindingPattern {
@@ -735,7 +817,12 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PassBy { Value, Ref, Out, Const }
+pub enum PassBy {
+    Value,
+    Ref,
+    Out,
+    Const,
+}
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -749,7 +836,12 @@ pub struct Argument {
 
 impl Argument {
     pub fn positional(value: Expression) -> Self {
-        Self { value, name: None, by_ref: false, spread: false }
+        Self {
+            value,
+            name: None,
+            by_ref: false,
+            spread: false,
+        }
     }
 }
 
@@ -775,16 +867,32 @@ pub struct ArrayElement {
 
 #[derive(Debug, Clone)]
 pub enum ObjectProperty {
-    KeyValue { key: Expression, value: Expression },
+    KeyValue {
+        key: Expression,
+        value: Expression,
+    },
     Shorthand(String),
     Spread(Expression),
-    Method { key: String, value: Box<Statement> },
-    Accessor { kind: AccessorKind, key: String, value: Box<Statement> },
-    Computed { key: Expression, value: Expression },
+    Method {
+        key: String,
+        value: Box<Statement>,
+    },
+    Accessor {
+        kind: AccessorKind,
+        key: String,
+        value: Box<Statement>,
+    },
+    Computed {
+        key: Expression,
+        value: Expression,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AccessorKind { Get, Set }
+pub enum AccessorKind {
+    Get,
+    Set,
+}
 
 // ── Interpolation ───────────────────────────────────────────────────────────
 
@@ -811,7 +919,14 @@ pub enum CaseCondition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ComparisonOp { Eq, NotEq, Lt, LtEq, Gt, GtEq }
+pub enum ComparisonOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
 
 // ── Catch ───────────────────────────────────────────────────────────────────
 
@@ -884,7 +999,12 @@ pub struct WithItem {
 // ── Comprehension ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ComprehensionKind { List, Set, Dict, Generator }
+pub enum ComprehensionKind {
+    List,
+    Set,
+    Dict,
+    Generator,
+}
 
 #[derive(Debug, Clone)]
 pub struct ComprehensionGen {
@@ -924,18 +1044,40 @@ pub enum ContinueTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ExitKind { Sub, Function, For, Do, While, Select, Try, Property }
+pub enum ExitKind {
+    Sub,
+    Function,
+    For,
+    Do,
+    While,
+    Select,
+    Try,
+    Property,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ContinueKind { Do, For, While }
+pub enum ContinueKind {
+    Do,
+    For,
+    While,
+}
 
 // ── Misc enums ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScopeDeclKind { Global, Nonlocal }
+pub enum ScopeDeclKind {
+    Global,
+    Nonlocal,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FileMode { Input, Output, Append, Binary, Random }
+pub enum FileMode {
+    Input,
+    Output,
+    Append,
+    Binary,
+    Random,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileKeyRelation {
@@ -958,36 +1100,82 @@ pub struct ExportName {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, IDiv, Mod, Pow,
-    Eq, NotEq, StrictEq, StrictNotEq, Lt, Gt, LtEq, GtEq,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    IDiv,
+    Mod,
+    Pow,
+    Eq,
+    NotEq,
+    StrictEq,
+    StrictNotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
     Spaceship,
-    And, Or, Xor, Eqv, Imp,
-    BitAnd, BitOr, BitXor, Shl, Shr, UShr,
+    And,
+    Or,
+    Xor,
+    Eqv,
+    Imp,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
     Concat,
-    In, NotIn, InstanceOf,
+    In,
+    NotIn,
+    InstanceOf,
     NullCoalesce,
-    MatMul, FloorDiv,
+    MatMul,
+    FloorDiv,
     Like,
-    Is, IsNot,
+    Is,
+    IsNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
-    Neg, Pos,
-    Not, BitNot,
-    PreInc, PreDec,
-    PostInc, PostDec,
-    Typeof, Void, Delete,
-    Deref, AddrOf,
+    Neg,
+    Pos,
+    Not,
+    BitNot,
+    PreInc,
+    PreDec,
+    PostInc,
+    PostDec,
+    Typeof,
+    Void,
+    Delete,
+    Deref,
+    AddrOf,
     Await,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompoundOp {
-    Add, Sub, Mul, Div, IDiv, Mod, Pow,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    IDiv,
+    Mod,
+    Pow,
     Concat,
-    BitAnd, BitOr, BitXor, Shl, Shr, UShr,
-    And, Or, NullCoalesce,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+    And,
+    Or,
+    NullCoalesce,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1057,43 +1245,83 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::VarDecl { declarations, .. } => declarations
             .iter()
             .any(|decl| decl.init.as_ref().map_or(false, expr_has_yield)),
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             expr_has_yield(cond)
                 || body_has_yield(then_body)
-                || elifs.iter().any(|(cond, body)| expr_has_yield(cond) || body_has_yield(body))
-                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+                || elifs
+                    .iter()
+                    .any(|(cond, body)| expr_has_yield(cond) || body_has_yield(body))
+                || else_body
+                    .as_ref()
+                    .map_or(false, |body| body_has_yield(body))
         }
-        StmtKind::For { init, cond, update, body } => {
-            init.as_ref().map_or(false, |stmt| statement_has_yield(stmt))
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref()
+                .map_or(false, |stmt| statement_has_yield(stmt))
                 || cond.as_ref().map_or(false, expr_has_yield)
                 || update.as_ref().map_or(false, expr_has_yield)
                 || body_has_yield(body)
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             expr_has_yield(iter)
                 || body_has_yield(body)
-                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+                || else_body
+                    .as_ref()
+                    .map_or(false, |body| body_has_yield(body))
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             expr_has_yield(cond)
                 || body_has_yield(body)
-                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+                || else_body
+                    .as_ref()
+                    .map_or(false, |body| body_has_yield(body))
         }
         StmtKind::DoWhile { body, cond, .. } => body_has_yield(body) || expr_has_yield(cond),
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             expr_has_yield(expr)
                 || cases.iter().any(|case| {
-                    case.conditions.iter().any(case_condition_has_yield) || body_has_yield(&case.body)
+                    case.conditions.iter().any(case_condition_has_yield)
+                        || body_has_yield(&case.body)
                 })
                 || default.as_ref().map_or(false, |body| body_has_yield(body))
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             body_has_yield(body)
                 || catches.iter().any(|catch| {
                     catch.when_clause.as_ref().map_or(false, expr_has_yield)
                         || body_has_yield(&catch.body)
                 })
-                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+                || else_body
+                    .as_ref()
+                    .map_or(false, |body| body_has_yield(body))
                 || finally.as_ref().map_or(false, |body| body_has_yield(body))
         }
         StmtKind::With { items, body, .. } => {
@@ -1112,34 +1340,44 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::CompoundAssign { target, value, .. } => {
             expr_has_yield(target) || expr_has_yield(value)
         }
-        StmtKind::AddHandler { control, handler, .. }
-        | StmtKind::RemoveHandler { control, handler, .. } => {
-            expr_has_yield(control) || expr_has_yield(handler)
+        StmtKind::AddHandler {
+            control, handler, ..
         }
-        StmtKind::RaiseEvent { args, .. }
-        | StmtKind::Delete(args)
-        | StmtKind::Echo(args) => args.iter().any(expr_has_yield),
-        StmtKind::OpenFile { path, file_number, .. } => {
-            expr_has_yield(path) || expr_has_yield(file_number)
+        | StmtKind::RemoveHandler {
+            control, handler, ..
+        } => expr_has_yield(control) || expr_has_yield(handler),
+        StmtKind::RaiseEvent { args, .. } | StmtKind::Delete(args) | StmtKind::Echo(args) => {
+            args.iter().any(expr_has_yield)
         }
+        StmtKind::OpenFile {
+            path, file_number, ..
+        } => expr_has_yield(path) || expr_has_yield(file_number),
         StmtKind::CloseFile(expr) => expr.as_ref().map_or(false, expr_has_yield),
-        StmtKind::PrintFile { file_number, items }
-        | StmtKind::WriteFile { file_number, items } => {
+        StmtKind::PrintFile { file_number, items } | StmtKind::WriteFile { file_number, items } => {
             expr_has_yield(file_number) || items.iter().any(expr_has_yield)
         }
-        StmtKind::StartFile { file_number, key_value, .. } => {
-            expr_has_yield(file_number) || expr_has_yield(key_value)
-        }
-        StmtKind::InputRecordFile { file_number, key_value, .. } => {
-            expr_has_yield(file_number)
-                || key_value.as_ref().map_or(false, expr_has_yield)
-        }
-        StmtKind::RewriteRecordFile { file_number, items, .. } => {
-            expr_has_yield(file_number) || items.iter().any(expr_has_yield)
-        }
+        StmtKind::StartFile {
+            file_number,
+            key_value,
+            ..
+        } => expr_has_yield(file_number) || expr_has_yield(key_value),
+        StmtKind::InputRecordFile {
+            file_number,
+            key_value,
+            ..
+        } => expr_has_yield(file_number) || key_value.as_ref().map_or(false, expr_has_yield),
+        StmtKind::RewriteRecordFile {
+            file_number, items, ..
+        } => expr_has_yield(file_number) || items.iter().any(expr_has_yield),
         StmtKind::ReDim { bounds, .. } => bounds.iter().any(expr_has_yield),
-        StmtKind::Export { declaration, default, .. } => {
-            declaration.as_ref().map_or(false, |stmt| statement_has_yield(stmt))
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            declaration
+                .as_ref()
+                .map_or(false, |stmt| statement_has_yield(stmt))
                 || default.as_ref().map_or(false, |expr| expr_has_yield(expr))
         }
         StmtKind::Labeled { body, .. } => statement_has_yield(body),
@@ -1170,14 +1408,20 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::Delete(expr) => expr_has_yield(expr),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Assign { target: left, value: right }
-        | ExprKind::Walrus { target: left, value: right }
-        | ExprKind::Range { start: left, end: right, .. } => {
-            expr_has_yield(left) || expr_has_yield(right)
+        | ExprKind::Assign {
+            target: left,
+            value: right,
         }
-        ExprKind::StaticAccess { class, member } => {
-            expr_has_yield(class) || expr_has_yield(member)
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
         }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_has_yield(left) || expr_has_yield(right),
+        ExprKind::StaticAccess { class, member } => expr_has_yield(class) || expr_has_yield(member),
         ExprKind::Ternary { cond, then, else_ } => {
             expr_has_yield(cond) || expr_has_yield(then) || expr_has_yield(else_)
         }
@@ -1197,8 +1441,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
             items.iter().any(expr_has_yield)
         }
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
-            ObjectProperty::KeyValue { key, value }
-            | ObjectProperty::Computed { key, value } => {
+            ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
                 expr_has_yield(key) || expr_has_yield(value)
             }
             ObjectProperty::Spread(expr) => expr_has_yield(expr),
@@ -1211,12 +1454,17 @@ fn expr_has_yield(expr: &Expression) -> bool {
         ExprKind::Match { subject, arms } => {
             expr_has_yield(subject)
                 || arms.iter().any(|arm| {
-                    arm.conditions.as_ref().map_or(false, |conditions| {
-                        conditions.iter().any(expr_has_yield)
-                    }) || expr_has_yield(&arm.body)
+                    arm.conditions
+                        .as_ref()
+                        .map_or(false, |conditions| conditions.iter().any(expr_has_yield))
+                        || expr_has_yield(&arm.body)
                 })
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             expr_has_yield(element)
                 || generators.iter().any(|generator| {
                     expr_has_yield(&generator.target)

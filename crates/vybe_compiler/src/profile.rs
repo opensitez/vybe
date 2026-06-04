@@ -93,6 +93,25 @@ pub struct LanguageProfile {
     /// an explicit `break`. VB/Pascal/Python: each case is independent.
     pub switch_fallthrough: bool,
 
+    /// PHP: relational operators (`<`/`>`/`<=`/`>=`/`<=>`) compare two
+    /// strings lexicographically and otherwise fall back to numeric/dynamic
+    /// comparison (DateTime operands are unboxed first). When false, the
+    /// generic dynamic comparison is used.
+    pub string_aware_relational: bool,
+
+    /// PHP: when a class constructor global is undefined at construction
+    /// time, invoke the registered `spl_autoload_register` callback with
+    /// the class name and retry. When false, a plain `GLOBAL_GET` is used.
+    pub supports_autoload: bool,
+
+    /// Language exposes buffered-iterator methods on generators
+    /// (`current`/`next`/`valid`/`send`/`getReturn`/`throw`, PHP-style) and
+    /// `foreach` must keep the generator's current value consistent with
+    /// those methods. Drives the generic buffered-generator protocol (built
+    /// on the WASM stack-switching `GEN_NEXT`/`RESUME` primitives). When
+    /// false, generators use the plain advance-only iteration path.
+    pub buffered_iterator_methods: bool,
+
     /// VB: LINQ query syntax compiled to method chains.
     pub linq_queries: bool,
 
@@ -162,7 +181,11 @@ pub struct LanguageProfile {
 pub enum EsmDefault {
     /// `import { name as local } from "module"`. `name` defaults to
     /// `local` when not provided.
-    Named { local: String, module: String, name: String },
+    Named {
+        local: String,
+        module: String,
+        name: String,
+    },
     /// `import * as alias from "module"`. Qualified access `alias.field`
     /// resolves to `(module, field)` at compile time.
     Namespace { alias: String, module: String },
@@ -244,7 +267,7 @@ pub enum BuiltinEmit {
     /// Emit a direct opcode sequence by name.
     Opcode(String),
     /// Mutate a variable: var = var OP arg. (Inc, Dec)
-    MutateVar(String),  // "add" or "sub"
+    MutateVar(String), // "add" or "sub"
     /// Multi-opcode intrinsic: name references [intrinsics] table in profile.
     Intrinsic(String),
     /// Dispatch to a compiler_common opcode-style emitter (args already on stack).
@@ -288,36 +311,59 @@ impl LanguageProfile {
 
     /// Look up a known type constructor mapping.
     pub fn lookup_known_type(&self, name: &str) -> Option<(&str, &str)> {
-        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
-        self.known_types.get(&key).map(|(m, f)| (m.as_str(), f.as_str()))
+        let key = if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        };
+        self.known_types
+            .get(&key)
+            .map(|(m, f)| (m.as_str(), f.as_str()))
     }
 
     /// Check if a name is a known namespace root.
     pub fn is_namespace_root(&self, name: &str) -> bool {
-        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        let key = if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        };
         self.namespaces.roots.iter().any(|r| r == &key)
     }
 
     /// Check if a name is a known constant (property access, not call).
     pub fn is_namespace_constant(&self, name: &str) -> bool {
-        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        let key = if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        };
         self.namespaces.constants.iter().any(|c| c == &key)
     }
 
     /// Look up a value method by name + arity.
     /// Returns the first overload whose arity range matches.
     pub fn lookup_value_method(&self, name: &str, argc: u8) -> Option<&BuiltinDef> {
-        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        let key = if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        };
         let overloads = self.value_methods.get(&key)?;
-        overloads.iter().find(|d| argc >= d.min_args && argc <= d.max_args)
+        overloads
+            .iter()
+            .find(|d| argc >= d.min_args && argc <= d.max_args)
     }
 
     /// Check if a value method exists by name (any arity).
     pub fn has_value_method(&self, name: &str) -> bool {
-        let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
+        let key = if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        };
         self.value_methods.contains_key(&key)
     }
-
 
     /// Look up a namespace constant value (Math.PI, Number.MAX_SAFE_INTEGER).
     pub fn lookup_constant(&self, name: &str) -> Option<&ConstantValue> {
@@ -338,73 +384,136 @@ impl LanguageProfile {
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     use toml::Value;
 
-    let root: Value = toml::from_str(src)
-        .map_err(|e| format!("TOML parse error in profile: {}", e))?;
+    let root: Value =
+        toml::from_str(src).map_err(|e| format!("TOML parse error in profile: {}", e))?;
 
-    let compiler = root.get("compiler")
-        .ok_or("Missing [compiler] section")?;
+    let compiler = root.get("compiler").ok_or("Missing [compiler] section")?;
 
-    let name = root.get("info")
+    let name = root
+        .get("info")
         .and_then(|v| v.get("name"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let function_return = match compiler.get("function_return")
-        .and_then(|v| v.as_str()).unwrap_or("explicit") {
+    let function_return = match compiler
+        .get("function_return")
+        .and_then(|v| v.as_str())
+        .unwrap_or("explicit")
+    {
         "result_slot" => ReturnStyle::ResultSlot,
         "last_expression" => ReturnStyle::LastExpression,
         _ => ReturnStyle::Explicit,
     };
 
-    let result_slot_name = compiler.get("result_slot_name")
-        .and_then(|v| v.as_str()).unwrap_or("Result").to_string();
+    let result_slot_name = compiler
+        .get("result_slot_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Result")
+        .to_string();
 
-    let self_keyword = compiler.get("self_keyword")
-        .and_then(|v| v.as_str()).unwrap_or("this").to_string();
-    let base_keyword = compiler.get("base_keyword")
-        .and_then(|v| v.as_str()).map(|s| s.to_string());
-    let constructor_name = compiler.get("constructor_name")
-        .and_then(|v| v.as_str()).unwrap_or("constructor").to_string();
-    let enum_as_ordinals = compiler.get("enum_as_ordinals")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let case_sensitive = compiler.get("case_sensitive")
-        .and_then(|v| v.as_bool()).unwrap_or(true);
-    let string_indexing = match compiler.get("string_indexing")
-        .and_then(|v| v.as_str()).unwrap_or("zero_based") {
+    let self_keyword = compiler
+        .get("self_keyword")
+        .and_then(|v| v.as_str())
+        .unwrap_or("this")
+        .to_string();
+    let base_keyword = compiler
+        .get("base_keyword")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let constructor_name = compiler
+        .get("constructor_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("constructor")
+        .to_string();
+    let enum_as_ordinals = compiler
+        .get("enum_as_ordinals")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let case_sensitive = compiler
+        .get("case_sensitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let string_indexing = match compiler
+        .get("string_indexing")
+        .and_then(|v| v.as_str())
+        .unwrap_or("zero_based")
+    {
         "one_based" => StringIndexing::OneBased,
         _ => StringIndexing::ZeroBased,
     };
-    let array_upper_bound_inclusive = compiler.get("array_upper_bound_inclusive")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let negative_index_wraps = compiler.get("negative_index_wraps")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let parens_for_index = compiler.get("parens_for_index")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let entry_point = compiler.get("entry_point")
-        .and_then(|v| v.as_str()).map(|s| s.to_string());
-    let hoist_var = compiler.get("hoist_var")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let dynamic_add = compiler.get("dynamic_add")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let commonjs_require = compiler.get("commonjs_require")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let multi_value_tuple_returns = compiler.get("multi_value_tuple_returns")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let byref_boxing = compiler.get("byref_boxing")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let with_block = compiler.get("with_block")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let new_with_initializer = compiler.get("new_with_initializer")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let new_from_initializer = compiler.get("new_from_initializer")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let linq_queries = compiler.get("linq_queries")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let switch_fallthrough = compiler.get("switch_fallthrough")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let uses_normalize_class = compiler.get("uses_normalize_class")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
+    let array_upper_bound_inclusive = compiler
+        .get("array_upper_bound_inclusive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let negative_index_wraps = compiler
+        .get("negative_index_wraps")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let parens_for_index = compiler
+        .get("parens_for_index")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let entry_point = compiler
+        .get("entry_point")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let hoist_var = compiler
+        .get("hoist_var")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dynamic_add = compiler
+        .get("dynamic_add")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let commonjs_require = compiler
+        .get("commonjs_require")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let multi_value_tuple_returns = compiler
+        .get("multi_value_tuple_returns")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let byref_boxing = compiler
+        .get("byref_boxing")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let with_block = compiler
+        .get("with_block")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let new_with_initializer = compiler
+        .get("new_with_initializer")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let new_from_initializer = compiler
+        .get("new_from_initializer")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let linq_queries = compiler
+        .get("linq_queries")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let switch_fallthrough = compiler
+        .get("switch_fallthrough")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let string_aware_relational = compiler
+        .get("string_aware_relational")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let supports_autoload = compiler
+        .get("supports_autoload")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let buffered_iterator_methods = compiler
+        .get("buffered_iterator_methods")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let uses_normalize_class = compiler
+        .get("uses_normalize_class")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     fn parse_builtin_table(root: &Value, section: &str) -> HashMap<String, BuiltinDef> {
         let mut map = HashMap::new();
@@ -412,10 +521,21 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             for (name, val) in bt {
                 if let Some(t) = val.as_table() {
                     let emit_str = t.get("emit").and_then(|v| v.as_str()).unwrap_or("noop");
-                    let min_args = t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
-                    let max_args = t.get("max_args").and_then(|v| v.as_integer()).unwrap_or(255) as u8;
+                    let min_args =
+                        t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
+                    let max_args = t
+                        .get("max_args")
+                        .and_then(|v| v.as_integer())
+                        .unwrap_or(255) as u8;
                     if let Some(emit) = parse_emit(emit_str) {
-                        map.insert(name.clone(), BuiltinDef { emit, min_args, max_args });
+                        map.insert(
+                            name.clone(),
+                            BuiltinDef {
+                                emit,
+                                min_args,
+                                max_args,
+                            },
+                        );
                     }
                 }
             }
@@ -431,15 +551,32 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             _ if s.starts_with("host:") => {
                 let parts: Vec<&str> = s["host:".len()..].splitn(3, ':').collect();
                 if parts.len() == 3 {
-                    Some(BuiltinEmit::HostCall(format!("{}:{}", parts[0], parts[1]), parts[2].to_string()))
-                } else { None }
+                    Some(BuiltinEmit::HostCall(
+                        format!("{}:{}", parts[0], parts[1]),
+                        parts[2].to_string(),
+                    ))
+                } else {
+                    None
+                }
             }
-            _ if s.starts_with("opcode:") => Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string())),
-            _ if s.starts_with("mutate:") => Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string())),
-            _ if s.starts_with("intrinsic:") => Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string())),
-            _ if s.starts_with("common:") => Some(BuiltinEmit::Common(s["common:".len()..].to_string())),
-            _ if s.starts_with("stdlib:") => Some(BuiltinEmit::Stdlib(s["stdlib:".len()..].to_string())),
-            _ if s.starts_with("invoke:") => Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string())),
+            _ if s.starts_with("opcode:") => {
+                Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string()))
+            }
+            _ if s.starts_with("mutate:") => {
+                Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string()))
+            }
+            _ if s.starts_with("intrinsic:") => {
+                Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string()))
+            }
+            _ if s.starts_with("common:") => {
+                Some(BuiltinEmit::Common(s["common:".len()..].to_string()))
+            }
+            _ if s.starts_with("stdlib:") => {
+                Some(BuiltinEmit::Stdlib(s["stdlib:".len()..].to_string()))
+            }
+            _ if s.starts_with("invoke:") => {
+                Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))
+            }
             _ => None,
         }
     }
@@ -448,7 +585,9 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         let mut map = HashMap::new();
         if let Some(t) = root.get(section).and_then(|v| v.as_table()) {
             for (k, v) in t {
-                if let Some(s) = v.as_str() { map.insert(k.clone(), s.to_string()); }
+                if let Some(s) = v.as_str() {
+                    map.insert(k.clone(), s.to_string());
+                }
             }
         }
         map
@@ -463,19 +602,35 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
                     for entry in arr {
                         if let Some(t) = entry.as_table() {
                             let emit_str = t.get("emit").and_then(|v| v.as_str()).unwrap_or("noop");
-                            let min_args = t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
-                            let max_args = t.get("max_args").and_then(|v| v.as_integer()).unwrap_or(255) as u8;
+                            let min_args =
+                                t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
+                            let max_args = t
+                                .get("max_args")
+                                .and_then(|v| v.as_integer())
+                                .unwrap_or(255) as u8;
                             if let Some(emit) = parse_emit(emit_str) {
-                                map.entry(name.clone()).or_default().push(BuiltinDef { emit, min_args, max_args });
+                                map.entry(name.clone()).or_default().push(BuiltinDef {
+                                    emit,
+                                    min_args,
+                                    max_args,
+                                });
                             }
                         }
                     }
                 } else if let Some(t) = val.as_table() {
                     let emit_str = t.get("emit").and_then(|v| v.as_str()).unwrap_or("noop");
-                    let min_args = t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
-                    let max_args = t.get("max_args").and_then(|v| v.as_integer()).unwrap_or(255) as u8;
+                    let min_args =
+                        t.get("min_args").and_then(|v| v.as_integer()).unwrap_or(0) as u8;
+                    let max_args = t
+                        .get("max_args")
+                        .and_then(|v| v.as_integer())
+                        .unwrap_or(255) as u8;
                     if let Some(emit) = parse_emit(emit_str) {
-                        map.entry(name.clone()).or_default().push(BuiltinDef { emit, min_args, max_args });
+                        map.entry(name.clone()).or_default().push(BuiltinDef {
+                            emit,
+                            min_args,
+                            max_args,
+                        });
                     }
                 }
             }
@@ -490,24 +645,57 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
-            use_dotnet: ns.get("use_dotnet").and_then(|v| v.as_bool()).unwrap_or(false),
-            use_dotnet_resolver: ns.get("use_dotnet_resolver").and_then(|v| v.as_bool())
+            use_dotnet: ns
+                .get("use_dotnet")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            use_dotnet_resolver: ns
+                .get("use_dotnet_resolver")
+                .and_then(|v| v.as_bool())
                 // Default: the resolver is on whenever `use_dotnet` is —
                 // that's how VB works today. Languages that want the
                 // class registration but NOT the eager dotted-name
                 // rewrite (C#) can override to `false`.
-                .unwrap_or_else(|| ns.get("use_dotnet").and_then(|v| v.as_bool()).unwrap_or(false)),
-            extra_imports: ns.get("extra_imports").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_else(|| {
+                    ns.get("use_dotnet")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                }),
+            extra_imports: ns
+                .get("extra_imports")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            roots: ns.get("roots").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            roots: ns
+                .get("roots")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            default_imports: ns.get("default_imports").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            default_imports: ns
+                .get("default_imports")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            constants: ns.get("constants").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            constants: ns
+                .get("constants")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     } else {
@@ -550,8 +738,12 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     if let Some(nc) = root.get("namespace_constants").and_then(|v| v.as_table()) {
         for (name, val) in nc {
             match val {
-                Value::Float(f) => { namespace_constants.insert(name.clone(), ConstantValue::Float(*f)); }
-                Value::Integer(i) => { namespace_constants.insert(name.clone(), ConstantValue::Float(*i as f64)); }
+                Value::Float(f) => {
+                    namespace_constants.insert(name.clone(), ConstantValue::Float(*f));
+                }
+                Value::Integer(i) => {
+                    namespace_constants.insert(name.clone(), ConstantValue::Float(*i as f64));
+                }
                 Value::String(s) => {
                     if let Ok(f) = s.parse::<f64>() {
                         namespace_constants.insert(name.clone(), ConstantValue::Float(f));
@@ -579,12 +771,18 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     let mut esm_defaults: Vec<EsmDefault> = Vec::new();
     if let Some(arr) = root.get("esm_default").and_then(|v| v.as_array()) {
         for entry in arr {
-            let Some(tbl) = entry.as_table() else { continue };
+            let Some(tbl) = entry.as_table() else {
+                continue;
+            };
             let kind = tbl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
                 "named" => {
-                    let Some(local) = tbl.get("local").and_then(|v| v.as_str()) else { continue };
-                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else { continue };
+                    let Some(local) = tbl.get("local").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     // `name` defaults to `local` when omitted.
                     let name = tbl.get("name").and_then(|v| v.as_str()).unwrap_or(local);
                     esm_defaults.push(EsmDefault::Named {
@@ -594,16 +792,24 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
                     });
                 }
                 "namespace" => {
-                    let Some(alias) = tbl.get("alias").and_then(|v| v.as_str()) else { continue };
-                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else { continue };
+                    let Some(alias) = tbl.get("alias").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     esm_defaults.push(EsmDefault::Namespace {
                         alias: alias.to_string(),
                         module: module.to_string(),
                     });
                 }
                 "package-root" | "package_root" => {
-                    let Some(prefix) = tbl.get("prefix").and_then(|v| v.as_str()) else { continue };
-                    let Some(module_root) = tbl.get("module_root").and_then(|v| v.as_str()) else { continue };
+                    let Some(prefix) = tbl.get("prefix").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(module_root) = tbl.get("module_root").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     esm_defaults.push(EsmDefault::PackageRoot {
                         prefix: prefix.to_string(),
                         module_root: module_root.to_string(),
@@ -630,16 +836,39 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
 
     Ok(LanguageProfile {
         name,
-        function_return, result_slot_name,
-        self_keyword, base_keyword, constructor_name,
-        enum_as_ordinals, case_sensitive, string_indexing,
-        array_upper_bound_inclusive, negative_index_wraps, parens_for_index, entry_point,
-        hoist_var, dynamic_add, commonjs_require,
-        multi_value_tuple_returns, byref_boxing, with_block,
-        new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
+        function_return,
+        result_slot_name,
+        self_keyword,
+        base_keyword,
+        constructor_name,
+        enum_as_ordinals,
+        case_sensitive,
+        string_indexing,
+        array_upper_bound_inclusive,
+        negative_index_wraps,
+        parens_for_index,
+        entry_point,
+        hoist_var,
+        dynamic_add,
+        commonjs_require,
+        multi_value_tuple_returns,
+        byref_boxing,
+        with_block,
+        new_with_initializer,
+        new_from_initializer,
+        linq_queries,
+        switch_fallthrough,
+        string_aware_relational,
+        supports_autoload,
+        buffered_iterator_methods,
         uses_normalize_class,
-        builtins, intrinsics, namespaces, known_types,
-        value_methods, namespace_constants, array_methods,
+        builtins,
+        intrinsics,
+        namespaces,
+        known_types,
+        value_methods,
+        namespace_constants,
+        array_methods,
         esm_defaults,
         bare_module_aliases,
     })

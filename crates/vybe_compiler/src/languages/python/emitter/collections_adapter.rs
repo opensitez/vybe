@@ -3,7 +3,14 @@ use vybe_bytecode::opcode::Op;
 
 use crate::emitter::{collections, dict, strings};
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
@@ -75,7 +82,8 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+    let keys_key =
+        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
@@ -146,7 +154,8 @@ pub fn emit_discard(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+    let keys_key =
+        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
@@ -187,7 +196,8 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let keys_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+    let keys_key =
+        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
@@ -261,7 +271,8 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         return;
     } else {
-        let keys_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        let keys_key = chunks[current]
+            .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -312,8 +323,10 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
-    let size_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+    let keys_key =
+        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+    let size_key =
+        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op(Op::REF_IS_STRING, line);

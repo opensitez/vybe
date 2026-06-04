@@ -5,9 +5,9 @@
 //! `vybe_compiler::ast::Module`. From there everything goes through the
 //! shared compiler — no Fortran-specific code in `compiler.rs`.
 
-pub mod walker;
 pub mod emitter;
 pub mod normalize_class;
+pub mod walker;
 
 use pest_derive::Parser;
 

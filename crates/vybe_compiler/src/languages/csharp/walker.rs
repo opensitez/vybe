@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use pest::Parser;
-use pest::iterators::Pair;
 use super::{CSharpParser, Rule};
 use crate::ast::*;
+use pest::Parser;
+use pest::iterators::Pair;
 
 pub fn parse(source: &str) -> Result<Module, String> {
-    let pairs = CSharpParser::parse(Rule::program, source)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let pairs =
+        CSharpParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut pending_attributes: Vec<Expression> = Vec::new();
@@ -16,12 +16,17 @@ pub fn parse(source: &str) -> Result<Module, String> {
         let inner = match top.as_rule() {
             Rule::program => top.into_inner(),
             Rule::EOI => continue,
-            _ => { body.push(walk_statement(top)?); continue; }
+            _ => {
+                body.push(walk_statement(top)?);
+                continue;
+            }
         };
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI => continue,
-                Rule::attribute_list => pending_attributes.extend(parse_attribute_specs(pair.as_str())),
+                Rule::attribute_list => {
+                    pending_attributes.extend(parse_attribute_specs(pair.as_str()))
+                }
                 Rule::using_directive => imports.push(walk_using(pair)?),
                 Rule::namespace_declaration => {
                     // Build NamespaceDecl with name and body
@@ -30,11 +35,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     let mut namespace_pending_attributes: Vec<Expression> = Vec::new();
                     for p in pair.into_inner() {
                         match p.as_rule() {
-                            Rule::dotted_name => ns_name = strip_global_namespace_qualifier(p.as_str()).to_string(),
-                            Rule::attribute_list => namespace_pending_attributes.extend(parse_attribute_specs(p.as_str())),
+                            Rule::dotted_name => {
+                                ns_name = strip_global_namespace_qualifier(p.as_str()).to_string()
+                            }
+                            Rule::attribute_list => namespace_pending_attributes
+                                .extend(parse_attribute_specs(p.as_str())),
                             Rule::using_directive => imports.push(walk_using(p)?),
                             _ => {
-                                if let Ok(stmt) = walk_top_level_with_attributes(p, &namespace_pending_attributes) {
+                                if let Ok(stmt) =
+                                    walk_top_level_with_attributes(p, &namespace_pending_attributes)
+                                {
                                     ns_body.push(stmt);
                                 }
                                 namespace_pending_attributes.clear();
@@ -219,7 +229,9 @@ fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
             }
 
             let (name, args) = if let Some(open_idx) = trimmed.find('(') {
-                let close_idx = trimmed.rfind(')').unwrap_or(trimmed.len().saturating_sub(1));
+                let close_idx = trimmed
+                    .rfind(')')
+                    .unwrap_or(trimmed.len().saturating_sub(1));
                 let name = trimmed[..open_idx].trim();
                 let args_src = &trimmed[open_idx + 1..close_idx];
                 let args = split_csharp_top_level(args_src, ',')
@@ -263,7 +275,13 @@ fn explicit_interface_runtime_name(interface_name: &str, member_name: &str) -> S
 fn sanitize_explicit_interface_name(interface_name: &str) -> String {
     normalize_runtime_type_name(interface_name)
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -401,13 +419,19 @@ fn rewrite_explicit_interface_accesses_in_statement(
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
-        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
             rewrite_explicit_interface_accesses_in_expr(cause, conflicted);
         }
@@ -435,7 +459,12 @@ fn rewrite_explicit_interface_accesses_in_statement(
                 rewrite_explicit_interface_accesses_in_member(member, conflicted);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
             rewrite_explicit_interface_accesses_in_statements(then_body, conflicted);
             for (elif_cond, elif_body) in elifs {
@@ -446,7 +475,12 @@ fn rewrite_explicit_interface_accesses_in_statement(
                 rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_explicit_interface_accesses_in_statement(init, conflicted);
             }
@@ -458,14 +492,23 @@ fn rewrite_explicit_interface_accesses_in_statement(
             }
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_explicit_interface_accesses_in_expr(iter, conflicted);
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             if let Some(else_body) = else_body {
                 rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             if let Some(else_body) = else_body {
@@ -476,12 +519,18 @@ fn rewrite_explicit_interface_accesses_in_statement(
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_explicit_interface_accesses_in_expr(expr, conflicted),
+                        CaseCondition::Value(expr) => {
+                            rewrite_explicit_interface_accesses_in_expr(expr, conflicted)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_explicit_interface_accesses_in_expr(from, conflicted);
                             rewrite_explicit_interface_accesses_in_expr(to, conflicted);
@@ -497,7 +546,12 @@ fn rewrite_explicit_interface_accesses_in_statement(
                 rewrite_explicit_interface_accesses_in_statements(default, conflicted);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -533,7 +587,11 @@ fn rewrite_explicit_interface_accesses_in_member(
     conflicted: &HashSet<String>,
 ) {
     match member {
-        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+        ClassMember::Field {
+            init: Some(expr),
+            array_bounds,
+            ..
+        } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
             if let Some(bounds) = array_bounds {
                 for bound in bounds {
@@ -544,7 +602,9 @@ fn rewrite_explicit_interface_accesses_in_member(
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             rewrite_explicit_interface_accesses_in_statement(stmt, conflicted);
         }
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             if let Some(base_args) = base_args {
                 for arg in base_args {
@@ -572,8 +632,7 @@ fn rewrite_explicit_interface_accesses_in_expr(
     conflicted: &HashSet<String>,
 ) {
     match &mut expr.kind {
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_explicit_interface_accesses_in_expr(left, conflicted);
             rewrite_explicit_interface_accesses_in_expr(right, conflicted);
         }
@@ -632,14 +691,15 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 rewrite_explicit_interface_accesses_in_expr(&mut arg.value, conflicted);
             }
         }
-        ExprKind::Assign { target, value }
-        | ExprKind::Walrus { target, value } => {
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_explicit_interface_accesses_in_expr(target, conflicted);
             rewrite_explicit_interface_accesses_in_expr(value, conflicted);
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => rewrite_explicit_interface_accesses_in_expr(expr, conflicted),
-            LambdaBody::Block(body) => rewrite_explicit_interface_accesses_in_statements(body, conflicted),
+            LambdaBody::Block(body) => {
+                rewrite_explicit_interface_accesses_in_statements(body, conflicted)
+            }
         },
         ExprKind::Array(items) => {
             for item in items {
@@ -649,9 +709,7 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_explicit_interface_accesses_in_expr(item, conflicted);
             }
@@ -688,7 +746,11 @@ fn rewrite_explicit_interface_accesses_in_expr(
         ExprKind::Yield(Some(expr)) => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_explicit_interface_accesses_in_expr(element, conflicted);
             for generator in generators {
                 rewrite_explicit_interface_accesses_in_expr(&mut generator.target, conflicted);
@@ -709,7 +771,9 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 rewrite_explicit_interface_accesses_in_expr(step, conflicted);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_explicit_interface_accesses_in_expr(parent, conflicted);
             }
@@ -778,7 +842,11 @@ fn extract_deconstruct_shape(params: &[Param], body: &[Statement]) -> Option<Rec
 
         let field_name = match &value.kind {
             ExprKind::Ident(name) => name.clone(),
-            ExprKind::Member { object, field, null_safe: false } if matches!(object.kind, ExprKind::This) => field.clone(),
+            ExprKind::Member {
+                object,
+                field,
+                null_safe: false,
+            } if matches!(object.kind, ExprKind::This) => field.clone(),
             _ => return None,
         };
         positional_fields.push(field_name);
@@ -816,7 +884,10 @@ fn collect_record_shapes_in_statement(stmt: &Statement, shapes: &mut HashMap<Str
                 let ClassMember::Method(stmt) = member else {
                     return None;
                 };
-                let StmtKind::FunctionDecl { name, params, body, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name, params, body, ..
+                } = &stmt.kind
+                else {
                     return None;
                 };
                 if name != "Deconstruct" || params.is_empty() {
@@ -876,7 +947,8 @@ fn rewrite_record_uses_in_statement(
             }
         }
         StmtKind::Block(body) => {
-            if let Some(rewritten) = rewrite_record_deconstruction_stmt(body, record_shapes, scopes) {
+            if let Some(rewritten) = rewrite_record_deconstruction_stmt(body, record_shapes, scopes)
+            {
                 stmt.kind = rewritten;
             } else {
                 scopes.push(HashMap::new());
@@ -892,8 +964,15 @@ fn rewrite_record_uses_in_statement(
         StmtKind::FunctionDecl { params, body, .. } => {
             scopes.push(HashMap::new());
             for param in params {
-                if let Some(type_name) = param.type_hint.clone().filter(|name| record_shapes.contains_key(name)) {
-                    scopes.last_mut().unwrap().insert(param.name.clone(), type_name);
+                if let Some(type_name) = param
+                    .type_hint
+                    .clone()
+                    .filter(|name| record_shapes.contains_key(name))
+                {
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(param.name.clone(), type_name);
                 }
             }
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -910,8 +989,15 @@ fn rewrite_record_uses_in_statement(
                     ClassMember::Constructor { params, body, .. } => {
                         scopes.push(HashMap::new());
                         for param in params {
-                            if let Some(type_name) = param.type_hint.clone().filter(|name| record_shapes.contains_key(name)) {
-                                scopes.last_mut().unwrap().insert(param.name.clone(), type_name);
+                            if let Some(type_name) = param
+                                .type_hint
+                                .clone()
+                                .filter(|name| record_shapes.contains_key(name))
+                            {
+                                scopes
+                                    .last_mut()
+                                    .unwrap()
+                                    .insert(param.name.clone(), type_name);
                             }
                         }
                         rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -925,7 +1011,11 @@ fn rewrite_record_uses_in_statement(
                         }
                         if let Some(setter) = setter {
                             scopes.push(HashMap::new());
-                            rewrite_record_uses_in_statements(&mut setter.body, record_shapes, scopes);
+                            rewrite_record_uses_in_statements(
+                                &mut setter.body,
+                                record_shapes,
+                                scopes,
+                            );
                             scopes.pop();
                         }
                     }
@@ -933,7 +1023,12 @@ fn rewrite_record_uses_in_statement(
                 }
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_record_uses_in_expr(cond, record_shapes, scopes);
             scopes.push(HashMap::new());
             rewrite_record_uses_in_statements(then_body, record_shapes, scopes);
@@ -950,7 +1045,12 @@ fn rewrite_record_uses_in_statement(
                 scopes.pop();
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_record_uses_in_statement(init, record_shapes, scopes);
@@ -964,7 +1064,12 @@ fn rewrite_record_uses_in_statement(
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
             scopes.pop();
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_record_uses_in_expr(iter, record_shapes, scopes);
             scopes.push(HashMap::new());
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -973,7 +1078,11 @@ fn rewrite_record_uses_in_statement(
             }
             scopes.pop();
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_record_uses_in_expr(cond, record_shapes, scopes);
             scopes.push(HashMap::new());
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -988,12 +1097,18 @@ fn rewrite_record_uses_in_statement(
             scopes.pop();
             rewrite_record_uses_in_expr(cond, record_shapes, scopes);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_record_uses_in_expr(expr, record_shapes, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+                        CaseCondition::Value(expr) => {
+                            rewrite_record_uses_in_expr(expr, record_shapes, scopes)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_record_uses_in_expr(from, record_shapes, scopes);
                             rewrite_record_uses_in_expr(to, record_shapes, scopes);
@@ -1029,9 +1144,12 @@ fn rewrite_record_uses_in_expr(
             if matches!(op, BinOp::Eq | BinOp::NotEq) {
                 let left_type = infer_record_type(left, record_shapes, scopes);
                 let right_type = infer_record_type(right, record_shapes, scopes);
-                if let Some(type_name) = left_type.filter(|type_name| Some(type_name.clone()) == right_type) {
+                if let Some(type_name) =
+                    left_type.filter(|type_name| Some(type_name.clone()) == right_type)
+                {
                     if let Some(shape) = record_shapes.get(&type_name) {
-                        let equals_expr = build_record_field_equality(left, right, &shape.positional_fields);
+                        let equals_expr =
+                            build_record_field_equality(left, right, &shape.positional_fields);
                         *expr = if matches!(op, BinOp::NotEq) {
                             Expression::new(ExprKind::Unary {
                                 op: UnaryOp::Not,
@@ -1045,8 +1163,14 @@ fn rewrite_record_uses_in_expr(
             }
         }
         ExprKind::NullCoalesce { left, right }
-        | ExprKind::Assign { target: left, value: right }
-        | ExprKind::Walrus { target: left, value: right } => {
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => {
             rewrite_record_uses_in_expr(left, record_shapes, scopes);
             rewrite_record_uses_in_expr(right, record_shapes, scopes);
         }
@@ -1066,7 +1190,9 @@ fn rewrite_record_uses_in_expr(
             rewrite_record_uses_in_expr(then, record_shapes, scopes);
             rewrite_record_uses_in_expr(else_, record_shapes, scopes);
         }
-        ExprKind::Member { object, .. } => rewrite_record_uses_in_expr(object, record_shapes, scopes),
+        ExprKind::Member { object, .. } => {
+            rewrite_record_uses_in_expr(object, record_shapes, scopes)
+        }
         ExprKind::Index { object, index, .. } => {
             rewrite_record_uses_in_expr(object, record_shapes, scopes);
             rewrite_record_uses_in_expr(index, record_shapes, scopes);
@@ -1099,9 +1225,7 @@ fn rewrite_record_uses_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_record_uses_in_expr(item, record_shapes, scopes);
             }
@@ -1114,7 +1238,9 @@ fn rewrite_record_uses_in_expr(
                         rewrite_record_uses_in_expr(key, record_shapes, scopes);
                         rewrite_record_uses_in_expr(value, record_shapes, scopes);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_record_uses_in_expr(expr, record_shapes, scopes)
+                    }
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
                         rewrite_record_uses_in_statement(value, record_shapes, scopes);
@@ -1133,7 +1259,11 @@ fn rewrite_record_uses_in_expr(
                 }
             }
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_record_uses_in_expr(element, record_shapes, scopes);
             for generator in generators {
                 rewrite_record_uses_in_expr(&mut generator.target, record_shapes, scopes);
@@ -1154,7 +1284,9 @@ fn rewrite_record_uses_in_expr(
                 rewrite_record_uses_in_expr(step, record_shapes, scopes);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_record_uses_in_expr(parent, record_shapes, scopes);
             }
@@ -1167,12 +1299,18 @@ fn rewrite_record_uses_in_expr(
                 }
             }
         }
-        ExprKind::FunctionExpr(stmt) => rewrite_record_uses_in_statement(stmt, record_shapes, scopes),
+        ExprKind::FunctionExpr(stmt) => {
+            rewrite_record_uses_in_statement(stmt, record_shapes, scopes)
+        }
         _ => {}
     }
 }
 
-fn build_record_field_equality(left: &Expression, right: &Expression, fields: &[String]) -> Expression {
+fn build_record_field_equality(
+    left: &Expression,
+    right: &Expression,
+    fields: &[String],
+) -> Expression {
     let mut combined = Expression::bool(true);
     for field in fields {
         let cmp = Expression::new(ExprKind::Binary {
@@ -1198,7 +1336,8 @@ fn build_record_field_equality(left: &Expression, right: &Expression, fields: &[
 }
 
 fn build_tuple_structural_equality(left: &Expression, right: &Expression) -> Option<Expression> {
-    let (ExprKind::Tuple(left_items), ExprKind::Tuple(right_items)) = (&left.kind, &right.kind) else {
+    let (ExprKind::Tuple(left_items), ExprKind::Tuple(right_items)) = (&left.kind, &right.kind)
+    else {
         return None;
     };
     if left_items.len() != right_items.len() {
@@ -1254,28 +1393,35 @@ fn rewrite_record_deconstruction_stmt(
         return None;
     }
 
-    let patterns: Vec<ArrayPatternElem> = args.iter().map(|arg| {
-        match &arg.value.kind {
+    let patterns: Vec<ArrayPatternElem> = args
+        .iter()
+        .map(|arg| match &arg.value.kind {
             ExprKind::Ident(name) if !name.starts_with("__discard_") => {
                 ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
             }
             _ => ArrayPatternElem::Hole,
-        }
-    }).collect();
+        })
+        .collect();
 
-    let values = shape.positional_fields.iter().map(|field| ArrayElement {
-        key: None,
-        value: Expression::new(ExprKind::Member {
-            object: Box::new((**object).clone()),
-            field: field.clone(),
-            null_safe: false,
-        }),
-        spread: false,
-        by_ref: false,
-    }).collect();
+    let values = shape
+        .positional_fields
+        .iter()
+        .map(|field| ArrayElement {
+            key: None,
+            value: Expression::new(ExprKind::Member {
+                object: Box::new((**object).clone()),
+                field: field.clone(),
+                null_safe: false,
+            }),
+            spread: false,
+            by_ref: false,
+        })
+        .collect();
 
     Some(StmtKind::Assign {
-        targets: vec![Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))],
+        targets: vec![Expression::new(ExprKind::Destructure(
+            DestructurePattern::Array(patterns),
+        ))],
         value: Expression::new(ExprKind::Array(values)),
     })
 }
@@ -1286,12 +1432,17 @@ fn infer_record_type(
     scopes: &[HashMap<String, String>],
 ) -> Option<String> {
     match &expr.kind {
-        ExprKind::Ident(name) => scopes.iter().rev().find_map(|scope| scope.get(name).cloned()),
+        ExprKind::Ident(name) => scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned()),
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) if record_shapes.contains_key(name) => Some(name.clone()),
             _ => None,
         },
-        ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => Some(type_name.clone()),
+        ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => {
+            Some(type_name.clone())
+        }
         _ => None,
     }
 }
@@ -1310,10 +1461,7 @@ fn rewrite_tuple_uses_in_statements(
     }
 }
 
-fn rewrite_tuple_uses_in_statement(
-    stmt: &mut Statement,
-    scopes: &mut Vec<HashMap<String, usize>>,
-) {
+fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMap<String, usize>>) {
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_tuple_uses_in_expr(expr, scopes);
@@ -1334,7 +1482,11 @@ fn rewrite_tuple_uses_in_statement(
                 let BindingPattern::Ident(name) = &decl.pattern else {
                     continue;
                 };
-                if let Some(arity) = decl.init.as_ref().and_then(|init| infer_tuple_arity(init, scopes)) {
+                if let Some(arity) = decl
+                    .init
+                    .as_ref()
+                    .and_then(|init| infer_tuple_arity(init, scopes))
+                {
                     scopes.last_mut().unwrap().insert(name.clone(), arity);
                 } else {
                     scopes.last_mut().unwrap().remove(name);
@@ -1398,7 +1550,12 @@ fn rewrite_tuple_uses_in_statement(
                 }
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_tuple_uses_in_expr(cond, scopes);
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(then_body, scopes);
@@ -1415,7 +1572,12 @@ fn rewrite_tuple_uses_in_statement(
                 scopes.pop();
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_tuple_uses_in_statement(init, scopes);
@@ -1429,7 +1591,12 @@ fn rewrite_tuple_uses_in_statement(
             rewrite_tuple_uses_in_statements(body, scopes);
             scopes.pop();
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_tuple_uses_in_expr(iter, scopes);
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(body, scopes);
@@ -1438,7 +1605,11 @@ fn rewrite_tuple_uses_in_statement(
             }
             scopes.pop();
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_tuple_uses_in_expr(cond, scopes);
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(body, scopes);
@@ -1453,7 +1624,11 @@ fn rewrite_tuple_uses_in_statement(
             scopes.pop();
             rewrite_tuple_uses_in_expr(cond, scopes);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_tuple_uses_in_expr(expr, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -1482,10 +1657,7 @@ fn rewrite_tuple_uses_in_statement(
     }
 }
 
-fn rewrite_tuple_uses_in_expr(
-    expr: &mut Expression,
-    scopes: &mut Vec<HashMap<String, usize>>,
-) {
+fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<String, usize>>) {
     match &mut expr.kind {
         ExprKind::Binary { op, left, right } => {
             rewrite_tuple_uses_in_expr(left, scopes);
@@ -1513,8 +1685,14 @@ fn rewrite_tuple_uses_in_expr(
             }
         }
         ExprKind::NullCoalesce { left, right }
-        | ExprKind::Assign { target: left, value: right }
-        | ExprKind::Walrus { target: left, value: right } => {
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => {
             rewrite_tuple_uses_in_expr(left, scopes);
             rewrite_tuple_uses_in_expr(right, scopes);
         }
@@ -1566,9 +1744,7 @@ fn rewrite_tuple_uses_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_tuple_uses_in_expr(item, scopes);
             }
@@ -1600,7 +1776,11 @@ fn rewrite_tuple_uses_in_expr(
                 }
             }
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_tuple_uses_in_expr(element, scopes);
             for generator in generators {
                 rewrite_tuple_uses_in_expr(&mut generator.target, scopes);
@@ -1621,7 +1801,9 @@ fn rewrite_tuple_uses_in_expr(
                 rewrite_tuple_uses_in_expr(step, scopes);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_tuple_uses_in_expr(parent, scopes);
             }
@@ -1639,12 +1821,12 @@ fn rewrite_tuple_uses_in_expr(
     }
 }
 
-fn infer_tuple_arity(
-    expr: &Expression,
-    scopes: &[HashMap<String, usize>],
-) -> Option<usize> {
+fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Option<usize> {
     match &expr.kind {
-        ExprKind::Ident(name) => scopes.iter().rev().find_map(|scope| scope.get(name).copied()),
+        ExprKind::Ident(name) => scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied()),
         ExprKind::Tuple(items) => Some(items.len()),
         ExprKind::Cast { expr, .. } => infer_tuple_arity(expr, scopes),
         _ => None,
@@ -1717,7 +1899,12 @@ fn wrap_checked_byte_value(value: Expression, is_checked: bool) -> Expression {
 }
 
 fn is_checked_byte_wrapper_call(expr: &Expression, is_checked: bool) -> bool {
-    let ExprKind::Call { callee, args, optional: false } = &expr.kind else {
+    let ExprKind::Call {
+        callee,
+        args,
+        optional: false,
+    } = &expr.kind
+    else {
         return false;
     };
     if args.len() != 1 {
@@ -1803,7 +1990,12 @@ fn rewrite_checked_numeric_statement(
             rewrite_checked_numeric_statements(body, scopes, is_checked);
             scopes.pop();
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_checked_numeric_expr(cond, scopes, is_checked);
             scopes.push(HashMap::new());
             rewrite_checked_numeric_statements(then_body, scopes, is_checked);
@@ -1820,7 +2012,12 @@ fn rewrite_checked_numeric_statement(
                 scopes.pop();
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_checked_numeric_statement(init, scopes, is_checked);
@@ -1834,7 +2031,12 @@ fn rewrite_checked_numeric_statement(
             rewrite_checked_numeric_statements(body, scopes, is_checked);
             scopes.pop();
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_checked_numeric_expr(iter, scopes, is_checked);
             scopes.push(HashMap::new());
             rewrite_checked_numeric_statements(body, scopes, is_checked);
@@ -1843,7 +2045,11 @@ fn rewrite_checked_numeric_statement(
             }
             scopes.pop();
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_checked_numeric_expr(cond, scopes, is_checked);
             scopes.push(HashMap::new());
             rewrite_checked_numeric_statements(body, scopes, is_checked);
@@ -1868,8 +2074,7 @@ fn rewrite_checked_numeric_expr(
     is_checked: bool,
 ) {
     match &mut expr.kind {
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_checked_numeric_expr(left, scopes, is_checked);
             rewrite_checked_numeric_expr(right, scopes, is_checked);
         }
@@ -1930,9 +2135,7 @@ fn rewrite_checked_numeric_expr(
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_checked_numeric_expr(item, scopes, is_checked);
             }
@@ -1945,7 +2148,9 @@ fn rewrite_checked_numeric_expr(
                         rewrite_checked_numeric_expr(key, scopes, is_checked);
                         rewrite_checked_numeric_expr(value, scopes, is_checked);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_checked_numeric_expr(expr, scopes, is_checked),
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_checked_numeric_expr(expr, scopes, is_checked)
+                    }
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
                         rewrite_checked_numeric_statement(value, scopes, is_checked);
@@ -1964,7 +2169,11 @@ fn rewrite_checked_numeric_expr(
                 }
             }
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_checked_numeric_expr(element, scopes, is_checked);
             for generator in generators {
                 rewrite_checked_numeric_expr(&mut generator.target, scopes, is_checked);
@@ -1985,7 +2194,9 @@ fn rewrite_checked_numeric_expr(
                 rewrite_checked_numeric_expr(step, scopes, is_checked);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_checked_numeric_expr(parent, scopes, is_checked);
             }
@@ -2025,7 +2236,10 @@ fn rewrite_using_imports(module: &mut Module) {
     let mut static_paths: Vec<String> = Vec::new();
     for import in &module.imports {
         match &import.kind {
-            ImportKind::Simple { path, alias: Some(alias) } => {
+            ImportKind::Simple {
+                path,
+                alias: Some(alias),
+            } => {
                 aliases.insert(alias.clone(), normalize_import_path(path));
             }
             ImportKind::Wildcard { path, alias: None } => {
@@ -2098,7 +2312,12 @@ fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
                 }
             }
         }
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             rewrite_using_declarations_in_statements(then_body);
             for (_, elif_body) in elifs {
                 rewrite_using_declarations_in_statements(elif_body);
@@ -2113,13 +2332,17 @@ fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
             }
             rewrite_using_declarations_in_statements(body);
         }
-        StmtKind::ForIn { body, else_body, .. } => {
+        StmtKind::ForIn {
+            body, else_body, ..
+        } => {
             rewrite_using_declarations_in_statements(body);
             if let Some(else_body) = else_body {
                 rewrite_using_declarations_in_statements(else_body);
             }
         }
-        StmtKind::While { body, else_body, .. } => {
+        StmtKind::While {
+            body, else_body, ..
+        } => {
             rewrite_using_declarations_in_statements(body);
             if let Some(else_body) = else_body {
                 rewrite_using_declarations_in_statements(else_body);
@@ -2130,7 +2353,12 @@ fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
         | StmtKind::Lock { body, .. } => {
             rewrite_using_declarations_in_statements(body);
         }
-        StmtKind::Try { body, catches, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
             rewrite_using_declarations_in_statements(body);
             for catch in catches {
                 rewrite_using_declarations_in_statements(&mut catch.body);
@@ -2173,13 +2401,19 @@ fn rewrite_using_imports_in_statement(
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
-        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
             rewrite_using_imports_in_expr(cause, aliases, static_paths);
         }
@@ -2207,7 +2441,12 @@ fn rewrite_using_imports_in_statement(
                 rewrite_using_imports_in_member(member, aliases, static_paths);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_using_imports_in_expr(cond, aliases, static_paths);
             rewrite_using_imports_in_statements(then_body, aliases, static_paths);
             for (elif_cond, elif_body) in elifs {
@@ -2218,7 +2457,12 @@ fn rewrite_using_imports_in_statement(
                 rewrite_using_imports_in_statements(else_body, aliases, static_paths);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_using_imports_in_statement(init, aliases, static_paths);
             }
@@ -2230,14 +2474,23 @@ fn rewrite_using_imports_in_statement(
             }
             rewrite_using_imports_in_statements(body, aliases, static_paths);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_using_imports_in_expr(iter, aliases, static_paths);
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             if let Some(else_body) = else_body {
                 rewrite_using_imports_in_statements(else_body, aliases, static_paths);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_using_imports_in_expr(cond, aliases, static_paths);
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             if let Some(else_body) = else_body {
@@ -2248,12 +2501,18 @@ fn rewrite_using_imports_in_statement(
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             rewrite_using_imports_in_expr(cond, aliases, static_paths);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_using_imports_in_expr(expr, aliases, static_paths),
+                        CaseCondition::Value(expr) => {
+                            rewrite_using_imports_in_expr(expr, aliases, static_paths)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_using_imports_in_expr(from, aliases, static_paths);
                             rewrite_using_imports_in_expr(to, aliases, static_paths);
@@ -2269,7 +2528,12 @@ fn rewrite_using_imports_in_statement(
                 rewrite_using_imports_in_statements(default, aliases, static_paths);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -2306,7 +2570,11 @@ fn rewrite_using_imports_in_member(
     static_paths: &[String],
 ) {
     match member {
-        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+        ClassMember::Field {
+            init: Some(expr),
+            array_bounds,
+            ..
+        } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
             if let Some(bounds) = array_bounds {
                 for bound in bounds {
@@ -2317,7 +2585,9 @@ fn rewrite_using_imports_in_member(
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             rewrite_using_imports_in_statement(stmt, aliases, static_paths);
         }
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             if let Some(base_args) = base_args {
                 for arg in base_args {
@@ -2346,8 +2616,7 @@ fn rewrite_using_imports_in_expr(
     static_paths: &[String],
 ) {
     match &mut expr.kind {
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_using_imports_in_expr(left, aliases, static_paths);
             rewrite_using_imports_in_expr(right, aliases, static_paths);
         }
@@ -2403,14 +2672,15 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(&mut arg.value, aliases, static_paths);
             }
         }
-        ExprKind::Assign { target, value }
-        | ExprKind::Walrus { target, value } => {
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_using_imports_in_expr(target, aliases, static_paths);
             rewrite_using_imports_in_expr(value, aliases, static_paths);
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => rewrite_using_imports_in_expr(expr, aliases, static_paths),
-            LambdaBody::Block(body) => rewrite_using_imports_in_statements(body, aliases, static_paths),
+            LambdaBody::Block(body) => {
+                rewrite_using_imports_in_statements(body, aliases, static_paths)
+            }
         },
         ExprKind::Array(items) => {
             for item in items {
@@ -2420,9 +2690,7 @@ fn rewrite_using_imports_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_using_imports_in_expr(item, aliases, static_paths);
             }
@@ -2462,7 +2730,11 @@ fn rewrite_using_imports_in_expr(
         ExprKind::Yield(Some(expr)) => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_using_imports_in_expr(element, aliases, static_paths);
             for generator in generators {
                 rewrite_using_imports_in_expr(&mut generator.target, aliases, static_paths);
@@ -2483,7 +2755,9 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(step, aliases, static_paths);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_using_imports_in_expr(parent, aliases, static_paths);
             }
@@ -2532,7 +2806,12 @@ fn rewrite_using_imports_in_expr(
 fn rewrite_extension_calls(module: &mut Module) {
     let mut extension_methods: HashMap<String, String> = HashMap::new();
     let mut extension_containers: HashSet<String> = HashSet::new();
-    collect_extension_methods(&module.body, None, &mut extension_methods, &mut extension_containers);
+    collect_extension_methods(
+        &module.body,
+        None,
+        &mut extension_methods,
+        &mut extension_containers,
+    );
     if extension_methods.is_empty() {
         return;
     }
@@ -2541,15 +2820,39 @@ fn rewrite_extension_calls(module: &mut Module) {
     collect_all_type_names(&module.body, &mut extension_containers);
     // Add well-known BCL static class names that may appear as call receivers.
     for name in &[
-        "Array", "Console", "String", "Math", "Environment", "Convert",
-        "File", "Path", "Directory", "Enumerable", "Regex", "Char",
-        "Int32", "Int64", "Double", "Boolean", "Object", "Type",
-        "Encoding", "BitConverter", "GC", "Monitor", "Thread",
-        "StringBuilder", "StringComparer",
+        "Array",
+        "Console",
+        "String",
+        "Math",
+        "Environment",
+        "Convert",
+        "File",
+        "Path",
+        "Directory",
+        "Enumerable",
+        "Regex",
+        "Char",
+        "Int32",
+        "Int64",
+        "Double",
+        "Boolean",
+        "Object",
+        "Type",
+        "Encoding",
+        "BitConverter",
+        "GC",
+        "Monitor",
+        "Thread",
+        "StringBuilder",
+        "StringComparer",
     ] {
         extension_containers.insert(name.to_string());
     }
-    rewrite_extension_calls_in_statements(&mut module.body, &extension_methods, &extension_containers);
+    rewrite_extension_calls_in_statements(
+        &mut module.body,
+        &extension_methods,
+        &extension_containers,
+    );
 }
 
 fn collect_all_type_names(body: &[Statement], type_names: &mut HashSet<String>) {
@@ -2584,7 +2887,12 @@ fn collect_extension_methods(
     for stmt in body {
         match &stmt.kind {
             StmtKind::NamespaceDecl { name, body } => {
-                collect_extension_methods(body, Some(name.as_str()), extension_methods, extension_containers);
+                collect_extension_methods(
+                    body,
+                    Some(name.as_str()),
+                    extension_methods,
+                    extension_containers,
+                );
             }
             StmtKind::ClassDecl { name, members, .. }
             | StmtKind::StructDecl { name, members, .. } => {
@@ -2598,15 +2906,32 @@ fn collect_extension_methods(
                 for member in members {
                     match member {
                         ClassMember::Method(method) => {
-                            if let StmtKind::FunctionDecl { name: method_name, params, modifiers, .. } = &method.kind {
-                                if modifiers.is_static && params.first().map(|param| param.pass_by == PassBy::Const).unwrap_or(false) {
-                                    extension_methods.entry(method_name.clone())
+                            if let StmtKind::FunctionDecl {
+                                name: method_name,
+                                params,
+                                modifiers,
+                                ..
+                            } = &method.kind
+                            {
+                                if modifiers.is_static
+                                    && params
+                                        .first()
+                                        .map(|param| param.pass_by == PassBy::Const)
+                                        .unwrap_or(false)
+                                {
+                                    extension_methods
+                                        .entry(method_name.clone())
                                         .or_insert_with(|| format!("{name}.{method_name}"));
                                 }
                             }
                         }
                         ClassMember::NestedType(nested) => {
-                            collect_extension_methods(std::slice::from_ref(nested.as_ref()), namespace, extension_methods, extension_containers);
+                            collect_extension_methods(
+                                std::slice::from_ref(nested.as_ref()),
+                                namespace,
+                                extension_methods,
+                                extension_containers,
+                            );
                         }
                         _ => {}
                     }
@@ -2635,13 +2960,19 @@ fn rewrite_extension_calls_in_statement(
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
-        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(cause, extension_methods, extension_containers);
         }
@@ -2652,7 +2983,11 @@ fn rewrite_extension_calls_in_statement(
                 }
                 if let Some(bounds) = &mut decl.array_bounds {
                     for bound in bounds {
-                        rewrite_extension_calls_in_expr(bound, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(
+                            bound,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                 }
             }
@@ -2669,18 +3004,40 @@ fn rewrite_extension_calls_in_statement(
                 rewrite_extension_calls_in_member(member, extension_methods, extension_containers);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
-            rewrite_extension_calls_in_statements(then_body, extension_methods, extension_containers);
+            rewrite_extension_calls_in_statements(
+                then_body,
+                extension_methods,
+                extension_containers,
+            );
             for (elif_cond, elif_body) in elifs {
                 rewrite_extension_calls_in_expr(elif_cond, extension_methods, extension_containers);
-                rewrite_extension_calls_in_statements(elif_body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    elif_body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             if let Some(else_body) = else_body {
-                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    else_body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_extension_calls_in_statement(init, extension_methods, extension_containers);
             }
@@ -2692,63 +3049,133 @@ fn rewrite_extension_calls_in_statement(
             }
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_extension_calls_in_expr(iter, extension_methods, extension_containers);
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             if let Some(else_body) = else_body {
-                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    else_body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             if let Some(else_body) = else_body {
-                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    else_body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
         StmtKind::DoWhile { body, cond, .. } => {
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers),
+                        CaseCondition::Value(expr) => rewrite_extension_calls_in_expr(
+                            expr,
+                            extension_methods,
+                            extension_containers,
+                        ),
                         CaseCondition::Range { from, to } => {
-                            rewrite_extension_calls_in_expr(from, extension_methods, extension_containers);
-                            rewrite_extension_calls_in_expr(to, extension_methods, extension_containers);
+                            rewrite_extension_calls_in_expr(
+                                from,
+                                extension_methods,
+                                extension_containers,
+                            );
+                            rewrite_extension_calls_in_expr(
+                                to,
+                                extension_methods,
+                                extension_containers,
+                            );
                         }
                         CaseCondition::Comparison { expr, .. } => {
-                            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                            rewrite_extension_calls_in_expr(
+                                expr,
+                                extension_methods,
+                                extension_containers,
+                            );
                         }
                     }
                 }
-                rewrite_extension_calls_in_statements(&mut case.body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    &mut case.body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             if let Some(default) = default {
-                rewrite_extension_calls_in_statements(default, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    default,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_extension_calls_in_expr(when_clause, extension_methods, extension_containers);
+                    rewrite_extension_calls_in_expr(
+                        when_clause,
+                        extension_methods,
+                        extension_containers,
+                    );
                 }
-                rewrite_extension_calls_in_statements(&mut catch.body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    &mut catch.body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             if let Some(else_body) = else_body {
-                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    else_body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             if let Some(finally) = finally {
-                rewrite_extension_calls_in_statements(finally, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    finally,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
         StmtKind::With { items, body, .. } => {
             for item in items {
-                rewrite_extension_calls_in_expr(&mut item.expr, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut item.expr,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
         }
@@ -2768,7 +3195,11 @@ fn rewrite_extension_calls_in_member(
     extension_containers: &HashSet<String>,
 ) {
     match member {
-        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+        ClassMember::Field {
+            init: Some(expr),
+            array_bounds,
+            ..
+        } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
             if let Some(bounds) = array_bounds {
                 for bound in bounds {
@@ -2779,7 +3210,9 @@ fn rewrite_extension_calls_in_member(
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             rewrite_extension_calls_in_statement(stmt, extension_methods, extension_containers);
         }
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             if let Some(base_args) = base_args {
                 for arg in base_args {
@@ -2789,10 +3222,18 @@ fn rewrite_extension_calls_in_member(
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                rewrite_extension_calls_in_statements(getter, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    getter,
+                    extension_methods,
+                    extension_containers,
+                );
             }
             if let Some(setter) = setter {
-                rewrite_extension_calls_in_statements(&mut setter.body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(
+                    &mut setter.body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
         ClassMember::Const { value, .. } => {
@@ -2808,8 +3249,7 @@ fn rewrite_extension_calls_in_expr(
     extension_containers: &HashSet<String>,
 ) {
     match &mut expr.kind {
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_extension_calls_in_expr(left, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(right, extension_methods, extension_containers);
         }
@@ -2850,13 +3290,25 @@ fn rewrite_extension_calls_in_expr(
         ExprKind::Call { callee, args, .. } => {
             rewrite_extension_calls_in_expr(callee, extension_methods, extension_containers);
             for arg in args.iter_mut() {
-                rewrite_extension_calls_in_expr(&mut arg.value, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut arg.value,
+                    extension_methods,
+                    extension_containers,
+                );
             }
 
-            let replacement = if let ExprKind::Member { object, field, null_safe } = &callee.kind {
+            let replacement = if let ExprKind::Member {
+                object,
+                field,
+                null_safe,
+            } = &callee.kind
+            {
                 if *null_safe {
                     None
-                } else if expr_dotted_name(object).map(|name| extension_containers.contains(&name)).unwrap_or(false) {
+                } else if expr_dotted_name(object)
+                    .map(|name| extension_containers.contains(&name))
+                    .unwrap_or(false)
+                {
                     None
                 } else {
                     extension_methods.get(field).map(|static_path| {
@@ -2881,29 +3333,38 @@ fn rewrite_extension_calls_in_expr(
         ExprKind::New { class, args } => {
             rewrite_extension_calls_in_expr(class, extension_methods, extension_containers);
             for arg in args {
-                rewrite_extension_calls_in_expr(&mut arg.value, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut arg.value,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
-        ExprKind::Assign { target, value }
-        | ExprKind::Walrus { target, value } => {
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
         }
         ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers),
-            LambdaBody::Block(body) => rewrite_extension_calls_in_statements(body, extension_methods, extension_containers),
+            LambdaBody::Expr(expr) => {
+                rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers)
+            }
+            LambdaBody::Block(body) => {
+                rewrite_extension_calls_in_statements(body, extension_methods, extension_containers)
+            }
         },
         ExprKind::Array(items) => {
             for item in items {
-                rewrite_extension_calls_in_expr(&mut item.value, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut item.value,
+                    extension_methods,
+                    extension_containers,
+                );
                 if let Some(key) = &mut item.key {
                     rewrite_extension_calls_in_expr(key, extension_methods, extension_containers);
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_extension_calls_in_expr(item, extension_methods, extension_containers);
             }
@@ -2913,15 +3374,31 @@ fn rewrite_extension_calls_in_expr(
                 match prop {
                     ObjectProperty::KeyValue { key, value }
                     | ObjectProperty::Computed { key, value } => {
-                        rewrite_extension_calls_in_expr(key, extension_methods, extension_containers);
-                        rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(
+                            key,
+                            extension_methods,
+                            extension_containers,
+                        );
+                        rewrite_extension_calls_in_expr(
+                            value,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                     ObjectProperty::Spread(expr) => {
-                        rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(
+                            expr,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
-                        rewrite_extension_calls_in_statement(value, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_statement(
+                            value,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                     ObjectProperty::Shorthand(_) => {}
                 }
@@ -2931,7 +3408,11 @@ fn rewrite_extension_calls_in_expr(
             for part in parts {
                 match part {
                     InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                        rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(
+                            expr,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                     InterpolPart::Text(_) => {}
                 }
@@ -2943,13 +3424,29 @@ fn rewrite_extension_calls_in_expr(
         ExprKind::Yield(Some(expr)) => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_extension_calls_in_expr(element, extension_methods, extension_containers);
             for generator in generators {
-                rewrite_extension_calls_in_expr(&mut generator.target, extension_methods, extension_containers);
-                rewrite_extension_calls_in_expr(&mut generator.iter, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut generator.target,
+                    extension_methods,
+                    extension_containers,
+                );
+                rewrite_extension_calls_in_expr(
+                    &mut generator.iter,
+                    extension_methods,
+                    extension_containers,
+                );
                 for condition in &mut generator.conditions {
-                    rewrite_extension_calls_in_expr(condition, extension_methods, extension_containers);
+                    rewrite_extension_calls_in_expr(
+                        condition,
+                        extension_methods,
+                        extension_containers,
+                    );
                 }
             }
         }
@@ -2964,7 +3461,9 @@ fn rewrite_extension_calls_in_expr(
                 rewrite_extension_calls_in_expr(step, extension_methods, extension_containers);
             }
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_extension_calls_in_expr(parent, extension_methods, extension_containers);
             }
@@ -2988,10 +3487,18 @@ fn rewrite_extension_calls_in_expr(
             for arm in arms {
                 if let Some(conditions) = &mut arm.conditions {
                     for condition in conditions {
-                        rewrite_extension_calls_in_expr(condition, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(
+                            condition,
+                            extension_methods,
+                            extension_containers,
+                        );
                     }
                 }
-                rewrite_extension_calls_in_expr(&mut arm.body, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(
+                    &mut arm.body,
+                    extension_methods,
+                    extension_containers,
+                );
             }
         }
         ExprKind::Lit(_)
@@ -3009,9 +3516,11 @@ fn rewrite_extension_calls_in_expr(
 fn expr_dotted_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.clone()),
-        ExprKind::Member { object, field, null_safe } if !null_safe => {
-            expr_dotted_name(object).map(|prefix| format!("{prefix}.{field}"))
-        }
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } if !null_safe => expr_dotted_name(object).map(|prefix| format!("{prefix}.{field}")),
         _ => None,
     }
 }
@@ -3109,7 +3618,9 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
                         expr: Some(Expression::new(ExprKind::New {
                             class: Box::new(Expression::ident("OverflowException")),
                             args: vec![Argument::positional(Expression::new(ExprKind::Lit(
-                                Literal::Str("Arithmetic operation resulted in an overflow.".into()),
+                                Literal::Str(
+                                    "Arithmetic operation resulted in an overflow.".into(),
+                                ),
                             )))],
                         })),
                         cause: None,
@@ -3143,26 +3654,27 @@ fn synthesize_exception_class(name: &str) -> Statement {
     //
     // Walker emits the appropriate constructor body so `e.ParamName`
     // and `e.Message` resolve to the right values on every catch.
-    let needs_param_name = matches!(name,
-        "ArgumentNullException"
-        | "ArgumentOutOfRangeException"
-        | "ArgumentException"
+    let needs_param_name = matches!(
+        name,
+        "ArgumentNullException" | "ArgumentOutOfRangeException" | "ArgumentException"
     );
 
-    let assign = |field: &str, ident: &str| Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                    field: field.into(),
-                    null_safe: false,
-                },
-                span.clone(),
-            )],
-            value: Expression::with_span(ExprKind::Ident(ident.into()), span.clone()),
-        },
-        span.clone(),
-    );
+    let assign = |field: &str, ident: &str| {
+        Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
+                        field: field.into(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                )],
+                value: Expression::with_span(ExprKind::Ident(ident.into()), span.clone()),
+            },
+            span.clone(),
+        )
+    };
 
     let canon = crate::emitter::errors::canonical_exception_name(name).to_string();
     let assign_extype = Statement::with_span(
@@ -3175,10 +3687,7 @@ fn synthesize_exception_class(name: &str) -> Statement {
                 },
                 span.clone(),
             )],
-            value: Expression::with_span(
-                ExprKind::Lit(Literal::Str(canon.clone())),
-                span.clone(),
-            ),
+            value: Expression::with_span(ExprKind::Lit(Literal::Str(canon.clone())), span.clone()),
         },
         span.clone(),
     );
@@ -3188,7 +3697,10 @@ fn synthesize_exception_class(name: &str) -> Statement {
         type_hint: Some("string".into()),
         default: None,
         pass_by: PassBy::Value,
-        is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
     };
 
     let (params, body) = if needs_param_name {
@@ -3198,7 +3710,11 @@ fn synthesize_exception_class(name: &str) -> Statement {
         match name {
             "ArgumentException" => (
                 vec![mk_param("msg"), mk_param("paramName")],
-                vec![assign("Message", "msg"), assign("ParamName", "paramName"), assign_extype.clone()],
+                vec![
+                    assign("Message", "msg"),
+                    assign("ParamName", "paramName"),
+                    assign_extype.clone(),
+                ],
             ),
             "ArgumentNullException" => (
                 vec![mk_param("paramName")],
@@ -3206,24 +3722,29 @@ fn synthesize_exception_class(name: &str) -> Statement {
             ),
             "ArgumentOutOfRangeException" => (
                 vec![mk_param("paramName"), mk_param("msg")],
-                vec![assign("ParamName", "paramName"), assign("Message", "msg"), assign_extype.clone()],
+                vec![
+                    assign("ParamName", "paramName"),
+                    assign("Message", "msg"),
+                    assign_extype.clone(),
+                ],
             ),
             _ => unreachable!(),
         }
     } else {
-        (vec![mk_param("msg")], vec![assign("Message", "msg"), assign_extype.clone()])
+        (
+            vec![mk_param("msg")],
+            vec![assign("Message", "msg"), assign_extype.clone()],
+        )
     };
 
-    let mut members = vec![
-        ClassMember::Field {
-            name: "Message".into(),
-            type_hint: Some("string".into()),
-            init: None,
-            modifiers: Modifiers::default(),
-            with_events: false,
-            array_bounds: None,
-        },
-    ];
+    let mut members = vec![ClassMember::Field {
+        name: "Message".into(),
+        type_hint: Some("string".into()),
+        init: None,
+        modifiers: Modifiers::default(),
+        with_events: false,
+        array_bounds: None,
+    }];
     if needs_param_name {
         members.push(ClassMember::Field {
             name: "ParamName".into(),
@@ -3266,7 +3787,10 @@ fn synthesize_exception_class(name: &str) -> Statement {
 
 // ── Top-level items ─────────────────────────────────────────────────────────
 
-fn walk_top_level_with_attributes(pair: Pair<Rule>, attributes: &[Expression]) -> Result<Statement, String> {
+fn walk_top_level_with_attributes(
+    pair: Pair<Rule>,
+    attributes: &[Expression],
+) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
         Rule::record_struct_declaration => walk_record_decl(pair, attributes)?,
@@ -3288,14 +3812,16 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let kind = match pair.as_rule() {
         Rule::empty_statement => StmtKind::Empty,
         Rule::block_statement => {
-            let stmts = pair.into_inner()
+            let stmts = pair
+                .into_inner()
                 .map(walk_statement)
                 .collect::<Result<Vec<_>, _>>()?;
             StmtKind::Block(stmts)
         }
         Rule::checked_statement => {
             let is_checked = pair.as_str().trim_start().starts_with("checked");
-            let block = pair.into_inner()
+            let block = pair
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::block_statement)
                 .ok_or("Empty checked statement")?;
             let mut stmt = walk_statement(block)?;
@@ -3329,12 +3855,12 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             classify_expr_stmt(expr)
         }
         // Type declarations can appear inside methods
-        Rule::record_struct_declaration => walk_record_decl(pair, &[] )?,
-        Rule::class_declaration => walk_class_decl(pair, &[] )?,
-        Rule::struct_declaration => walk_struct_decl(pair, &[] )?,
-        Rule::interface_declaration => walk_interface_decl(pair, &[] )?,
+        Rule::record_struct_declaration => walk_record_decl(pair, &[])?,
+        Rule::class_declaration => walk_class_decl(pair, &[])?,
+        Rule::struct_declaration => walk_struct_decl(pair, &[])?,
+        Rule::interface_declaration => walk_interface_decl(pair, &[])?,
         Rule::enum_declaration => walk_enum_decl(pair, &[])?,
-        Rule::record_declaration => walk_record_decl(pair, &[] )?,
+        Rule::record_declaration => walk_record_decl(pair, &[])?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
         other => return Err(format!("Unexpected statement rule: {:?}", other)),
     };
@@ -3356,8 +3882,16 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                 let is_same_target = match (&left.kind, &target.kind) {
                     (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
                     (
-                        ExprKind::Member { object: lo, field: lf, .. },
-                        ExprKind::Member { object: to, field: tf, .. },
+                        ExprKind::Member {
+                            object: lo,
+                            field: lf,
+                            ..
+                        },
+                        ExprKind::Member {
+                            object: to,
+                            field: tf,
+                            ..
+                        },
                     ) => member_target_eq(lo, lf, to, tf),
                     _ => false,
                 };
@@ -3389,8 +3923,16 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                     let event = field.to_lowercase();
                                     let handler = (**right).clone();
                                     return match compound_op {
-                                        CompoundOp::Add => StmtKind::AddHandler { control, event, handler },
-                                        _ => StmtKind::RemoveHandler { control, event, handler },
+                                        CompoundOp::Add => StmtKind::AddHandler {
+                                            control,
+                                            event,
+                                            handler,
+                                        },
+                                        _ => StmtKind::RemoveHandler {
+                                            control,
+                                            event,
+                                            handler,
+                                        },
                                     };
                                 }
                             }
@@ -3403,14 +3945,22 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                     }
                 }
             }
-            StmtKind::Assign { targets: vec![*target], value: *value }
+            StmtKind::Assign {
+                targets: vec![*target],
+                value: *value,
+            }
         }
         _ => StmtKind::Expr(expr),
     }
 }
 
 fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
-    let ExprKind::Call { callee, args, optional: false } = &expr.kind else {
+    let ExprKind::Call {
+        callee,
+        args,
+        optional: false,
+    } = &expr.kind
+    else {
         return None;
     };
     if args.len() != 2 || !args[0].by_ref {
@@ -3423,7 +3973,11 @@ fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
     };
 
     let is_array_resize = match &callee.kind {
-        ExprKind::Member { object, field, null_safe: false } if field.eq_ignore_ascii_case("Resize") => {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } if field.eq_ignore_ascii_case("Resize") => {
             matches!(&object.kind,
                 ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array")
             ) || matches!(&object.kind,
@@ -3457,8 +4011,16 @@ fn member_target_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field
         (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
         (ExprKind::This, ExprKind::This) => true,
         (
-            ExprKind::Member { object: inner_a, field: inner_field_a, .. },
-            ExprKind::Member { object: inner_b, field: inner_field_b, .. },
+            ExprKind::Member {
+                object: inner_a,
+                field: inner_field_a,
+                ..
+            },
+            ExprKind::Member {
+                object: inner_b,
+                field: inner_field_b,
+                ..
+            },
         ) => member_target_eq(inner_a, inner_field_a, inner_b, inner_field_b),
         _ => false,
     }
@@ -3478,7 +4040,10 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
                     match inner.as_rule() {
                         Rule::using_static_directive => {
                             is_static = true;
-                            if let Some(name) = inner.into_inner().find(|p| p.as_rule() == Rule::dotted_name) {
+                            if let Some(name) = inner
+                                .into_inner()
+                                .find(|p| p.as_rule() == Rule::dotted_name)
+                            {
                                 path = strip_global_namespace_qualifier(name.as_str()).to_string();
                             }
                         }
@@ -3486,15 +4051,20 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
                             let mut parts = inner.into_inner();
                             alias = parts.next().map(|p| p.as_str().to_string());
                             if let Some(target) = parts.next() {
-                                path = strip_global_namespace_qualifier(target.as_str()).to_string();
+                                path =
+                                    strip_global_namespace_qualifier(target.as_str()).to_string();
                             }
                         }
-                        Rule::dotted_name => path = strip_global_namespace_qualifier(inner.as_str()).to_string(),
+                        Rule::dotted_name => {
+                            path = strip_global_namespace_qualifier(inner.as_str()).to_string()
+                        }
                         _ => {}
                     }
                 }
             }
-            Rule::dotted_name => path = strip_global_namespace_qualifier(child.as_str()).to_string(),
+            Rule::dotted_name => {
+                path = strip_global_namespace_qualifier(child.as_str()).to_string()
+            }
             _ => {}
         }
     }
@@ -3560,19 +4130,24 @@ fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 kind: VarDeclKind::Let,
             }));
         }
-        body.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(value),
-                field: "Deconstruct".into(),
-                null_safe: false,
-            })),
-            args,
-            optional: false,
-        }))));
+        body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(value),
+                    field: "Deconstruct".into(),
+                    null_safe: false,
+                })),
+                args,
+                optional: false,
+            },
+        ))));
         return Ok(StmtKind::Block(body));
     }
     let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(pattern)));
-    Ok(StmtKind::Assign { targets: vec![target], value })
+    Ok(StmtKind::Assign {
+        targets: vec![target],
+        value,
+    })
 }
 
 fn walk_tuple_binding_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, String> {
@@ -3586,7 +4161,10 @@ fn walk_tuple_binding_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, St
 }
 
 fn walk_tuple_binding_pattern(pair: Pair<Rule>) -> Result<ArrayPatternElem, String> {
-    let inner = pair.into_inner().next().ok_or("empty tuple binding pattern")?;
+    let inner = pair
+        .into_inner()
+        .next()
+        .ok_or("empty tuple binding pattern")?;
     match inner.as_rule() {
         Rule::ident_name => {
             let name = inner.as_str().to_string();
@@ -3600,7 +4178,10 @@ fn walk_tuple_binding_pattern(pair: Pair<Rule>) -> Result<ArrayPatternElem, Stri
             BindingPattern::Array(walk_tuple_binding_list(inner)?),
             None,
         )),
-        other => Err(format!("unexpected tuple binding pattern rule: {:?}", other)),
+        other => Err(format!(
+            "unexpected tuple binding pattern rule: {:?}",
+            other
+        )),
     }
 }
 
@@ -3619,7 +4200,8 @@ fn collect_tuple_binding_leaf_names(pattern: &[ArrayPatternElem], out: &mut Vec<
 }
 
 fn tuple_binding_pattern_elems(idents: Vec<String>) -> Vec<ArrayPatternElem> {
-    idents.into_iter()
+    idents
+        .into_iter()
         .map(|name| {
             if name == "_" {
                 ArrayPatternElem::Hole
@@ -3662,10 +4244,18 @@ fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
     if !args.is_empty() {
         return None;
     }
-    let ExprKind::Lambda { body: LambdaBody::Block(body), .. } = &callee.kind else {
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(body),
+        ..
+    } = &callee.kind
+    else {
         return None;
     };
-    let StmtKind::Return(Some(Expression { kind: ExprKind::Ident(return_name), .. })) = &body.last()?.kind else {
+    let StmtKind::Return(Some(Expression {
+        kind: ExprKind::Ident(return_name),
+        ..
+    })) = &body.last()?.kind
+    else {
         return None;
     };
     for stmt in body {
@@ -3682,7 +4272,11 @@ fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
             if let Some(type_hint) = decl.type_hint.as_ref() {
                 return Some(type_hint.clone());
             }
-            if let Some(Expression { kind: ExprKind::New { class, .. }, .. }) = decl.init.as_ref() {
+            if let Some(Expression {
+                kind: ExprKind::New { class, .. },
+                ..
+            }) = decl.init.as_ref()
+            {
                 return infer_csharp_new_type_name(class);
             }
         }
@@ -3803,12 +4397,19 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::VarDecl { declarations, kind: VarDeclKind::Let })
+    Ok(StmtKind::VarDecl {
+        declarations,
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     let mut inner = pair.into_inner();
-    let name = inner.next().ok_or("Empty var declarator")?.as_str().to_string();
+    let name = inner
+        .next()
+        .ok_or("Empty var declarator")?
+        .as_str()
+        .to_string();
     let init = match inner.next() {
         Some(p) if p.as_rule() == Rule::array_initializer => {
             // `int[] arr = { 1, 2, 3 }` — bare-brace array literal in a
@@ -3817,10 +4418,16 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
             // Each child is a `collection_element` (post grammar change
             // for nested-brace dict / multi-dim support).
             let span = to_span(&p);
-            let elems = p.into_inner()
-                .map(|e| walk_collection_element(e).map(|expr| ArrayElement {
-                    key: None, value: expr, spread: false, by_ref: false,
-                }))
+            let elems = p
+                .into_inner()
+                .map(|e| {
+                    walk_collection_element(e).map(|expr| ArrayElement {
+                        key: None,
+                        value: expr,
+                        spread: false,
+                        by_ref: false,
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Some(Expression::with_span(ExprKind::Array(elems), span))
         }
@@ -3851,7 +4458,10 @@ fn looks_like_csharp_interface_type(type_name: &str) -> bool {
 
     leaf.starts_with('I')
         && leaf.len() > 1
-        && leaf.chars().nth(1).is_some_and(|ch| ch.is_ascii_uppercase())
+        && leaf
+            .chars()
+            .nth(1)
+            .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
@@ -3980,7 +4590,9 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
                 let Some((_, base)) = parse_explicit_interface_runtime_name(name) else {
                     continue;
                 };
-                if explicit_methods.get(&base).copied().unwrap_or(0) == 1 && !plain_methods.contains(&base) {
+                if explicit_methods.get(&base).copied().unwrap_or(0) == 1
+                    && !plain_methods.contains(&base)
+                {
                     let mut alias_stmt = (**stmt).clone();
                     if let StmtKind::FunctionDecl { name, .. } = &mut alias_stmt.kind {
                         *name = base;
@@ -3992,7 +4604,9 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
                 let Some((_, base)) = parse_explicit_interface_runtime_name(name) else {
                     continue;
                 };
-                if explicit_properties.get(&base).copied().unwrap_or(0) == 1 && !plain_properties.contains(&base) {
+                if explicit_properties.get(&base).copied().unwrap_or(0) == 1
+                    && !plain_properties.contains(&base)
+                {
                     let mut alias_member = member.clone();
                     if let ClassMember::Property { name, .. } = &mut alias_member {
                         *name = base;
@@ -4084,13 +4698,18 @@ fn rewrite_generic_ctor_news_in_member(member: &mut ClassMember, generic_params:
             }
         }
         ClassMember::Method(stmt) => {
-            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut stmt.kind {
+            if let StmtKind::FunctionDecl {
+                body, modifiers, ..
+            } = &mut stmt.kind
+            {
                 if !modifiers.is_static {
                     rewrite_generic_ctor_news_in_statements(body, generic_params);
                 }
             }
         }
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             if let Some(base_args) = base_args {
                 for arg in base_args {
@@ -4098,7 +4717,12 @@ fn rewrite_generic_ctor_news_in_member(member: &mut ClassMember, generic_params:
                 }
             }
         }
-        ClassMember::Property { getter, setter, modifiers, .. } if !modifiers.is_static => {
+        ClassMember::Property {
+            getter,
+            setter,
+            modifiers,
+            ..
+        } if !modifiers.is_static => {
             if let Some(getter) = getter {
                 rewrite_generic_ctor_news_in_statements(getter, generic_params);
             }
@@ -4123,13 +4747,19 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
-        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
             rewrite_generic_ctor_news_in_expr(cause, generic_params);
         }
@@ -4149,10 +4779,13 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             rewrite_generic_ctor_news_in_statements(body, generic_params);
         }
-        StmtKind::ClassDecl { .. }
-        | StmtKind::StructDecl { .. }
-        | StmtKind::ModuleDecl { .. } => {}
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::ModuleDecl { .. } => {}
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_generic_ctor_news_in_expr(cond, generic_params);
             rewrite_generic_ctor_news_in_statements(then_body, generic_params);
             for (elif_cond, elif_body) in elifs {
@@ -4163,7 +4796,12 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
                 rewrite_generic_ctor_news_in_statements(else_body, generic_params);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_generic_ctor_news_in_statement(init, generic_params);
             }
@@ -4175,14 +4813,23 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
             }
             rewrite_generic_ctor_news_in_statements(body, generic_params);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_generic_ctor_news_in_expr(iter, generic_params);
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
                 rewrite_generic_ctor_news_in_statements(else_body, generic_params);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_generic_ctor_news_in_expr(cond, generic_params);
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
@@ -4193,12 +4840,18 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             rewrite_generic_ctor_news_in_expr(cond, generic_params);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_generic_ctor_news_in_expr(expr, generic_params),
+                        CaseCondition::Value(expr) => {
+                            rewrite_generic_ctor_news_in_expr(expr, generic_params)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_generic_ctor_news_in_expr(from, generic_params);
                             rewrite_generic_ctor_news_in_expr(to, generic_params);
@@ -4214,7 +4867,12 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
                 rewrite_generic_ctor_news_in_statements(default, generic_params);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -4247,8 +4905,7 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
 
 fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[String]) {
     match &mut expr.kind {
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_generic_ctor_news_in_expr(left, generic_params);
             rewrite_generic_ctor_news_in_expr(right, generic_params);
         }
@@ -4293,14 +4950,15 @@ fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[St
                 }
             }
         }
-        ExprKind::Assign { target, value }
-        | ExprKind::Walrus { target, value } => {
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_generic_ctor_news_in_expr(target, generic_params);
             rewrite_generic_ctor_news_in_expr(value, generic_params);
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => rewrite_generic_ctor_news_in_expr(expr, generic_params),
-            LambdaBody::Block(body) => rewrite_generic_ctor_news_in_statements(body, generic_params),
+            LambdaBody::Block(body) => {
+                rewrite_generic_ctor_news_in_statements(body, generic_params)
+            }
         },
         ExprKind::Array(items) => {
             for item in items {
@@ -4310,9 +4968,7 @@ fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[St
                 }
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_generic_ctor_news_in_expr(item, generic_params);
             }
@@ -4348,11 +5004,14 @@ fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[St
                 }
             }
         }
-        ExprKind::Spread(expr)
-        | ExprKind::Cast { expr, .. } => {
+        ExprKind::Spread(expr) | ExprKind::Cast { expr, .. } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_generic_ctor_news_in_expr(element, generic_params);
             for generator in generators {
                 rewrite_generic_ctor_news_in_expr(&mut generator.iter, generic_params);
@@ -4405,13 +5064,19 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
-        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
             rewrite_generic_bindings_in_expr(expr, generic_params);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_generic_bindings_in_expr(expr, generic_params);
             rewrite_generic_bindings_in_expr(cause, generic_params);
         }
@@ -4432,7 +5097,12 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             rewrite_generic_bindings_in_statements(body, generic_params);
         }
         StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::ModuleDecl { .. } => {}
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_generic_bindings_in_expr(cond, generic_params);
             rewrite_generic_bindings_in_statements(then_body, generic_params);
             for (elif_cond, elif_body) in elifs {
@@ -4443,7 +5113,12 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
                 rewrite_generic_bindings_in_statements(else_body, generic_params);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_generic_bindings_in_statement(init, generic_params);
             }
@@ -4455,14 +5130,23 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             }
             rewrite_generic_bindings_in_statements(body, generic_params);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_generic_bindings_in_expr(iter, generic_params);
             rewrite_generic_bindings_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
                 rewrite_generic_bindings_in_statements(else_body, generic_params);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_generic_bindings_in_expr(cond, generic_params);
             rewrite_generic_bindings_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
@@ -4473,12 +5157,18 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             rewrite_generic_bindings_in_statements(body, generic_params);
             rewrite_generic_bindings_in_expr(cond, generic_params);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_generic_bindings_in_expr(expr, generic_params);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
+                        CaseCondition::Value(expr) => {
+                            rewrite_generic_bindings_in_expr(expr, generic_params)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_generic_bindings_in_expr(from, generic_params);
                             rewrite_generic_bindings_in_expr(to, generic_params);
@@ -4494,7 +5184,12 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
                 rewrite_generic_bindings_in_statements(default, generic_params);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_generic_bindings_in_statements(body, generic_params);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -4602,8 +5297,11 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
                         rewrite_generic_bindings_in_expr(key, generic_params);
                         rewrite_generic_bindings_in_expr(value, generic_params);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
-                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_generic_bindings_in_expr(expr, generic_params)
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
                         rewrite_generic_bindings_in_statement(value, generic_params);
                     }
                     ObjectProperty::Shorthand(_) => {}
@@ -4620,7 +5318,11 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
                 }
             }
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_generic_bindings_in_expr(element, generic_params);
             for generator in generators {
                 rewrite_generic_bindings_in_expr(&mut generator.iter, generic_params);
@@ -4630,9 +5332,15 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
             }
         }
         ExprKind::Slice { lower, upper, step } => {
-            if let Some(lower) = lower { rewrite_generic_bindings_in_expr(lower, generic_params); }
-            if let Some(upper) = upper { rewrite_generic_bindings_in_expr(upper, generic_params); }
-            if let Some(step) = step { rewrite_generic_bindings_in_expr(step, generic_params); }
+            if let Some(lower) = lower {
+                rewrite_generic_bindings_in_expr(lower, generic_params);
+            }
+            if let Some(upper) = upper {
+                rewrite_generic_bindings_in_expr(upper, generic_params);
+            }
+            if let Some(step) = step {
+                rewrite_generic_bindings_in_expr(step, generic_params);
+            }
         }
         ExprKind::Range { start, end, .. } => {
             rewrite_generic_bindings_in_expr(start, generic_params);
@@ -4679,7 +5387,10 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                         s if s.starts_with("readonly") => mods.is_readonly = true,
                         // C# `const` — implicitly static + readonly per ECMA-334 §15.4.
                         // Compile-time constant folded into class-level slot.
-                        "const" => { mods.is_static = true; mods.is_readonly = true; }
+                        "const" => {
+                            mods.is_static = true;
+                            mods.is_readonly = true;
+                        }
                         s if s.starts_with("async") => {} // handled in method
                         _ => {}
                     }
@@ -4694,12 +5405,18 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mp = member_pair.ok_or("Empty class member")?;
     match mp.as_rule() {
         Rule::constructor_declaration => walk_constructor(mp, mods).map(|m| vec![m]),
-        Rule::explicit_interface_property_declaration | Rule::property_declaration => walk_property(mp, mods),
+        Rule::explicit_interface_property_declaration | Rule::property_declaration => {
+            walk_property(mp, mods)
+        }
         Rule::event_declaration => walk_event(mp).map(|m| vec![m]),
-        Rule::explicit_interface_method_declaration | Rule::method_declaration => walk_method(mp, mods).map(|m| vec![m]),
+        Rule::explicit_interface_method_declaration | Rule::method_declaration => {
+            walk_method(mp, mods).map(|m| vec![m])
+        }
         Rule::field_declaration => walk_field(mp, mods).map(|m| vec![m]),
         Rule::operator_declaration => walk_operator(mp, mods).map(|m| vec![m]),
-        Rule::explicit_interface_indexer_declaration | Rule::indexer_declaration => walk_indexer(mp, mods),
+        Rule::explicit_interface_indexer_declaration | Rule::indexer_declaration => {
+            walk_indexer(mp, mods)
+        }
         // Nested type — wrap as `ClassMember::NestedType(stmt)` so the
         // class-emit pipeline registers the inner type as a sibling
         // global. Per ECMA-334 §15.3 nested types are accessible via
@@ -4764,17 +5481,19 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
     }
 
     if mods.is_static {
-        return Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "__static_init__".into(),
-            params: Vec::new(),
-            body,
-            return_type: None,
-            is_async: false,
-            is_generator: false,
-            is_sub: true,
-            handles: Vec::new(),
-            modifiers: mods,
-        }))));
+        return Ok(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "__static_init__".into(),
+                params: Vec::new(),
+                body,
+                return_type: None,
+                is_async: false,
+                is_generator: false,
+                is_sub: true,
+                handles: Vec::new(),
+                modifiers: mods,
+            },
+        ))));
     }
 
     Ok(ClassMember::Constructor {
@@ -4849,7 +5568,10 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                             }
                         }
                         let is_get = rest.starts_with("get")
-                            && rest[3..].chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '_');
+                            && rest[3..]
+                                .chars()
+                                .next()
+                                .map_or(true, |c| !c.is_alphanumeric() && c != '_');
                         let mut acc_body = None;
                         for ap in acc.into_inner() {
                             match ap.as_rule() {
@@ -4863,7 +5585,10 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                                         let span = to_span(&expr_pair);
                                         let expr = walk_expression(expr_pair)?;
                                         acc_body = Some(if is_get {
-                                            vec![Statement::with_span(StmtKind::Return(Some(expr)), span)]
+                                            vec![Statement::with_span(
+                                                StmtKind::Return(Some(expr)),
+                                                span,
+                                            )]
                                         } else {
                                             vec![Statement::with_span(StmtKind::Expr(expr), span)]
                                         });
@@ -4976,7 +5701,12 @@ fn rewrite_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
             *expr = Some(Expression::ident(var_name));
         }
         StmtKind::Block(inner) => rewrite_bare_throws(inner, var_name),
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             rewrite_bare_throws(then_body, var_name);
             for (_, body) in elifs {
                 rewrite_bare_throws(body, var_name);
@@ -5014,7 +5744,11 @@ fn rewrite_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
     }
 }
 
-fn build_named_tuple_object_expr(span: Span, tuple_names: &[Option<String>], elems: &[Expression]) -> Expression {
+fn build_named_tuple_object_expr(
+    span: Span,
+    tuple_names: &[Option<String>],
+    elems: &[Expression],
+) -> Expression {
     let mut props = Vec::new();
     for (index, value) in elems.iter().enumerate() {
         let item_key = format!("Item{}", index + 1);
@@ -5076,9 +5810,14 @@ fn parse_csharp_named_tuple_return_slots(raw_type: &str) -> Option<Vec<Option<St
             let candidate = candidate.trim();
             (tokens.len() >= 2
                 && !candidate.is_empty()
-                && candidate.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
-                && candidate.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric()))
-                .then(|| candidate.to_string())
+                && candidate
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+                && candidate
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric()))
+            .then(|| candidate.to_string())
         });
         has_named |= name.is_some();
         names.push(name);
@@ -5104,13 +5843,20 @@ fn rewrite_named_tuple_returns_in_stmt(stmt: &mut Statement, tuple_names: &[Opti
         | StmtKind::Using { body, .. } => {
             rewrite_named_tuple_returns_in_stmts(body, tuple_names);
         }
-        StmtKind::ForIn { body, else_body, .. } => {
+        StmtKind::ForIn {
+            body, else_body, ..
+        } => {
             rewrite_named_tuple_returns_in_stmts(body, tuple_names);
             if let Some(body) = else_body {
                 rewrite_named_tuple_returns_in_stmts(body, tuple_names);
             }
         }
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             rewrite_named_tuple_returns_in_stmts(then_body, tuple_names);
             for (_, body) in elifs {
                 rewrite_named_tuple_returns_in_stmts(body, tuple_names);
@@ -5119,7 +5865,12 @@ fn rewrite_named_tuple_returns_in_stmt(stmt: &mut Statement, tuple_names: &[Opti
                 rewrite_named_tuple_returns_in_stmts(body, tuple_names);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             rewrite_named_tuple_returns_in_stmts(body, tuple_names);
             for catch in catches {
                 rewrite_named_tuple_returns_in_stmts(&mut catch.body, tuple_names);
@@ -5251,10 +6002,7 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
                     let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(
-                        StmtKind::Return(Some(expr)),
-                        span,
-                    )];
+                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
                 }
             }
             _ => {}
@@ -5327,10 +6075,7 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
                 let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
                     let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(
-                        StmtKind::Return(Some(expr)),
-                        span,
-                    )];
+                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
                 }
             }
             _ => {}
@@ -5339,17 +6084,19 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
     let name = operator_method_name(&symbol).to_string();
     let is_sub = return_type.as_deref() == Some("void");
     let is_generator = body_has_yield(&body);
-    Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type,
-        body,
-        modifiers: mods,
-        is_async: false,
-        is_generator,
-        is_sub,
-        handles: Vec::new(),
-    }))))
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers: mods,
+            is_async: false,
+            is_generator,
+            is_sub,
+            handles: Vec::new(),
+        },
+    ))))
 }
 
 /// Walk an `indexer_declaration`. Lowers to a Property named `__index__`
@@ -5397,7 +6144,10 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                                         let span = to_span(&expr_pair);
                                         let expr = walk_expression(expr_pair)?;
                                         acc_body = Some(if is_get {
-                                            vec![Statement::with_span(StmtKind::Return(Some(expr)), span)]
+                                            vec![Statement::with_span(
+                                                StmtKind::Return(Some(expr)),
+                                                span,
+                                            )]
                                         } else {
                                             vec![Statement::with_span(StmtKind::Expr(expr), span)]
                                         });
@@ -5425,17 +6175,19 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
 
     let mut members = Vec::new();
     if let Some(body) = getter {
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: getter_name,
-            params: params.clone(),
-            return_type: None,
-            body,
-            modifiers: mods.clone(),
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: getter_name,
+                params: params.clone(),
+                return_type: None,
+                body,
+                modifiers: mods.clone(),
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        ))));
     }
     if let Some(body) = setter {
         let mut setter_params = params;
@@ -5449,17 +6201,19 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
             is_optional: false,
             is_nullable: false,
         });
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: setter_name,
-            params: setter_params,
-            return_type: Some("void".into()),
-            body,
-            modifiers: mods,
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: true,
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: setter_name,
+                params: setter_params,
+                return_type: Some("void".into()),
+                body,
+                modifiers: mods,
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: true,
+            },
+        ))));
     }
 
     Ok(members)
@@ -5509,10 +6263,7 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
                 let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
                     let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(
-                        StmtKind::Return(Some(expr)),
-                        span,
-                    )];
+                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
                 }
             }
             Rule::method_name => {
@@ -5545,17 +6296,19 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
     let is_sub = return_type.as_deref() == Some("void");
 
     let is_generator = body_has_yield(&body);
-    Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type,
-        body,
-        modifiers: mods,
-        handles: Vec::new(),
-        is_async,
-        is_generator,
-        is_sub,
-    }))))
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers: mods,
+            handles: Vec::new(),
+            is_async,
+            is_generator,
+            is_sub,
+        },
+    ))))
 }
 
 fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
@@ -5621,20 +6374,26 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         }
     }
 
-    let has_user_equals = members.iter().any(|member| matches!(
-        member,
-        ClassMember::Method(stmt) if matches!(
-            &stmt.kind,
-            StmtKind::FunctionDecl { name, .. } if name == "Equals"
+    let has_user_equals = members.iter().any(|member| {
+        matches!(
+            member,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "Equals"
+            )
         )
-    ));
+    });
 
     if !has_user_equals {
         let comparable_members: Vec<String> = members
             .iter()
             .filter_map(|member| match member {
-                ClassMember::Field { name, modifiers, .. } if !modifiers.is_static => Some(name.clone()),
-                ClassMember::Property { name, modifiers, .. } if !modifiers.is_static => Some(name.clone()),
+                ClassMember::Field {
+                    name, modifiers, ..
+                } if !modifiers.is_static => Some(name.clone()),
+                ClassMember::Property {
+                    name, modifiers, ..
+                } if !modifiers.is_static => Some(name.clone()),
                 _ => None,
             })
             .collect();
@@ -5674,17 +6433,22 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             });
         }
 
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "Equals".into(),
-            params: vec![other_param],
-            body: vec![Statement::new(StmtKind::Return(Some(eq_expr)))],
-            return_type: Some("bool".into()),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-            handles: Vec::new(),
-            modifiers: Modifiers { is_override: true, ..Default::default() },
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "Equals".into(),
+                params: vec![other_param],
+                body: vec![Statement::new(StmtKind::Return(Some(eq_expr)))],
+                return_type: Some("bool".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers {
+                    is_override: true,
+                    ..Default::default()
+                },
+            },
+        ))));
     }
 
     Ok(StmtKind::StructDecl {
@@ -5749,11 +6513,18 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
         match p.as_rule() {
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
-            Rule::param_list => { has_params = true; params = walk_params(p)?; }
+            Rule::param_list => {
+                has_params = true;
+                params = walk_params(p)?;
+            }
             _ => {
                 let s = p.as_str();
-                if s == "get" { has_getter = true; }
-                if s == "set" { has_setter = true; }
+                if s == "get" {
+                    has_getter = true;
+                }
+                if s == "set" {
+                    has_setter = true;
+                }
             }
         }
     }
@@ -5807,7 +6578,11 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
                                 _ => val = Some(walk_expression(ep)?),
                             }
                         }
-                        members.push(EnumMember { name: en, value: val, constructor_args: Vec::new() });
+                        members.push(EnumMember {
+                            name: en,
+                            value: val,
+                            constructor_args: Vec::new(),
+                        });
                     }
                 }
             }
@@ -5861,12 +6636,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     match bp.as_rule() {
                         Rule::type_name => parents.push(bp.as_str().to_string()),
                         Rule::argument_list => {
-                            base_args = Some(
-                                walk_arguments(bp)?
-                                    .into_iter()
-                                    .map(|a| a.value)
-                                    .collect(),
-                            );
+                            base_args =
+                                Some(walk_arguments(bp)?.into_iter().map(|a| a.value).collect());
                         }
                         _ => {}
                     }
@@ -5899,16 +6670,19 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
 
     // Generate constructor from params
     if !params.is_empty() {
-        let ctor_body: Vec<Statement> = params.iter().map(|p| {
-            Statement::new(StmtKind::Assign {
-                targets: vec![Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::new(ExprKind::This)),
-                    field: p.name.clone(),
-                    null_safe: false,
-                })],
-                value: Expression::ident(&p.name),
+        let ctor_body: Vec<Statement> = params
+            .iter()
+            .map(|p| {
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: p.name.clone(),
+                        null_safe: false,
+                    })],
+                    value: Expression::ident(&p.name),
+                })
             })
-        }).collect();
+            .collect();
         members.push(ClassMember::Constructor {
             params: params.clone(),
             body: ctor_body,
@@ -5918,54 +6692,66 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         });
     }
 
-    let has_user_deconstruct = members.iter().any(|m| matches!(
-        m,
-        ClassMember::Method(stmt) if matches!(
-            &stmt.kind,
-            StmtKind::FunctionDecl { name, .. } if name == "Deconstruct"
+    let has_user_deconstruct = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "Deconstruct"
+            )
         )
-    ));
+    });
     if !has_user_deconstruct && !params.is_empty() {
-        let body: Vec<Statement> = params.iter().map(|p| {
-            Statement::new(StmtKind::Assign {
-                targets: vec![Expression::ident(&p.name)],
-                value: Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::new(ExprKind::This)),
-                    field: p.name.clone(),
-                    null_safe: false,
-                }),
+        let body: Vec<Statement> = params
+            .iter()
+            .map(|p| {
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(&p.name)],
+                    value: Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: p.name.clone(),
+                        null_safe: false,
+                    }),
+                })
             })
-        }).collect();
-        let out_params: Vec<Param> = params.iter().map(|p| Param {
-            name: p.name.clone(),
-            type_hint: p.type_hint.clone(),
-            default: None,
-            pass_by: PassBy::Ref,
-            is_rest: false,
-            is_kwargs: false,
-            is_optional: false,
-            is_nullable: false,
-        }).collect();
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "Deconstruct".into(),
-            params: out_params,
-            body,
-            return_type: Some("void".into()),
-            is_async: false,
-            is_generator: false,
-            is_sub: true,
-            handles: Vec::new(),
-            modifiers: Modifiers::default(),
-        }))));
+            .collect();
+        let out_params: Vec<Param> = params
+            .iter()
+            .map(|p| Param {
+                name: p.name.clone(),
+                type_hint: p.type_hint.clone(),
+                default: None,
+                pass_by: PassBy::Ref,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            })
+            .collect();
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "Deconstruct".into(),
+                params: out_params,
+                body,
+                return_type: Some("void".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: true,
+                handles: Vec::new(),
+                modifiers: Modifiers::default(),
+            },
+        ))));
     }
 
-    let has_user_equals = members.iter().any(|m| matches!(
-        m,
-        ClassMember::Method(stmt) if matches!(
-            &stmt.kind,
-            StmtKind::FunctionDecl { name, .. } if name == "Equals"
+    let has_user_equals = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "Equals"
+            )
         )
-    ));
+    });
     if !has_user_equals && !params.is_empty() {
         let other_param = Param {
             name: "other".into(),
@@ -6001,26 +6787,33 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             });
         }
         let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "Equals".into(),
-            params: vec![other_param],
-            body,
-            return_type: Some("bool".into()),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-            handles: Vec::new(),
-            modifiers: Modifiers { is_override: true, ..Default::default() },
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "Equals".into(),
+                params: vec![other_param],
+                body,
+                return_type: Some("bool".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers {
+                    is_override: true,
+                    ..Default::default()
+                },
+            },
+        ))));
     }
 
-    let has_user_op_eq = members.iter().any(|m| matches!(
-        m,
-        ClassMember::Method(stmt) if matches!(
-            &stmt.kind,
-            StmtKind::FunctionDecl { name, .. } if name == "op_Equality"
+    let has_user_op_eq = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "op_Equality"
+            )
         )
-    ));
+    });
     if !has_user_op_eq && !params.is_empty() {
         let left_param = Param {
             name: "left".into(),
@@ -6066,28 +6859,35 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             });
         }
         let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "op_Equality".into(),
-            params: vec![left_param, right_param],
-            body,
-            return_type: Some("bool".into()),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-            handles: Vec::new(),
-            modifiers: Modifiers { is_static: true, ..Default::default() },
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "op_Equality".into(),
+                params: vec![left_param, right_param],
+                body,
+                return_type: Some("bool".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers {
+                    is_static: true,
+                    ..Default::default()
+                },
+            },
+        ))));
     }
 
     // Synthetic ToString — `Point { X = 3, Y = 4 }` (ECMA-334 §15.6.6,
     // .NET 5+ record default). Skip if the user already defined one.
-    let has_user_tostring = members.iter().any(|m| matches!(
-        m,
-        ClassMember::Method(stmt) if matches!(
-            &stmt.kind,
-            StmtKind::FunctionDecl { name, .. } if name == "ToString"
+    let has_user_tostring = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "ToString"
+            )
         )
-    ));
+    });
     if !has_user_tostring && !params.is_empty() {
         let mut concat = Expression::new(ExprKind::Lit(Literal::Str(format!("{} {{ ", name))));
         for (i, p) in params.iter().enumerate() {
@@ -6101,7 +6901,10 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             concat = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(concat),
-                right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(format!("{} = ", p.name))))),
+                right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(format!(
+                    "{} = ",
+                    p.name
+                ))))),
             });
             concat = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
@@ -6119,17 +6922,22 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(" }".into())))),
         });
         let body = vec![Statement::new(StmtKind::Return(Some(concat)))];
-        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "ToString".into(),
-            params: Vec::new(),
-            body,
-            return_type: Some("string".into()),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-            handles: Vec::new(),
-            modifiers: Modifiers { is_override: true, ..Default::default() },
-        }))));
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "ToString".into(),
+                params: Vec::new(),
+                body,
+                return_type: Some("string".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers {
+                    is_override: true,
+                    ..Default::default()
+                },
+            },
+        ))));
     }
 
     Ok(StmtKind::ClassDecl {
@@ -6211,7 +7019,12 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::If { cond, then_body, elifs, else_body })
+    Ok(StmtKind::If {
+        cond,
+        then_body,
+        elifs,
+        else_body,
+    })
 }
 
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6229,8 +7042,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         init = Some(Box::new(Statement::new(walk_local_var(inner)?)));
                     }
                     Rule::expression_list => {
-                        let first_expr = inner.into_inner().next()
-                            .ok_or("Empty expr list")?;
+                        let first_expr = inner.into_inner().next().ok_or("Empty expr list")?;
                         let expr = walk_expression(first_expr)?;
                         init = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
                     }
@@ -6254,7 +7066,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         update = Some(walk_expression(exprs.remove(0))?);
                     } else {
                         // Multiple update expressions → sequence
-                        let seq: Vec<Expression> = exprs.into_iter()
+                        let seq: Vec<Expression> = exprs
+                            .into_iter()
                             .map(walk_expression)
                             .collect::<Result<Vec<_>, _>>()?;
                         update = Some(Expression::new(ExprKind::Sequence(seq)));
@@ -6271,7 +7084,12 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::For { init, cond, update, body })
+    Ok(StmtKind::For {
+        init,
+        cond,
+        update,
+        body,
+    })
 }
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6292,7 +7110,8 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     match inner.as_rule() {
                         Rule::ident_name => var = inner.as_str().to_string(),
                         Rule::foreach_tuple_target => {
-                            let names: Vec<String> = inner.into_inner()
+                            let names: Vec<String> = inner
+                                .into_inner()
                                 .filter(|part| part.as_rule() == Rule::ident_name)
                                 .map(|part| part.as_str().to_string())
                                 .collect();
@@ -6319,16 +7138,19 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if let Some(names) = tuple_target {
-        body.insert(0, Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Array(tuple_binding_pattern_elems(names)),
-                type_hint: None,
-                init: Some(Expression::ident(&var)),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }));
+        body.insert(
+            0,
+            Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Array(tuple_binding_pattern_elems(names)),
+                    type_hint: None,
+                    init: Some(Expression::ident(&var)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }),
+        );
     } else {
         let uses_entry_fields = !var.is_empty()
             && foreach_src.contains(&format!("{}.Key", var))
@@ -6354,32 +7176,39 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }),
                 },
             ]));
-            body.insert(0, Statement::new(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(user_var),
-                    type_hint: None,
-                    init: Some(entry_object),
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Let,
-            }));
-            var = source_var;
-        } else {
-            let binding_type = explicit_type_hint.or_else(|| infer_csharp_foreach_element_type(&iter));
-            if let Some(type_hint) = binding_type {
-                let user_var = var.clone();
-                let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
-                body.insert(0, Statement::new(StmtKind::VarDecl {
+            body.insert(
+                0,
+                Statement::new(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(user_var),
-                        type_hint: Some(type_hint),
-                        init: Some(Expression::ident(&source_var)),
+                        type_hint: None,
+                        init: Some(entry_object),
                         array_bounds: None,
                         with_events: false,
                     }],
                     kind: VarDeclKind::Let,
-                }));
+                }),
+            );
+            var = source_var;
+        } else {
+            let binding_type =
+                explicit_type_hint.or_else(|| infer_csharp_foreach_element_type(&iter));
+            if let Some(type_hint) = binding_type {
+                let user_var = var.clone();
+                let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
+                body.insert(
+                    0,
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(user_var),
+                            type_hint: Some(type_hint),
+                            init: Some(Expression::ident(&source_var)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                );
                 var = source_var;
             }
         }
@@ -6400,14 +7229,22 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond = walk_expression(inner.next().ok_or("while: no cond")?)?;
     let body = vec![walk_statement(inner.next().ok_or("while: no body")?)?];
-    Ok(StmtKind::While { cond, body, else_body: None })
+    Ok(StmtKind::While {
+        cond,
+        body,
+        else_body: None,
+    })
 }
 
 fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let body = vec![walk_statement(inner.next().ok_or("do: no body")?)?];
     let cond = walk_expression(inner.next().ok_or("do: no cond")?)?;
-    Ok(StmtKind::DoWhile { body, cond, until: false })
+    Ok(StmtKind::DoWhile {
+        body,
+        cond,
+        until: false,
+    })
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6415,7 +7252,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     enum SwitchLabelInfo<'i> {
         Default,
         Value(Expression),
-        Pattern { pattern: Pair<'i, Rule>, guard: Option<Expression> },
+        Pattern {
+            pattern: Pair<'i, Rule>,
+            guard: Option<Expression>,
+        },
     }
 
     let mut inner = pair.into_inner();
@@ -6437,13 +7277,19 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         } else if let Some(label_inner) = sp.into_inner().next() {
                             match label_inner.as_rule() {
                                 Rule::case_value_label => {
-                                    let expr_pair = label_inner.into_inner().next().ok_or("switch case missing value")?;
-                                    labels.push(SwitchLabelInfo::Value(walk_expression(expr_pair)?));
+                                    let expr_pair = label_inner
+                                        .into_inner()
+                                        .next()
+                                        .ok_or("switch case missing value")?;
+                                    labels
+                                        .push(SwitchLabelInfo::Value(walk_expression(expr_pair)?));
                                 }
                                 Rule::case_pattern_label => {
                                     let mut label_parts = label_inner.into_inner();
-                                    let pattern = label_parts.next().ok_or("switch case missing pattern")?;
-                                    let guard = label_parts.next().map(walk_expression).transpose()?;
+                                    let pattern =
+                                        label_parts.next().ok_or("switch case missing pattern")?;
+                                    let guard =
+                                        label_parts.next().map(walk_expression).transpose()?;
                                     labels.push(SwitchLabelInfo::Pattern { pattern, guard });
                                     has_pattern_labels = true;
                                 }
@@ -6477,7 +7323,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let stripped_body = if use_split_bodies {
                     split_bodies[index].clone()
                 } else {
-                    split_bodies.first().cloned().unwrap_or_else(|| strip_switch_breaks(&stmts))
+                    split_bodies
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| strip_switch_breaks(&stmts))
                 };
                 match label {
                     SwitchLabelInfo::Default => {
@@ -6492,19 +7341,23 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         arms.push((cond, stripped_body.clone()));
                     }
                     SwitchLabelInfo::Pattern { pattern, guard } => {
-                        let mut cond = build_general_pattern_cond(subject_expr.clone(), pattern.clone())?;
+                        let mut cond =
+                            build_general_pattern_cond(subject_expr.clone(), pattern.clone())?;
                         let binding = build_general_pattern_binding(subject_expr.clone(), pattern)?;
                         let mut body = stripped_body.clone();
-                        let mark_matched_stmt = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
-                            target: Box::new(Expression::ident(&matched_name)),
-                            value: Box::new(Expression::bool(true)),
-                        })));
+                        let mark_matched_stmt =
+                            Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                                target: Box::new(Expression::ident(&matched_name)),
+                                value: Box::new(Expression::bool(true)),
+                            })));
                         if let Some(binding_stmt) = binding {
                             if let Some(guard_expr) = guard {
                                 let binding_name = extract_binding_name(&binding_stmt);
                                 let rewritten_guard = binding_name
                                     .as_deref()
-                                    .map(|name| rewrite_ident_expr(&guard_expr, name, &subject_expr))
+                                    .map(|name| {
+                                        rewrite_ident_expr(&guard_expr, name, &subject_expr)
+                                    })
                                     .unwrap_or(guard_expr);
                                 cond = Expression::new(ExprKind::Binary {
                                     op: BinOp::And,
@@ -6602,18 +7455,22 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             default = Some(stmts);
         } else {
             let conditions = value_labels.into_iter().map(CaseCondition::Value).collect();
-            cases.push(SwitchCase { conditions, body: stmts });
+            cases.push(SwitchCase {
+                conditions,
+                body: stmts,
+            });
         }
     }
 
-    Ok(StmtKind::Switch { expr, cases, default })
+    Ok(StmtKind::Switch {
+        expr,
+        cases,
+        default,
+    })
 }
 
 fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner()
-        .next()
-        .map(walk_expression)
-        .transpose()?;
+    let expr = pair.into_inner().next().map(walk_expression).transpose()?;
     Ok(StmtKind::Return(expr))
 }
 
@@ -6641,21 +7498,59 @@ fn body_has_yield(body: &[Statement]) -> bool {
     for s in body {
         match &s.kind {
             StmtKind::Expr(e) if expr_has_yield(e) => return true,
-            StmtKind::If { then_body, elifs, else_body, .. } => {
-                if body_has_yield(then_body) { return true; }
-                for (_, b) in elifs { if body_has_yield(b) { return true; } }
-                if let Some(b) = else_body { if body_has_yield(b) { return true; } }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                if body_has_yield(then_body) {
+                    return true;
+                }
+                for (_, b) in elifs {
+                    if body_has_yield(b) {
+                        return true;
+                    }
+                }
+                if let Some(b) = else_body {
+                    if body_has_yield(b) {
+                        return true;
+                    }
+                }
             }
-            StmtKind::While { body: b, .. } | StmtKind::ForIn { body: b, .. }
-            | StmtKind::For { body: b, .. } | StmtKind::DoWhile { body: b, .. } => {
-                if body_has_yield(b) { return true; }
+            StmtKind::While { body: b, .. }
+            | StmtKind::ForIn { body: b, .. }
+            | StmtKind::For { body: b, .. }
+            | StmtKind::DoWhile { body: b, .. } => {
+                if body_has_yield(b) {
+                    return true;
+                }
             }
-            StmtKind::Try { body: b, catches, finally, .. } => {
-                if body_has_yield(b) { return true; }
-                for c in catches { if body_has_yield(&c.body) { return true; } }
-                if let Some(f) = finally { if body_has_yield(f) { return true; } }
+            StmtKind::Try {
+                body: b,
+                catches,
+                finally,
+                ..
+            } => {
+                if body_has_yield(b) {
+                    return true;
+                }
+                for c in catches {
+                    if body_has_yield(&c.body) {
+                        return true;
+                    }
+                }
+                if let Some(f) = finally {
+                    if body_has_yield(f) {
+                        return true;
+                    }
+                }
             }
-            StmtKind::Block(b) => { if body_has_yield(b) { return true; } }
+            StmtKind::Block(b) => {
+                if body_has_yield(b) {
+                    return true;
+                }
+            }
             _ => {}
         }
     }
@@ -6663,10 +7558,7 @@ fn body_has_yield(body: &[Statement]) -> bool {
 }
 
 fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner()
-        .next()
-        .map(walk_expression)
-        .transpose()?;
+    let expr = pair.into_inner().next().map(walk_expression).transpose()?;
     Ok(StmtKind::Throw { expr, cause: None })
 }
 
@@ -6707,7 +7599,9 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     let name = "__caught";
                     var_name = Some(name.into());
                     Some(name.to_string())
-                } else { None };
+                } else {
+                    None
+                };
                 // Bare `throw;` (StmtKind::Throw with expr=None) inside
                 // the catch body gets rewritten to `throw <var_name>;`
                 // so the VM rethrows the caught instance instead of NULL.
@@ -6734,7 +7628,12 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::Try { body, catches, else_body: None, finally })
+    Ok(StmtKind::Try {
+        body,
+        catches,
+        else_body: None,
+        finally,
+    })
 }
 
 fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6760,7 +7659,11 @@ fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::Using { var, resource, body })
+    Ok(StmtKind::Using {
+        var,
+        resource,
+        body,
+    })
 }
 
 fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6800,7 +7703,11 @@ fn walk_params_with_decorators(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Expr
     let mut params = Vec::new();
     let mut decorators = Vec::new();
 
-    for (index, param_pair) in pair.into_inner().filter(|p| p.as_rule() == Rule::param).enumerate() {
+    for (index, param_pair) in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::param)
+        .enumerate()
+    {
         let (param, param_decorators) = walk_param_with_decorators(param_pair)?;
         decorators.extend(
             param_decorators
@@ -6852,7 +7759,9 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             _ => default = Some(walk_expression(p)?),
         }
     }
-    let is_nullable = type_hint.as_deref().is_some_and(|hint| hint.trim().ends_with('?'));
+    let is_nullable = type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.trim().ends_with('?'));
 
     Ok((
         Param {
@@ -6930,8 +7839,14 @@ fn rewrite_query_expr(expr: &Expression, bindings: &[(String, Expression)]) -> E
 }
 
 fn query_bindings_for_item(item_param: &str, names: &[String]) -> Vec<(String, Expression)> {
-    names.iter()
-        .map(|name| (name.clone(), query_member(Expression::ident(item_param), name)))
+    names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                query_member(Expression::ident(item_param), name),
+            )
+        })
         .collect()
 }
 
@@ -7020,7 +7935,9 @@ fn parse_csharp_ordering(pair: Pair<Rule>) -> Result<(Expression, bool), String>
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::expression => key_expr = Some(walk_expression(child)?),
-            Rule::q_order_direction => descending = child.as_str().eq_ignore_ascii_case("descending"),
+            Rule::q_order_direction => {
+                descending = child.as_str().eq_ignore_ascii_case("descending")
+            }
             _ => {}
         }
     }
@@ -7045,7 +7962,10 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                 let clause = child.into_inner().next().ok_or("empty query clause")?;
                 match clause.as_rule() {
                     Rule::q_where_clause => {
-                        let predicate = clause.into_inner().next().ok_or("where clause missing predicate")?;
+                        let predicate = clause
+                            .into_inner()
+                            .next()
+                            .ok_or("where clause missing predicate")?;
                         let raw = walk_expression(predicate)?;
                         let rewritten = rewrite_query_expr(&raw, &state.bindings);
                         state.result_expr = query_call(
@@ -7060,7 +7980,11 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                             let (raw_key, descending) = parse_csharp_ordering(ordering)?;
                             let rewritten = rewrite_query_expr(&raw_key, &state.bindings);
                             let method = if index == 0 {
-                                if descending { "OrderByDescending" } else { "OrderBy" }
+                                if descending {
+                                    "OrderByDescending"
+                                } else {
+                                    "OrderBy"
+                                }
                             } else if descending {
                                 "ThenByDescending"
                             } else {
@@ -7115,7 +8039,8 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                         state.bindings = query_bindings_for_item(&state.item_param, &names);
                     }
                     Rule::q_join_clause => {
-                        let (join_var, join_source, left_key, right_key) = parse_csharp_join_clause(clause)?;
+                        let (join_var, join_source, left_key, right_key) =
+                            parse_csharp_join_clause(clause)?;
                         let outer_item_param = state.item_param.clone();
                         let visible_bindings = state.bindings.clone();
                         let rewritten_source = rewrite_query_expr(&join_source, &visible_bindings);
@@ -7166,10 +8091,16 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
     }
 
     let terminal = terminal.ok_or("query body missing terminal clause")?;
-    let terminal_expr = terminal.into_inner().next().ok_or("empty query terminal clause")?;
+    let terminal_expr = terminal
+        .into_inner()
+        .next()
+        .ok_or("empty query terminal clause")?;
     let result_after_terminal = match terminal_expr.as_rule() {
         Rule::q_select_clause => {
-            let selection = terminal_expr.into_inner().next().ok_or("select clause missing projection")?;
+            let selection = terminal_expr
+                .into_inner()
+                .next()
+                .ok_or("select clause missing projection")?;
             let raw = walk_expression(selection)?;
             let rewritten = rewrite_query_expr(&raw, &state.bindings);
             query_call(
@@ -7205,13 +8136,24 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                 vec![query_lambda(&key_param, rewritten_key)],
             )
         }
-        _ => return Err(format!("unsupported query terminal clause: {:?}", terminal_expr.as_rule())),
+        _ => {
+            return Err(format!(
+                "unsupported query terminal clause: {:?}",
+                terminal_expr.as_rule()
+            ));
+        }
     };
 
     if let Some(continuation) = continuation {
         let mut inner = continuation.into_inner();
-        let name = inner.next().ok_or("query continuation missing range variable")?.as_str().to_string();
-        let body = inner.next().ok_or("query continuation missing query body")?;
+        let name = inner
+            .next()
+            .ok_or("query continuation missing range variable")?
+            .as_str()
+            .to_string();
+        let body = inner
+            .next()
+            .ok_or("query continuation missing query body")?;
         return lower_csharp_query_body(
             body,
             QueryState {
@@ -7252,13 +8194,15 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // suffix (UL/L/U) is alpha noise; A–F are real digits.
             let s = if raw.starts_with("0x") || raw.starts_with("0X") {
                 let body = &raw[2..];
-                let cut = body.rfind(|c: char| c.is_ascii_hexdigit())
+                let cut = body
+                    .rfind(|c: char| c.is_ascii_hexdigit())
                     .map(|i| 2 + i + 1)
                     .unwrap_or(raw.len());
                 &raw[..cut]
             } else if raw.starts_with("0b") || raw.starts_with("0B") {
                 let body = &raw[2..];
-                let cut = body.rfind(|c: char| c == '0' || c == '1')
+                let cut = body
+                    .rfind(|c: char| c == '0' || c == '1')
                     .map(|i| 2 + i + 1)
                     .unwrap_or(raw.len());
                 &raw[..cut]
@@ -7267,13 +8211,24 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             };
             // Underscores are allowed as digit separators in C# 7.0+.
             let s_owned;
-            let s = if s.contains('_') { s_owned = s.replace('_', ""); &s_owned } else { s };
+            let s = if s.contains('_') {
+                s_owned = s.replace('_', "");
+                &s_owned
+            } else {
+                s
+            };
             if s.starts_with("0x") || s.starts_with("0X") {
-                Ok(ExprKind::Lit(Literal::Int(i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?)))
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?,
+                )))
             } else if s.starts_with("0b") || s.starts_with("0B") {
-                Ok(ExprKind::Lit(Literal::Int(i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?)))
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?,
+                )))
             } else if s.contains('.') || s.contains('e') || s.contains('E') {
-                Ok(ExprKind::Lit(Literal::Float(s.parse().map_err(|e| format!("{}", e))?)))
+                Ok(ExprKind::Lit(Literal::Float(
+                    s.parse().map_err(|e| format!("{}", e))?,
+                )))
             } else {
                 Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
             }
@@ -7282,12 +8237,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::verbatim_string => {
             let s = pair.as_str();
             // @"..." → strip @" and trailing "
-            let inner = &s[2..s.len()-1];
+            let inner = &s[2..s.len() - 1];
             Ok(ExprKind::Lit(Literal::Str(inner.replace("\"\"", "\""))))
         }
         Rule::char_literal => {
             let s = pair.as_str();
-            let inner = &s[1..s.len()-1];
+            let inner = &s[1..s.len() - 1];
             let ch = match inner {
                 "\\n" => '\n',
                 "\\t" => '\t',
@@ -7342,14 +8297,21 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let op_str = inner.remove(0).as_str();
                 let right = walk_expression(inner.remove(0))?;
                 if op_str == "=" {
-                    Ok(ExprKind::Assign { target: Box::new(left), value: Box::new(right) })
+                    Ok(ExprKind::Assign {
+                        target: Box::new(left),
+                        value: Box::new(right),
+                    })
                 } else {
                     let op = match op_str {
-                        "+=" => CompoundOp::Add, "-=" => CompoundOp::Sub,
-                        "*=" => CompoundOp::Mul, "/=" => CompoundOp::Div,
+                        "+=" => CompoundOp::Add,
+                        "-=" => CompoundOp::Sub,
+                        "*=" => CompoundOp::Mul,
+                        "/=" => CompoundOp::Div,
                         "%=" => CompoundOp::Mod,
-                        "&=" => CompoundOp::BitAnd, "|=" => CompoundOp::BitOr,
-                        "^=" => CompoundOp::BitXor, "<<=" => CompoundOp::Shl,
+                        "&=" => CompoundOp::BitAnd,
+                        "|=" => CompoundOp::BitOr,
+                        "^=" => CompoundOp::BitXor,
+                        "<<=" => CompoundOp::Shl,
                         ">>=" => CompoundOp::Shr,
                         "??=" => CompoundOp::NullCoalesce,
                         _ => CompoundOp::Add,
@@ -7377,12 +8339,18 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             for p in pair.into_inner() {
                 match p.as_rule() {
                     Rule::async_kw => is_async = true,
-                    Rule::ident_name => params = vec![Param {
-                        name: p.as_str().to_string(),
-                        type_hint: None, default: None,
-                        pass_by: PassBy::Value, is_rest: false,
-                        is_kwargs: false, is_optional: false, is_nullable: false,
-                    }],
+                    Rule::ident_name => {
+                        params = vec![Param {
+                            name: p.as_str().to_string(),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        }]
+                    }
                     Rule::param_list => params = walk_params(p)?,
                     Rule::lambda_body => {
                         let inner = p.into_inner().next().ok_or("Empty lambda body")?;
@@ -7395,7 +8363,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
 
-            Ok(ExprKind::Lambda { params, body, is_async, captures: Vec::new() })
+            Ok(ExprKind::Lambda {
+                params,
+                body,
+                is_async,
+                captures: Vec::new(),
+            })
         }
 
         // Ternary
@@ -7411,7 +8384,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 if let Some(binding_stmt) = extract_if_is_pattern_binding(cond_pair)? {
                     then = build_scoped_then_expr(binding_stmt, then);
                 }
-                Ok(ExprKind::Ternary { cond: Box::new(cond), then: Box::new(then), else_: Box::new(else_) })
+                Ok(ExprKind::Ternary {
+                    cond: Box::new(cond),
+                    then: Box::new(then),
+                    else_: Box::new(else_),
+                })
             } else {
                 walk_expr_kind(inner.remove(0))
             }
@@ -7437,14 +8414,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             let op_str = first.as_str().trim();
             let operand = walk_expression(inner.next().ok_or("Missing unary operand")?)?;
-            if op_str.starts_with("await") { return Ok(ExprKind::Await(Box::new(operand))); }
+            if op_str.starts_with("await") {
+                return Ok(ExprKind::Await(Box::new(operand)));
+            }
             let op = match op_str {
-                "-" => UnaryOp::Neg, "+" => UnaryOp::Pos,
-                "!" => UnaryOp::Not, "~" => UnaryOp::BitNot,
-                "++" => UnaryOp::PreInc, "--" => UnaryOp::PreDec,
+                "-" => UnaryOp::Neg,
+                "+" => UnaryOp::Pos,
+                "!" => UnaryOp::Not,
+                "~" => UnaryOp::BitNot,
+                "++" => UnaryOp::PreInc,
+                "--" => UnaryOp::PreDec,
                 _ => UnaryOp::Neg,
             };
-            Ok(ExprKind::Unary { op, expr: Box::new(operand) })
+            Ok(ExprKind::Unary {
+                op,
+                expr: Box::new(operand),
+            })
         }
 
         // C# explicit cast `(TypeName)expr` — lower to the canonical
@@ -7485,14 +8470,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             let base = walk_expression(inner.remove(0))?;
             let has_postfix = inner.iter().any(|p| p.as_rule() == Rule::postfix_op);
-            if !has_postfix { return Ok(base.kind); }
-            let op_pair = inner.iter().find(|p| p.as_rule() == Rule::postfix_op).unwrap();
+            if !has_postfix {
+                return Ok(base.kind);
+            }
+            let op_pair = inner
+                .iter()
+                .find(|p| p.as_rule() == Rule::postfix_op)
+                .unwrap();
             let op = match op_pair.as_str() {
                 "++" => UnaryOp::PostInc,
                 "--" => UnaryOp::PostDec,
                 _ => return Ok(base.kind),
             };
-            Ok(ExprKind::Unary { op, expr: Box::new(base) })
+            Ok(ExprKind::Unary {
+                op,
+                expr: Box::new(base),
+            })
         }
 
         // Call / member / index chain
@@ -7512,7 +8505,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // `.Name` / `.FullName` member access is rewritten in
         // `canonicalize_member_access` for typeof-string receivers.
         Rule::typeof_expression => {
-            let type_name = pair.into_inner()
+            let type_name = pair
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::type_name)
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
@@ -7522,7 +8516,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // nameof(member) → push name as string
         Rule::nameof_expression => {
-            let name = pair.into_inner()
+            let name = pair
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::dotted_name)
                 .map(|p| {
                     let s = p.as_str();
@@ -7535,7 +8530,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // default or default(Type)
         Rule::default_expression => {
-            let type_name = pair.into_inner()
+            let type_name = pair
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::type_name)
                 .map(|p| p.as_str().to_string());
             if let Some(type_name) = type_name {
@@ -7547,7 +8543,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // checked/unchecked → just evaluate inner
         Rule::checked_expression => {
-            let inner = pair.into_inner()
+            let inner = pair
+                .into_inner()
                 .find(|p| matches!(p.as_rule(), Rule::expression))
                 .ok_or("Empty checked expression")?;
             walk_expr_kind(inner)
@@ -7557,15 +8554,19 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::interpolated_string => {
             let s = pair.as_str();
             // Strip $" prefix and " suffix
-            let inner = &s[2..s.len()-1];
+            let inner = &s[2..s.len() - 1];
             let parts = parse_interpolated_parts(inner)?;
             Ok(ExprKind::Interpolation(parts))
         }
 
         // Type name used as expression (cast, etc.)
-        Rule::type_name | Rule::generic_type_expr | Rule::base_type | Rule::dotted_name | Rule::global_qualified_name => {
-            Ok(ExprKind::Ident(strip_global_namespace_qualifier(pair.as_str()).to_string()))
-        }
+        Rule::type_name
+        | Rule::generic_type_expr
+        | Rule::base_type
+        | Rule::dotted_name
+        | Rule::global_qualified_name => Ok(ExprKind::Ident(
+            strip_global_namespace_qualifier(pair.as_str()).to_string(),
+        )),
 
         // Passthrough wrappers
         Rule::call_chain => {
@@ -7577,7 +8578,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Named tuples lower to an Object with both Item<N> AND the
         // user-given names so `t.Item1` and `t.Name` both resolve.
         Rule::tuple_literal => {
-            let elements: Vec<Pair<Rule>> = pair.into_inner()
+            let elements: Vec<Pair<Rule>> = pair
+                .into_inner()
                 .filter(|p| p.as_rule() == Rule::tuple_element)
                 .collect();
             let mut has_names = false;
@@ -7653,10 +8655,15 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         Expression::new(ExprKind::Binary {
                             op: BinOp::StrictEq,
                             left: Box::new(typeof_expr),
-                            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(js_typeof.into())))),
+                            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                                js_typeof.into(),
+                            )))),
                         })
                     } else {
-                        Expression::new(ExprKind::IsType { expr: Box::new(left.clone()), type_name })
+                        Expression::new(ExprKind::IsType {
+                            expr: Box::new(left.clone()),
+                            type_name,
+                        })
                     };
                     left = Expression::new(ExprKind::Ternary {
                         cond: Box::new(test),
@@ -7671,13 +8678,18 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let op_str = br_inner[0].as_str().trim();
                     let right = walk_expression(br_inner.remove(1))?;
                     let bin_op = match op_str {
-                        "<=" => BinOp::LtEq, ">=" => BinOp::GtEq,
-                        "<" => BinOp::Lt, ">" => BinOp::Gt,
-                        ">>" => BinOp::Shr, "<<" => BinOp::Shl,
+                        "<=" => BinOp::LtEq,
+                        ">=" => BinOp::GtEq,
+                        "<" => BinOp::Lt,
+                        ">" => BinOp::Gt,
+                        ">>" => BinOp::Shr,
+                        "<<" => BinOp::Shl,
                         _ => BinOp::Lt,
                     };
                     left = Expression::new(ExprKind::Binary {
-                        op: bin_op, left: Box::new(left), right: Box::new(right),
+                        op: bin_op,
+                        left: Box::new(left),
+                        right: Box::new(right),
                     });
                 }
             }
@@ -7691,7 +8703,9 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // Direct operand — shouldn't happen but try as additive
                 let right = walk_expression(p)?;
                 left = Expression::new(ExprKind::Binary {
-                    op: BinOp::Lt, left: Box::new(left), right: Box::new(right),
+                    op: BinOp::Lt,
+                    left: Box::new(left),
+                    right: Box::new(right),
                 });
             }
         }
@@ -7741,25 +8755,41 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         let bin_op = match op_str {
             "??" => BinOp::NullCoalesce,
-            "||" => BinOp::Or, "&&" => BinOp::And,
-            "|" => BinOp::BitOr, "^" => BinOp::BitXor, "&" => BinOp::BitAnd,
-            "==" => BinOp::Eq, "!=" => BinOp::NotEq,
-            "<" => BinOp::Lt, ">" => BinOp::Gt,
-            "<=" => BinOp::LtEq, ">=" => BinOp::GtEq,
-            ">>" => BinOp::Shr, "<<" => BinOp::Shl,
-            "+" => BinOp::Add, "-" => BinOp::Sub,
-            "*" => BinOp::Mul, "/" => BinOp::Div, "%" => BinOp::Mod,
+            "||" => BinOp::Or,
+            "&&" => BinOp::And,
+            "|" => BinOp::BitOr,
+            "^" => BinOp::BitXor,
+            "&" => BinOp::BitAnd,
+            "==" => BinOp::Eq,
+            "!=" => BinOp::NotEq,
+            "<" => BinOp::Lt,
+            ">" => BinOp::Gt,
+            "<=" => BinOp::LtEq,
+            ">=" => BinOp::GtEq,
+            ">>" => BinOp::Shr,
+            "<<" => BinOp::Shl,
+            "+" => BinOp::Add,
+            "-" => BinOp::Sub,
+            "*" => BinOp::Mul,
+            "/" => BinOp::Div,
+            "%" => BinOp::Mod,
             _ => {
                 // relational_op may contain "is Type" or "as Type" as combined text
                 if op_str.starts_with("is") {
                     let type_name = normalize_runtime_type_name(op_str.trim_start_matches("is"));
-                    left = Expression::new(ExprKind::IsType { expr: Box::new(left), type_name });
+                    left = Expression::new(ExprKind::IsType {
+                        expr: Box::new(left),
+                        type_name,
+                    });
                     i += 2;
                     continue;
                 }
                 if op_str.starts_with("as") {
                     let type_name = normalize_runtime_type_name(op_str.trim_start_matches("as"));
-                    left = Expression::new(ExprKind::Cast { expr: Box::new(left), type_name });
+                    left = Expression::new(ExprKind::Cast {
+                        expr: Box::new(left),
+                        type_name,
+                    });
                     i += 2;
                     continue;
                 }
@@ -7774,19 +8804,16 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // integer literal numerator is unambiguously the int form
         // — rewrite the expression to a throw of the exception so
         // try/catch picks it up.
-        if matches!(bin_op, BinOp::Div)
-            && is_int_zero_literal(&right)
-            && is_int_literal(&left)
-        {
+        if matches!(bin_op, BinOp::Div) && is_int_zero_literal(&right) && is_int_literal(&left) {
             // Build `(() => { throw new DivideByZeroException("Attempted to divide by zero."); })()`
             // — IIFE so the throw works in expression position.
             let throw_stmt = Statement::with_span(
                 StmtKind::Throw {
                     expr: Some(Expression::new(ExprKind::New {
                         class: Box::new(Expression::ident("DivideByZeroException")),
-                        args: vec![Argument::positional(Expression::new(
-                            ExprKind::Lit(Literal::Str("Attempted to divide by zero.".into())),
-                        ))],
+                        args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                            Literal::Str("Attempted to divide by zero.".into()),
+                        )))],
                     })),
                     cause: None,
                 },
@@ -7862,7 +8889,9 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // Null-conditional member access
             let name = strip_csharp_terminal_type_args(chain_src[2..].trim());
             expr = Expression::new(ExprKind::Member {
-                object: Box::new(expr), field: name, null_safe: true,
+                object: Box::new(expr),
+                field: name,
+                null_safe: true,
             });
         } else if chain_src.starts_with("(") {
             // Call — normalize known method calls to canonical builtins
@@ -7880,9 +8909,14 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     *field = stripped;
                 }
             }
-            let mut args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
+            let mut args = if let Some(arg_pair) = chain_inner
+                .into_iter()
+                .find(|p| p.as_rule() == Rule::argument_list)
+            {
                 walk_arguments(arg_pair)?
-            } else { Vec::new() };
+            } else {
+                Vec::new()
+            };
             if !generic_type_args.is_empty() {
                 args.extend(csharp_method_generic_binding_args(&generic_type_args));
             }
@@ -7892,7 +8926,9 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if let ExprKind::Member { field, .. } = &expr.kind {
                 let f = field.as_str();
                 if (f == "PadLeft" || f == "PadRight") && args.len() == 1 {
-                    args.push(Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(" ".into())))));
+                    args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                        Literal::Str(" ".into()),
+                    ))));
                 }
             }
             expr = canonicalize_method_call(expr, args);
@@ -7920,12 +8956,15 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // `Length` can also appear as instance-method names (LINQ
             // `Count(predicate)`); folding them eagerly into `__len__`
             // breaks the call site.
-            let next_is_call = iter.peek()
+            let next_is_call = iter
+                .peek()
                 .map(|c| c.as_str().starts_with('('))
                 .unwrap_or(false);
             if next_is_call {
                 expr = Expression::new(ExprKind::Member {
-                    object: Box::new(expr), field: name, null_safe: false,
+                    object: Box::new(expr),
+                    field: name,
+                    null_safe: false,
                 });
             } else {
                 expr = canonicalize_member_access(expr, &name);
@@ -7942,7 +8981,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let inner_pairs: Vec<Pair<Rule>> = chain_inner.into_iter().collect();
             // Find the index_expression child (grammar wraps the brackets'
             // contents in `index_expression`).
-            let idx_pair = inner_pairs.into_iter()
+            let idx_pair = inner_pairs
+                .into_iter()
                 .find(|p| p.as_rule() == Rule::index_expression);
             if let Some(idx) = idx_pair {
                 let idx_src = idx.as_str().trim();
@@ -7990,12 +9030,16 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     if let Some(first) = iter.next() {
                         let index = walk_index_part(first, expr.clone())?;
                         expr = Expression::new(ExprKind::Index {
-                            object: Box::new(expr), index: Box::new(index), null_safe,
+                            object: Box::new(expr),
+                            index: Box::new(index),
+                            null_safe,
                         });
                         for p in iter {
                             let index = walk_index_part(p, expr.clone())?;
                             expr = Expression::new(ExprKind::Index {
-                                object: Box::new(expr), index: Box::new(index), null_safe: false,
+                                object: Box::new(expr),
+                                index: Box::new(index),
+                                null_safe: false,
                             });
                         }
                     }
@@ -8074,8 +9118,8 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // `ContainsKey` / `Add` to the `ecma:map.*` primitives. The IIFE
     // builds a real Map-backed Dictionary and populates it before
     // returning.
-    let is_dict_ctor = type_name.eq_ignore_ascii_case("Dictionary")
-        || type_name.ends_with("Dictionary");
+    let is_dict_ctor =
+        type_name.eq_ignore_ascii_case("Dictionary") || type_name.ends_with("Dictionary");
     if is_dict_ctor && !array_init.is_empty() {
         let mut pairs: Vec<(Expression, Expression)> = Vec::new();
         for elem in &array_init {
@@ -8113,8 +9157,14 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Array initializer: new[] { 1, 2, 3 } or new int[] { 1, 2, 3 }
         // — also covers multi-dim (`int[,]`) where each element is itself
         // an Array, which `walk_collection_element` already produced.
-        let elements = array_init.into_iter()
-            .map(|v| ArrayElement { key: None, value: v, spread: false, by_ref: false })
+        let elements = array_init
+            .into_iter()
+            .map(|v| ArrayElement {
+                key: None,
+                value: v,
+                spread: false,
+                by_ref: false,
+            })
             .collect();
         return Ok(ExprKind::Array(elements));
     }
@@ -8130,9 +9180,9 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 field: "join".into(),
                 null_safe: false,
             })),
-            args: vec![Argument::positional(Expression::new(
-                ExprKind::Lit(Literal::Str("".into())),
-            ))],
+            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                Literal::Str("".into()),
+            )))],
             optional: false,
         });
     }
@@ -8156,13 +9206,14 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             return Ok(ExprKind::Array(Vec::new()));
         }
 
-        let trailing_unspecified_ranks = csharp_array_rank_group_count(&type_name)
-            .saturating_sub(dimensions.len());
+        let trailing_unspecified_ranks =
+            csharp_array_rank_group_count(&type_name).saturating_sub(dimensions.len());
         return Ok(build_csharp_sized_array_expr(
             &dimensions,
             &csharp_array_element_type_name(&type_name),
             trailing_unspecified_ranks,
-        ).kind);
+        )
+        .kind);
     }
 
     // Object initializer: `new Point { X = 10, Y = 20 }`. The
@@ -8220,10 +9271,13 @@ fn csharp_array_element_type_name(type_name: &str) -> String {
 }
 
 fn csharp_array_default_expr(type_name: &str) -> Expression {
-    match normalize_runtime_type_name(type_name).to_ascii_lowercase().as_str() {
-        "int" | "int32" | "long" | "int64" | "short" | "int16" | "byte" | "uint"
-        | "uint32" | "ulong" | "uint64" | "ushort" | "uint16" | "sbyte"
-        | "double" | "float" | "single" | "decimal" => Expression::int(0),
+    match normalize_runtime_type_name(type_name)
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "int" | "int32" | "long" | "int64" | "short" | "int16" | "byte" | "uint" | "uint32"
+        | "ulong" | "uint64" | "ushort" | "uint16" | "sbyte" | "double" | "float" | "single"
+        | "decimal" => Expression::int(0),
         "bool" | "boolean" => Expression::bool(false),
         "char" => Expression::new(ExprKind::Lit(Literal::Char('\0'))),
         _ => Expression::null(),
@@ -8405,7 +9459,9 @@ fn looks_like_csharp_runtime_ctor_type(type_name: &str) -> bool {
     }
     let bare = trimmed.split('<').next().unwrap_or(trimmed).trim();
     let leaf = bare.rsplit('.').next().unwrap_or(bare);
-    leaf.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+    leaf.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 fn is_csharp_builtin_generic_type(base_type: &str) -> bool {
@@ -8434,7 +9490,10 @@ fn is_csharp_builtin_generic_type(base_type: &str) -> bool {
     )
 }
 
-fn csharp_generic_ctor_bindings(raw_type_name: &str, base_type_name: &str) -> Vec<(usize, Expression)> {
+fn csharp_generic_ctor_bindings(
+    raw_type_name: &str,
+    base_type_name: &str,
+) -> Vec<(usize, Expression)> {
     if is_csharp_builtin_generic_type(base_type_name) {
         return Vec::new();
     }
@@ -8456,7 +9515,10 @@ fn csharp_generic_ctor_bindings(raw_type_name: &str, base_type_name: &str) -> Ve
         .collect()
 }
 
-fn emit_generic_ctor_binding_iife(new_call: Expression, bindings: Vec<(usize, Expression)>) -> ExprKind {
+fn emit_generic_ctor_binding_iife(
+    new_call: Expression,
+    bindings: Vec<(usize, Expression)>,
+) -> ExprKind {
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
@@ -8726,7 +9788,10 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
             })),
             value: Box::new(value),
         });
-        body.push(Statement::with_span(StmtKind::Expr(assign), Span::default()));
+        body.push(Statement::with_span(
+            StmtKind::Expr(assign),
+            Span::default(),
+        ));
     }
     body.push(Statement::with_span(
         StmtKind::Return(Some(Expression::ident("__o"))),
@@ -8735,9 +9800,12 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
     let lambda = Expression::new(ExprKind::Lambda {
         params: vec![Param {
             name: "__src".into(),
-            type_hint: None, default: None,
-            pass_by: PassBy::Value, is_rest: false,
-            is_kwargs: false, is_optional: false,
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
             is_nullable: false,
         }],
         body: LambdaBody::Block(body),
@@ -8759,7 +9827,8 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
 /// `SwitchExpressionException` shape (we don't throw — return null
 /// rather than complicate codegen).
 fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expression, String> {
-    let arms: Vec<Pair<Rule>> = postfix.into_inner()
+    let arms: Vec<Pair<Rule>> = postfix
+        .into_inner()
         .filter(|p| p.as_rule() == Rule::switch_arm)
         .collect();
     let span = subject.span.clone();
@@ -8898,12 +9967,17 @@ fn build_switch_pattern_cond(
     let cond: Expression;
     if let Some(op) = rel_op {
         // Find the inner expression child.
-        let inner = pattern.into_inner()
+        let inner = pattern
+            .into_inner()
             .find(|p| p.as_rule() == Rule::expression)
             .ok_or("relational pattern missing expression")?;
         let rhs = walk_expression(inner)?;
         cond = Expression::with_span(
-            ExprKind::Binary { op, left: Box::new(subject), right: Box::new(rhs) },
+            ExprKind::Binary {
+                op,
+                left: Box::new(subject),
+                right: Box::new(rhs),
+            },
             span.clone(),
         );
     } else {
@@ -8919,10 +9993,8 @@ fn build_switch_pattern_cond(
         {
             let type_name = inner_pairs[0].as_str().trim().to_string();
             let test = if let Some(js_typeof) = primitive_to_typeof(&type_name) {
-                let typeof_expr = Expression::with_span(
-                    ExprKind::TypeOf(Box::new(subject)),
-                    span.clone(),
-                );
+                let typeof_expr =
+                    Expression::with_span(ExprKind::TypeOf(Box::new(subject)), span.clone());
                 Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::StrictEq,
@@ -8936,7 +10008,10 @@ fn build_switch_pattern_cond(
                 )
             } else {
                 Expression::with_span(
-                    ExprKind::IsType { expr: Box::new(subject), type_name },
+                    ExprKind::IsType {
+                        expr: Box::new(subject),
+                        type_name,
+                    },
                     span.clone(),
                 )
             };
@@ -8970,7 +10045,11 @@ fn build_switch_pattern_binding(
     {
         let type_name = inner_pairs[0].as_str().trim().to_string();
         let binding_name = inner_pairs[1].as_str().trim().to_string();
-        return Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)));
+        return Ok(Some(build_type_pattern_binding_stmt(
+            subject,
+            type_name,
+            binding_name,
+        )));
     }
     Ok(None)
 }
@@ -8980,7 +10059,10 @@ fn extract_switch_tuple_pattern_elements(
 ) -> Result<Option<Vec<Option<Expression>>>, String> {
     if pair.as_rule() == Rule::tuple_literal {
         let mut elements = Vec::new();
-        for element in pair.into_inner().filter(|p| p.as_rule() == Rule::tuple_element) {
+        for element in pair
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::tuple_element)
+        {
             let expr_pair = element
                 .into_inner()
                 .rev()
@@ -9043,18 +10125,27 @@ fn build_switch_tuple_pattern_cond(
     cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span))
 }
 
-fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Result<Expression, String> {
+fn build_general_pattern_cond(
+    subject: Expression,
+    pattern: Pair<Rule>,
+) -> Result<Expression, String> {
     let span = subject.span.clone();
     match pattern.as_rule() {
         Rule::switch_case_pattern => {
-            let inner = pattern.into_inner().next().ok_or("switch case pattern missing clause")?;
+            let inner = pattern
+                .into_inner()
+                .next()
+                .ok_or("switch case pattern missing clause")?;
             build_general_pattern_cond(subject, inner)
         }
         Rule::pattern_clause => {
             let src = pattern.as_str().trim_start();
             let negated = src.starts_with("not")
                 && src[3..].chars().next().map_or(true, |c| c.is_whitespace());
-            let atoms: Vec<Pair<Rule>> = pattern.into_inner().filter(|p| p.as_rule() == Rule::pattern_atom).collect();
+            let atoms: Vec<Pair<Rule>> = pattern
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::pattern_atom)
+                .collect();
             let mut cond = Expression::bool(true);
             for atom in atoms {
                 let next = build_general_pattern_cond(subject.clone(), atom)?;
@@ -9069,7 +10160,10 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
             }
             if negated {
                 Ok(Expression::with_span(
-                    ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(cond) },
+                    ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(cond),
+                    },
                     span,
                 ))
             } else {
@@ -9078,7 +10172,9 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
         }
         Rule::pattern_atom => {
             let inner: Vec<Pair<Rule>> = pattern.into_inner().collect();
-            let first = inner.first().ok_or("Empty pattern atom inner".to_string())?;
+            let first = inner
+                .first()
+                .ok_or("Empty pattern atom inner".to_string())?;
             match first.as_rule() {
                 Rule::pattern_type => build_general_pattern_cond(subject, first.clone()),
                 _ => build_general_pattern_cond(subject, first.clone()),
@@ -9088,11 +10184,18 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
             ExprKind::Binary {
                 op: BinOp::StrictEq,
                 left: Box::new(subject),
-                right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Null), span.clone())),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Null),
+                    span.clone(),
+                )),
             },
             span,
         )),
-        Rule::true_kw | Rule::false_kw | Rule::numeric_literal | Rule::string_literal | Rule::char_literal => {
+        Rule::true_kw
+        | Rule::false_kw
+        | Rule::numeric_literal
+        | Rule::string_literal
+        | Rule::char_literal => {
             let lit = walk_expression(pattern)?;
             Ok(Expression::with_span(
                 ExprKind::Binary {
@@ -9114,7 +10217,8 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
             } else {
                 BinOp::Lt
             };
-            let rhs_pair = pattern.into_inner()
+            let rhs_pair = pattern
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::expression)
                 .ok_or("relational pattern missing expression")?;
             let rhs = walk_expression(rhs_pair)?;
@@ -9129,11 +10233,17 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
         }
         Rule::tuple_pattern => {
             let mut elements = Vec::new();
-            for item in pattern.into_inner().filter(|p| p.as_rule() == Rule::tuple_pattern_item) {
+            for item in pattern
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::tuple_pattern_item)
+            {
                 if item.as_str().trim() == "_" {
                     elements.push(None);
                 } else {
-                    let expr_pair = item.into_inner().next().ok_or("tuple pattern element missing expression")?;
+                    let expr_pair = item
+                        .into_inner()
+                        .next()
+                        .ok_or("tuple pattern element missing expression")?;
                     elements.push(Some(walk_expression(expr_pair)?));
                 }
             }
@@ -9143,10 +10253,8 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
         Rule::pattern_type => {
             let type_name = normalize_runtime_type_name(pattern.as_str());
             if let Some(js_typeof) = primitive_to_typeof(&type_name) {
-                let typeof_expr = Expression::with_span(
-                    ExprKind::TypeOf(Box::new(subject)),
-                    span.clone(),
-                );
+                let typeof_expr =
+                    Expression::with_span(ExprKind::TypeOf(Box::new(subject)), span.clone());
                 Ok(Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::StrictEq,
@@ -9160,7 +10268,10 @@ fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Resul
                 ))
             } else {
                 Ok(Expression::with_span(
-                    ExprKind::IsType { expr: Box::new(subject), type_name },
+                    ExprKind::IsType {
+                        expr: Box::new(subject),
+                        type_name,
+                    },
                     span,
                 ))
             }
@@ -9185,7 +10296,10 @@ fn build_general_pattern_binding(
 ) -> Result<Option<Statement>, String> {
     match pattern.as_rule() {
         Rule::switch_case_pattern => {
-            let inner = pattern.into_inner().next().ok_or("switch case pattern missing clause")?;
+            let inner = pattern
+                .into_inner()
+                .next()
+                .ok_or("switch case pattern missing clause")?;
             build_general_pattern_binding(subject, inner)
         }
         Rule::pattern_clause => {
@@ -9193,7 +10307,10 @@ fn build_general_pattern_binding(
             if src.starts_with("not") {
                 return Ok(None);
             }
-            let atoms: Vec<Pair<Rule>> = pattern.into_inner().filter(|p| p.as_rule() == Rule::pattern_atom).collect();
+            let atoms: Vec<Pair<Rule>> = pattern
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::pattern_atom)
+                .collect();
             if atoms.len() != 1 {
                 return Ok(None);
             }
@@ -9207,7 +10324,11 @@ fn build_general_pattern_binding(
             {
                 let type_name = normalize_runtime_type_name(inner[0].as_str());
                 let binding_name = inner[1].as_str().to_string();
-                return Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)));
+                return Ok(Some(build_type_pattern_binding_stmt(
+                    subject,
+                    type_name,
+                    binding_name,
+                )));
             }
             if let Some(first) = inner.first() {
                 return build_general_pattern_binding(subject, first.clone());
@@ -9215,7 +10336,12 @@ fn build_general_pattern_binding(
             Ok(None)
         }
         Rule::var_pattern => {
-            let binding_name = pattern.into_inner().last().ok_or("var pattern missing identifier")?.as_str().to_string();
+            let binding_name = pattern
+                .into_inner()
+                .last()
+                .ok_or("var pattern missing identifier")?
+                .as_str()
+                .to_string();
             Ok(Some(Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(binding_name),
@@ -9231,7 +10357,11 @@ fn build_general_pattern_binding(
     }
 }
 
-fn build_scoped_guard_expr(cond: Expression, binding_stmt: Statement, guard: Expression) -> Expression {
+fn build_scoped_guard_expr(
+    cond: Expression,
+    binding_stmt: Statement,
+    guard: Expression,
+) -> Expression {
     let guard_lambda = Expression::new(ExprKind::Lambda {
         params: vec![],
         body: LambdaBody::Block(vec![
@@ -9298,24 +10428,39 @@ fn rewrite_ident_expr(expr: &Expression, name: &str, replacement: &Expression) -
             then: Box::new(rewrite_ident_expr(then, name, replacement)),
             else_: Box::new(rewrite_ident_expr(else_, name, replacement)),
         },
-        ExprKind::Member { object, field, null_safe } => ExprKind::Member {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => ExprKind::Member {
             object: Box::new(rewrite_ident_expr(object, name, replacement)),
             field: field.clone(),
             null_safe: *null_safe,
         },
-        ExprKind::Index { object, index, null_safe } => ExprKind::Index {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => ExprKind::Index {
             object: Box::new(rewrite_ident_expr(object, name, replacement)),
             index: Box::new(rewrite_ident_expr(index, name, replacement)),
             null_safe: *null_safe,
         },
-        ExprKind::Call { callee, args, optional } => ExprKind::Call {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => ExprKind::Call {
             callee: Box::new(rewrite_ident_expr(callee, name, replacement)),
-            args: args.iter().map(|arg| Argument {
-                value: rewrite_ident_expr(&arg.value, name, replacement),
-                name: arg.name.clone(),
-                by_ref: arg.by_ref,
-                spread: arg.spread,
-            }).collect(),
+            args: args
+                .iter()
+                .map(|arg| Argument {
+                    value: rewrite_ident_expr(&arg.value, name, replacement),
+                    name: arg.name.clone(),
+                    by_ref: arg.by_ref,
+                    spread: arg.spread,
+                })
+                .collect(),
             optional: *optional,
         },
         _ => expr.kind.clone(),
@@ -9336,11 +10481,14 @@ fn build_scoped_pattern_test(
         }
     }
     if let Some(guard) = guard {
-        return Ok((Expression::new(ExprKind::Binary {
-            op: BinOp::And,
-            left: Box::new(cond),
-            right: Box::new(guard),
-        }), binding));
+        return Ok((
+            Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(cond),
+                right: Box::new(guard),
+            }),
+            binding,
+        ));
     }
     Ok((cond, binding))
 }
@@ -9371,7 +10519,10 @@ fn split_leading_is_pattern_guard(
             Ok(None)
         }
         Rule::logical_and => {
-            let parts: Vec<Pair<Rule>> = pair.into_inner().filter(|p| p.as_rule() != Rule::and_op).collect();
+            let parts: Vec<Pair<Rule>> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() != Rule::and_op)
+                .collect();
             if parts.len() == 2 {
                 if let Some(subject_clause) = extract_is_pattern_subject_clause(parts[0].clone())? {
                     return Ok(Some((subject_clause, parts[1].clone())));
@@ -9432,7 +10583,8 @@ fn extract_is_pattern_subject_clause(
 }
 
 fn lower_if_pattern_condition(cond_pair: Pair<Rule>) -> Result<Option<Expression>, String> {
-    let Some(((subject, pattern_clause), guard_pair)) = split_leading_is_pattern_guard(cond_pair)? else {
+    let Some(((subject, pattern_clause), guard_pair)) = split_leading_is_pattern_guard(cond_pair)?
+    else {
         return Ok(None);
     };
     let guard = walk_expression(guard_pair)?;
@@ -9442,7 +10594,13 @@ fn lower_if_pattern_condition(cond_pair: Pair<Rule>) -> Result<Option<Expression
 
 fn strip_switch_breaks(stmts: &[Statement]) -> Vec<Statement> {
     let mut out = stmts.to_vec();
-    while matches!(out.last(), Some(Statement { kind: StmtKind::Break(_), .. })) {
+    while matches!(
+        out.last(),
+        Some(Statement {
+            kind: StmtKind::Break(_),
+            ..
+        })
+    ) {
         out.pop();
     }
     out
@@ -9538,7 +10696,10 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__s".into()),
-                type_hint: Some(annotate_case_insensitive_ctor_type(type_name.clone(), &args)),
+                type_hint: Some(annotate_case_insensitive_ctor_type(
+                    type_name.clone(),
+                    &args,
+                )),
                 init: Some(new_set),
                 array_bounds: None,
                 with_events: false,
@@ -9592,7 +10753,10 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__l".into()),
-                type_hint: Some(annotate_case_insensitive_ctor_type(type_name.clone(), &args)),
+                type_hint: Some(annotate_case_insensitive_ctor_type(
+                    type_name.clone(),
+                    &args,
+                )),
                 init: Some(new_list),
                 array_bounds: None,
                 with_events: false,
@@ -9653,8 +10817,18 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
                     .ok_or_else(|| "indexer initializer missing value".to_string())
                     .and_then(walk_expression)?;
                 return Ok(Expression::new(ExprKind::Array(vec![
-                    ArrayElement { key: None, value: key, spread: false, by_ref: false },
-                    ArrayElement { key: None, value, spread: false, by_ref: false },
+                    ArrayElement {
+                        key: None,
+                        value: key,
+                        spread: false,
+                        by_ref: false,
+                    },
+                    ArrayElement {
+                        key: None,
+                        value,
+                        spread: false,
+                        by_ref: false,
+                    },
                 ])));
             }
         }
@@ -9664,7 +10838,10 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
             for inner in pair.into_inner() {
                 if let Ok(expr) = walk_expression(inner) {
                     elements.push(ArrayElement {
-                        key: None, value: expr, spread: false, by_ref: false,
+                        key: None,
+                        value: expr,
+                        spread: false,
+                        by_ref: false,
                     });
                 }
             }
@@ -9686,8 +10863,7 @@ fn primitive_to_typeof(type_name: &str) -> Option<&'static str> {
     match type_name {
         "string" | "String" => Some("string"),
         "char" | "Char" => Some("string"),
-        "int" | "long" | "double" | "float" | "decimal"
-        | "byte" | "sbyte" | "short" | "ushort"
+        "int" | "long" | "double" | "float" | "decimal" | "byte" | "sbyte" | "short" | "ushort"
         | "uint" | "ulong" | "nint" | "nuint" => Some("number"),
         "bool" | "Boolean" => Some("boolean"),
         _ => None,
@@ -9700,7 +10876,9 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
     match pair.as_rule() {
         Rule::from_end_index => {
             // `^N` → receiver.length - N (or for ranges, the same expression)
-            let inner = pair.into_inner().next()
+            let inner = pair
+                .into_inner()
+                .next()
                 .ok_or_else(|| "from_end_index missing inner expression".to_string())?;
             let n_expr = walk_expression(inner)?;
             // `__len__(receiver) - n_expr`
@@ -9745,14 +10923,17 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             // declaration prepended elsewhere (TODO). For now, we
             // extract the ident as a write-target reference.
             if src.starts_with("out ") {
-                let name_pair = inner_pairs.iter()
+                let name_pair = inner_pairs
+                    .iter()
                     .find(|part| part.as_rule() == Rule::ident_name)
                     .or_else(|| inner_pairs.last())
                     .ok_or("Empty out argument".to_string())?;
                 let name = name_pair.as_str().trim().to_string();
                 return Ok(Argument {
                     value: Expression::with_span(ExprKind::Ident(name), to_span(name_pair)),
-                    name: None, by_ref: true, spread: false,
+                    name: None,
+                    by_ref: true,
+                    spread: false,
                 });
             }
 
@@ -9761,24 +10942,36 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             // explicit `ident_name ~ ":" ~ expression` alternative.
             if inner_pairs.len() >= 2
                 && inner_pairs[0].as_rule() == Rule::ident_name
-                && inner_pairs.iter().any(|p| !matches!(p.as_rule(), Rule::ident_name)
-                    && p.as_rule() != Rule::argument_list)
+                && inner_pairs.iter().any(|p| {
+                    !matches!(p.as_rule(), Rule::ident_name) && p.as_rule() != Rule::argument_list
+                })
             {
                 let name_str = inner_pairs[0].as_str().to_string();
                 // Look for the value expression (anything that isn't ident_name).
-                if let Some(value_pair) = inner_pairs.iter()
-                    .find(|p| p.as_rule() != Rule::ident_name)
+                if let Some(value_pair) =
+                    inner_pairs.iter().find(|p| p.as_rule() != Rule::ident_name)
                 {
                     let value = walk_expression(value_pair.clone())?;
                     return Ok(Argument {
-                        value, name: Some(name_str), by_ref, spread: false,
+                        value,
+                        name: Some(name_str),
+                        by_ref,
+                        spread: false,
                     });
                 }
             }
 
-            let inner = inner_pairs.into_iter().next().ok_or("Empty argument".to_string())?;
+            let inner = inner_pairs
+                .into_iter()
+                .next()
+                .ok_or("Empty argument".to_string())?;
             let value = walk_expression(inner)?;
-            Ok(Argument { value, name: None, by_ref, spread: false })
+            Ok(Argument {
+                value,
+                name: None,
+                by_ref,
+                spread: false,
+            })
         })
         .collect()
 }
@@ -9786,9 +10979,7 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn walk_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
-    pair.into_inner()
-        .map(walk_statement)
-        .collect()
+    pair.into_inner().map(walk_statement).collect()
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {
@@ -9803,11 +10994,17 @@ fn to_span(pair: &Pair<Rule>) -> Span {
 }
 
 fn unquote(s: &str) -> String {
-    if s.len() < 2 { return s.to_string(); }
-    let inner = &s[1..s.len()-1];
-    inner.replace("\\\"", "\"").replace("\\\\", "\\")
-        .replace("\\n", "\n").replace("\\t", "\t")
-        .replace("\\r", "\r").replace("\\0", "\0")
+    if s.len() < 2 {
+        return s.to_string();
+    }
+    let inner = &s[1..s.len() - 1];
+    inner
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\r", "\r")
+        .replace("\\0", "\0")
 }
 
 /// Canonicalize C# property/member access to unified AST representation.
@@ -9840,7 +11037,8 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 "__dotnet_equalitycomparer_default".into(),
             )));
         }
-        if normalized.contains("Comparer<") && !normalized.contains("EqualityComparer<")
+        if normalized.contains("Comparer<")
+            && !normalized.contains("EqualityComparer<")
             && name.eq_ignore_ascii_case("Default")
         {
             return Expression::new(ExprKind::Lit(Literal::Str(
@@ -9873,7 +11071,12 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     if name == "Name" || name == "FullName" {
         if let ExprKind::Call { callee, args, .. } = &object.kind {
             if args.is_empty() {
-                if let ExprKind::Member { object: receiver, field, .. } = &callee.kind {
+                if let ExprKind::Member {
+                    object: receiver,
+                    field,
+                    ..
+                } = &callee.kind
+                {
                     if field == "GetType" {
                         let short = dotnet_runtime_type_name_expr((**receiver).clone());
                         if name == "Name" {
@@ -9882,7 +11085,9 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                         // FullName: prepend "System." via DYN_ADD-equivalent
                         return Expression::new(ExprKind::Binary {
                             op: BinOp::Add,
-                            left: Box::new(Expression::new(ExprKind::Lit(Literal::Str("System.".into())))),
+                            left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                                "System.".into(),
+                            )))),
                             right: Box::new(short),
                         });
                     }
@@ -9898,12 +11103,12 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
         &object.kind,
         ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())
     );
-    
+
     // Dictionary/collection properties that are defined as 0-arity methods
     // but accessed as properties in C# without parentheses should become method calls.
     // For example: dict.Keys → dict.Keys(), dict.Values → dict.Values()
     let is_zero_arity_method = matches!(name, "Keys" | "Values");
-    
+
     let canonical = None;
     if let Some(canonical_name) = canonical {
         Expression::new(ExprKind::Call {
@@ -9960,7 +11165,10 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 return build_csharp_get_length_expr((**object).clone(), dimension);
             }
         }
-        if field.eq_ignore_ascii_case("CopyTo") && args.len() == 2 && is_csharp_zero_literal(&args[1].value) {
+        if field.eq_ignore_ascii_case("CopyTo")
+            && args.len() == 2
+            && is_csharp_zero_literal(&args[1].value)
+        {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(build_dotted_expr("System.Array")),
@@ -9976,8 +11184,16 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             });
         }
         if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
-            if let ExprKind::Call { callee: prior_callee, args: prior_args, .. } = &object.kind {
-                if let ExprKind::Member { field: prior_field, .. } = &prior_callee.kind {
+            if let ExprKind::Call {
+                callee: prior_callee,
+                args: prior_args,
+                ..
+            } = &object.kind
+            {
+                if let ExprKind::Member {
+                    field: prior_field, ..
+                } = &prior_callee.kind
+                {
                     if prior_field.eq_ignore_ascii_case("OrderBy") && prior_args.len() == 1 {
                         let primary_selector = prior_args[0].value.clone();
                         let secondary_selector = args[0].value.clone();
@@ -10016,7 +11232,9 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                 cond: Box::new(Expression::new(ExprKind::Binary {
                                     op: BinOp::NotEq,
                                     left: Box::new(primary_cmp.clone()),
-                                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
+                                        0,
+                                    )))),
                                 })),
                                 then: Box::new(primary_cmp),
                                 else_: Box::new(secondary_cmp),
@@ -10066,7 +11284,9 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                 field: "Sort".into(),
                                 null_safe: false,
                             })),
-                            args: vec![Argument::positional(build_string_comparer_lambda(ignore_case))],
+                            args: vec![Argument::positional(build_string_comparer_lambda(
+                                ignore_case,
+                            ))],
                             optional: false,
                         });
                     }
@@ -10142,7 +11362,9 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 && field.eq_ignore_ascii_case("Compare")
                 && (args.len() == 2 || args.len() == 3)
             {
-                let ignore_case = args.get(2).map_or(false, |arg| matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true))));
+                let ignore_case = args.get(2).map_or(false, |arg| {
+                    matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
+                });
                 let left = if ignore_case {
                     lower_case_expr(args[0].value.clone())
                 } else {
@@ -10160,8 +11382,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             // string.Join(sep, arr) → arr.join(sep)
             if (obj_name.eq_ignore_ascii_case("string")
                 || obj_name.eq_ignore_ascii_case("System.String"))
-               && field.eq_ignore_ascii_case("Join")
-               && args.len() == 2
+                && field.eq_ignore_ascii_case("Join")
+                && args.len() == 2
             {
                 let sep = args[0].value.clone();
                 let arr = args[1].value.clone();
@@ -10188,20 +11410,28 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 let ignore_case = args.get(2).map_or(false, |arg| {
                     if let ExprKind::Member { field, .. } = &arg.value.kind {
                         field.contains("IgnoreCase")
-                    } else { false }
+                    } else {
+                        false
+                    }
                 });
                 if ignore_case {
                     let a_lc = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(a), field: "toLowerCase".into(), null_safe: false,
+                            object: Box::new(a),
+                            field: "toLowerCase".into(),
+                            null_safe: false,
                         })),
-                        args: vec![], optional: false,
+                        args: vec![],
+                        optional: false,
                     });
                     let b_lc = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(b), field: "toLowerCase".into(), null_safe: false,
+                            object: Box::new(b),
+                            field: "toLowerCase".into(),
+                            null_safe: false,
                         })),
-                        args: vec![], optional: false,
+                        args: vec![],
+                        optional: false,
                     });
                     return Expression::new(ExprKind::Binary {
                         op: BinOp::Eq,
@@ -10230,9 +11460,12 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 let s = args[0].value.clone();
                 let s_lc = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(s), field: "toLowerCase".into(), null_safe: false,
+                        object: Box::new(s),
+                        field: "toLowerCase".into(),
+                        null_safe: false,
                     })),
-                    args: vec![], optional: false,
+                    args: vec![],
+                    optional: false,
                 });
                 return Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
@@ -10251,7 +11484,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     }
     if let ExprKind::Ident(name) = &callee.kind {
         if let Some((prefix, field)) = name.rsplit_once('.') {
-            if (prefix.eq_ignore_ascii_case("string") || prefix.eq_ignore_ascii_case("System.String"))
+            if (prefix.eq_ignore_ascii_case("string")
+                || prefix.eq_ignore_ascii_case("System.String"))
                 && field.eq_ignore_ascii_case("Join")
                 && args.len() == 2
             {
@@ -10365,15 +11599,21 @@ fn char_static_lower(method: &str, c: Expression) -> Option<Expression> {
     match lower_method.as_str() {
         "toupper" => Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(c), field: "toUpperCase".into(), null_safe: false,
+                object: Box::new(c),
+                field: "toUpperCase".into(),
+                null_safe: false,
             })),
-            args: vec![], optional: false,
+            args: vec![],
+            optional: false,
         })),
         "tolower" => Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(c), field: "toLowerCase".into(), null_safe: false,
+                object: Box::new(c),
+                field: "toLowerCase".into(),
+                null_safe: false,
             })),
-            args: vec![], optional: false,
+            args: vec![],
+            optional: false,
         })),
         // ASCII range predicates — emitted as `c >= "A" && c <= "Z"`.
         "isupper" => Some(char_in_range(c, "A", "Z")),
@@ -10384,7 +11624,9 @@ fn char_static_lower(method: &str, c: Expression) -> Option<Expression> {
             let upper = char_in_range(c.clone(), "A", "Z");
             let lower = char_in_range(c, "a", "z");
             Some(Expression::new(ExprKind::Binary {
-                op: BinOp::Or, left: Box::new(upper), right: Box::new(lower),
+                op: BinOp::Or,
+                left: Box::new(upper),
+                right: Box::new(lower),
             }))
         }
         "isletterordigit" => {
@@ -10392,10 +11634,14 @@ fn char_static_lower(method: &str, c: Expression) -> Option<Expression> {
             let lower = char_in_range(c.clone(), "a", "z");
             let digit = char_in_range(c, "0", "9");
             let letter = Expression::new(ExprKind::Binary {
-                op: BinOp::Or, left: Box::new(upper), right: Box::new(lower),
+                op: BinOp::Or,
+                left: Box::new(upper),
+                right: Box::new(lower),
             });
             Some(Expression::new(ExprKind::Binary {
-                op: BinOp::Or, left: Box::new(letter), right: Box::new(digit),
+                op: BinOp::Or,
+                left: Box::new(letter),
+                right: Box::new(digit),
             }))
         }
         // IsWhiteSpace — match space, tab, newline, carriage return.
@@ -10431,7 +11677,8 @@ fn dotnet_type_name(t: &str) -> String {
         "string" | "String" => "String",
         "object" | "Object" => "Object",
         other => other,
-    }.to_string()
+    }
+    .to_string()
 }
 
 fn normalize_runtime_type_name(t: &str) -> String {
@@ -10447,7 +11694,12 @@ fn normalize_runtime_type_name(t: &str) -> String {
         }
     }
     let without_generics = out.trim();
-    without_generics.rsplit('.').next().unwrap_or(without_generics).trim().to_string()
+    without_generics
+        .rsplit('.')
+        .next()
+        .unwrap_or(without_generics)
+        .trim()
+        .to_string()
 }
 
 fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
@@ -10455,7 +11707,11 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
         return Ok(None);
     };
 
-    Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)))
+    Ok(Some(build_type_pattern_binding_stmt(
+        subject,
+        type_name,
+        binding_name,
+    )))
 }
 
 fn build_type_pattern_binding_stmt(
@@ -10475,7 +11731,9 @@ fn build_type_pattern_binding_stmt(
     })
 }
 
-fn find_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<(Expression, String, String)>, String> {
+fn find_if_is_pattern_binding(
+    pair: Pair<Rule>,
+) -> Result<Option<(Expression, String, String)>, String> {
     match pair.as_rule() {
         Rule::expression
         | Rule::assignment_expression
@@ -10550,17 +11808,23 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
     let is_string = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str("string".into())))),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "string".into(),
+        )))),
     });
     let is_number = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str("number".into())))),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "number".into(),
+        )))),
     });
     let is_boolean = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str("boolean".into())))),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "boolean".into(),
+        )))),
     });
 
     // Math.floor(e) === e — true for whole numbers; faithful to .NET
@@ -10585,13 +11849,19 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
     let number_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(is_int),
         then: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Int32".into())))),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Double".into())))),
+        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "Double".into(),
+        )))),
     });
 
     let bool_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(is_boolean),
-        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Boolean".into())))),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Object".into())))),
+        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "Boolean".into(),
+        )))),
+        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "Object".into(),
+        )))),
     });
 
     let num_or_bool = Expression::new(ExprKind::Ternary {
@@ -10602,7 +11872,9 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
 
     Expression::new(ExprKind::Ternary {
         cond: Box::new(is_string),
-        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str("String".into())))),
+        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "String".into(),
+        )))),
         else_: Box::new(num_or_bool),
     })
 }
@@ -10619,7 +11891,9 @@ fn char_in_range(c: Expression, lo: &str, hi: &str) -> Expression {
         right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(hi.into())))),
     });
     Expression::new(ExprKind::Binary {
-        op: BinOp::And, left: Box::new(ge), right: Box::new(le),
+        op: BinOp::And,
+        left: Box::new(ge),
+        right: Box::new(le),
     })
 }
 
@@ -10635,7 +11909,9 @@ fn or_chain(mut exprs: Vec<Expression>) -> Expression {
     let mut acc = exprs.remove(0);
     for e in exprs {
         acc = Expression::new(ExprKind::Binary {
-            op: BinOp::Or, left: Box::new(acc), right: Box::new(e),
+            op: BinOp::Or,
+            left: Box::new(acc),
+            right: Box::new(e),
         });
     }
     acc
@@ -10660,9 +11936,15 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
             let mut depth = 1;
             i += 1;
             while i < chars.len() && depth > 0 {
-                if chars[i] == '{' { depth += 1; }
-                if chars[i] == '}' { depth -= 1; }
-                if depth > 0 { i += 1; }
+                if chars[i] == '{' {
+                    depth += 1;
+                }
+                if chars[i] == '}' {
+                    depth -= 1;
+                }
+                if depth > 0 {
+                    i += 1;
+                }
             }
             let expr_str: String = chars[start..i].iter().collect();
             let expr = parse_interpolated_expr_text(&expr_str)?;
@@ -10809,14 +12091,22 @@ fn split_top_level_ternary(text: &str) -> Option<(&str, &str, &str)> {
 
 fn compound_to_binop(op: CompoundOp) -> BinOp {
     match op {
-        CompoundOp::Add => BinOp::Add, CompoundOp::Sub => BinOp::Sub,
-        CompoundOp::Mul => BinOp::Mul, CompoundOp::Div => BinOp::Div,
-        CompoundOp::Mod => BinOp::Mod, CompoundOp::Pow => BinOp::Pow,
-        CompoundOp::BitAnd => BinOp::BitAnd, CompoundOp::BitOr => BinOp::BitOr,
-        CompoundOp::BitXor => BinOp::BitXor, CompoundOp::Shl => BinOp::Shl,
-        CompoundOp::Shr => BinOp::Shr, CompoundOp::UShr => BinOp::UShr,
-        CompoundOp::And => BinOp::And, CompoundOp::Or => BinOp::Or,
+        CompoundOp::Add => BinOp::Add,
+        CompoundOp::Sub => BinOp::Sub,
+        CompoundOp::Mul => BinOp::Mul,
+        CompoundOp::Div => BinOp::Div,
+        CompoundOp::Mod => BinOp::Mod,
+        CompoundOp::Pow => BinOp::Pow,
+        CompoundOp::BitAnd => BinOp::BitAnd,
+        CompoundOp::BitOr => BinOp::BitOr,
+        CompoundOp::BitXor => BinOp::BitXor,
+        CompoundOp::Shl => BinOp::Shl,
+        CompoundOp::Shr => BinOp::Shr,
+        CompoundOp::UShr => BinOp::UShr,
+        CompoundOp::And => BinOp::And,
+        CompoundOp::Or => BinOp::Or,
         CompoundOp::NullCoalesce => BinOp::NullCoalesce,
-        CompoundOp::IDiv => BinOp::IDiv, CompoundOp::Concat => BinOp::Concat,
+        CompoundOp::IDiv => BinOp::IDiv,
+        CompoundOp::Concat => BinOp::Concat,
     }
 }

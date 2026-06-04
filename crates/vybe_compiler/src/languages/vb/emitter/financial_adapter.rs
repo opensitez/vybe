@@ -1,5 +1,5 @@
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const RATE_EPSILON: f64 = 1e-12;
 const SOLVER_EPSILON: f64 = 1e-10;
@@ -30,7 +30,14 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -41,7 +48,13 @@ fn emit_log(chunks: &mut [Chunk], current: usize, line: u32) {
     call_import(chunks, current, "ecma:math", "log", 1, line);
 }
 
-fn emit_pow_one_plus_local(chunks: &mut [Chunk], current: usize, rate_slot: u16, exp_slot: u16, line: u32) {
+fn emit_pow_one_plus_local(
+    chunks: &mut [Chunk],
+    current: usize,
+    rate_slot: u16,
+    exp_slot: u16,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     lget(chunk, rate_slot, line);
     push_f64(chunk, 1.0, line);
@@ -140,7 +153,14 @@ fn init_slots_5_required4(chunk: &mut Chunk, argc: u8, default5: f64, line: u32)
     [s1, s2, s3, s4, s5]
 }
 
-fn init_slots_6_required3(chunk: &mut Chunk, argc: u8, default4: f64, default5: f64, default6: f64, line: u32) -> [u16; 6] {
+fn init_slots_6_required3(
+    chunk: &mut Chunk,
+    argc: u8,
+    default4: f64,
+    default5: f64,
+    default6: f64,
+    line: u32,
+) -> [u16; 6] {
     let s1 = alloc_local(chunk);
     let s2 = alloc_local(chunk);
     let s3 = alloc_local(chunk);
@@ -190,7 +210,13 @@ fn init_slots_6_required3(chunk: &mut Chunk, argc: u8, default4: f64, default5: 
     [s1, s2, s3, s4, s5, s6]
 }
 
-fn init_slots_6_required4(chunk: &mut Chunk, argc: u8, default5: f64, default6: f64, line: u32) -> [u16; 6] {
+fn init_slots_6_required4(
+    chunk: &mut Chunk,
+    argc: u8,
+    default5: f64,
+    default6: f64,
+    line: u32,
+) -> [u16; 6] {
     let s1 = alloc_local(chunk);
     let s2 = alloc_local(chunk);
     let s3 = alloc_local(chunk);
@@ -229,7 +255,16 @@ fn init_slots_6_required4(chunk: &mut Chunk, argc: u8, default5: f64, default6: 
     [s1, s2, s3, s4, s5, s6]
 }
 
-fn emit_pmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, pv: u16, fv: u16, typ: u16, line: u32) {
+fn emit_pmt_formula(
+    chunks: &mut [Chunk],
+    current: usize,
+    rate: u16,
+    nper: u16,
+    pv: u16,
+    fv: u16,
+    typ: u16,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
@@ -276,7 +311,17 @@ fn emit_pmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, 
     }
 }
 
-fn emit_rate_equation_value(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, pmt: u16, pv: u16, fv: u16, typ: u16, line: u32) {
+fn emit_rate_equation_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    rate: u16,
+    nper: u16,
+    pmt: u16,
+    pv: u16,
+    fv: u16,
+    typ: u16,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
@@ -325,7 +370,16 @@ fn emit_rate_equation_value(chunks: &mut [Chunk], current: usize, rate: u16, npe
     }
 }
 
-fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, pv: u16, typ: u16, payment_slot: u16, line: u32) {
+fn emit_ipmt_formula(
+    chunks: &mut [Chunk],
+    current: usize,
+    rate: u16,
+    per: u16,
+    pv: u16,
+    typ: u16,
+    payment_slot: u16,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);

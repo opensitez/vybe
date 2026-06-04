@@ -5,9 +5,9 @@
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
-    pub detail: String,        // e.g. "(a: Integer, b: Integer): Integer" for a function
-    pub line: u32,             // 0-based line where the symbol is defined
-    pub end_line: u32,         // 0-based end line (for folding/outline)
+    pub detail: String, // e.g. "(a: Integer, b: Integer): Integer" for a function
+    pub line: u32,      // 0-based line where the symbol is defined
+    pub end_line: u32,  // 0-based end line (for folding/outline)
     pub children: Vec<Symbol>, // nested symbols (methods inside a class, etc.)
 }
 
@@ -34,8 +34,8 @@ pub enum SymbolKind {
 /// A diagnostic (error/warning) from parsing.
 #[derive(Debug, Clone)]
 pub struct LspDiagnostic {
-    pub line: u32,       // 0-based
-    pub col: u32,        // 0-based
+    pub line: u32, // 0-based
+    pub col: u32,  // 0-based
     pub end_col: u32,
     pub message: String,
     pub severity: DiagSeverity,

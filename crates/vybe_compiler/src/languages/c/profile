@@ -1,0 +1,130 @@
+# C Compiler Profile
+# ──────────────────
+# Covers C99 core: functions, structs (as objects), arrays, pointers
+# (modeled as references), stdio/string/math/stdlib library functions.
+# C-specific runtime semantics (printf format codes) route through the
+# shared `__vybe_sprintf` formatter in the common emitter.
+
+[info]
+name = "c"
+extensions = ["c", "h"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+constructor_name = "constructor"
+case_sensitive = true
+string_indexing = "zero_based"
+entry_point = "main"
+dynamic_add = true
+uses_normalize_class = false
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── stdio ────────────────────────────────────────────────────────────────────
+# Walker normalizations (in walker.rs):
+#   printf(fmt, args...)    → puts(sprintf(fmt, args...))
+#   fprintf(f, fmt, args...)→ puts(sprintf(fmt, args...))  (stream dropped)
+#   sprintf(buf, fmt, args...)→ sprintf(fmt, args...)      (buf dropped)
+#   snprintf(buf,n,fmt,...) → sprintf(fmt, args...)
+# sprintf routes through the inline common emitter helper (no JS polyfill).
+"sprintf"  = { emit = "common:sprintf.format", min_args = 1, max_args = 255 }
+"puts"     = { emit = "print",          min_args = 1, max_args = 1 }
+"putchar"  = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
+
+# ── stdio.h extras ───────────────────────────────────────────────────────────
+"getchar"  = { emit = "noop",                     min_args = 0, max_args = 0 }
+"fflush"   = { emit = "noop",                     min_args = 1, max_args = 1 }
+
+# ── string.h ─────────────────────────────────────────────────────────────────
+# strlen/strcmp work directly via opcode/emitter
+"strlen"   = { emit = "common:strings.length",    min_args = 1, max_args = 1 }
+"strcmp"   = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
+"strncmp"  = { emit = "opcode:str_compare",        min_args = 2, max_args = 3 }
+# strcpy/strncpy/strcat/strncat: walker rewrites to assignment/concat
+# strchr/strrchr/strstr: walker rewrites to ternary slice-or-null
+"strupr"   = { emit = "common:strings.to_upper",   min_args = 1, max_args = 1 }
+"strlwr"   = { emit = "common:strings.to_lower",   min_args = 1, max_args = 1 }
+"memcpy"   = { emit = "noop",                      min_args = 3, max_args = 3 }
+"memset"   = { emit = "noop",                      min_args = 3, max_args = 3 }
+"memcmp"   = { emit = "opcode:str_compare",        min_args = 3, max_args = 3 }
+"memmove"  = { emit = "noop",                      min_args = 3, max_args = 3 }
+
+# ── ctype.h — walker rewrites these to ecma:string calls ─────────────────────
+# isalpha/isdigit/isalnum/isspace/isupper/islower: walker wraps char-code arg
+# with String.fromCharCode then calls these:
+"isalpha"  = { emit = "host:ecma:string:isalpha",  min_args = 1, max_args = 1 }
+"isdigit"  = { emit = "host:ecma:string:isdigit",  min_args = 1, max_args = 1 }
+"isalnum"  = { emit = "host:ecma:string:isalnum",  min_args = 1, max_args = 1 }
+"isspace"  = { emit = "host:ecma:string:isspace",  min_args = 1, max_args = 1 }
+"isupper"  = { emit = "host:ecma:string:isupper",  min_args = 1, max_args = 1 }
+"islower"  = { emit = "host:ecma:string:islower",  min_args = 1, max_args = 1 }
+"isxdigit" = { emit = "host:ecma:string:isxdigit", min_args = 1, max_args = 1 }
+# iscntrl/isprint/ispunct/toupper/tolower: walker emits arithmetic inline
+
+# ── stdlib.h ─────────────────────────────────────────────────────────────────
+"atoi"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
+"atol"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
+"atof"     = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
+"strtol"   = { emit = "host:ecma:number:parseInt",   min_args = 1, max_args = 3 }
+"strtof"   = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }
+"strtod"   = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }
+"abs"      = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
+"labs"     = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
+"llabs"    = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
+"rand"     = { emit = "host:ecma:math:random",       min_args = 0, max_args = 0 }
+"srand"    = { emit = "noop",                        min_args = 1, max_args = 1 }
+"exit"     = { emit = "noop",                        min_args = 0, max_args = 1 }
+# malloc/calloc/realloc/free: walker rewrites to array construction / noop
+"qsort"    = { emit = "common:collections.sort",     min_args = 4, max_args = 4 }
+"bsearch"  = { emit = "noop",                        min_args = 5, max_args = 5 }
+
+# ── math.h ───────────────────────────────────────────────────────────────────
+"sqrt"     = { emit = "opcode:f64_sqrt",   min_args = 1, max_args = 1 }
+"fabs"     = { emit = "opcode:f64_abs",    min_args = 1, max_args = 1 }
+"floor"    = { emit = "opcode:f64_floor",  min_args = 1, max_args = 1 }
+"ceil"     = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
+"round"    = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+"pow"      = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+"fmod"     = { emit = "stdlib:fmod",       min_args = 2, max_args = 2 }
+"sin"      = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
+"cos"      = { emit = "host:ecma:math:cos",  min_args = 1, max_args = 1 }
+"tan"      = { emit = "host:ecma:math:tan",  min_args = 1, max_args = 1 }
+"asin"     = { emit = "host:ecma:math:asin", min_args = 1, max_args = 1 }
+"acos"     = { emit = "host:ecma:math:acos", min_args = 1, max_args = 1 }
+"atan"     = { emit = "host:ecma:math:atan", min_args = 1, max_args = 1 }
+"atan2"    = { emit = "host:ecma:math:atan2", min_args = 2, max_args = 2 }
+"log"      = { emit = "host:ecma:math:log",  min_args = 1, max_args = 1 }
+"log10"    = { emit = "host:ecma:math:log10", min_args = 1, max_args = 1 }
+"exp"      = { emit = "host:ecma:math:exp",  min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods (rare in C; structs carry no methods)
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — common math.h / limits.h macros
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"M_PI"   = 3.141592653589793
+"M_E"    = 2.718281828459045
+"M_SQRT2" = 1.4142135623730951
+"M_LN2"  = 0.6931471805599453
+"M_LN10" = 2.302585092994046
+"INT_MAX" = 2147483647
+"INT_MIN" = -2147483648
+"RAND_MAX" = 2147483647
+"EOF"    = -1
+"NULL"   = 0
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []

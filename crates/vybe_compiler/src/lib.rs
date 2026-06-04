@@ -12,16 +12,16 @@
 //! * [`languages`] — per-language walkers + profiles.
 //! * [`platforms`] — reusable runtime/framework surfaces such as .NET.
 
-pub mod emitter;
-pub mod php;
 pub mod ast;
-pub mod common;     // cross-language compile-time helpers (class normalisation, etc.)
+pub mod bundle;
+pub mod common; // cross-language compile-time helpers (class normalisation, etc.)
 pub mod compiler;
 pub mod dotnet_register;
+pub mod emitter;
 pub mod languages;
+pub mod lsp;
+pub mod php;
 pub mod platforms;
 pub mod profile;
-pub mod scope;
-pub mod bundle;
 pub mod projects;
-pub mod lsp;
+pub mod scope;

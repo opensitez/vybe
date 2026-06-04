@@ -1,6 +1,6 @@
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use pest::Parser;
 use pest::iterators::Pair;
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use std::collections::HashMap;
 
 use super::{Rule, VbParser};
@@ -8,8 +8,8 @@ use crate::ast::*;
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
-    let pairs = VbParser::parse(Rule::program, source)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let pairs =
+        VbParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
 
@@ -23,7 +23,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 Rule::option_directive => {}
                 Rule::statement_line => {
                     for stmt_pair in inner.into_inner() {
-                        if stmt_pair.as_rule() == Rule::NEWLINE || stmt_pair.as_rule() == Rule::EOI {
+                        if stmt_pair.as_rule() == Rule::NEWLINE || stmt_pair.as_rule() == Rule::EOI
+                        {
                             continue;
                         }
                         if stmt_pair.as_rule() == Rule::module_decl {
@@ -56,9 +57,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
 }
 
 pub fn parse_expression_str(source: &str) -> Result<Expression, String> {
-    let mut pairs = VbParser::parse(Rule::expression, source)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    let pair = pairs.next().ok_or_else(|| "Missing VB expression".to_string())?;
+    let mut pairs =
+        VbParser::parse(Rule::expression, source).map_err(|e| format!("Parse error: {}", e))?;
+    let pair = pairs
+        .next()
+        .ok_or_else(|| "Missing VB expression".to_string())?;
     parse_expression(pair)
 }
 
@@ -104,9 +107,11 @@ fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
 fn dotted_expr_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.clone()),
-        ExprKind::Member { object, field, null_safe: false } => {
-            Some(format!("{}.{}", dotted_expr_name(object)?, field))
-        }
+        ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } => Some(format!("{}.{}", dotted_expr_name(object)?, field)),
         _ => None,
     }
 }
@@ -183,8 +188,14 @@ fn round_decimal_text_to_even(text: &str, digits: usize) -> Option<f64> {
 
     let mut kept: Vec<u8> = frac.as_bytes()[..digits].to_vec();
     let next = frac.as_bytes()[digits];
-    let rest_nonzero = frac.as_bytes()[digits + 1..].iter().any(|digit| *digit != b'0');
-    let last_kept = kept.last().copied().or_else(|| whole.as_bytes().last().copied()).unwrap_or(b'0');
+    let rest_nonzero = frac.as_bytes()[digits + 1..]
+        .iter()
+        .any(|digit| *digit != b'0');
+    let last_kept = kept
+        .last()
+        .copied()
+        .or_else(|| whole.as_bytes().last().copied())
+        .unwrap_or(b'0');
     let round_up = match next.cmp(&b'5') {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
@@ -226,7 +237,11 @@ fn round_decimal_text_to_even(text: &str, digits: usize) -> Option<f64> {
     } else {
         format!("{}.{}", whole, frac_text)
     };
-    let signed = if negative { format!("-{}", rounded) } else { rounded };
+    let signed = if negative {
+        format!("-{}", rounded)
+    } else {
+        rounded
+    };
     signed.parse().ok()
 }
 
@@ -334,8 +349,14 @@ fn literal_number(expr: &Expression) -> Option<f64> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n as f64),
         ExprKind::Lit(Literal::Float(n)) => Some(*n),
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => literal_number(expr).map(|value| -value),
-        ExprKind::Unary { op: UnaryOp::Pos, expr } => literal_number(expr),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => literal_number(expr).map(|value| -value),
+        ExprKind::Unary {
+            op: UnaryOp::Pos,
+            expr,
+        } => literal_number(expr),
         _ => None,
     }
 }
@@ -362,7 +383,11 @@ fn literal_string(expr: &Expression) -> Option<String> {
 }
 
 fn last_day_of_month(year: i32, month: u32) -> Option<u32> {
-    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
     Some((first_of_next - Duration::days(1)).day())
 }
@@ -371,7 +396,10 @@ fn normalize_year_month(year: i64, month: i64) -> Option<(i32, u32)> {
     let total_months = year.checked_mul(12)?.checked_add(month - 1)?;
     let normalized_year = total_months.div_euclid(12);
     let normalized_month = total_months.rem_euclid(12) + 1;
-    Some((i32::try_from(normalized_year).ok()?, u32::try_from(normalized_month).ok()?))
+    Some((
+        i32::try_from(normalized_year).ok()?,
+        u32::try_from(normalized_month).ok()?,
+    ))
 }
 
 fn build_date_serial(year: i64, month: i64, day: i64) -> Option<NaiveDate> {
@@ -458,7 +486,11 @@ fn fold_partition(arguments: &[Argument]) -> Option<Expression> {
         (low, high)
     };
 
-    let width = (stop.saturating_add(1)).abs().to_string().len().max(start.abs().to_string().len());
+    let width = (stop.saturating_add(1))
+        .abs()
+        .to_string()
+        .len()
+        .max(start.abs().to_string().len());
     Some(Expression::string(&format!("{low:>width$}:{high:>width$}")))
 }
 
@@ -468,7 +500,13 @@ fn format_vb_time(time: NaiveTime) -> String {
         hour = 12;
     }
     let suffix = if time.hour() < 12 { "AM" } else { "PM" };
-    format!("{}:{:02}:{:02} {}", hour, time.minute(), time.second(), suffix)
+    format!(
+        "{}:{:02}:{:02} {}",
+        hour,
+        time.minute(),
+        time.second(),
+        suffix
+    )
 }
 
 fn format_vb_date(value: NaiveDate) -> String {
@@ -480,7 +518,11 @@ fn format_vb_date_value(value: &VbDateValue) -> String {
         VbDateValue::Date(date) => format_vb_date(*date),
         VbDateValue::Time(time) => format_vb_time(*time),
         VbDateValue::DateTime(datetime) => {
-            format!("{} {}", format_vb_date(datetime.date()), format_vb_time(datetime.time()))
+            format!(
+                "{} {}",
+                format_vb_date(datetime.date()),
+                format_vb_time(datetime.time())
+            )
         }
     }
 }
@@ -488,7 +530,11 @@ fn format_vb_date_value(value: &VbDateValue) -> String {
 fn date_value_as_datetime(value: &VbDateValue) -> Option<NaiveDateTime> {
     match value {
         VbDateValue::Date(date) => date.and_hms_opt(0, 0, 0),
-        VbDateValue::Time(time) => NaiveDate::from_ymd_opt(1970, 1, 1)?.and_hms_opt(time.hour(), time.minute(), time.second()),
+        VbDateValue::Time(time) => NaiveDate::from_ymd_opt(1970, 1, 1)?.and_hms_opt(
+            time.hour(),
+            time.minute(),
+            time.second(),
+        ),
         VbDateValue::DateTime(datetime) => Some(*datetime),
     }
 }
@@ -510,19 +556,33 @@ fn add_interval(value: &VbDateValue, interval: &str, amount: i64) -> Option<VbDa
     match interval {
         "day" => match value {
             VbDateValue::Date(date) => Some(VbDateValue::Date(*date + Duration::days(amount))),
-            VbDateValue::DateTime(datetime) => Some(VbDateValue::DateTime(*datetime + Duration::days(amount))),
+            VbDateValue::DateTime(datetime) => {
+                Some(VbDateValue::DateTime(*datetime + Duration::days(amount)))
+            }
             VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
         },
         "hour" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::DateTime(date.and_hms_opt(0, 0, 0)? + Duration::hours(amount))),
-            VbDateValue::DateTime(datetime) => Some(VbDateValue::DateTime(*datetime + Duration::hours(amount))),
-            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(i64::from(time.hour()) + amount, i64::from(time.minute()), i64::from(time.second()))?)),
+            VbDateValue::Date(date) => Some(VbDateValue::DateTime(
+                date.and_hms_opt(0, 0, 0)? + Duration::hours(amount),
+            )),
+            VbDateValue::DateTime(datetime) => {
+                Some(VbDateValue::DateTime(*datetime + Duration::hours(amount)))
+            }
+            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(
+                i64::from(time.hour()) + amount,
+                i64::from(time.minute()),
+                i64::from(time.second()),
+            )?)),
         },
         "month" => match value {
             VbDateValue::Date(date) => Some(VbDateValue::Date(add_months_to_date(*date, amount)?)),
             VbDateValue::DateTime(datetime) => {
                 let next_date = add_months_to_date(datetime.date(), amount)?;
-                Some(VbDateValue::DateTime(next_date.and_hms_opt(datetime.hour(), datetime.minute(), datetime.second())?))
+                Some(VbDateValue::DateTime(next_date.and_hms_opt(
+                    datetime.hour(),
+                    datetime.minute(),
+                    datetime.second(),
+                )?))
             }
             VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
         },
@@ -534,7 +594,9 @@ fn add_interval(value: &VbDateValue, interval: &str, amount: i64) -> Option<VbDa
 fn parse_interval_expr(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Member { object, field, .. } => match &object.kind {
-            ExprKind::Ident(name) if name.eq_ignore_ascii_case("DateInterval") => Some(field.to_lowercase()),
+            ExprKind::Ident(name) if name.eq_ignore_ascii_case("DateInterval") => {
+                Some(field.to_lowercase())
+            }
             _ => None,
         },
         ExprKind::Lit(Literal::Str(value)) => Some(value.to_lowercase()),
@@ -548,7 +610,10 @@ fn date_diff(interval: &str, start: &VbDateValue, end: &VbDateValue) -> Option<i
     match interval {
         "day" => Some((end_dt - start_dt).num_days()),
         "hour" => Some((end_dt - start_dt).num_hours()),
-        "month" => Some(i64::from(end_dt.year() - start_dt.year()) * 12 + i64::from(end_dt.month()) - i64::from(start_dt.month())),
+        "month" => Some(
+            i64::from(end_dt.year() - start_dt.year()) * 12 + i64::from(end_dt.month())
+                - i64::from(start_dt.month()),
+        ),
         "year" => Some(i64::from(end_dt.year() - start_dt.year())),
         _ => None,
     }
@@ -564,7 +629,11 @@ fn date_part(interval: &str, value: &VbDateValue) -> Option<i64> {
 }
 
 fn weekday_index(value: &VbDateValue) -> Option<i64> {
-    Some(i64::from(date_value_as_datetime(value)?.weekday().number_from_sunday()))
+    Some(i64::from(
+        date_value_as_datetime(value)?
+            .weekday()
+            .number_from_sunday(),
+    ))
 }
 
 fn fold_date_constructor(args: &[Argument], is_time: bool) -> Option<Expression> {
@@ -573,23 +642,45 @@ fn fold_date_constructor(args: &[Argument], is_time: bool) -> Option<Expression>
         let minute = literal_i64(&args.get(1)?.value)?;
         let second = literal_i64(&args.get(2)?.value)?;
         let time = build_time_serial(hour, minute, second)?;
-        return Some(Expression::string(&format_vb_date_value(&VbDateValue::Time(time))));
+        return Some(Expression::string(&format_vb_date_value(
+            &VbDateValue::Time(time),
+        )));
     }
 
     let year = literal_i64(&args.get(0)?.value)?;
     let month = literal_i64(&args.get(1)?.value)?;
     let day = literal_i64(&args.get(2)?.value)?;
     let date = build_date_serial(year, month, day)?;
-    Some(Expression::string(&format_vb_date_value(&VbDateValue::Date(date))))
+    Some(Expression::string(&format_vb_date_value(
+        &VbDateValue::Date(date),
+    )))
 }
 
 fn fold_month_name(args: &[Argument]) -> Option<Expression> {
     let month = literal_i64(&args.get(0)?.value)?;
-    let abbreviate = args.get(1).and_then(|arg| literal_bool(&arg.value)).unwrap_or(false);
+    let abbreviate = args
+        .get(1)
+        .and_then(|arg| literal_bool(&arg.value))
+        .unwrap_or(false);
     let names = if abbreviate {
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
     } else {
-        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+        [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
     };
     let index = usize::try_from(month.checked_sub(1)?).ok()?;
     Some(Expression::string(names.get(index)?))
@@ -597,11 +688,22 @@ fn fold_month_name(args: &[Argument]) -> Option<Expression> {
 
 fn fold_weekday_name(args: &[Argument]) -> Option<Expression> {
     let weekday = literal_i64(&args.get(0)?.value)?;
-    let abbreviate = args.get(1).and_then(|arg| literal_bool(&arg.value)).unwrap_or(false);
+    let abbreviate = args
+        .get(1)
+        .and_then(|arg| literal_bool(&arg.value))
+        .unwrap_or(false);
     let names = if abbreviate {
         ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     } else {
-        ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]
     };
     let index = usize::try_from(weekday.checked_sub(1)?).ok()?;
     Some(Expression::string(names.get(index)?))
@@ -625,19 +727,37 @@ fn fold_date_value(name: &str, args: &[Argument]) -> Option<Expression> {
         "datediff" => {
             let start = parse_vb_date_expr(&args.get(1)?.value)?;
             let end = parse_vb_date_expr(&args.get(2)?.value)?;
-            Some(Expression::int(date_diff(interval.as_deref()?, &start, &end)?))
+            Some(Expression::int(date_diff(
+                interval.as_deref()?,
+                &start,
+                &end,
+            )?))
         }
         "datepart" => {
             let value = parse_vb_date_expr(&args.get(1)?.value)?;
             Some(Expression::int(date_part(interval.as_deref()?, &value)?))
         }
-        "year" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.year()))),
-        "month" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.month()))),
-        "day" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.day()))),
-        "hour" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.hour()))),
-        "minute" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.minute()))),
-        "second" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.second()))),
-        "weekday" => Some(Expression::int(weekday_index(&parse_vb_date_expr(&args.get(0)?.value)?)?)),
+        "year" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.year(),
+        ))),
+        "month" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.month(),
+        ))),
+        "day" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.day(),
+        ))),
+        "hour" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.hour(),
+        ))),
+        "minute" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.minute(),
+        ))),
+        "second" => Some(Expression::int(i64::from(
+            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.second(),
+        ))),
+        "weekday" => Some(Expression::int(weekday_index(&parse_vb_date_expr(
+            &args.get(0)?.value,
+        )?)?)),
         "monthname" => fold_month_name(args),
         "weekdayname" => fold_weekday_name(args),
         "isdate" => {
@@ -660,37 +780,30 @@ fn canonicalize_special_identifier(name: &str) -> Option<Expression> {
 
 fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
     match name.to_ascii_lowercase().as_str() {
-        "fix" if arguments.len() == 1 => Some(call_expr(build_dotted_expr("System.Math.Truncate"), arguments.to_vec())),
-        "round" if arguments.len() == 1 => Some(build_vb_bankers_round_expr(arguments[0].value.clone())),
+        "fix" if arguments.len() == 1 => Some(call_expr(
+            build_dotted_expr("System.Math.Truncate"),
+            arguments.to_vec(),
+        )),
+        "round" if arguments.len() == 1 => {
+            Some(build_vb_bankers_round_expr(arguments[0].value.clone()))
+        }
         "round" if arguments.len() >= 2 => Some(build_vb_precision_round_expr(
             arguments[0].value.clone(),
             arguments[1].value.clone(),
         )),
-        "vartype" if arguments.len() == 1 && matches!(arguments[0].value.kind, ExprKind::Lit(Literal::Null)) => {
+        "vartype"
+            if arguments.len() == 1
+                && matches!(arguments[0].value.kind, ExprKind::Lit(Literal::Null)) =>
+        {
             Some(Expression::int(0))
         }
         "vartype" if arguments.len() == 1 && is_vb_date_literal_expr(&arguments[0].value) => {
             Some(Expression::int(7))
         }
         "partition" if arguments.len() == 4 => fold_partition(arguments),
-        "dateserial"
-        | "timeserial"
-        | "dateadd"
-        | "datediff"
-        | "datepart"
-        | "datevalue"
-        | "timevalue"
-        | "cdate"
-        | "year"
-        | "month"
-        | "day"
-        | "hour"
-        | "minute"
-        | "second"
-        | "weekday"
-        | "monthname"
-        | "weekdayname"
-        | "isdate" => fold_date_value(name, arguments),
+        "dateserial" | "timeserial" | "dateadd" | "datediff" | "datepart" | "datevalue"
+        | "timevalue" | "cdate" | "year" | "month" | "day" | "hour" | "minute" | "second"
+        | "weekday" | "monthname" | "weekdayname" | "isdate" => fold_date_value(name, arguments),
         _ => None,
     }
 }
@@ -751,7 +864,10 @@ fn emit_vb_object_init_iife(new_call: Expression, props: Vec<(String, Expression
             })),
             value: Box::new(value),
         });
-        body.push(Statement::with_span(StmtKind::Expr(assign), Span::default()));
+        body.push(Statement::with_span(
+            StmtKind::Expr(assign),
+            Span::default(),
+        ));
     }
     body.push(Statement::with_span(
         StmtKind::Return(Some(Expression::ident("__obj"))),
@@ -788,7 +904,11 @@ fn try_parse_declaration(pair: Pair<Rule>) -> Result<Option<Statement>, String> 
 fn rewrite_vb_import_aliases(module: &mut Module) {
     let mut aliases: HashMap<String, String> = HashMap::new();
     for import in &module.imports {
-        if let ImportKind::Simple { path, alias: Some(alias) } = &import.kind {
+        if let ImportKind::Simple {
+            path,
+            alias: Some(alias),
+        } = &import.kind
+        {
             aliases.insert(alias.clone(), path.clone());
         }
     }
@@ -819,10 +939,16 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
             rewrite_vb_aliases_in_expr(expr, aliases);
             rewrite_vb_aliases_in_statements(body, aliases);
         }
-        StmtKind::Throw { expr: Some(expr), cause: None } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        } => {
             rewrite_vb_aliases_in_expr(expr, aliases);
         }
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
             rewrite_vb_aliases_in_expr(expr, aliases);
             rewrite_vb_aliases_in_expr(cause, aliases);
         }
@@ -845,15 +971,19 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
             }
             rewrite_vb_aliases_in_expr(value, aliases);
         }
-        StmtKind::FunctionDecl { params, return_type, body, .. } => {
+        StmtKind::FunctionDecl {
+            params,
+            return_type,
+            body,
+            ..
+        } => {
             for param in params {
                 rewrite_vb_alias_in_param(param, aliases);
             }
             rewrite_vb_alias_in_type_hint(return_type, aliases);
             rewrite_vb_aliases_in_statements(body, aliases);
         }
-        StmtKind::Block(body)
-        | StmtKind::NamespaceDecl { body, .. } => {
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             rewrite_vb_aliases_in_statements(body, aliases);
         }
         StmtKind::ClassDecl { members, .. }
@@ -863,7 +993,12 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
                 rewrite_vb_aliases_in_member(member, aliases);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_vb_aliases_in_expr(cond, aliases);
             rewrite_vb_aliases_in_statements(then_body, aliases);
             for (elif_cond, elif_body) in elifs {
@@ -874,7 +1009,12 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
                 rewrite_vb_aliases_in_statements(else_body, aliases);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_vb_aliases_in_statement(init, aliases);
             }
@@ -886,14 +1026,23 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
             }
             rewrite_vb_aliases_in_statements(body, aliases);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             rewrite_vb_aliases_in_expr(iter, aliases);
             rewrite_vb_aliases_in_statements(body, aliases);
             if let Some(else_body) = else_body {
                 rewrite_vb_aliases_in_statements(else_body, aliases);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_vb_aliases_in_expr(cond, aliases);
             rewrite_vb_aliases_in_statements(body, aliases);
             if let Some(else_body) = else_body {
@@ -904,7 +1053,12 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
             rewrite_vb_aliases_in_statements(body, aliases);
             rewrite_vb_aliases_in_expr(cond, aliases);
         }
-        StmtKind::Try { body, catches, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
             rewrite_vb_aliases_in_statements(body, aliases);
             for catch in catches {
                 for ty in &mut catch.types {
@@ -921,13 +1075,18 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
                 rewrite_vb_aliases_in_statements(finally, aliases);
             }
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_vb_aliases_in_expr(expr, aliases);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr)
-                        | CaseCondition::Comparison { expr, .. } => rewrite_vb_aliases_in_expr(expr, aliases),
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            rewrite_vb_aliases_in_expr(expr, aliases)
+                        }
                         CaseCondition::Range { from, to } => {
                             rewrite_vb_aliases_in_expr(from, aliases);
                             rewrite_vb_aliases_in_expr(to, aliases);
@@ -946,7 +1105,12 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
 
 fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<String, String>) {
     match member {
-        ClassMember::Field { type_hint, init, array_bounds, .. } => {
+        ClassMember::Field {
+            type_hint,
+            init,
+            array_bounds,
+            ..
+        } => {
             rewrite_vb_alias_in_type_hint(type_hint, aliases);
             if let Some(init) = init {
                 rewrite_vb_aliases_in_expr(init, aliases);
@@ -960,7 +1124,12 @@ fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<Stri
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             rewrite_vb_aliases_in_statement(stmt, aliases);
         }
-        ClassMember::Constructor { params, body, base_args, .. } => {
+        ClassMember::Constructor {
+            params,
+            body,
+            base_args,
+            ..
+        } => {
             for param in params {
                 rewrite_vb_alias_in_param(param, aliases);
             }
@@ -971,7 +1140,12 @@ fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<Stri
             }
             rewrite_vb_aliases_in_statements(body, aliases);
         }
-        ClassMember::Property { type_hint, getter, setter, .. } => {
+        ClassMember::Property {
+            type_hint,
+            getter,
+            setter,
+            ..
+        } => {
             rewrite_vb_alias_in_type_hint(type_hint, aliases);
             if let Some(getter) = getter {
                 rewrite_vb_aliases_in_statements(getter, aliases);
@@ -981,13 +1155,17 @@ fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<Stri
                 rewrite_vb_aliases_in_statements(&mut setter.body, aliases);
             }
         }
-        ClassMember::Event { type_hint, params, .. } => {
+        ClassMember::Event {
+            type_hint, params, ..
+        } => {
             rewrite_vb_alias_in_type_hint(type_hint, aliases);
             for param in params {
                 rewrite_vb_alias_in_param(param, aliases);
             }
         }
-        ClassMember::Const { type_hint, value, .. } => {
+        ClassMember::Const {
+            type_hint, value, ..
+        } => {
             rewrite_vb_alias_in_type_hint(type_hint, aliases);
             rewrite_vb_aliases_in_expr(value, aliases);
         }
@@ -1001,7 +1179,10 @@ fn rewrite_vb_alias_in_param(param: &mut Param, aliases: &HashMap<String, String
     }
 }
 
-fn rewrite_vb_alias_in_type_hint(type_hint: &mut Option<String>, aliases: &HashMap<String, String>) {
+fn rewrite_vb_alias_in_type_hint(
+    type_hint: &mut Option<String>,
+    aliases: &HashMap<String, String>,
+) {
     if let Some(current) = type_hint.as_ref() {
         if let Some(rewritten) = rewrite_vb_alias_type_name(current, aliases) {
             *type_hint = Some(rewritten);
@@ -1020,10 +1201,7 @@ fn rewrite_vb_alias_type_name(name: &str, aliases: &HashMap<String, String>) -> 
 }
 
 fn vb_alias_target_type_name(path: &str) -> String {
-    path.rsplit('.')
-        .next()
-        .unwrap_or(path)
-        .to_string()
+    path.rsplit('.').next().unwrap_or(path).to_string()
 }
 
 fn rewrite_vb_alias_name(name: &str, aliases: &HashMap<String, String>) -> Option<String> {
@@ -1043,7 +1221,10 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
         }
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Walrus { target: left, value: right } => {
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => {
             rewrite_vb_aliases_in_expr(left, aliases);
             rewrite_vb_aliases_in_expr(right, aliases);
         }
@@ -1117,9 +1298,7 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 rewrite_vb_aliases_in_expr(&mut item.value, aliases);
             }
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_vb_aliases_in_expr(item, aliases);
             }
@@ -1151,8 +1330,7 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 }
             }
         }
-        ExprKind::IsType { expr, type_name }
-        | ExprKind::Cast { expr, type_name } => {
+        ExprKind::IsType { expr, type_name } | ExprKind::Cast { expr, type_name } => {
             rewrite_vb_aliases_in_expr(expr, aliases);
             if let Some(rewritten) = rewrite_vb_alias_name(type_name, aliases) {
                 *type_name = rewritten;
@@ -1164,13 +1342,21 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
             }
         }
         ExprKind::Yield(Some(expr)) => rewrite_vb_aliases_in_expr(expr, aliases),
-        ExprKind::Yield(None) | ExprKind::AddressOf(_) | ExprKind::This | ExprKind::Super | ExprKind::Lit(_) => {}
+        ExprKind::Yield(None)
+        | ExprKind::AddressOf(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::Lit(_) => {}
         ExprKind::SuperCall { args, .. } => {
             for arg in args {
                 rewrite_vb_aliases_in_expr(&mut arg.value, aliases);
             }
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             rewrite_vb_aliases_in_expr(element, aliases);
             for generator in generators {
                 rewrite_vb_aliases_in_expr(&mut generator.iter, aliases);
@@ -1191,7 +1377,9 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
             }
         }
         ExprKind::Destructure(_) => {}
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             if let Some(parent) = parent {
                 rewrite_vb_aliases_in_expr(parent, aliases);
             }
@@ -1295,12 +1483,13 @@ fn is_vb_err_clear_call(expr: &Expression) -> bool {
 }
 
 fn find_vb_label(body: &[Statement], label: &str, start: usize) -> Option<usize> {
-    body.iter().enumerate().skip(start).find_map(|(idx, stmt)| {
-        match &stmt.kind {
+    body.iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(idx, stmt)| match &stmt.kind {
             StmtKind::Label(name) if name.eq_ignore_ascii_case(label) => Some(idx),
             _ => None,
-        }
-    })
+        })
 }
 
 fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
@@ -1352,9 +1541,10 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
         }
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Walrus { target: left, value: right } => {
-            rewrite_vb_err_expr(left) | rewrite_vb_err_expr(right)
-        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => rewrite_vb_err_expr(left) | rewrite_vb_err_expr(right),
         ExprKind::Unary { expr, .. }
         | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
@@ -1366,7 +1556,9 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
         ExprKind::RefOf(place) => match place.as_mut() {
             PlaceExpr::Ident(_) => false,
             PlaceExpr::Member { object, .. } => rewrite_vb_err_expr(object),
-            PlaceExpr::Index { object, index, .. } => rewrite_vb_err_expr(object) | rewrite_vb_err_expr(index),
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_vb_err_expr(object) | rewrite_vb_err_expr(index)
+            }
             PlaceExpr::Deref(expr) => rewrite_vb_err_expr(expr),
         },
         ExprKind::Ternary { cond, then, else_ } => {
@@ -1382,7 +1574,9 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             used
         }
-        ExprKind::Assign { target, value } => rewrite_vb_err_expr(target) | rewrite_vb_err_expr(value),
+        ExprKind::Assign { target, value } => {
+            rewrite_vb_err_expr(target) | rewrite_vb_err_expr(value)
+        }
         ExprKind::Lambda { body, .. } => {
             if let LambdaBody::Expr(expr) = body {
                 rewrite_vb_err_expr(expr)
@@ -1400,9 +1594,7 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             used
         }
-        ExprKind::Tuple(items)
-        | ExprKind::Set(items)
-        | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             let mut used = false;
             for item in items {
                 used |= rewrite_vb_err_expr(item);
@@ -1447,7 +1639,11 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             used
         }
-        ExprKind::Comprehension { element, generators, .. } => {
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
             let mut used = rewrite_vb_err_expr(element);
             for generator in generators {
                 used |= rewrite_vb_err_expr(&mut generator.iter);
@@ -1471,7 +1667,9 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             used
         }
         ExprKind::Range { start, end, .. } => rewrite_vb_err_expr(start) | rewrite_vb_err_expr(end),
-        ExprKind::StaticAccess { class, member } => rewrite_vb_err_expr(class) | rewrite_vb_err_expr(member),
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_vb_err_expr(class) | rewrite_vb_err_expr(member)
+        }
         ExprKind::Match { subject, arms } => {
             let mut used = rewrite_vb_err_expr(subject);
             for arm in arms {
@@ -1507,10 +1705,14 @@ fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
         | StmtKind::CompoundAssign { value: expr, .. } => rewrite_vb_err_expr(expr),
-        StmtKind::Throw { expr: Some(expr), cause: None } => rewrite_vb_err_expr(expr),
-        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
-            rewrite_vb_err_expr(expr) | rewrite_vb_err_expr(cause)
-        }
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        } => rewrite_vb_err_expr(expr),
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => rewrite_vb_err_expr(expr) | rewrite_vb_err_expr(cause),
         StmtKind::VarDecl { declarations, .. } => {
             let mut used = false;
             for decl in declarations {
@@ -1532,14 +1734,18 @@ fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
             }
             used
         }
-        StmtKind::Block(body)
-        | StmtKind::Using { body, .. } => {
+        StmtKind::Block(body) | StmtKind::Using { body, .. } => {
             normalize_vb_legacy_error_body(body)
         }
         StmtKind::Lock { expr, body } => {
             rewrite_vb_err_expr(expr) | normalize_vb_legacy_error_body(body)
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             let mut used = rewrite_vb_err_expr(cond) | normalize_vb_legacy_error_body(then_body);
             for (elif_cond, elif_body) in elifs {
                 used |= rewrite_vb_err_expr(elif_cond);
@@ -1550,7 +1756,12 @@ fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
             }
             used
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             let mut used = false;
             if let Some(init) = init {
                 used |= normalize_vb_legacy_error_statement(init);
@@ -1563,14 +1774,23 @@ fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
             }
             used | normalize_vb_legacy_error_body(body)
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             let mut used = rewrite_vb_err_expr(iter) | normalize_vb_legacy_error_body(body);
             if let Some(else_body) = else_body {
                 used |= normalize_vb_legacy_error_body(else_body);
             }
             used
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             let mut used = rewrite_vb_err_expr(cond) | normalize_vb_legacy_error_body(body);
             if let Some(else_body) = else_body {
                 used |= normalize_vb_legacy_error_body(else_body);
@@ -1580,7 +1800,12 @@ fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
         StmtKind::DoWhile { body, cond, .. } => {
             normalize_vb_legacy_error_body(body) | rewrite_vb_err_expr(cond)
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             let mut used = normalize_vb_legacy_error_body(body);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -1687,7 +1912,12 @@ fn rewrite_vb_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
             *expr = Some(Expression::ident(var_name));
         }
         StmtKind::Block(inner) => rewrite_vb_bare_throws(inner, var_name),
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             rewrite_vb_bare_throws(then_body, var_name);
             for (_, body) in elifs {
                 rewrite_vb_bare_throws(body, var_name);
@@ -2057,7 +2287,9 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => {}
                 }
             }
-            Rule::identifier | Rule::member_identifier | Rule::sub_name => name = p.as_str().to_string(),
+            Rule::identifier | Rule::member_identifier | Rule::sub_name => {
+                name = p.as_str().to_string()
+            }
             Rule::generic_suffix => {}
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::statement | Rule::statement_line => {
@@ -2095,29 +2327,32 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params: parameters,
-        return_type: None,
-        body,
-        modifiers: Modifiers {
-            visibility,
-            is_static: is_shared,
-            is_abstract: is_must_override,
-            is_virtual: is_overridable,
-            is_override: is_overrides,
-            is_readonly: false,
-            is_shared,
-            is_extension,
-            is_overloads: false,
-            is_not_overridable,
-            decorators: vec![],
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params: parameters,
+            return_type: None,
+            body,
+            modifiers: Modifiers {
+                visibility,
+                is_static: is_shared,
+                is_abstract: is_must_override,
+                is_virtual: is_overridable,
+                is_override: is_overrides,
+                is_readonly: false,
+                is_shared,
+                is_extension,
+                is_overloads: false,
+                is_not_overridable,
+                decorators: vec![],
+            },
+            handles,
+            is_async,
+            is_generator,
+            is_sub: true,
         },
-        handles,
-        is_async,
-        is_generator,
-        is_sub: true,
-    }, span))
+        span,
+    ))
 }
 
 fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -2154,8 +2389,10 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     "notoverridable" => is_not_overridable = true,
                     _ => {}
                 }
-            },
-            Rule::identifier | Rule::member_identifier | Rule::function_name => name = p.as_str().to_string(),
+            }
+            Rule::identifier | Rule::member_identifier | Rule::function_name => {
+                name = p.as_str().to_string()
+            }
             Rule::generic_suffix => {}
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::type_name => return_type = Some(p.as_str().to_string()),
@@ -2194,29 +2431,32 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     let is_generator = body_has_yield(&body);
 
-    Ok(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params: parameters,
-        return_type,
-        body,
-        modifiers: Modifiers {
-            visibility,
-            is_static: is_shared,
-            is_abstract: is_must_override,
-            is_virtual: is_overridable,
-            is_override: is_overrides,
-            is_readonly: false,
-            is_shared,
-            is_extension,
-            is_overloads: false,
-            is_not_overridable,
-            decorators: vec![],
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params: parameters,
+            return_type,
+            body,
+            modifiers: Modifiers {
+                visibility,
+                is_static: is_shared,
+                is_abstract: is_must_override,
+                is_virtual: is_overridable,
+                is_override: is_overrides,
+                is_readonly: false,
+                is_shared,
+                is_extension,
+                is_overloads: false,
+                is_not_overridable,
+                decorators: vec![],
+            },
+            handles,
+            is_async,
+            is_generator,
+            is_sub: false,
         },
-        handles,
-        is_async,
-        is_generator,
-        is_sub: false,
-    }, span))
+        span,
+    ))
 }
 
 fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -2245,7 +2485,9 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 });
             }
             Rule::sub_decl => members.push(ClassMember::Method(Box::new(parse_sub_decl(p)?))),
-            Rule::function_decl => members.push(ClassMember::Method(Box::new(parse_function_decl(p)?))),
+            Rule::function_decl => {
+                members.push(ClassMember::Method(Box::new(parse_function_decl(p)?)))
+            }
             Rule::const_statement => {
                 let (vis, decl) = parse_const_statement(p)?;
                 let init = decl.init.unwrap_or_else(|| Expression::null());
@@ -2310,11 +2552,14 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::ModuleDecl {
-        name,
-        members,
-        visibility: Visibility::Public,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::ModuleDecl {
+            name,
+            members,
+            visibility: Visibility::Public,
+        },
+        span,
+    ))
 }
 
 fn parse_field_modifiers(pair: &Pair<Rule>) -> Modifiers {
@@ -2399,7 +2644,10 @@ fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::NamespaceDecl { name, body }, span))
+    Ok(Statement::with_span(
+        StmtKind::NamespaceDecl { name, body },
+        span,
+    ))
 }
 
 /// Parse an auto-implemented property into a VarDeclarator (field), since it's syntactic sugar.
@@ -2457,7 +2705,11 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     // classes live in the same flat global namespace, so this
                     // matches both .NET BCL parents and user-defined parents.
                     let qualified = type_pair.as_str().to_string();
-                    let unqualified = qualified.rsplit('.').next().unwrap_or(&qualified).to_string();
+                    let unqualified = qualified
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&qualified)
+                        .to_string();
                     parents.push(unqualified);
                 }
             }
@@ -2497,7 +2749,12 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 };
                 if is_ctor {
                     match sub_stmt.kind {
-                        StmtKind::FunctionDecl { params, body, modifiers, .. } => {
+                        StmtKind::FunctionDecl {
+                            params,
+                            body,
+                            modifiers,
+                            ..
+                        } => {
                             members.push(ClassMember::Constructor {
                                 params,
                                 body,
@@ -2613,20 +2870,23 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         inject_implicit_mybase_new(&mut members, &name);
     }
 
-    Ok(Statement::with_span(StmtKind::ClassDecl {
-        name,
-        parents,
-        interfaces,
-        members,
-        modifiers: ClassModifiers {
-            visibility,
-            is_partial,
-            is_abstract: is_must_inherit,
-            is_sealed: is_not_inheritable,
-            is_static: false,
+    Ok(Statement::with_span(
+        StmtKind::ClassDecl {
+            name,
+            parents,
+            interfaces,
+            members,
+            modifiers: ClassModifiers {
+                visibility,
+                is_partial,
+                is_abstract: is_must_inherit,
+                is_sealed: is_not_inheritable,
+                is_static: false,
+            },
+            decorators: vec![],
         },
-        decorators: vec![],
-    }, span))
+        span,
+    ))
 }
 
 /// Inject `MyBase.New()` at the start of every constructor body that doesn't
@@ -2646,9 +2906,10 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str) 
     let mybase_new = || -> Statement {
         // SuperCall { method: Some("New"), args: [] } — same shape the
         // mybase_member_call walker arm produces for explicit `MyBase.New()`.
-        Statement::new(StmtKind::Expr(Expression::new(
-            ExprKind::SuperCall { method: Some("New".to_string()), args: Vec::new() },
-        )))
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::SuperCall {
+            method: Some("New".to_string()),
+            args: Vec::new(),
+        })))
     };
 
     // Me.__control_name = "<lowercased class name>"
@@ -2671,15 +2932,14 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str) 
 
     let starts_with_mybase_new = |body: &[Statement]| -> bool {
         match body.first().map(|s| &s.kind) {
-            Some(StmtKind::Expr(e)) => matches!(
-                &e.kind,
-                ExprKind::SuperCall { .. }
-            ),
+            Some(StmtKind::Expr(e)) => matches!(&e.kind, ExprKind::SuperCall { .. }),
             _ => false,
         }
     };
 
-    let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
+    let has_ctor = members
+        .iter()
+        .any(|m| matches!(m, ClassMember::Constructor { .. }));
     if !has_ctor {
         // Synthesize a default ctor that just calls MyBase.New() and stamps
         // the canonical control name.
@@ -2717,14 +2977,22 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
     let mut to_inject: Vec<(String, Vec<String>)> = Vec::new();
     for m in members.iter_mut() {
         if let ClassMember::Method(stmt) = m {
-            if let StmtKind::FunctionDecl { name: mname, handles, modifiers, .. } = &mut stmt.kind {
+            if let StmtKind::FunctionDecl {
+                name: mname,
+                handles,
+                modifiers,
+                ..
+            } = &mut stmt.kind
+            {
                 if !handles.is_empty() && !modifiers.is_static {
                     to_inject.push((mname.clone(), std::mem::take(handles)));
                 }
             }
         }
     }
-    if to_inject.is_empty() { return; }
+    if to_inject.is_empty() {
+        return;
+    }
 
     // Build the AddHandler statements.
     let mut new_stmts: Vec<Statement> = Vec::new();
@@ -2752,9 +3020,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 null_safe: false,
             });
             new_stmts.push(Statement::new(crate::common::events::add_handler_stmt(
-                control,
-                event,
-                handler,
+                control, event, handler,
             )));
         }
     }
@@ -2773,12 +3039,14 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 )
         )
     });
-    let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
+    let has_ctor = members
+        .iter()
+        .any(|m| matches!(m, ClassMember::Constructor { .. }));
     if !has_ctor && !has_explicit_new {
         members.push(ClassMember::Constructor {
             params: Vec::new(),
             body: new_stmts,
-            base_args: None,  // VB walker injects MyBase.New() into the body; no base_args needed here
+            base_args: None, // VB walker injects MyBase.New() into the body; no base_args needed here
             initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         });
@@ -2816,16 +3084,14 @@ fn parse_property_decl_to_member(pair: Pair<Rule>) -> Result<ClassMember, String
         match p.as_str().to_lowercase().as_str() {
             "public" => visibility = Visibility::Public,
             "private" => visibility = Visibility::Private,
-            _ => {
-                match p.as_rule() {
-                    Rule::identifier => name = p.as_str().to_string(),
-                    Rule::param_list => _parameters = parse_param_list(p)?,
-                    Rule::type_name => return_type = Some(p.as_str().to_string()),
-                    Rule::property_get => getter = Some(parse_property_get(p)?),
-                    Rule::property_set => setter = Some(parse_property_set(p)?),
-                    _ => {}
-                }
-            }
+            _ => match p.as_rule() {
+                Rule::identifier => name = p.as_str().to_string(),
+                Rule::param_list => _parameters = parse_param_list(p)?,
+                Rule::type_name => return_type = Some(p.as_str().to_string()),
+                Rule::property_get => getter = Some(parse_property_get(p)?),
+                Rule::property_set => setter = Some(parse_property_set(p)?),
+                _ => {}
+            },
         }
     }
 
@@ -2929,13 +3195,16 @@ fn parse_parameter(pair: Pair<Rule>) -> Result<Param, String> {
 
 fn parse_array_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    let elements = pair.into_inner()
-        .map(|p| parse_expression(p).map(|value| ArrayElement {
-            key: None,
-            value,
-            spread: false,
-            by_ref: false,
-        }))
+    let elements = pair
+        .into_inner()
+        .map(|p| {
+            parse_expression(p).map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Expression::with_span(ExprKind::Array(elements), span))
 }
@@ -2957,13 +3226,16 @@ fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator)
         }
     }
 
-    Ok((visibility, VarDeclarator {
-        pattern: BindingPattern::Ident(name),
-        type_hint,
-        init,
-        array_bounds: None,
-        with_events: false,
-    }))
+    Ok((
+        visibility,
+        VarDeclarator {
+            pattern: BindingPattern::Ident(name),
+            type_hint,
+            init,
+            array_bounds: None,
+            with_events: false,
+        },
+    ))
 }
 
 fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
@@ -2978,7 +3250,10 @@ fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> 
             .into_inner()
             .map(parse_expression)
             .collect::<Result<Vec<_>, _>>(),
-        _ => Err(format!("Unexpected array bounds rule: {:?}", pair.as_rule())),
+        _ => Err(format!(
+            "Unexpected array bounds rule: {:?}",
+            pair.as_rule()
+        )),
     }
 }
 
@@ -3038,10 +3313,13 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
                         members.push((prop_name, prop_expr));
                     }
                     if let Some(class_name) = &type_hint {
-                        init = Some(emit_vb_object_init_iife(Expression::new(ExprKind::New {
-                            class: Box::new(Expression::ident(class_name)),
-                            args: ctor_args.clone(),
-                        }), members));
+                        init = Some(emit_vb_object_init_iife(
+                            Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident(class_name)),
+                                args: ctor_args.clone(),
+                            }),
+                            members,
+                        ));
                     }
                 }
                 _ => {}
@@ -3104,11 +3382,14 @@ fn parse_redim_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::ReDim {
-        preserve,
-        array,
-        bounds,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::ReDim {
+            preserve,
+            array,
+            bounds,
+        },
+        span,
+    ))
 }
 
 fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -3149,7 +3430,9 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let mut value_expr = None;
             for p in inner {
                 match p.as_rule() {
-                    Rule::identifier | Rule::member_identifier => members.push(p.as_str().to_string()),
+                    Rule::identifier | Rule::member_identifier => {
+                        members.push(p.as_str().to_string())
+                    }
                     Rule::expression => value_expr = Some(parse_expression(p)?),
                     _ => {}
                 }
@@ -3186,12 +3469,15 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let mut value_expr = None;
             for p in inner {
                 match p.as_rule() {
-                    Rule::identifier | Rule::member_identifier => members.push(p.as_str().to_string()),
+                    Rule::identifier | Rule::member_identifier => {
+                        members.push(p.as_str().to_string())
+                    }
                     Rule::expression => value_expr = Some(parse_expression(p)?),
                     _ => {}
                 }
             }
-            let value = value_expr.ok_or_else(|| "me_assign_statement missing value".to_string())?;
+            let value =
+                value_expr.ok_or_else(|| "me_assign_statement missing value".to_string())?;
             if members.is_empty() {
                 return Err("me_assign_statement needs at least one member".to_string());
             }
@@ -3222,12 +3508,15 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let mut value_expr = None;
             for p in inner {
                 match p.as_rule() {
-                    Rule::identifier | Rule::member_identifier => members.push(p.as_str().to_string()),
+                    Rule::identifier | Rule::member_identifier => {
+                        members.push(p.as_str().to_string())
+                    }
                     Rule::expression => value_expr = Some(parse_expression(p)?),
                     _ => {}
                 }
             }
-            let value = value_expr.ok_or_else(|| "mybase_assign_statement missing value".to_string())?;
+            let value =
+                value_expr.ok_or_else(|| "mybase_assign_statement missing value".to_string())?;
             if members.is_empty() {
                 return Err("mybase_assign_statement needs at least one member".to_string());
             }
@@ -3279,7 +3568,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let value = parse_expression(inner.next().unwrap())?;
 
             StmtKind::Expr(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(if is_right { "__vb_rset_stmt" } else { "__vb_lset_stmt" })),
+                callee: Box::new(Expression::ident(if is_right {
+                    "__vb_rset_stmt"
+                } else {
+                    "__vb_lset_stmt"
+                })),
                 args: vec![Argument::positional(target), Argument::positional(value)],
                 optional: false,
             }))
@@ -3289,7 +3582,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let target = parse_l_value_expression(inner.next().unwrap())?;
             let start = parse_expression(inner.next().unwrap())?;
             let mut trailing: Vec<_> = inner.collect();
-            let value = parse_expression(trailing.pop().ok_or_else(|| "Mid statement missing value".to_string())?)?;
+            let value = parse_expression(
+                trailing
+                    .pop()
+                    .ok_or_else(|| "Mid statement missing value".to_string())?,
+            )?;
             let count = if let Some(count_pair) = trailing.pop() {
                 parse_expression(count_pair)?
             } else {
@@ -3323,7 +3620,12 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 "^=" => CompoundOp::Pow,
                 "<<=" => CompoundOp::Shl,
                 ">>=" => CompoundOp::Shr,
-                _ => return Err(format!("Unknown compound assignment operator: {}", op_pair.as_str())),
+                _ => {
+                    return Err(format!(
+                        "Unknown compound assignment operator: {}",
+                        op_pair.as_str()
+                    ));
+                }
             };
 
             let value = parse_expression(inner.next().unwrap())?;
@@ -3357,7 +3659,8 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::using_statement => return parse_using_statement(pair),
         Rule::exit_statement => {
             let mut inner = pair.into_inner();
-            let exit_type = inner.next()
+            let exit_type = inner
+                .next()
                 .ok_or_else(|| "Exit statement missing type".to_string())?
                 .as_str()
                 .to_lowercase();
@@ -3382,7 +3685,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();
-            let value = inner.next().map(parse_expression).transpose()?.map(Box::new);
+            let value = inner
+                .next()
+                .map(parse_expression)
+                .transpose()?
+                .map(Box::new);
             StmtKind::Expr(Expression::new(ExprKind::Yield(value)))
         }
         Rule::continue_statement => return parse_continue_statement(pair),
@@ -3408,7 +3715,13 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
             // Check if it's a member_call, member_access, call_expression, me_member_call, cast_member_call, or simple identifier
             match first.as_rule() {
-                Rule::postfix | Rule::cast_member_call | Rule::me_member_call | Rule::mybase_member_call | Rule::member_call | Rule::member_access | Rule::call_expression => {
+                Rule::postfix
+                | Rule::cast_member_call
+                | Rule::me_member_call
+                | Rule::mybase_member_call
+                | Rule::member_call
+                | Rule::member_access
+                | Rule::call_expression => {
                     // Parse as expression and convert to statement
                     let expr = parse_expression(first)?;
                     StmtKind::Expr(expr)
@@ -3416,7 +3729,8 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 Rule::identifier => {
                     // Could be: identifier, identifier(args), or identifier args
                     let name = first.as_str().to_string();
-                    let arguments = inner.next()
+                    let arguments = inner
+                        .next()
                         .map(|p| {
                             if p.as_rule() == Rule::argument_list {
                                 parse_argument_list(p)
@@ -3453,22 +3767,14 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let event_target_str = inner.next().unwrap().as_str().to_string();
             let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
-            crate::common::events::add_handler_stmt(
-                control,
-                event,
-                handler,
-            )
+            crate::common::events::add_handler_stmt(control, event, handler)
         }
         Rule::removehandler_statement => {
             let mut inner = pair.into_inner();
             let event_target_str = inner.next().unwrap().as_str().to_string();
             let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
-            crate::common::events::remove_handler_stmt(
-                control,
-                event,
-                handler,
-            )
+            crate::common::events::remove_handler_stmt(control, event, handler)
         }
         Rule::static_statement => {
             let mut name = String::new();
@@ -3508,7 +3814,10 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             } else {
                 // On Error GoTo <label> or On Error GoTo 0
                 let inner = pair.into_inner();
-                let target = inner.last().map(|p| p.as_str().to_string()).unwrap_or_else(|| "0".to_string());
+                let target = inner
+                    .last()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_else(|| "0".to_string());
                 StmtKind::OnErrorGoTo(target)
             }
         }
@@ -3517,13 +3826,12 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::Empty
         }
         // New declarations — parse gracefully as no-op statements for now
-        Rule::interface_decl | Rule::structure_decl |
-        Rule::event_decl | Rule::delegate_sub_decl | Rule::delegate_function_decl => {
-            StmtKind::Empty
-        }
-        Rule::namespace_decl => {
-            StmtKind::Empty
-        }
+        Rule::interface_decl
+        | Rule::structure_decl
+        | Rule::event_decl
+        | Rule::delegate_sub_decl
+        | Rule::delegate_function_decl => StmtKind::Empty,
+        Rule::namespace_decl => StmtKind::Empty,
         Rule::synclock_statement => return parse_synclock_statement(pair),
         _ => return Err(format!("Unexpected rule: {:?}", pair.as_rule())),
     };
@@ -3551,7 +3859,10 @@ fn parse_if_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 for p_inner in p.into_inner() {
                     match p_inner.as_rule() {
                         Rule::expression => elseif_condition = Some(parse_expression(p_inner)?),
-                        Rule::if_body => { elseif_body = parse_block(p_inner)?; break; }
+                        Rule::if_body => {
+                            elseif_body = parse_block(p_inner)?;
+                            break;
+                        }
                         _ => {}
                     }
                 }
@@ -3574,12 +3885,15 @@ fn parse_if_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::If {
-        cond,
-        then_body,
-        elifs,
-        else_body,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        },
+        span,
+    ))
 }
 
 fn parse_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -3663,10 +3977,16 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let step_is_negative = match &step_val.kind {
         ExprKind::Lit(Literal::Int(n)) => *n < 0,
         ExprKind::Lit(Literal::Float(f)) => *f < 0.0,
-        ExprKind::Unary { op: UnaryOp::Neg, .. } => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg, ..
+        } => true,
         _ => false,
     };
-    let cond_op = if step_is_negative { BinOp::GtEq } else { BinOp::LtEq };
+    let cond_op = if step_is_negative {
+        BinOp::GtEq
+    } else {
+        BinOp::LtEq
+    };
     let cond = Expression::new(ExprKind::Binary {
         op: cond_op,
         left: Box::new(Expression::ident(&variable)),
@@ -3681,12 +4001,15 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         })),
     });
 
-    Ok(Statement::with_span(StmtKind::For {
-        init: Some(Box::new(init)),
-        cond: Some(cond),
-        update: Some(update),
-        body,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::For {
+            init: Some(Box::new(init)),
+            cond: Some(cond),
+            update: Some(update),
+            body,
+        },
+        span,
+    ))
 }
 
 fn parse_while_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -3710,11 +4033,14 @@ fn parse_while_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::While {
-        cond,
-        body,
-        else_body: None,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::While {
+            cond,
+            body,
+            else_body: None,
+        },
+        span,
+    ))
 }
 
 fn parse_do_loop_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -3770,29 +4096,41 @@ fn parse_do_loop_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     if let Some((is_until, cond)) = pre_condition {
         // Do While/Until <cond> ... Loop → While loop
         let effective_cond = if is_until {
-            Expression::new(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(cond) })
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(cond),
+            })
         } else {
             cond
         };
-        Ok(Statement::with_span(StmtKind::While {
-            cond: effective_cond,
-            body,
-            else_body: None,
-        }, span))
+        Ok(Statement::with_span(
+            StmtKind::While {
+                cond: effective_cond,
+                body,
+                else_body: None,
+            },
+            span,
+        ))
     } else if let Some((is_until, cond)) = post_condition {
         // Do ... Loop While/Until <cond> → DoWhile
-        Ok(Statement::with_span(StmtKind::DoWhile {
-            body,
-            cond,
-            until: is_until,
-        }, span))
+        Ok(Statement::with_span(
+            StmtKind::DoWhile {
+                body,
+                cond,
+                until: is_until,
+            },
+            span,
+        ))
     } else {
         // Do ... Loop (infinite)
-        Ok(Statement::with_span(StmtKind::DoWhile {
-            body,
-            cond: Expression::bool(true),
-            until: false,
-        }, span))
+        Ok(Statement::with_span(
+            StmtKind::DoWhile {
+                body,
+                cond: Expression::bool(true),
+                until: false,
+            },
+            span,
+        ))
     }
 }
 
@@ -3809,12 +4147,23 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::named_argument => {
                 let mut inner = pair.into_inner();
                 let _name = inner.next();
-                pair = inner.next().ok_or_else(|| "Named argument missing value".to_string())?;
+                pair = inner
+                    .next()
+                    .ok_or_else(|| "Named argument missing value".to_string())?;
                 continue;
             }
-            Rule::expression | Rule::logical_imp | Rule::logical_eqv | Rule::logical_xor | Rule::logical_or | Rule::logical_and |
-            Rule::equality | Rule::comparison | Rule::bit_shift | Rule::additive |
-            Rule::multiplicative | Rule::exponent => {
+            Rule::expression
+            | Rule::logical_imp
+            | Rule::logical_eqv
+            | Rule::logical_xor
+            | Rule::logical_or
+            | Rule::logical_and
+            | Rule::equality
+            | Rule::comparison
+            | Rule::bit_shift
+            | Rule::additive
+            | Rule::multiplicative
+            | Rule::exponent => {
                 let mut probe = pair.clone().into_inner();
                 let first = probe.next().unwrap();
                 if probe.next().is_none() {
@@ -3839,7 +4188,8 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::lambda_expression => return parse_lambda_expression(pair),
             Rule::nameof_expression => {
-                let name = pair.into_inner()
+                let name = pair
+                    .into_inner()
                     .find(|p| p.as_rule() == Rule::dotted_identifier)
                     .map(|p| {
                         let text = p.as_str();
@@ -3849,14 +4199,17 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 ExprKind::Lit(Literal::Str(name))
             }
             Rule::gettype_expression => {
-                let type_name = pair.into_inner()
+                let type_name = pair
+                    .into_inner()
                     .find(|p| p.as_rule() == Rule::type_name)
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
                 ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
-                        value: Expression::string(type_name.rsplit('.').next().unwrap_or(&type_name)),
+                        value: Expression::string(
+                            type_name.rsplit('.').next().unwrap_or(&type_name),
+                        ),
                     },
                     ObjectProperty::KeyValue {
                         key: Expression::string("FullName"),
@@ -3936,7 +4289,8 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::cast_expression => {
                 let text = pair.as_str();
-                let cast_kind = if text.len() >= 10 && text[..10].eq_ignore_ascii_case("DirectCast") {
+                let cast_kind = if text.len() >= 10 && text[..10].eq_ignore_ascii_case("DirectCast")
+                {
                     "DirectCast"
                 } else if text.len() >= 7 && text[..7].eq_ignore_ascii_case("TryCast") {
                     "TryCast"
@@ -3999,7 +4353,9 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         }
                         match parse_expression_str(&expr_text) {
                             Ok(expr) => parts.push(InterpolPart::Expr(expr)),
-                            Err(_) => parts.push(InterpolPart::Expr(Expression::ident(expr_text.trim()))),
+                            Err(_) => {
+                                parts.push(InterpolPart::Expr(Expression::ident(expr_text.trim())))
+                            }
                         }
                     } else if ch == '}' {
                         if chars.peek() == Some(&'}') {
@@ -4028,7 +4384,9 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::string_literal => {
-                let s = pair.as_str().trim_end_matches(|c: char| c == 'c' || c == 'C');
+                let s = pair
+                    .as_str()
+                    .trim_end_matches(|c: char| c == 'c' || c == 'C');
                 ExprKind::Lit(Literal::Str(s[1..s.len() - 1].replace("\"\"", "\"")))
             }
             Rule::numeric_literal => {
@@ -4042,15 +4400,20 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0)))
                 }
             }
-            Rule::boolean_literal => ExprKind::Lit(Literal::Bool(pair.as_str().eq_ignore_ascii_case("true"))),
+            Rule::boolean_literal => {
+                ExprKind::Lit(Literal::Bool(pair.as_str().eq_ignore_ascii_case("true")))
+            }
             Rule::array_literal => {
-                let elements = pair.into_inner()
-                    .map(|p| parse_expression(p).map(|value| ArrayElement {
-                        key: None,
-                        value,
-                        spread: false,
-                        by_ref: false,
-                    }))
+                let elements = pair
+                    .into_inner()
+                    .map(|p| {
+                        parse_expression(p).map(|value| ArrayElement {
+                            key: None,
+                            value,
+                            spread: false,
+                            by_ref: false,
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 ExprKind::Array(elements)
             }
@@ -4073,13 +4436,15 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         Rule::generic_suffix => class_name.push_str(p.as_str()),
                         Rule::argument_list => args = parse_argument_list(p)?,
                         Rule::array_literal => {
-                            let elements = p.into_inner()
+                            let elements = p
+                                .into_inner()
                                 .map(parse_expression)
                                 .collect::<Result<Vec<_>, _>>()?;
                             array_init = Some(elements);
                         }
                         Rule::from_initializer => {
-                            let elements = p.into_inner()
+                            let elements = p
+                                .into_inner()
                                 .filter(|e| e.as_rule() == Rule::expression)
                                 .map(parse_expression)
                                 .collect::<Result<Vec<_>, _>>()?;
@@ -4087,10 +4452,13 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             for elem in elements {
                                 all_args.push(Argument::positional(elem));
                             }
-                            return Ok(Expression::with_span(ExprKind::New {
-                                class: Box::new(Expression::ident(&class_name)),
-                                args: all_args,
-                            }, span));
+                            return Ok(Expression::with_span(
+                                ExprKind::New {
+                                    class: Box::new(Expression::ident(&class_name)),
+                                    args: all_args,
+                                },
+                                span,
+                            ));
                         }
                         Rule::with_initializer => {
                             let mut members = Vec::new();
@@ -4103,21 +4471,32 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                                 let prop_expr = parse_expression(mi_inner.next().unwrap())?;
                                 members.push((prop_name, prop_expr));
                             }
-                            return Ok(emit_vb_object_init_iife(Expression::with_span(ExprKind::New {
-                                class: Box::new(Expression::ident(&class_name)),
-                                args,
-                            }, span), members));
+                            return Ok(emit_vb_object_init_iife(
+                                Expression::with_span(
+                                    ExprKind::New {
+                                        class: Box::new(Expression::ident(&class_name)),
+                                        args,
+                                    },
+                                    span,
+                                ),
+                                members,
+                            ));
                         }
                         _ => {}
                     }
                 }
                 if let Some(elements) = array_init {
-                    ExprKind::Array(elements.into_iter().map(|value| ArrayElement {
-                        key: None,
-                        value,
-                        spread: false,
-                        by_ref: false,
-                    }).collect())
+                    ExprKind::Array(
+                        elements
+                            .into_iter()
+                            .map(|value| ArrayElement {
+                                key: None,
+                                value,
+                                spread: false,
+                                by_ref: false,
+                            })
+                            .collect(),
+                    )
                 } else {
                     ExprKind::New {
                         class: Box::new(Expression::ident(&class_name)),
@@ -4158,7 +4537,9 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 let mut arguments = Vec::new();
                 for p in inner {
                     match p.as_rule() {
-                        Rule::identifier | Rule::member_identifier => identifiers.push(p.as_str().to_string()),
+                        Rule::identifier | Rule::member_identifier => {
+                            identifiers.push(p.as_str().to_string())
+                        }
                         Rule::argument_list => arguments = parse_argument_list(p)?,
                         _ => {}
                     }
@@ -4237,7 +4618,9 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 for p in inner {
                     match p.as_rule() {
                         Rule::me_keyword => {}
-                        Rule::identifier | Rule::member_identifier => identifiers.push(p.as_str().to_string()),
+                        Rule::identifier | Rule::member_identifier => {
+                            identifiers.push(p.as_str().to_string())
+                        }
                         Rule::argument_list => arguments = parse_argument_list(p)?,
                         _ => {}
                     }
@@ -4272,7 +4655,9 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 for p in inner {
                     match p.as_rule() {
                         Rule::mybase_keyword => {}
-                        Rule::identifier | Rule::member_identifier => identifiers.push(p.as_str().to_string()),
+                        Rule::identifier | Rule::member_identifier => {
+                            identifiers.push(p.as_str().to_string())
+                        }
                         Rule::argument_list => arguments = parse_argument_list(p)?,
                         _ => {}
                     }
@@ -4321,35 +4706,44 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
-            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::eqv_op | Rule::imp_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
-                match op_pair.as_str().to_lowercase().as_str() {
-                    "+" => BinOp::Add,
-                    "-" => BinOp::Sub,
-                    "*" => BinOp::Mul,
-                    "/" => BinOp::Div,
-                    "\\" => BinOp::IDiv,
-                    "mod" => BinOp::Mod,
-                    "^" => BinOp::Pow,
-                    "&" => BinOp::Concat,
-                    "=" => BinOp::Eq,
-                    "<>" => BinOp::NotEq,
-                    "<" => BinOp::Lt,
-                    "<=" => BinOp::LtEq,
-                    ">" => BinOp::Gt,
-                    ">=" => BinOp::GtEq,
-                    "and" | "andalso" => BinOp::And,
-                    "or" | "orelse" => BinOp::Or,
-                    "xor" => BinOp::Xor,
-                    "eqv" => BinOp::Eqv,
-                    "imp" => BinOp::Imp,
-                    "<<" => BinOp::Shl,
-                    ">>" => BinOp::Shr,
-                    "is" => BinOp::Is,
-                    "isnot" => BinOp::IsNot,
-                    "like" => BinOp::Like,
-                    _ => return Err(format!("Unknown operator: {}", op_pair.as_str())),
-                }
-            }
+            Rule::add_op
+            | Rule::mult_op
+            | Rule::eq_op
+            | Rule::comp_op
+            | Rule::and_op
+            | Rule::or_op
+            | Rule::xor_op
+            | Rule::eqv_op
+            | Rule::imp_op
+            | Rule::shift_op
+            | Rule::like_op
+            | Rule::exp_op => match op_pair.as_str().to_lowercase().as_str() {
+                "+" => BinOp::Add,
+                "-" => BinOp::Sub,
+                "*" => BinOp::Mul,
+                "/" => BinOp::Div,
+                "\\" => BinOp::IDiv,
+                "mod" => BinOp::Mod,
+                "^" => BinOp::Pow,
+                "&" => BinOp::Concat,
+                "=" => BinOp::Eq,
+                "<>" => BinOp::NotEq,
+                "<" => BinOp::Lt,
+                "<=" => BinOp::LtEq,
+                ">" => BinOp::Gt,
+                ">=" => BinOp::GtEq,
+                "and" | "andalso" => BinOp::And,
+                "or" | "orelse" => BinOp::Or,
+                "xor" => BinOp::Xor,
+                "eqv" => BinOp::Eqv,
+                "imp" => BinOp::Imp,
+                "<<" => BinOp::Shl,
+                ">>" => BinOp::Shr,
+                "is" => BinOp::Is,
+                "isnot" => BinOp::IsNot,
+                "like" => BinOp::Like,
+                _ => return Err(format!("Unknown operator: {}", op_pair.as_str())),
+            },
             _ => return Ok(operands.pop().unwrap()),
         };
 
@@ -4989,32 +5383,42 @@ fn parse_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     match first.as_rule() {
         Rule::not_op => {
             let operand = parse_expression(inner.next().unwrap())?;
-            Ok(Expression::with_span(ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: Box::new(operand),
-            }, span))
+            Ok(Expression::with_span(
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(operand),
+                },
+                span,
+            ))
         }
         Rule::pos_op => {
             let operand = parse_expression(inner.next().unwrap())?;
-            Ok(Expression::with_span(ExprKind::Unary {
-                op: UnaryOp::Pos,
-                expr: Box::new(operand),
-            }, span))
+            Ok(Expression::with_span(
+                ExprKind::Unary {
+                    op: UnaryOp::Pos,
+                    expr: Box::new(operand),
+                },
+                span,
+            ))
         }
         Rule::neg_op => {
             let operand = parse_expression(inner.next().unwrap())?;
-            Ok(Expression::with_span(ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr: Box::new(operand),
-            }, span))
+            Ok(Expression::with_span(
+                ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(operand),
+                },
+                span,
+            ))
         }
         Rule::await_op => {
             let operand = parse_expression(inner.next().unwrap())?;
-            Ok(Expression::with_span(ExprKind::Await(Box::new(operand)), span))
+            Ok(Expression::with_span(
+                ExprKind::Await(Box::new(operand)),
+                span,
+            ))
         }
-        Rule::postfix => {
-            parse_postfix_expression(first)
-        }
+        Rule::postfix => parse_postfix_expression(first),
         _ => {
             // Fallback: treat as primary
             parse_expression(first)
@@ -5080,12 +5484,12 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             }
             if name.eq_ignore_ascii_case("Round") {
                 if let Some(path) = dotted_expr_name(&expr) {
-                    if path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math") {
+                    if path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math")
+                    {
                         if arguments.len() >= 2 {
-                            if let Some(folded) = try_fold_vb_double_round(
-                                &arguments[0].value,
-                                &arguments[1].value,
-                            ) {
+                            if let Some(folded) =
+                                try_fold_vb_double_round(&arguments[0].value, &arguments[1].value)
+                            {
                                 return Ok(folded);
                             }
                         }
@@ -5219,14 +5623,15 @@ fn parse_try_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                 }
             }
-            Rule::try_end => {},
+            Rule::try_end => {}
             _ => {}
         }
     }
 
-    if let Some(exit_index) = body.iter().position(|stmt| {
-        matches!(stmt.kind, StmtKind::Break(BreakTarget::Kind(ExitKind::Try)))
-    }) {
+    if let Some(exit_index) = body
+        .iter()
+        .position(|stmt| matches!(stmt.kind, StmtKind::Break(BreakTarget::Kind(ExitKind::Try))))
+    {
         body.truncate(exit_index);
     }
 
@@ -5236,12 +5641,15 @@ fn parse_try_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::Try {
-        body,
-        catches,
-        else_body: None,
-        finally,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::Try {
+            body,
+            catches,
+            else_body: None,
+            finally,
+        },
+        span,
+    ))
 }
 
 fn parse_catch_block(pair: Pair<Rule>) -> Result<CatchClause, String> {
@@ -5300,11 +5708,15 @@ fn parse_lambda_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let mut params = Vec::new();
 
-    let mut next_pair = inner.next().ok_or_else(|| "Lambda missing body".to_string())?;
+    let mut next_pair = inner
+        .next()
+        .ok_or_else(|| "Lambda missing body".to_string())?;
 
     if next_pair.as_rule() == Rule::param_list {
         params = parse_param_list(next_pair)?;
-        next_pair = inner.next().ok_or_else(|| "Lambda missing body".to_string())?;
+        next_pair = inner
+            .next()
+            .ok_or_else(|| "Lambda missing body".to_string())?;
     }
 
     let body = match next_pair.as_rule() {
@@ -5316,7 +5728,9 @@ fn parse_lambda_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 match item.as_rule() {
                     Rule::statement_line => {
                         for stmt_pair in item.into_inner() {
-                            if stmt_pair.as_rule() != Rule::NEWLINE && stmt_pair.as_rule() != Rule::EOI {
+                            if stmt_pair.as_rule() != Rule::NEWLINE
+                                && stmt_pair.as_rule() != Rule::EOI
+                            {
                                 body_stmts.push(parse_statement(stmt_pair)?);
                             }
                         }
@@ -5338,12 +5752,15 @@ fn parse_lambda_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     };
 
-    Ok(Expression::with_span(ExprKind::Lambda {
-        params,
-        body,
-        is_async: false,
-        captures: vec![],
-    }, span))
+    Ok(Expression::with_span(
+        ExprKind::Lambda {
+            params,
+            body,
+            is_async: false,
+            captures: vec![],
+        },
+        span,
+    ))
 }
 
 fn parse_block_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -5392,28 +5809,34 @@ fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut loop_var = variable.clone();
     if let Some(type_hint) = variable_type {
         let source_var = format!("__vb_foreach_item_{}", hidden_suffix);
-        body.insert(0, Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(variable),
-                type_hint: Some(type_hint),
-                init: Some(Expression::ident(&source_var)),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Dim,
-        }));
+        body.insert(
+            0,
+            Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(variable),
+                    type_hint: Some(type_hint),
+                    init: Some(Expression::ident(&source_var)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Dim,
+            }),
+        );
         loop_var = source_var;
     }
 
-    Ok(Statement::with_span(StmtKind::ForIn {
-        var: loop_var,
-        key: None,
-        iter: collection.ok_or_else(|| "For Each missing collection".to_string())?,
-        body,
-        of: true, // VB For Each iterates values, like JS for...of
-        else_body: None,
-        is_async: false,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::ForIn {
+            var: loop_var,
+            key: None,
+            iter: collection.ok_or_else(|| "For Each missing collection".to_string())?,
+            body,
+            of: true, // VB For Each iterates values, like JS for...of
+            else_body: None,
+            is_async: false,
+        },
+        span,
+    ))
 }
 
 fn parse_with_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5436,11 +5859,17 @@ fn parse_with_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::With {
-        items: vec![WithItem { expr: object, var: None }],
-        body,
-        is_async: false,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::With {
+            items: vec![WithItem {
+                expr: object,
+                var: None,
+            }],
+            body,
+            is_async: false,
+        },
+        span,
+    ))
 }
 
 fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5464,7 +5893,8 @@ fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => {}
                     }
                 }
-                let resource = resource_expr.ok_or_else(|| "Using statement missing resource expression".to_string())?;
+                let resource = resource_expr
+                    .ok_or_else(|| "Using statement missing resource expression".to_string())?;
                 resources.push((var_name, resource));
             }
             Rule::statement_line => {
@@ -5482,11 +5912,14 @@ fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut nested_body = body;
     let mut nested_stmt = None;
     for (var, resource) in resources.into_iter().rev() {
-        let using_stmt = Statement::with_span(StmtKind::Using {
-            var,
-            resource,
-            body: nested_body,
-        }, span.clone());
+        let using_stmt = Statement::with_span(
+            StmtKind::Using {
+                var,
+                resource,
+                body: nested_body,
+            },
+            span.clone(),
+        );
         nested_body = vec![using_stmt.clone()];
         nested_stmt = Some(using_stmt);
     }
@@ -5520,23 +5953,30 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     .find(|e| e.as_rule() == Rule::expression)
                     .map(|e| parse_expression(e))
                     .transpose()?;
-                members.push(EnumMember { name: member_name, value, constructor_args: Vec::new() });
+                members.push(EnumMember {
+                    name: member_name,
+                    value,
+                    constructor_args: Vec::new(),
+                });
             }
             Rule::enum_end | Rule::NEWLINE => {}
             _ => {}
         }
     }
 
-    Ok(Statement::with_span(StmtKind::EnumDecl {
-        name,
-        members,
-        visibility,
-        is_flags: false,
-        backing_type: None,
-        interfaces: Vec::new(),
-        body_members: Vec::new(),
-        decorators: vec![],
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::EnumDecl {
+            name,
+            members,
+            visibility,
+            is_flags: false,
+            backing_type: None,
+            interfaces: Vec::new(),
+            body_members: Vec::new(),
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn parse_single_line_if(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5552,12 +5992,15 @@ fn parse_single_line_if(pair: Pair<Rule>) -> Result<Statement, String> {
         None
     };
 
-    Ok(Statement::with_span(StmtKind::If {
-        cond,
-        then_body,
-        elifs: Vec::new(),
-        else_body,
-    }, span))
+    Ok(Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs: Vec::new(),
+            else_body,
+        },
+        span,
+    ))
 }
 
 fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
@@ -5571,9 +6014,13 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
 
     for fp in pair.into_inner() {
         match fp.as_rule() {
-            Rule::withevents_keyword => { is_with_events = true; }
+            Rule::withevents_keyword => {
+                is_with_events = true;
+            }
             Rule::visibility_modifier | Rule::sub_modifier_keyword | Rule::partial_keyword => {} // modifiers handled by caller
-            Rule::dim_new_keyword => { is_new = true; }
+            Rule::dim_new_keyword => {
+                is_new = true;
+            }
             Rule::identifier => field_name = fp.as_str().to_string(),
             Rule::type_name => field_type = Some(fp.as_str().to_string()),
             Rule::array_rank_spec => {
@@ -5639,7 +6086,14 @@ fn parse_open_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         _ => return Err(format!("Unknown file mode: {}", mode_pair.as_str())),
     };
     let file_number = parse_expression(inner.next().unwrap())?;
-    Ok(Statement::with_span(StmtKind::OpenFile { path: file_path, mode, file_number }, span))
+    Ok(Statement::with_span(
+        StmtKind::OpenFile {
+            path: file_path,
+            mode,
+            file_number,
+        },
+        span,
+    ))
 }
 
 fn parse_close_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5654,22 +6108,30 @@ fn parse_print_file_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
     let file_number = parse_expression(inner.next().unwrap())?;
-    let items = inner.next()
+    let items = inner
+        .next()
         .map(|p| parse_argument_list(p).map(|args| args.into_iter().map(|a| a.value).collect()))
         .transpose()?
         .unwrap_or_default();
-    Ok(Statement::with_span(StmtKind::PrintFile { file_number, items }, span))
+    Ok(Statement::with_span(
+        StmtKind::PrintFile { file_number, items },
+        span,
+    ))
 }
 
 fn parse_write_file_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
     let file_number = parse_expression(inner.next().unwrap())?;
-    let items = inner.next()
+    let items = inner
+        .next()
         .map(|p| parse_argument_list(p).map(|args| args.into_iter().map(|a| a.value).collect()))
         .transpose()?
         .unwrap_or_default();
-    Ok(Statement::with_span(StmtKind::WriteFile { file_number, items }, span))
+    Ok(Statement::with_span(
+        StmtKind::WriteFile { file_number, items },
+        span,
+    ))
 }
 
 fn parse_input_file_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5682,7 +6144,13 @@ fn parse_input_file_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             variables.push(Expression::ident(p.as_str()));
         }
     }
-    Ok(Statement::with_span(StmtKind::InputFile { file_number, variables }, span))
+    Ok(Statement::with_span(
+        StmtKind::InputFile {
+            file_number,
+            variables,
+        },
+        span,
+    ))
 }
 
 fn parse_line_input_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5690,7 +6158,13 @@ fn parse_line_input_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut inner = pair.into_inner();
     let file_number = parse_expression(inner.next().unwrap())?;
     let variable = inner.next().unwrap().as_str().to_string();
-    Ok(Statement::with_span(StmtKind::LineInput { file_number, variable }, span))
+    Ok(Statement::with_span(
+        StmtKind::LineInput {
+            file_number,
+            variable,
+        },
+        span,
+    ))
 }
 
 fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5717,7 +6191,10 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                             let expr1 = parse_expression(first)?;
                             if let Some(next) = cond_inner.next() {
                                 let expr2 = parse_expression(next)?;
-                                CaseCondition::Range { from: expr1, to: expr2 }
+                                CaseCondition::Range {
+                                    from: expr1,
+                                    to: expr2,
+                                }
                             } else {
                                 CaseCondition::Value(expr1)
                             }
@@ -5730,12 +6207,22 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                                 "<=" => ComparisonOp::LtEq,
                                 ">" => ComparisonOp::Gt,
                                 ">=" => ComparisonOp::GtEq,
-                                _ => return Err(format!("Unknown comparison operator: {}", first.as_str())),
+                                _ => {
+                                    return Err(format!(
+                                        "Unknown comparison operator: {}",
+                                        first.as_str()
+                                    ));
+                                }
                             };
                             let expr = parse_expression(cond_inner.next().unwrap())?;
                             CaseCondition::Comparison { op, expr }
                         }
-                        _ => return Err(format!("Unexpected rule in case condition: {:?}", first.as_rule())),
+                        _ => {
+                            return Err(format!(
+                                "Unexpected rule in case condition: {:?}",
+                                first.as_rule()
+                            ));
+                        }
                     };
                     conditions.push(condition);
                 }
@@ -5770,7 +6257,14 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::Switch { expr, cases, default }, span))
+    Ok(Statement::with_span(
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        },
+        span,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -5839,8 +6333,12 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 let mut is_readonly = false;
                 let mut is_writeonly = false;
                 let txt = p.as_str().to_lowercase();
-                if txt.starts_with("readonly") { is_readonly = true; }
-                if txt.starts_with("writeonly") { is_writeonly = true; }
+                if txt.starts_with("readonly") {
+                    is_readonly = true;
+                }
+                if txt.starts_with("writeonly") {
+                    is_writeonly = true;
+                }
                 for pp in p.into_inner() {
                     match pp.as_rule() {
                         Rule::identifier => pname = pp.as_str().to_string(),
@@ -5877,7 +6375,15 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::InterfaceDecl { name, parents, members, decorators: vec![] }, span))
+    Ok(Statement::with_span(
+        StmtKind::InterfaceDecl {
+            name,
+            parents,
+            members,
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -5963,7 +6469,16 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::StructDecl { name, interfaces, members, visibility, decorators: vec![] }, span))
+    Ok(Statement::with_span(
+        StmtKind::StructDecl {
+            name,
+            interfaces,
+            members,
+            visibility,
+            decorators: vec![],
+        },
+        span,
+    ))
 }
 
 fn parse_event_decl_to_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -6015,7 +6530,13 @@ fn parse_synclock_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
-    Ok(Statement::with_span(StmtKind::Lock { expr: lock_expr, body }, span))
+    Ok(Statement::with_span(
+        StmtKind::Lock {
+            expr: lock_expr,
+            body,
+        },
+        span,
+    ))
 }
 
 fn parse_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -6037,7 +6558,10 @@ fn parse_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
             while let Some(p) = from_inner.next() {
                 match p.as_rule() {
-                    Rule::expression => { collection_expr = parse_expression(p)?; break; }
+                    Rule::expression => {
+                        collection_expr = parse_expression(p)?;
+                        break;
+                    }
                     Rule::type_name => {} // skip
                     _ => {}
                 }
@@ -6090,10 +6614,17 @@ fn parse_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             let mut ord_inner = ord.into_inner();
                             let key_expr = parse_expression(ord_inner.next().unwrap())?;
                             let descending = matches!(
-                                ord_inner.next().map(|x| x.as_str().to_lowercase()).as_deref(),
+                                ord_inner
+                                    .next()
+                                    .map(|x| x.as_str().to_lowercase())
+                                    .as_deref(),
                                 Some("descending")
                             );
-                            let method = if descending { "OrderByDescending" } else { "OrderBy" };
+                            let method = if descending {
+                                "OrderByDescending"
+                            } else {
+                                "OrderBy"
+                            };
                             let lambda = Expression::new(ExprKind::Lambda {
                                 params: vec![Param {
                                     name: range_var.clone(),
@@ -6134,9 +6665,10 @@ fn parse_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 let inner_sg = p.into_inner().next().unwrap();
                 match inner_sg.as_rule() {
                     Rule::select_clause => {
-                        let exprs: Vec<Expression> = inner_sg.into_inner()
+                        let exprs: Vec<Expression> = inner_sg
+                            .into_inner()
                             .map(|x| parse_expression(x))
-                            .collect::<Result<Vec<_>,_>>()?;
+                            .collect::<Result<Vec<_>, _>>()?;
                         if !exprs.is_empty() {
                             // .Select(Function(x) expr)
                             let select_body = if exprs.len() == 1 {
@@ -6144,9 +6676,15 @@ fn parse_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             } else {
                                 // Multiple select expressions → tuple-like
                                 Expression::new(ExprKind::Array(
-                                    exprs.into_iter().map(|e| ArrayElement {
-                                        key: None, value: e, spread: false, by_ref: false,
-                                    }).collect()
+                                    exprs
+                                        .into_iter()
+                                        .map(|e| ArrayElement {
+                                            key: None,
+                                            value: e,
+                                            spread: false,
+                                            by_ref: false,
+                                        })
+                                        .collect(),
                                 ))
                             };
                             let lambda = Expression::new(ExprKind::Lambda {
@@ -6228,7 +6766,10 @@ fn parse_xml_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     // XML literals are VB-specific. Convert to a string representation.
     let span = to_span(&pair);
     let xml_text = pair.as_str().to_string();
-    Ok(Expression::with_span(ExprKind::Lit(Literal::Str(xml_text)), span))
+    Ok(Expression::with_span(
+        ExprKind::Lit(Literal::Str(xml_text)),
+        span,
+    ))
 }
 
 fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -6240,9 +6781,7 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         cursor += 1;
     }
     let start = cursor;
-    while cursor < bytes.len()
-        && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
-    {
+    while cursor < bytes.len() && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_') {
         cursor += 1;
     }
 

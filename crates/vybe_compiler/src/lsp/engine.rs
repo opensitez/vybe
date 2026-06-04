@@ -7,20 +7,24 @@
 //! - Version-tracked: results carry a version; the UI discards stale results.
 //! - On initial file open, the editor renders immediately; analysis arrives later.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
-use crossbeam_channel::{Sender, Receiver, TryRecvError};
-use crate::ast::Lang;
-use crate::languages;
 use super::extract;
 use super::symbols::*;
+use crate::ast::Lang;
+use crate::languages;
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Request from the UI thread to the analysis thread.
 pub enum AnalysisRequest {
     /// File opened or content changed. Engine will debounce and parse.
-    Update { uri: String, content: String, version: u64 },
+    Update {
+        uri: String,
+        content: String,
+        version: u64,
+    },
     /// Shutdown the analysis thread.
     Shutdown,
 }
@@ -54,14 +58,24 @@ impl AnalysisEngine {
             })
             .expect("failed to spawn analysis thread");
 
-        Self { tx: req_tx, rx: evt_rx, version }
+        Self {
+            tx: req_tx,
+            rx: evt_rx,
+            version,
+        }
     }
 
     /// Send an update with auto-incrementing version. Returns the version number.
     /// Never blocks.
     pub fn update(&self, uri: String, content: String) -> u64 {
         let v = self.version.fetch_add(1, Ordering::Relaxed) + 1;
-        self.tx.send(AnalysisRequest::Update { uri, content, version: v }).ok();
+        self.tx
+            .send(AnalysisRequest::Update {
+                uri,
+                content,
+                version: v,
+            })
+            .ok();
         v
     }
 
@@ -87,7 +101,13 @@ pub fn analyze(uri: &str, content: &str) -> AnalysisResult {
     let lang = extract::detect_language(uri);
     let keywords = extract::language_keywords(lang);
     let (symbols, diagnostics) = parse_content(lang, content);
-    AnalysisResult { uri: uri.to_string(), version: 0, symbols, diagnostics, keywords }
+    AnalysisResult {
+        uri: uri.to_string(),
+        version: 0,
+        symbols,
+        diagnostics,
+        keywords,
+    }
 }
 
 fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>) {
@@ -109,11 +129,16 @@ fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>)
             Ok(module) => (extract::extract_symbols(&module), Vec::new()),
             Err(msg) => {
                 let (line, col) = parse_error_location(&msg);
-                (Vec::new(), vec![LspDiagnostic {
-                    line, col, end_col: col + 10,
-                    message: msg,
-                    severity: DiagSeverity::Error,
-                }])
+                (
+                    Vec::new(),
+                    vec![LspDiagnostic {
+                        line,
+                        col,
+                        end_col: col + 10,
+                        message: msg,
+                        severity: DiagSeverity::Error,
+                    }],
+                )
             }
         }
     } else {
@@ -128,8 +153,12 @@ fn parse_error_location(msg: &str) -> (u32, u32) {
         let parts: Vec<&str> = after.splitn(2, ':').collect();
         if parts.len() == 2 {
             if let Ok(line) = parts[0].trim().parse::<u32>() {
-                let col = parts[1].trim().split(|c: char| !c.is_ascii_digit()).next()
-                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                let col = parts[1]
+                    .trim()
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
                 return (line.saturating_sub(1), col.saturating_sub(1));
             }
         }
@@ -137,7 +166,9 @@ fn parse_error_location(msg: &str) -> (u32, u32) {
     // Try "line N" format
     if let Some(idx) = msg.to_lowercase().find("line ") {
         let after = &msg[idx + 5..];
-        if let Some(line) = after.split(|c: char| !c.is_ascii_digit()).next()
+        if let Some(line) = after
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
             .and_then(|s| s.parse::<u32>().ok())
         {
             return (line.saturating_sub(1), 0);
@@ -158,28 +189,42 @@ fn analysis_loop(
         let timeout = pending.as_ref().map(|(_, _, _, at)| {
             let elapsed = at.elapsed();
             let debounce = Duration::from_millis(DEBOUNCE_MS);
-            if elapsed >= debounce { Duration::ZERO } else { debounce - elapsed }
+            if elapsed >= debounce {
+                Duration::ZERO
+            } else {
+                debounce - elapsed
+            }
         });
 
         let recv_result = if let Some(t) = timeout {
             if t.is_zero() {
-                rx.try_recv().map_err(|_| crossbeam_channel::RecvTimeoutError::Timeout)
+                rx.try_recv()
+                    .map_err(|_| crossbeam_channel::RecvTimeoutError::Timeout)
             } else {
                 rx.recv_timeout(t)
             }
         } else {
-            rx.recv().map_err(|_| crossbeam_channel::RecvTimeoutError::Disconnected)
+            rx.recv()
+                .map_err(|_| crossbeam_channel::RecvTimeoutError::Disconnected)
         };
 
         match recv_result {
             Ok(AnalysisRequest::Shutdown) => return,
-            Ok(AnalysisRequest::Update { uri, content, version }) => {
+            Ok(AnalysisRequest::Update {
+                uri,
+                content,
+                version,
+            }) => {
                 pending = Some((uri, content, version, Instant::now()));
                 // Drain queued updates to coalesce
                 while let Ok(req) = rx.try_recv() {
                     match req {
                         AnalysisRequest::Shutdown => return,
-                        AnalysisRequest::Update { uri, content, version } => {
+                        AnalysisRequest::Update {
+                            uri,
+                            content,
+                            version,
+                        } => {
                             pending = Some((uri, content, version, Instant::now()));
                         }
                     }
@@ -205,7 +250,8 @@ fn analysis_loop(
                         symbols,
                         diagnostics,
                         keywords,
-                    })).ok();
+                    }))
+                    .ok();
                 }
                 pending = None;
             }

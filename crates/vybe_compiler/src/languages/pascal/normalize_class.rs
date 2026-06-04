@@ -13,22 +13,29 @@
 //!   - `override` / `virtual` / `reintroduce` → flag carries through.
 //!   - Case-insensitive: Pascal method names lowercase to canonical.
 
-use crate::ast::{ClassMember, ClassModifiers, Expression, ExprKind, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{
+    ClassMember, ClassModifiers, ExprKind, Expression, Modifiers, PropertySetter, Span, Statement,
+    StmtKind,
+};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
 use std::collections::{HashMap, HashSet};
 
 fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Option<String> {
-    let [stmt] = body else { return None; };
+    let [stmt] = body else {
+        return None;
+    };
     match &stmt.kind {
         StmtKind::Return(Some(expr)) => match &expr.kind {
             ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
                 ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
-                    field_names.contains(&field.to_ascii_lowercase()).then(|| field.clone())
+                    field_names
+                        .contains(&field.to_ascii_lowercase())
+                        .then(|| field.clone())
                 }
                 _ => None,
             },
@@ -40,7 +47,9 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                     if matches!(object.kind, ExprKind::This)
                         && matches!(args[0].value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) =>
                 {
-                    field_names.contains(&field.to_ascii_lowercase()).then(|| field.clone())
+                    field_names
+                        .contains(&field.to_ascii_lowercase())
+                        .then(|| field.clone())
                 }
                 _ => None,
             },
@@ -50,18 +59,26 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
     }
 }
 
-fn rewrite_property_getter_body(body: &[Statement], field_names: &HashSet<String>) -> Vec<Statement> {
+fn rewrite_property_getter_body(
+    body: &[Statement],
+    field_names: &HashSet<String>,
+) -> Vec<Statement> {
     let Some(field_name) = property_field_name(body, field_names) else {
         return body.to_vec();
     };
-    vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Member {
-        object: Box::new(Expression::new(ExprKind::This)),
-        field: field_name,
-        null_safe: false,
-    }))))]
+    vec![Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: field_name,
+            null_safe: false,
+        },
+    ))))]
 }
 
-fn rewrite_property_setter_body(body: &[Statement], field_names: &HashSet<String>) -> Vec<Statement> {
+fn rewrite_property_setter_body(
+    body: &[Statement],
+    field_names: &HashSet<String>,
+) -> Vec<Statement> {
     let Some(field_name) = property_field_name(body, field_names) else {
         return body.to_vec();
     };
@@ -92,14 +109,24 @@ pub fn normalize_class(
     let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut destructor: Option<NormalMethod> = None;
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
-    let field_names: HashSet<String> = members.iter().filter_map(|member| match member {
-        ClassMember::Field { name, .. } => Some(name.to_ascii_lowercase()),
-        _ => None,
-    }).collect();
+    let field_names: HashSet<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field { name, .. } => Some(name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers: m,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -116,20 +143,27 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: src_name, modifiers: m, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: src_name,
+                    modifiers: m,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
 
                 // Pascal destructor: `destructor Destroy;`. Case-insensitive.
                 if src_name.eq_ignore_ascii_case("Destroy") {
-                    if let Some(d) = from_method_stmt(span.clone(), stmt, "destroy", Access::Public) {
+                    if let Some(d) = from_method_stmt(span.clone(), stmt, "destroy", Access::Public)
+                    {
                         destructor = Some(d);
                     }
                     continue;
                 }
 
                 let (canonical, special_kind) = canonicalize_method(ClassLang::Pascal, src_name);
-                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public) else {
+                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
+                else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
@@ -145,36 +179,78 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } => {
                 constructors.push(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // Pascal: `inherited;` or `inherited Create;` is
                         // the explicit call. Walker today emits base_args
                         // = None when absent — mirror with Auto if there's
                         // a parent, None otherwise.
-                        None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        None => {
+                            if parents.is_empty() {
+                                BaseCall::None
+                            } else {
+                                BaseCall::Auto
+                            }
+                        }
                     },
                     named_name: None,
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
                 let (canonical, _) = canonicalize_method(ClassLang::Pascal, pname);
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, rewrite_property_getter_body(body, &field_names),
-                    Access::Public, false, false, false, Modifiers::default(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, rewrite_property_setter_body(&s.body, &field_names),
-                    Access::Public, false, false, false, Modifiers::default(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        rewrite_property_getter_body(body, &field_names),
+                        Access::Public,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        rewrite_property_setter_body(&s.body, &field_names),
+                        Access::Public,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
@@ -185,7 +261,9 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            other @ (ClassMember::Event { .. }
+            | ClassMember::Const { .. }
+            | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }
@@ -193,7 +271,8 @@ pub fn normalize_class(
 
     instance_methods = lower_pascal_method_overloads(instance_methods, &span);
     static_methods = lower_pascal_method_overloads(static_methods, &span);
-    let (ctor_helper_methods, constructor) = lower_pascal_constructor_overloads(constructors, &span);
+    let (ctor_helper_methods, constructor) =
+        lower_pascal_constructor_overloads(constructors, &span);
     instance_methods.extend(ctor_helper_methods);
 
     if let Some(destructor_method) = destructor.clone() {
@@ -204,11 +283,13 @@ pub fn normalize_class(
                 || method.canonical_name.eq_ignore_ascii_case("free")
         });
         if !has_free {
-            let free_body = vec![Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("Destroy")),
-                args: Vec::new(),
-                optional: false,
-            })))];
+            let free_body = vec![Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("Destroy")),
+                    args: Vec::new(),
+                    optional: false,
+                },
+            )))];
             instance_methods.push(build_normal_method(
                 span.clone(),
                 "free",
@@ -266,12 +347,17 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
         if !groups.contains_key(&method.canonical_name) {
             order.push(method.canonical_name.clone());
         }
-        groups.entry(method.canonical_name.clone()).or_default().push(method);
+        groups
+            .entry(method.canonical_name.clone())
+            .or_default()
+            .push(method);
     }
 
     let mut lowered = Vec::new();
     for key in order {
-        let Some(group) = groups.remove(&key) else { continue; };
+        let Some(group) = groups.remove(&key) else {
+            continue;
+        };
         if group.len() <= 1 || has_duplicate_arities(group.iter().map(|m| m.params.len())) {
             lowered.extend(group);
             continue;
@@ -284,7 +370,11 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
         let wrapper_template = sorted.last().cloned().unwrap();
 
         for method in sorted {
-            let hidden_name = format!("__vybe_overload_{}_{}", method.canonical_name, method.params.len());
+            let hidden_name = format!(
+                "__vybe_overload_{}_{}",
+                method.canonical_name,
+                method.params.len()
+            );
             cases.push(PascalOverloadCase {
                 arity: method.params.len(),
                 hidden_name: hidden_name.clone(),
@@ -313,7 +403,11 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
             wrapper_template.aliases.clone(),
             wrapper_template.params.clone(),
             wrapper_template.return_type.clone(),
-            build_pascal_overload_dispatch(&cases, &wrapper_template.params, wrapper_template.return_type.is_none() && wrapper_template.is_sub),
+            build_pascal_overload_dispatch(
+                &cases,
+                &wrapper_template.params,
+                wrapper_template.return_type.is_none() && wrapper_template.is_sub,
+            ),
             wrapper_template.access,
             false,
             false,
@@ -332,7 +426,9 @@ fn lower_pascal_constructor_overloads(
     if constructors.is_empty() {
         return (Vec::new(), None);
     }
-    if constructors.len() == 1 || has_duplicate_arities(constructors.iter().map(|ctor| ctor.params.len())) {
+    if constructors.len() == 1
+        || has_duplicate_arities(constructors.iter().map(|ctor| ctor.params.len()))
+    {
         return (Vec::new(), constructors.into_iter().last());
     }
 
@@ -385,7 +481,9 @@ fn build_pascal_overload_dispatch(
     }
 
     let first = &cases[0];
-    let call_args: Vec<crate::ast::Argument> = wrapper_params.iter().take(first.arity)
+    let call_args: Vec<crate::ast::Argument> = wrapper_params
+        .iter()
+        .take(first.arity)
         .map(|param| crate::ast::Argument::positional(Expression::ident(&param.name)))
         .collect();
     let call_expr = Expression::new(ExprKind::Call {
@@ -414,7 +512,11 @@ fn build_pascal_overload_dispatch(
         cond,
         then_body: vec![invoke_stmt],
         elifs: Vec::new(),
-        else_body: Some(build_pascal_overload_dispatch(&cases[1..], wrapper_params, is_sub)),
+        else_body: Some(build_pascal_overload_dispatch(
+            &cases[1..],
+            wrapper_params,
+            is_sub,
+        )),
     })]
 }
 
@@ -436,26 +538,34 @@ mod tests {
     use super::*;
     use crate::ast::Modifiers;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
-            name: src_name.into(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        })))
+        ClassMember::Method(Box::new(crate::ast::Statement::new(
+            StmtKind::FunctionDecl {
+                name: src_name.into(),
+                params: vec![],
+                return_type: None,
+                body: vec![],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        )))
     }
 
     #[test]
     fn destroy_goes_to_destructor_case_insensitive() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("Destroy")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("Destroy")],
             &ClassModifiers::default(),
         );
         assert!(nc.destructor.is_some());
@@ -463,7 +573,11 @@ mod tests {
 
         // case variant
         let nc2 = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("destroy")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("destroy")],
             &ClassModifiers::default(),
         );
         assert!(nc2.destructor.is_some());
@@ -472,7 +586,11 @@ mod tests {
     #[test]
     fn add_operator_maps_to_canonical_add() {
         let nc = normalize_class(
-            dummy_span(), "Vec", &[], &[], &[make_method("Add")],
+            dummy_span(),
+            "Vec",
+            &[],
+            &[],
+            &[make_method("Add")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "add");

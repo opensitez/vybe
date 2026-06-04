@@ -1,6 +1,6 @@
-mod symbols;
-mod extract;
 mod engine;
+mod extract;
+mod symbols;
 
+pub use engine::{AnalysisEngine, AnalysisEvent, AnalysisRequest, analyze};
 pub use symbols::*;
-pub use engine::{AnalysisEngine, AnalysisRequest, AnalysisEvent, analyze};

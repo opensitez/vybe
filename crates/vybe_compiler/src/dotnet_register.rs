@@ -29,8 +29,8 @@
 use crate::compiler::Compiler;
 use crate::emitter as common;
 use common::dotnet::class_exports::dotnet_class_exports;
-use common::dotnet::classes::{builder, DotnetClass, MethodTarget};
-use common::dotnet::classes::builder::{SetterBinding, MethodBinding};
+use common::dotnet::classes::builder::{MethodBinding, SetterBinding};
+use common::dotnet::classes::{DotnetClass, MethodTarget, builder};
 
 impl Compiler {
     /// Register every `.NET` class wrapper as a callable global on the
@@ -44,10 +44,14 @@ impl Compiler {
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_SET_PROPERTY);
         let get_prop_idx = self.chunks_mut()[0]
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_GET_PROPERTY);
-        let new_controls_collection_idx = self.chunks_mut()[0]
-            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_NEW_CONTROLS_COLLECTION);
-        let new_components_collection_idx = self.chunks_mut()[0]
-            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_NEW_COMPONENTS_COLLECTION);
+        let new_controls_collection_idx = self.chunks_mut()[0].add_import(
+            common::gui::GUI_MODULE,
+            common::gui::HOST_FN_NEW_CONTROLS_COLLECTION,
+        );
+        let new_components_collection_idx = self.chunks_mut()[0].add_import(
+            common::gui::GUI_MODULE,
+            common::gui::HOST_FN_NEW_COMPONENTS_COLLECTION,
+        );
 
         for export in dotnet_class_exports() {
             let Some(class) = export.wrapper.as_ref() else {
@@ -131,9 +135,8 @@ impl Compiler {
                     (0u16, imports)
                 }
             };
-            let thunk = builder::build_method_thunk_chunk(
-                class.name, method, import_idx, &body_imports,
-            );
+            let thunk =
+                builder::build_method_thunk_chunk(class.name, method, import_idx, &body_imports);
             self.chunks_mut().push(thunk);
             method_thunk_indices.push(self.chunks_mut().len() - 1);
             method_lowered_names.push(method.name.to_lowercase());
@@ -148,9 +151,9 @@ impl Compiler {
             .collect();
 
         // ── Step 3: import the backing host fn if this is a concrete leaf ──
-        let widget_new_idx = class.widget_host_fn.map(|host_fn| {
-            self.chunks_mut()[0].add_import(class.widget_host_module, host_fn)
-        });
+        let widget_new_idx = class
+            .widget_host_fn
+            .map(|host_fn| self.chunks_mut()[0].add_import(class.widget_host_module, host_fn));
 
         // ── Step 4: build & push the constructor chunk ─────────────────────
         let ctor_chunk = builder::build_constructor_chunk(

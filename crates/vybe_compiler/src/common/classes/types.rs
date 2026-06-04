@@ -93,7 +93,7 @@ pub struct NormalClass {
 pub enum Access {
     Public,
     Protected,
-    Internal,   // package / assembly visibility
+    Internal, // package / assembly visibility
     Private,
 }
 
@@ -216,39 +216,52 @@ pub enum SpecialMethodKind {
     Next,          // JS iterator.next, Python __next__
 
     // ── Arithmetic operators ────────────────────────────────────────
-    Add, Sub, Mul, Div, Mod, Pow, Neg,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Neg,
 
     // ── Comparison ──────────────────────────────────────────────────
-    Eq,       // ==
-    Compare,  // <=> (Ruby) / __cmp__ (Python legacy) / CompareTo (C#)
-    Lt, Le, Gt, Ge,
+    Eq,      // ==
+    Compare, // <=> (Ruby) / __cmp__ (Python legacy) / CompareTo (C#)
+    Lt,
+    Le,
+    Gt,
+    Ge,
 
     // ── Bitwise ─────────────────────────────────────────────────────
-    And, Or, Xor, Not,
-    LShift, RShift,
+    And,
+    Or,
+    Xor,
+    Not,
+    LShift,
+    RShift,
 
     // ── Container protocol ──────────────────────────────────────────
-    Len,       // len() / length / size / Count
-    GetItem,   // Python __getitem__, Ruby [], Dart operator []
-    SetItem,   // Python __setitem__, Ruby []=, Dart operator []=
-    DelItem,   // Python __delitem__
-    Contains,  // Python __contains__, Ruby include?
+    Len,      // len() / length / size / Count
+    GetItem,  // Python __getitem__, Ruby [], Dart operator []
+    SetItem,  // Python __setitem__, Ruby []=, Dart operator []=
+    DelItem,  // Python __delitem__
+    Contains, // Python __contains__, Ruby include?
 
     // ── Callable / reflection ───────────────────────────────────────
-    Call,         // Python __call__, PHP __invoke, Dart call, C# ()
-    HasInstance,  // JS Symbol.hasInstance, Python __instancecheck__
+    Call,        // Python __call__, PHP __invoke, Dart call, C# ()
+    HasInstance, // JS Symbol.hasInstance, Python __instancecheck__
 
     // ── Property access interception ────────────────────────────────
-    GetAttr,  // Python __getattr__, PHP __get, JS Proxy get
-    SetAttr,  // Python __setattr__, PHP __set, JS Proxy set
-    DelAttr,  // Python __delattr__, PHP __unset
+    GetAttr, // Python __getattr__, PHP __get, JS Proxy get
+    SetAttr, // Python __setattr__, PHP __set, JS Proxy set
+    DelAttr, // Python __delattr__, PHP __unset
 
     // ── Context managers ────────────────────────────────────────────
-    Enter,  // Python __enter__
-    Exit,   // Python __exit__
+    Enter, // Python __enter__
+    Exit,  // Python __exit__
 
     // ── Hash ────────────────────────────────────────────────────────
-    Hash,  // Python __hash__, Ruby hash, C# GetHashCode, Java hashCode
+    Hash, // Python __hash__, Ruby hash, C# GetHashCode, Java hashCode
 }
 
 #[derive(Debug, Clone)]

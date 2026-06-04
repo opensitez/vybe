@@ -15,5 +15,6 @@
 //! emit targets; `emitter::dispatch::emit_common` routes those names
 //! to the `emit_*` functions in this module.
 
+pub mod dispatch;
 pub mod math_adapter;
 pub mod string_adapter;

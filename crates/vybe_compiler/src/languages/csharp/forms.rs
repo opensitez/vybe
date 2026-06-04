@@ -17,8 +17,8 @@ struct ControlInfo {
 /// Parse C# designer source and populate a `GuiState` with live widgets.
 pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
     let module = crate::languages::csharp::parse(source)?;
-    let init_body = find_initialize_component_in_module(&module)
-        .ok_or("no InitializeComponent found")?;
+    let init_body =
+        find_initialize_component_in_module(&module).ok_or("no InitializeComponent found")?;
 
     let mut controls: Vec<ControlInfo> = Vec::new();
 
@@ -76,7 +76,8 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                                 c.text = s;
                             }
                         } else {
-                            c.props.push((prop_name.to_string(), expr_to_value_string(value)));
+                            c.props
+                                .push((prop_name.to_string(), expr_to_value_string(value)));
                         }
                     }
                 }
@@ -115,7 +116,10 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
 /// Emit C# designer code from the current widget state.
 pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!("public partial class {} : System.Windows.Forms.Form\n{{\n", class_name));
+    out.push_str(&format!(
+        "public partial class {} : System.Windows.Forms.Form\n{{\n",
+        class_name
+    ));
 
     struct CtrlSnapshot {
         name: String,
@@ -153,7 +157,10 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
     out.push_str("        this.SuspendLayout();\n");
 
     for s in &snaps {
-        out.push_str(&format!("        this.{0} = new {1}();\n", s.name, s.type_name));
+        out.push_str(&format!(
+            "        this.{0} = new {1}();\n",
+            s.name, s.type_name
+        ));
         out.push_str(&format!(
             "        this.{0}.Location = new System.Drawing.Point({1}, {2});\n",
             s.name, s.x, s.y
@@ -198,15 +205,20 @@ pub fn generate_designer_code(form: &Form) -> String {
     ));
 
     for control in &form.controls {
-        let ty = crate::languages::vb::designer_codegen::control_type_to_vbnet(&control.control_type);
+        let ty =
+            crate::languages::vb::designer_codegen::control_type_to_vbnet(&control.control_type);
         out.push_str(&format!("    private {} {};\n", ty, control.name));
     }
 
     out.push_str("\n    private void InitializeComponent()\n    {\n");
     out.push_str("        this.SuspendLayout();\n");
     for control in &form.controls {
-        let ty = crate::languages::vb::designer_codegen::control_type_to_vbnet(&control.control_type);
-        out.push_str(&format!("        this.{0} = new {1}();\n", control.name, ty));
+        let ty =
+            crate::languages::vb::designer_codegen::control_type_to_vbnet(&control.control_type);
+        out.push_str(&format!(
+            "        this.{0} = new {1}();\n",
+            control.name, ty
+        ));
         out.push_str(&format!(
             "        this.{0}.Location = new System.Drawing.Point({1}, {2});\n",
             control.name, control.bounds.x, control.bounds.y
@@ -223,13 +235,19 @@ pub fn generate_designer_code(form: &Form) -> String {
                 text.replace('"', "\\\"")
             ));
         }
-        out.push_str(&format!("        this.Controls.Add(this.{});\n", control.name));
+        out.push_str(&format!(
+            "        this.Controls.Add(this.{});\n",
+            control.name
+        ));
     }
     out.push_str(&format!(
         "        this.ClientSize = new System.Drawing.Size({}, {});\n",
         form.width, form.height
     ));
-    out.push_str(&format!("        this.Text = \"{}\";\n", form.text.replace('"', "\\\"")));
+    out.push_str(&format!(
+        "        this.Text = \"{}\";\n",
+        form.text.replace('"', "\\\"")
+    ));
     out.push_str("        this.ResumeLayout(false);\n");
     out.push_str("    }\n}\n");
     out
@@ -407,12 +425,18 @@ fn expr_to_value_string(expr: &Expression) -> String {
         }
         ExprKind::New { class, args } => {
             let name = expr_to_type_name(class);
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_value_string(&a.value)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| expr_to_value_string(&a.value))
+                .collect();
             format!("new {}({})", name, arg_strs.join(", "))
         }
         ExprKind::Call { callee, args, .. } => {
             let name = expr_to_value_string(callee);
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_value_string(&a.value)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| expr_to_value_string(&a.value))
+                .collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
         _ => format!("{:?}", expr.kind),
@@ -458,21 +482,62 @@ fn widget_to_csharp_type(widget: &dyn vybe_widgets::PanelWidget) -> &'static str
 }
 
 fn is_control_type(name: &str) -> bool {
-    matches!(name.to_lowercase().as_str(),
-        "button" | "label" | "textbox" | "checkbox" | "radiobutton" |
-        "combobox" | "listbox" | "panel" | "groupbox" | "picturebox" |
-        "progressbar" | "trackbar" | "numericupdown" | "datetimepicker" |
-        "richtextbox" | "treeview" | "datagridview" | "datagrid" |
-        "listview" | "tabcontrol" | "tabpage" | "monthcalendar" |
-        "hscrollbar" | "vscrollbar" | "menustrip" | "toolstrip" |
-        "statusstrip" | "contextmenustrip" | "splitcontainer" |
-        "flowlayoutpanel" | "tablelayoutpanel" | "maskedtextbox" |
-        "linklabel" | "bindingnavigator" | "usercontrol" |
-        "webbrowser" | "canvas" | "paintbox" |
-        "timer" | "imagelist" | "tooltip" | "errorprovider" |
-        "openfiledialog" | "savefiledialog" | "fontdialog" |
-        "colordialog" | "folderbrowserdialog" | "printdialog" |
-        "notifyicon" | "helpprovider" | "backgroundworker" |
-        "bindingsource" | "dataset" | "datatable" | "dataadapter"
+    matches!(
+        name.to_lowercase().as_str(),
+        "button"
+            | "label"
+            | "textbox"
+            | "checkbox"
+            | "radiobutton"
+            | "combobox"
+            | "listbox"
+            | "panel"
+            | "groupbox"
+            | "picturebox"
+            | "progressbar"
+            | "trackbar"
+            | "numericupdown"
+            | "datetimepicker"
+            | "richtextbox"
+            | "treeview"
+            | "datagridview"
+            | "datagrid"
+            | "listview"
+            | "tabcontrol"
+            | "tabpage"
+            | "monthcalendar"
+            | "hscrollbar"
+            | "vscrollbar"
+            | "menustrip"
+            | "toolstrip"
+            | "statusstrip"
+            | "contextmenustrip"
+            | "splitcontainer"
+            | "flowlayoutpanel"
+            | "tablelayoutpanel"
+            | "maskedtextbox"
+            | "linklabel"
+            | "bindingnavigator"
+            | "usercontrol"
+            | "webbrowser"
+            | "canvas"
+            | "paintbox"
+            | "timer"
+            | "imagelist"
+            | "tooltip"
+            | "errorprovider"
+            | "openfiledialog"
+            | "savefiledialog"
+            | "fontdialog"
+            | "colordialog"
+            | "folderbrowserdialog"
+            | "printdialog"
+            | "notifyicon"
+            | "helpprovider"
+            | "backgroundworker"
+            | "bindingsource"
+            | "dataset"
+            | "datatable"
+            | "dataadapter"
     )
 }

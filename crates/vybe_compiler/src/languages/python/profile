@@ -137,7 +137,7 @@ dir             = { emit = "host:ecma:object:keys",           min_args = 0, max_
 
 # ── String ───────────────────────────────────────────────────────────────────
 
-format          = { emit = "stdlib:sprintf",                  min_args = 1, max_args = 255 }
+format          = { emit = "common:sprintf.format",           min_args = 1, max_args = 255 }
 
 # ── OS / File I/O ────────────────────────────────────────────────────────────
 

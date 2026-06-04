@@ -4,8 +4,8 @@
 //! intrinsics. Composes pure WASM `f64.max` / `f64.min` opcodes —
 //! no host calls.
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let slot = chunk.local_count;
@@ -27,7 +27,14 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -47,7 +54,13 @@ fn emit_numeric_coerce_from_top(chunk: &mut Chunk, line: u32) {
     crate::emitter::ops::emit_dyn_add(chunk, line);
 }
 
-fn emit_array_get_into_slot(chunk: &mut Chunk, array_slot: u16, index_slot: u16, out_slot: u16, line: u32) {
+fn emit_array_get_into_slot(
+    chunk: &mut Chunk,
+    array_slot: u16,
+    index_slot: u16,
+    out_slot: u16,
+    line: u32,
+) {
     lget(chunk, array_slot, line);
     lget(chunk, index_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
@@ -116,20 +129,20 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_numeric_zero(chunk, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
-        emit_numeric_zero(chunk, line);
-        lset(chunk, k_slot, line);
-        emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
-        lget(chunk, right_first_slot, line);
-        chunk.emit_op(Op::REF_IS_ARRAY, line);
-        lset(chunk, right_is_matrix_slot, line);
+    emit_numeric_zero(chunk, line);
+    lset(chunk, k_slot, line);
+    emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
+    lget(chunk, right_first_slot, line);
+    chunk.emit_op(Op::REF_IS_ARRAY, line);
+    lset(chunk, right_is_matrix_slot, line);
 
-        lget(chunk, right_is_matrix_slot, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-            lget(chunk, right_first_slot, line);
-            chunk.emit_op(Op::ARRAY_LENGTH, line);
-            lset(chunk, col_count_slot, line);
-        chunk.emit_end(line);
+    lget(chunk, right_is_matrix_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, right_first_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, col_count_slot, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     emit_numeric_zero(chunk, line);

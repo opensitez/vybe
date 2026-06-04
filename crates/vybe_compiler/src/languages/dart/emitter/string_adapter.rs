@@ -49,8 +49,8 @@ pub fn emit_dart_replace_first(chunks: &mut [Chunk], current: usize, line: u32) 
 /// fields happen to be named `first`/`last`/`length` keep working
 /// through plain STRUCT_GET when the receiver isn't a list.
 pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
-    use vybe_bytecode::Value;
     use std::sync::Arc;
+    use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_ARRAY, line);
@@ -68,8 +68,8 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Dart `list.last` — `list[length - 1]`. Polymorphic; non-list
 /// receivers fall through to STRUCT_GET("last").
 pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
-    use vybe_bytecode::Value;
     use std::sync::Arc;
+    use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_ARRAY, line);
