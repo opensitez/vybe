@@ -6,9 +6,9 @@
 //! Composes only WASM string ops (`STR_LENGTH`, `STR_CODE_POINT_AT`)
 //! + numeric comparisons. No host fns; no JS polyfills.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// One `lo..=hi` UTF-16 code-unit range.
 #[derive(Copy, Clone)]
@@ -17,7 +17,9 @@ struct Range {
     hi: u32,
 }
 
-const fn r(lo: u32, hi: u32) -> Range { Range { lo, hi } }
+const fn r(lo: u32, hi: u32) -> Range {
+    Range { lo, hi }
+}
 
 /// Stack on entry: `[s]` ; Stack on exit: `[bool]`.
 fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32) {
@@ -114,13 +116,16 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         chunk.emit_end(line);
     }
     // No range matched → result = false; exit loop.
+    // Inside this `if`, label depths are 0=if, 1=loop, 2=outer block, so the
+    // loop-exiting break is `br 2` (to `outer`). `br 1` would target the loop
+    // itself and restart it → infinite loop on the first non-matching char.
     chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_op(Op::FALSE, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_br(1, line);
+    chunk.emit_br(2, line);
     chunk.emit_end(line);
 
     // i++
@@ -163,7 +168,8 @@ pub fn emit_ctype_xdigit(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 }
 pub fn emit_ctype_punct(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_check(
-        chunks, current,
+        chunks,
+        current,
         &[r(33, 47), r(58, 64), r(91, 96), r(123, 126)],
         line,
     );

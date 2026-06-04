@@ -16,10 +16,12 @@
 //!   - `abstract class` / `final class` → `is_abstract` / `is_sealed`.
 //!   - `class Foo implements I1, I2` → `interfaces`.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
+use crate::ast::{
+    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility,
+};
 use crate::common::classes::{
     build_normal_method,
-    canonical::{canonicalize_method, ClassLang},
+    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -44,7 +46,14 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
+            ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers: m,
+                array_bounds,
+                ..
+            } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
@@ -61,14 +70,21 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Method(stmt) => {
-                let StmtKind::FunctionDecl { name: src_name, modifiers: m, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl {
+                    name: src_name,
+                    modifiers: m,
+                    ..
+                } = &stmt.kind
+                else {
                     continue;
                 };
 
                 // __destruct gets routed away from methods list.
                 if src_name == "__destruct" {
                     if let Some(d) = from_method_stmt(
-                        span.clone(), stmt, "destructor",
+                        span.clone(),
+                        stmt,
+                        "destructor",
                         access_from_visibility(m.visibility),
                     ) {
                         destructor = Some(d);
@@ -94,14 +110,21 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
+            ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            args.iter()
+                                .map(|e| crate::ast::Argument::positional(e.clone()))
+                                .collect(),
                         ),
                         // PHP: `parent::__construct(...)` is optional;
                         // when missing no auto-call is emitted.
@@ -110,19 +133,48 @@ pub fn normalize_class(
                     named_name: None,
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
                 let (canonical, _) = canonicalize_method(ClassLang::Php, pname);
                 let access = access_from_visibility(m.visibility);
-                let getter_method = getter.as_ref().map(|body| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
-                let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
-                    span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
-                    access, false, false, false, Modifiers::default(),
-                ));
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![],
+                        None,
+                        body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        &canonical,
+                        pname,
+                        Vec::new(),
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
                 properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
@@ -133,7 +185,12 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            ClassMember::Const { name: cname, type_hint, value, .. } => {
+            ClassMember::Const {
+                name: cname,
+                type_hint,
+                value,
+                ..
+            } => {
                 // Class constants are stamped on the class object as
                 // static fields so PHP `Class::CONST` static access
                 // (struct_get on the constructor object) resolves to
@@ -199,26 +256,34 @@ mod tests {
     use super::*;
     use crate::ast::Modifiers;
 
-    fn dummy_span() -> Span { Span::default() }
+    fn dummy_span() -> Span {
+        Span::default()
+    }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
-            name: src_name.into(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        })))
+        ClassMember::Method(Box::new(crate::ast::Statement::new(
+            StmtKind::FunctionDecl {
+                name: src_name.into(),
+                params: vec![],
+                return_type: None,
+                body: vec![],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        )))
     }
 
     #[test]
     fn tostring_magic_maps_to_canonical() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("__toString")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("__toString")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "tostring");
@@ -228,7 +293,11 @@ mod tests {
     #[test]
     fn destruct_goes_to_destructor_slot() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("__destruct")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("__destruct")],
             &ClassModifiers::default(),
         );
         assert!(nc.destructor.is_some());
@@ -238,13 +307,21 @@ mod tests {
     #[test]
     fn invoke_and_call_both_map_to_call_kind() {
         let nc_invoke = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("__invoke")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("__invoke")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc_invoke.special_methods[0].kind, SpecialMethodKind::Call);
 
         let nc_call = normalize_class(
-            dummy_span(), "Foo", &[], &[], &[make_method("__call")],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[make_method("__call")],
             &ClassModifiers::default(),
         );
         assert_eq!(nc_call.special_methods[0].kind, SpecialMethodKind::Call);
@@ -253,7 +330,10 @@ mod tests {
     #[test]
     fn get_and_set_map_to_getattr_setattr() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &[],
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
             &[make_method("__get"), make_method("__set")],
             &ClassModifiers::default(),
         );
@@ -265,9 +345,16 @@ mod tests {
     #[test]
     fn interfaces_passed_through() {
         let nc = normalize_class(
-            dummy_span(), "Foo", &[], &["Countable".into(), "IteratorAggregate".into()],
-            &[], &ClassModifiers::default(),
+            dummy_span(),
+            "Foo",
+            &[],
+            &["Countable".into(), "IteratorAggregate".into()],
+            &[],
+            &ClassModifiers::default(),
         );
-        assert_eq!(nc.interfaces, vec!["Countable".to_string(), "IteratorAggregate".to_string()]);
+        assert_eq!(
+            nc.interfaces,
+            vec!["Countable".to_string(), "IteratorAggregate".to_string()]
+        );
     }
 }

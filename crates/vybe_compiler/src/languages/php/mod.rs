@@ -5,9 +5,9 @@
 //! `vybe_compiler::ast::Module`. From there everything goes through the
 //! shared compiler — no PHP-specific code in `compiler.rs`.
 
-mod walker;
 pub mod emitter;
 pub mod normalize_class;
+mod walker;
 
 use pest_derive::Parser;
 

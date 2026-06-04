@@ -13,8 +13,8 @@
 //! targets; `emitter::dispatch::emit_common` routes those names to
 //! the `emit_*` functions in this module.
 
-pub mod datetime_adapter;
 pub mod component_classes;
+pub mod datetime_adapter;
 
 // Inline-emit adapters for PHP top-level functions. Each `emit_<fn>`
 // takes `(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)`
@@ -24,12 +24,15 @@ pub mod component_classes;
 // `emitter::dispatch::emit_common` via `common:php.<name>` and
 // bound from the PHP profile's `[builtins]` section. No JS
 // polyfills; no PHP-specific host fns.
-pub mod numeric_adapter;
+pub mod array_adapter;
+pub mod autoload_adapter;
 pub mod ctype_adapter;
+pub mod dispatch;
+pub mod database_adapter;
+pub mod fiber_adapter;
+pub mod filesystem_adapter;
 pub mod math_adapter;
 pub mod misc_adapter;
-pub mod database_adapter;
+pub mod numeric_adapter;
+pub mod relational_adapter;
 pub mod string_adapter;
-pub mod array_adapter;
-pub mod filesystem_adapter;
-pub mod fiber_adapter;

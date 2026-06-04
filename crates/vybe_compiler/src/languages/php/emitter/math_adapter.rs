@@ -5,9 +5,9 @@
 //! (string↔string base conversion). Composes only WASM ops +
 //! `ecma:math.fmod` (for `%` on floats); no PHP-specific host fns.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;
@@ -37,12 +37,12 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Stack on entry: `[arg0, arg1, ..., argN-1]` (argc args).
 /// Stack on exit: `[smallest]` or `[false]` if argc == 0.
 pub fn emit_php_min(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_min_or_max(chunks, current, argc, /*want_lt=*/true, line);
+    emit_min_or_max(chunks, current, argc, /*want_lt=*/ true, line);
 }
 
 /// PHP `max(...)`. Same shape as `min`.
 pub fn emit_php_max(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_min_or_max(chunks, current, argc, /*want_lt=*/false, line);
+    emit_min_or_max(chunks, current, argc, /*want_lt=*/ false, line);
 }
 
 fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool, line: u32) {
@@ -84,7 +84,11 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         lget(chunk, best_slot, line);
         push_const(chunk, Value::F64(0.0), line);
         crate::emitter::ops::emit_dyn_add(chunk, line);
-        if want_lt { crate::emitter::ops::emit_dyn_lt(chunk, line) } else { crate::emitter::ops::emit_dyn_gt(chunk, line) };
+        if want_lt {
+            crate::emitter::ops::emit_dyn_lt(chunk, line)
+        } else {
+            crate::emitter::ops::emit_dyn_gt(chunk, line)
+        };
         chunk.emit_if(line);
         lget(chunk, base + i as u16, line);
         lset(chunk, best_slot, line);
@@ -145,7 +149,11 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     lget(chunk, best_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
-    if want_lt { crate::emitter::ops::emit_dyn_lt(chunk, line) } else { crate::emitter::ops::emit_dyn_gt(chunk, line) };
+    if want_lt {
+        crate::emitter::ops::emit_dyn_lt(chunk, line)
+    } else {
+        crate::emitter::ops::emit_dyn_gt(chunk, line)
+    };
     chunk.emit_if(line);
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
@@ -170,54 +178,64 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
 }
 
 pub fn emit_php_decbin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_dec_to_radix(chunks, current, 2, /*hex_digits=*/false, line);
+    emit_dec_to_radix(chunks, current, 2, /*hex_digits=*/ false, line);
 }
 
 pub fn emit_php_decoct(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_dec_to_radix(chunks, current, 8, /*hex_digits=*/false, line);
+    emit_dec_to_radix(chunks, current, 8, /*hex_digits=*/ false, line);
 }
 
 pub fn emit_php_dechex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_dec_to_radix(chunks, current, 16, /*hex_digits=*/true, line);
+    emit_dec_to_radix(chunks, current, 16, /*hex_digits=*/ true, line);
 }
 
 /// Stack on entry: `[n]` ; Stack on exit: `[radix-string]`.
-fn emit_dec_to_radix(chunks: &mut [Chunk], current: usize, radix: i32, hex_digits: bool, line: u32) {
+fn emit_dec_to_radix(
+    chunks: &mut [Chunk],
+    current: usize,
+    radix: i32,
+    hex_digits: bool,
+    line: u32,
+) {
+    // Fetch the one import we need before taking the &mut borrow of chunk.
+    let fmod = chunks[0].add_import("ecma:math", "fmod");
     let chunk = &mut chunks[current];
     let n_slot = alloc_local(chunk);
     let out_slot = alloc_local(chunk);
     let digit_slot = alloc_local(chunk);
 
-    // n = +arg
+    // n = +arg ; out = ""
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, n_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
 
+    // B_outer — the n == 0 shortcut breaks out to the result load below.
     let outer = chunk.emit_block(line);
 
-    // if n === 0: push "0" and break
+    // if n === 0 { out = "0"; break B_outer }
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "0", line);
-    chunk.emit_br(1, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_br(1, line); // exit B_outer
     chunk.emit_end(line);
 
-    // out = ""
-    push_str(chunk, "", line);
-    lset(chunk, out_slot, line);
-
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
-    let chunk = &mut chunks[current];
-
-    // while n > 0
+    // B_loop — wraps the digit loop so the loop-exit branch lands on the
+    // result load instead of skipping past B_outer (which would drop the
+    // accumulated string and leave the function returning null).
+    let loop_block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
+
+    // while n > 0  (exit B_loop when !(n > 0))
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(1, line);
+    chunk.emit_br_if(1, line); // exit B_loop
 
     // digit = n % radix
     lget(chunk, n_slot, line);
@@ -247,13 +265,16 @@ fn emit_dec_to_radix(chunks: &mut [Chunk], current: usize, radix: i32, hex_digit
     chunk.emit_op(Op::F64_FLOOR, line);
     lset(chunk, n_slot, line);
 
-    chunk.emit_br(0, line);
+    chunk.emit_br(0, line); // continue loop
     chunk.emit_end(line);
     chunk.patch_loop(loop_patch);
+    chunk.emit_end(line); // end B_loop
+    chunk.patch_block(loop_block);
 
-    lget(chunk, out_slot, line);
-    chunk.emit_end(line);
+    chunk.emit_end(line); // end B_outer
     chunk.patch_block(outer);
+
+    lget(chunk, out_slot, line); // result string
 }
 
 /// PHP `base_convert(num_str, from_radix, to_radix)`.
@@ -292,6 +313,9 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
 
+    // block { loop { ... } } — the surrounding block makes `br_if 1` (exit
+    // when i >= len) a valid WASM label. Without it the break has no target.
+    let scan_block = chunk.emit_block(line);
     let (scan_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
@@ -334,6 +358,8 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(scan_loop_patch);
+    chunk.emit_end(line); // end scan block
+    chunk.patch_block(scan_block);
 
     let outer = chunk.emit_block(line);
 
@@ -354,6 +380,9 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let chunk = &mut chunks[current];
 
     // while n > 0: out = table.charAt(n % to) + out; n = floor(n / to)
+    // Own block so the loop break (`br_if 1`) lands right after the loop —
+    // inside `outer`, so the trailing `lget out_slot` still runs.
+    let out_block = chunk.emit_block(line);
     let (out_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -386,6 +415,8 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(out_loop_patch);
+    chunk.emit_end(line); // end out block
+    chunk.patch_block(out_block);
 
     lget(chunk, out_slot, line);
     chunk.emit_end(line);

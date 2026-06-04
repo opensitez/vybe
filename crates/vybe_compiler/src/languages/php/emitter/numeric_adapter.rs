@@ -11,9 +11,9 @@
 //! No new host fns; composes only `ecma:number.parseFloat` /
 //! `ecma:number.parseInt` plus string opcodes.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let slot = chunk.local_count;
@@ -56,10 +56,19 @@ fn emit_numeric_fallback(
     chunk.emit_op_u16(Op::CALL_IMPORT, parse_float, line);
     chunk.emit(1, line);
     push_const(chunk, Value::F64(1.0), line);
-    if plus { crate::emitter::ops::emit_dyn_add(chunk, line) } else { chunk.emit_op(Op::F64_SUB, line) };
+    if plus {
+        crate::emitter::ops::emit_dyn_add(chunk, line)
+    } else {
+        chunk.emit_op(Op::F64_SUB, line)
+    };
 }
 
 fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u16, line: u32) {
+    // block { loop { ... } } — the surrounding block makes `br_if 1` (exit
+    // once out.length >= width) a valid WASM label. This helper is called
+    // from inside an `if/else`, so a bare loop's `br 1` would otherwise
+    // branch to the enclosing `if` and skip the trailing concat.
+    let pad_block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, out_slot, line);
     chunk.emit_op(Op::STR_LENGTH, line);
@@ -74,18 +83,20 @@ fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u1
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(loop_patch);
+    chunk.emit_end(line); // end pad block
+    chunk.patch_block(pad_block);
 }
 
 /// `__php_inc(v)` — PHP `$v++` arithmetic.
 /// Stack on entry: `[v]` ; Stack on exit: `[v + 1]`.
 pub fn emit_php_inc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_unary_arith(chunks, current, /*plus=*/true, line);
+    emit_unary_arith(chunks, current, /*plus=*/ true, line);
 }
 
 /// `__php_dec(v)` — PHP `$v--` arithmetic.
 /// Stack on entry: `[v]` ; Stack on exit: `[v - 1]`.
 pub fn emit_php_dec(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_unary_arith(chunks, current, /*plus=*/false, line);
+    emit_unary_arith(chunks, current, /*plus=*/ false, line);
 }
 
 fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32) {
@@ -140,92 +151,92 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-        lget(chunk, len_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        chunk.emit_op(Op::F64_SUB, line);
-        lset(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, i_slot, line);
 
-        lget(chunk, s_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-        lset(chunk, code_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    lset(chunk, code_slot, line);
 
-        lget(chunk, code_slot, line);
-        push_const(chunk, Value::F64(47.0), line);
-        crate::emitter::ops::emit_dyn_gt(chunk, line);
-        chunk.emit_if(line);
-            lget(chunk, code_slot, line);
-            push_const(chunk, Value::F64(58.0), line);
-            crate::emitter::ops::emit_dyn_lt(chunk, line);
-            chunk.emit_if(line);
-                lget(chunk, len_slot, line);
-                push_const(chunk, Value::F64(2.0), line);
-                chunk.emit_op(Op::F64_SUB, line);
-                lset(chunk, i_slot, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(47.0), line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(58.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, i_slot, line);
 
-                lget(chunk, s_slot, line);
-                lget(chunk, i_slot, line);
-                chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-                lset(chunk, code_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    lset(chunk, code_slot, line);
 
-                lget(chunk, code_slot, line);
-                push_const(chunk, Value::F64(47.0), line);
-                crate::emitter::ops::emit_dyn_gt(chunk, line);
-                chunk.emit_if(line);
-                    lget(chunk, code_slot, line);
-                    push_const(chunk, Value::F64(58.0), line);
-                    crate::emitter::ops::emit_dyn_lt(chunk, line);
-                    chunk.emit_if(line);
-                        lget(chunk, len_slot, line);
-                        push_const(chunk, Value::F64(3.0), line);
-                        crate::emitter::ops::emit_dyn_lt(chunk, line);
-                        chunk.emit_op(Op::I32_EQZ, line);
-                        chunk.emit_if(line);
-                            lget(chunk, len_slot, line);
-                            push_const(chunk, Value::F64(3.0), line);
-                            chunk.emit_op(Op::F64_SUB, line);
-                            lset(chunk, i_slot, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(47.0), line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(58.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(3.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(3.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, i_slot, line);
 
-                            lget(chunk, s_slot, line);
-                            lget(chunk, i_slot, line);
-                            chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-                            lset(chunk, code_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    lset(chunk, code_slot, line);
 
-                            lget(chunk, code_slot, line);
-                            push_const(chunk, Value::F64(47.0), line);
-                            crate::emitter::ops::emit_dyn_gt(chunk, line);
-                            chunk.emit_if(line);
-                                lget(chunk, code_slot, line);
-                                push_const(chunk, Value::F64(58.0), line);
-                                crate::emitter::ops::emit_dyn_lt(chunk, line);
-                                chunk.emit_op(Op::I32_EQZ, line);
-                                chunk.emit_if(line);
-                                    lget(chunk, len_slot, line);
-                                    push_const(chunk, Value::F64(2.0), line);
-                                    chunk.emit_op(Op::F64_SUB, line);
-                                    lset(chunk, suffix_start_slot, line);
-                                chunk.emit_end(line);
-                            chunk.emit_else(line);
-                                lget(chunk, len_slot, line);
-                                push_const(chunk, Value::F64(2.0), line);
-                                chunk.emit_op(Op::F64_SUB, line);
-                                lset(chunk, suffix_start_slot, line);
-                            chunk.emit_end(line);
-                        chunk.emit_end(line);
-                    chunk.emit_else(line);
-                        lget(chunk, len_slot, line);
-                        push_const(chunk, Value::F64(1.0), line);
-                        chunk.emit_op(Op::F64_SUB, line);
-                        lset(chunk, suffix_start_slot, line);
-                    chunk.emit_end(line);
-                chunk.emit_else(line);
-                    lget(chunk, len_slot, line);
-                    push_const(chunk, Value::F64(1.0), line);
-                    chunk.emit_op(Op::F64_SUB, line);
-                    lset(chunk, suffix_start_slot, line);
-                chunk.emit_end(line);
-            chunk.emit_end(line);
-        chunk.emit_end(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(47.0), line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(58.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, suffix_start_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, suffix_start_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, suffix_start_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, suffix_start_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     lget(chunk, suffix_start_slot, line);
@@ -273,6 +284,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     // Numeric case: v ± 1
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    if plus { crate::emitter::ops::emit_dyn_add(chunk, line) } else { chunk.emit_op(Op::F64_SUB, line) };
+    if plus {
+        crate::emitter::ops::emit_dyn_add(chunk, line)
+    } else {
+        chunk.emit_op(Op::F64_SUB, line)
+    };
     chunk.emit_end(line);
 }

@@ -9,9 +9,9 @@
 //! every call site gets its own inline sequence, mirroring the dotnet
 //! datetime_adapter / php datetime_adapter pattern.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;
@@ -32,7 +32,14 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -54,7 +61,14 @@ pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_op(Op::DROP, line);
     }
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFileName",
+        1,
+        line,
+    );
 }
 
 /// PHP `dirname($path, $levels = 1)` — current runtime behavior is a
@@ -65,7 +79,14 @@ pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::DROP, line);
     }
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetDirectory",
+        1,
+        line,
+    );
 }
 
 /// PHP `file_get_contents($path, ...)` — current MVP behavior forwards to
@@ -184,25 +205,53 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetDirectory",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, dirname_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFileName",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, basename_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetExtension", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetExtension",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, extension_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetFileNameWithoutExt", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFileNameWithoutExt",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, filename_slot, line);
 
@@ -268,13 +317,27 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetDirectory",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, dir_slot, line);
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFileName",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     lset(chunk, file_pattern_slot, line);
 

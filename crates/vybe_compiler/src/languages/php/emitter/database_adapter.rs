@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::{collections, convert};
 use crate::languages::php::emitter::string_adapter;
@@ -32,7 +32,14 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -75,14 +82,12 @@ fn set_mysqli_error_state(chunk: &mut Chunk, errno: f64, error: &str, line: u32)
     global_set_key(chunk, "__php_mysqli_connect_error", line);
 }
 
-fn emit_mysqli_queryish_check(chunk: &mut Chunk, sql_slot: u16, prefix: &str, line: u32) -> usize {
-    lget(chunk, sql_slot, line);
-    push_str(chunk, prefix, line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
-    chunk.emit_jump(Op::BR_IF_TRUE, line)
-}
-
-fn emit_mysqli_result_fields(chunks: &mut [Chunk], current: usize, rows_slot: u16, line: u32) -> u16 {
+fn emit_mysqli_result_fields(
+    chunks: &mut [Chunk],
+    current: usize,
+    rows_slot: u16,
+    line: u32,
+) -> u16 {
     let fields_slot = alloc_local(&mut chunks[current]);
 
     {
@@ -112,7 +117,12 @@ fn emit_mysqli_result_fields(chunks: &mut [Chunk], current: usize, rows_slot: u1
     fields_slot
 }
 
-fn emit_mysqli_field_object(chunks: &mut [Chunk], current: usize, field_name_slot: u16, line: u32) -> u16 {
+fn emit_mysqli_field_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    field_name_slot: u16,
+    line: u32,
+) -> u16 {
     call_import(chunks, current, "ecma:object", "new", 0, line);
     let field_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
@@ -174,7 +184,12 @@ fn emit_mysqli_field_object(chunks: &mut [Chunk], current: usize, field_name_slo
     field_slot
 }
 
-fn emit_mysqli_result_object(chunks: &mut [Chunk], current: usize, rows_slot: u16, line: u32) -> u16 {
+fn emit_mysqli_result_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    rows_slot: u16,
+    line: u32,
+) -> u16 {
     call_import(chunks, current, "ecma:object", "new", 0, line);
     let result_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
@@ -234,7 +249,13 @@ fn replace_in_slot(chunk: &mut Chunk, slot: u16, from: &str, to: &str, line: u32
     lset(chunk, slot, line);
 }
 
-fn append_credentials(chunk: &mut Chunk, normalized_slot: u16, username_slot: Option<u16>, password_slot: Option<u16>, line: u32) {
+fn append_credentials(
+    chunk: &mut Chunk,
+    normalized_slot: u16,
+    username_slot: Option<u16>,
+    password_slot: Option<u16>,
+    line: u32,
+) {
     if let Some(slot) = username_slot {
         emit_string_slot_nonempty(chunk, slot, line);
         chunk.emit_if(line);
@@ -350,7 +371,12 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
 }
 
-fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) -> u16 {
+fn emit_sql_literal_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    line: u32,
+) -> u16 {
     let resolved_slot = alloc_local(&mut chunks[current]);
     {
         let chunk = &mut chunks[current];
@@ -500,7 +526,13 @@ fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: 
     out_slot
 }
 
-fn emit_apply_named_bound_pairs(chunks: &mut [Chunk], current: usize, sql_slot: u16, pairs_slot: u16, line: u32) {
+fn emit_apply_named_bound_pairs(
+    chunks: &mut [Chunk],
+    current: usize,
+    sql_slot: u16,
+    pairs_slot: u16,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         push_const(chunk, Value::F64(0.0), line);
@@ -519,14 +551,14 @@ fn emit_apply_named_bound_pairs(chunks: &mut [Chunk], current: usize, sql_slot: 
         lset(chunk, len_slot, line);
     }
 
-    let loop_top = chunks[current].current_offset();
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
     }
-    let exit = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
 
     {
         let chunk = &mut chunks[current];
@@ -564,12 +596,17 @@ fn emit_apply_named_bound_pairs(chunks: &mut [Chunk], current: usize, sql_slot: 
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
-        chunk.emit_loop(loop_top, line);
-        chunk.patch_jump(exit);
     }
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
-fn emit_apply_named_params_from_entries(chunks: &mut [Chunk], current: usize, sql_slot: u16, params_slot: u16, line: u32) {
+fn emit_apply_named_params_from_entries(
+    chunks: &mut [Chunk],
+    current: usize,
+    sql_slot: u16,
+    params_slot: u16,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     lget(chunk, params_slot, line);
     collections::emit_iter_entries(chunks, current, line);
@@ -592,11 +629,15 @@ fn emit_apply_named_params_from_entries(chunks: &mut [Chunk], current: usize, sq
     let key_text_slot = alloc_local(chunk);
     let value_slot = alloc_local(chunk);
 
-    let loop_top = chunk.current_offset();
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
     lget(chunk, index_slot, line);
     lget(chunk, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
 
     lget(chunk, entries_slot, line);
     lget(chunk, index_slot, line);
@@ -617,13 +658,14 @@ fn emit_apply_named_params_from_entries(chunks: &mut [Chunk], current: usize, sq
     lget(chunk, key_text_slot, line);
     push_str(chunk, ":", line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    let has_prefix = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
+    chunk.emit_if(line);
 
     push_str(chunk, ":", line);
     lget(chunk, key_text_slot, line);
     chunk.emit_op(Op::STR_CONCAT, line);
     lset(chunk, key_text_slot, line);
-    chunk.patch_jump(has_prefix);
+    chunk.emit_end(line);
 
     lget(chunk, pair_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -642,8 +684,8 @@ fn emit_apply_named_params_from_entries(chunks: &mut [Chunk], current: usize, sq
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, index_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
 fn emit_new_statement(
@@ -705,26 +747,60 @@ fn emit_new_statement(
     lget(chunk, stmt_slot, line);
 }
 
-fn emit_queryish_check(chunk: &mut Chunk, sql_slot: u16, prefix: &str, line: u32) -> usize {
+fn emit_mark_queryish_prefix(
+    chunk: &mut Chunk,
+    sql_slot: u16,
+    is_query_slot: u16,
+    prefix: &str,
+    line: u32,
+) {
     lget(chunk, sql_slot, line);
     push_str(chunk, prefix, line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    chunk.emit_jump(Op::BR_IF_TRUE, line)
+    chunk.emit_if(line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    lset(chunk, is_query_slot, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let options_slot = if argc >= 4 { Some(alloc_local(chunk)) } else { None };
-    let password_slot = if argc >= 3 { Some(alloc_local(chunk)) } else { None };
-    let username_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let options_slot = if argc >= 4 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let password_slot = if argc >= 3 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let username_slot = if argc >= 2 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let dsn_slot = alloc_local(chunk);
 
-    if let Some(slot) = options_slot { lset(chunk, slot, line); }
-    if let Some(slot) = password_slot { lset(chunk, slot, line); }
-    if let Some(slot) = username_slot { lset(chunk, slot, line); }
+    if let Some(slot) = options_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = password_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = username_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, dsn_slot, line);
 
-    let normalized_slot = normalize_pdo_dsn(chunks, current, dsn_slot, username_slot, password_slot, line);
+    let normalized_slot = normalize_pdo_dsn(
+        chunks,
+        current,
+        dsn_slot,
+        username_slot,
+        password_slot,
+        line,
+    );
     let chunk = &mut chunks[current];
     lget(chunk, normalized_slot, line);
     call_import(chunks, current, "wasi:sql", "connect", 1, line);
@@ -749,7 +825,14 @@ pub fn emit_php_pdo_query(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
 
-    emit_new_statement(chunks, current, conn_slot, Some(sql_slot), Some(rows_slot), line);
+    emit_new_statement(
+        chunks,
+        current,
+        conn_slot,
+        Some(sql_slot),
+        Some(rows_slot),
+        line,
+    );
 }
 
 pub fn emit_php_pdo_exec(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -803,16 +886,34 @@ pub fn emit_php_pdo_rollback(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
 fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let _driver_options_slot = if argc >= 6 { Some(alloc_local(chunk)) } else { None };
-    let _max_length_slot = if argc >= 5 { Some(alloc_local(chunk)) } else { None };
-    let _type_slot = if argc >= 4 { Some(alloc_local(chunk)) } else { None };
+    let _driver_options_slot = if argc >= 6 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let _max_length_slot = if argc >= 5 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let _type_slot = if argc >= 4 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let value_slot = alloc_local(chunk);
     let param_slot = alloc_local(chunk);
     let stmt_slot = alloc_local(chunk);
 
-    if let Some(slot) = _driver_options_slot { lset(chunk, slot, line); }
-    if let Some(slot) = _max_length_slot { lset(chunk, slot, line); }
-    if let Some(slot) = _type_slot { lset(chunk, slot, line); }
+    if let Some(slot) = _driver_options_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = _max_length_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = _type_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, value_slot, line);
     lset(chunk, param_slot, line);
     lset(chunk, stmt_slot, line);
@@ -821,8 +922,23 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
 
     lget(chunk, param_slot, line);
     chunk.emit_op(Op::REF_IS_STRING, line);
-    let named_placeholder = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if(line);
 
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "__bound_named_pairs", line);
+    let named_pairs_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, named_pairs_slot, line);
+
+    lget(chunk, named_pairs_slot, line);
+    lget(chunk, param_slot, line);
+    lget(chunk, value_slot, line);
+    collections::emit_array_new(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_else(line);
     lget(chunk, stmt_slot, line);
     struct_get_key(chunk, "__bound_params", line);
     let params_slot = alloc_local(&mut chunks[current]);
@@ -838,39 +954,36 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
     collections::emit_set(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
     chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(named_placeholder);
-    lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__bound_named_pairs", line);
-    let named_pairs_slot = alloc_local(&mut chunks[current]);
-    let chunk = &mut chunks[current];
-    lset(chunk, named_pairs_slot, line);
-
-    lget(chunk, named_pairs_slot, line);
-    lget(chunk, param_slot, line);
-    lget(chunk, value_slot, line);
-    collections::emit_array_new(chunks, current, 2, line);
-    collections::emit_push(chunks, current, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::TRUE, line);
-    chunk.patch_jump(done);
 }
 
-pub fn emit_php_pdo_statement_bind_param(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_pdo_statement_bind_param(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     emit_php_pdo_statement_bind_common(chunks, current, argc, line);
 }
 
-pub fn emit_php_pdo_statement_bind_value(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_pdo_statement_bind_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     emit_php_pdo_statement_bind_common(chunks, current, argc, line);
 }
 
 pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let explicit_params_slot = {
         let chunk = &mut chunks[current];
-        if argc >= 2 { Some(alloc_local(chunk)) } else { None }
+        if argc >= 2 {
+            Some(alloc_local(chunk))
+        } else {
+            None
+        }
     };
     let stmt_slot = {
         let chunk = &mut chunks[current];
@@ -878,7 +991,9 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     };
     {
         let chunk = &mut chunks[current];
-        if let Some(slot) = explicit_params_slot { lset(chunk, slot, line); }
+        if let Some(slot) = explicit_params_slot {
+            lset(chunk, slot, line);
+        }
         lset(chunk, stmt_slot, line);
         lget(chunk, stmt_slot, line);
         struct_get_key(chunk, "__prepared_commandtext", line);
@@ -894,7 +1009,13 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         let chunk = &mut chunks[current];
         lget(chunk, slot, line);
         lset(chunk, effective_params_slot, line);
-        emit_apply_named_params_from_entries(chunks, current, sql_text_slot, effective_params_slot, line);
+        emit_apply_named_params_from_entries(
+            chunks,
+            current,
+            sql_text_slot,
+            effective_params_slot,
+            line,
+        );
     } else {
         {
             let chunk = &mut chunks[current];
@@ -925,26 +1046,23 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         lset(chunk, sql_slot, line);
     }
 
-    let query_jumps = {
+    let is_query_slot = {
         let chunk = &mut chunks[current];
-        vec![
-            emit_queryish_check(chunk, sql_slot, "select", line),
-            emit_queryish_check(chunk, sql_slot, "pragma", line),
-            emit_queryish_check(chunk, sql_slot, "show", line),
-            emit_queryish_check(chunk, sql_slot, "with", line),
-            emit_queryish_check(chunk, sql_slot, "describe", line),
-        ]
-    };
-    let not_query = {
-        let chunk = &mut chunks[current];
-        chunk.emit_jump(Op::BR, line)
+        chunk.emit_op(Op::I32_CONST_0, line);
+        let slot = alloc_local(chunk);
+        lset(chunk, slot, line);
+        emit_mark_queryish_prefix(chunk, sql_slot, slot, "select", line);
+        emit_mark_queryish_prefix(chunk, sql_slot, slot, "pragma", line);
+        emit_mark_queryish_prefix(chunk, sql_slot, slot, "show", line);
+        emit_mark_queryish_prefix(chunk, sql_slot, slot, "with", line);
+        emit_mark_queryish_prefix(chunk, sql_slot, slot, "describe", line);
+        slot
     };
 
-    for jump in query_jumps {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(jump);
-    }
     let chunk = &mut chunks[current];
+    lget(chunk, is_query_slot, line);
+    chunk.emit_if_value(line);
+
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     struct_set_key(chunk, "commandtext", line);
@@ -962,9 +1080,8 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     push_const(chunk, Value::F64(0.0), line);
     struct_set_key(chunk, "__cursor", line);
     chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
+    chunk.emit_else(line);
 
-    chunk.patch_jump(not_query);
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     struct_set_key(chunk, "commandtext", line);
@@ -989,14 +1106,20 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     push_const(chunk, Value::F64(-1.0), line);
     crate::emitter::ops::emit_dyn_ne(chunk, line);
 
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let mode_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let mode_slot = if argc >= 2 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let stmt_slot = alloc_local(chunk);
-    if let Some(slot) = mode_slot { lset(chunk, slot, line); }
+    if let Some(slot) = mode_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, stmt_slot, line);
 
     lget(chunk, stmt_slot, line);
@@ -1028,29 +1151,37 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_COLUMN), line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let not_column = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if_value(line);
 
         lget(chunk, row_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        let row_is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
-        emit_first_column_value(chunks, current, row_slot, line);
-        let done = chunks[current].emit_jump(Op::BR, line);
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(row_is_null);
+        chunk.emit_if_value(line);
         chunk.emit_op(Op::NULL, line);
-        chunk.patch_jump(done);
-        chunk.patch_jump(not_column);
+        chunk.emit_else(line);
+        let _ = chunk;
+        emit_first_column_value(chunks, current, row_slot, line);
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+        chunk.emit_else(line);
+        lget(chunk, row_slot, line);
+        chunk.emit_end(line);
+    } else {
+        let chunk = &mut chunks[current];
+        lget(chunk, row_slot, line);
     }
-
-    let chunk = &mut chunks[current];
-    lget(chunk, row_slot, line);
 }
 
 pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let mode_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let mode_slot = if argc >= 2 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let stmt_slot = alloc_local(chunk);
-    if let Some(slot) = mode_slot { lset(chunk, slot, line); }
+    if let Some(slot) = mode_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, stmt_slot, line);
 
     lget(chunk, stmt_slot, line);
@@ -1063,7 +1194,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_COLUMN), line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let not_column = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if_value(line);
 
         emit_empty_array(chunks, current, line);
         let out_slot = alloc_local(&mut chunks[current]);
@@ -1081,11 +1212,15 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         let chunk = &mut chunks[current];
         lset(chunk, len_slot, line);
 
-        let loop_top = chunk.current_offset();
+        let _ = chunk;
+        let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+        let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
-        let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        let _ = chunk;
+        crate::emitter::loops::emit_loop_cond(chunks, current, line);
+        let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
         lget(chunk, index_slot, line);
@@ -1096,26 +1231,27 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
         lget(chunk, row_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        let skip_push = chunk.emit_jump(Op::BR_IF_TRUE, line);
+        crate::emitter::ops::emit_dyn_not(chunk, line);
+        chunk.emit_if(line);
         lget(chunk, out_slot, line);
+        let _ = chunk;
         emit_first_column_value(chunks, current, row_slot, line);
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
         let chunk = &mut chunks[current];
-        chunk.patch_jump(skip_push);
+        chunk.emit_end(line);
 
         lget(chunk, index_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
-        chunk.emit_loop(loop_top, line);
-        chunk.patch_jump(exit);
+        let _ = chunk;
+        crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        let chunk = &mut chunks[current];
         lget(chunk, out_slot, line);
-        let done = chunk.emit_jump(Op::BR, line);
-
-        chunk.patch_jump(not_column);
+        chunk.emit_else(line);
         lget(chunk, rows_slot, line);
-        chunk.patch_jump(done);
+        chunk.emit_end(line);
         return;
     }
 
@@ -1176,22 +1312,64 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
 
     // mysqli_real_connect(dbh, host, user, password, database, port, socket, flags)
     // Args are in reverse order on stack: flags, socket, port, database, password, user, host, dbh
-    let flags_slot = if argc >= 8 { Some(alloc_local(chunk)) } else { None };
-    let socket_slot = if argc >= 7 { Some(alloc_local(chunk)) } else { None };
-    let port_slot = if argc >= 6 { Some(alloc_local(chunk)) } else { None };
-    let database_slot = if argc >= 5 { Some(alloc_local(chunk)) } else { None };
-    let password_slot = if argc >= 4 { Some(alloc_local(chunk)) } else { None };
-    let user_slot = if argc >= 3 { Some(alloc_local(chunk)) } else { None };
-    let host_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let flags_slot = if argc >= 8 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let socket_slot = if argc >= 7 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let port_slot = if argc >= 6 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let database_slot = if argc >= 5 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let password_slot = if argc >= 4 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let user_slot = if argc >= 3 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
+    let host_slot = if argc >= 2 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let dbh_slot = alloc_local(chunk);
 
-    if let Some(slot) = flags_slot { lset(chunk, slot, line); }
-    if let Some(slot) = socket_slot { lset(chunk, slot, line); }
-    if let Some(slot) = port_slot { lset(chunk, slot, line); }
-    if let Some(slot) = database_slot { lset(chunk, slot, line); }
-    if let Some(slot) = password_slot { lset(chunk, slot, line); }
-    if let Some(slot) = user_slot { lset(chunk, slot, line); }
-    if let Some(slot) = host_slot { lset(chunk, slot, line); }
+    if let Some(slot) = flags_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = socket_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = port_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = database_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = password_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = user_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = host_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, dbh_slot, line);
 
     // Build MySQL connection URL: mysql://user:password@host:port/database
@@ -1204,12 +1382,12 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         lget(chunk, slot, line);
         push_str(chunk, "", line);
         crate::emitter::ops::emit_dyn_ne(chunk, line);
-        let skip_user = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         lget(chunk, url_slot, line);
         lget(chunk, slot, line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lset(chunk, url_slot, line);
-        chunk.patch_jump(skip_user);
+        chunk.emit_end(line);
     }
 
     // Append password if provided
@@ -1217,14 +1395,14 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         lget(chunk, pass_slot, line);
         push_str(chunk, "", line);
         crate::emitter::ops::emit_dyn_ne(chunk, line);
-        let skip_pass = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, ":", line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lget(chunk, pass_slot, line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lset(chunk, url_slot, line);
-        chunk.patch_jump(skip_pass);
+        chunk.emit_end(line);
     }
 
     // Append @host
@@ -1247,14 +1425,14 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         lget(chunk, slot, line);
         push_str(chunk, "", line);
         crate::emitter::ops::emit_dyn_ne(chunk, line);
-        let skip_db = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, "/", line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lget(chunk, slot, line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lset(chunk, url_slot, line);
-        chunk.patch_jump(skip_db);
+        chunk.emit_end(line);
     }
 
     // Call wasi:sql.connect with the built URL
@@ -1267,7 +1445,22 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     // Check if connection failed (null)
     lget(chunk, conn_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if_value(line);
+
+    // Connection failed
+    set_mysqli_error_state(chunk, 1.0, "Connection failed", line);
+    lget(chunk, dbh_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    struct_set_key(chunk, "connect_errno", line);
+    lget(chunk, dbh_slot, line);
+    push_str(chunk, "Connection failed", line);
+    struct_set_key(chunk, "connect_error", line);
+    lget(chunk, dbh_slot, line);
+    push_str(chunk, "Connection failed", line);
+    struct_set_key(chunk, "error", line);
+    chunk.emit_op(Op::FALSE, line);
+
+    chunk.emit_else(line);
 
     // Connection succeeded - update dbh with the connection
     reset_mysqli_error_state(chunk, line);
@@ -1281,23 +1474,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, conn_slot, line);
     struct_set_key(chunk, "__connection", line);
     chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    // Connection failed
-    chunk.patch_jump(is_null);
-    set_mysqli_error_state(chunk, 1.0, "Connection failed", line);
-    lget(chunk, dbh_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    struct_set_key(chunk, "connect_errno", line);
-    lget(chunk, dbh_slot, line);
-    push_str(chunk, "Connection failed", line);
-    struct_set_key(chunk, "connect_error", line);
-    lget(chunk, dbh_slot, line);
-    push_str(chunk, "Connection failed", line);
-    struct_set_key(chunk, "error", line);
-    chunk.emit_op(Op::FALSE, line);
-
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_connect_errno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1336,20 +1513,18 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let normalized_sql_slot = alloc_local(chunk);
     lset(chunk, normalized_sql_slot, line);
 
-    let query_jumps = vec![
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "select", line),
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "pragma", line),
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "show", line),
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "with", line),
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "describe", line),
-        emit_mysqli_queryish_check(chunk, normalized_sql_slot, "explain", line),
-    ];
-    let exec_path = chunk.emit_jump(Op::BR, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    let is_query_slot = alloc_local(chunk);
+    lset(chunk, is_query_slot, line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "select", line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "pragma", line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "show", line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "with", line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "describe", line);
+    emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "explain", line);
 
-    for jump in query_jumps {
-        chunk.patch_jump(jump);
-    }
-
+    lget(chunk, is_query_slot, line);
+    chunk.emit_if_value(line);
     lget(chunk, dbh_slot, line);
     struct_get_key(chunk, "__connection", line);
     let conn_slot = alloc_local(&mut chunks[current]);
@@ -1376,9 +1551,8 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let result_slot = emit_mysqli_result_object(chunks, current, rows_slot, line);
     let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
+    chunk.emit_else(line);
 
-    chunk.patch_jump(exec_path);
     lget(chunk, dbh_slot, line);
     struct_get_key(chunk, "__connection", line);
     let conn_slot = alloc_local(&mut chunks[current]);
@@ -1403,7 +1577,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     struct_set_key(chunk, "error", line);
     chunk.emit_op(Op::TRUE, line);
 
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1443,8 +1617,10 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
 
     lget(chunk, dbh_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if_value(line);
 
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
     struct_set_key(chunk, "selected_db", line);
@@ -1452,11 +1628,7 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     lget(chunk, db_slot, line);
     struct_set_key(chunk, "database", line);
     chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(missing);
-    chunk.emit_op(Op::FALSE, line);
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1468,8 +1640,10 @@ pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: 
 
     lget(chunk, dbh_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if_value(line);
 
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, charset_slot, line);
     struct_set_key(chunk, "charset", line);
@@ -1477,11 +1651,7 @@ pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: 
     lget(chunk, charset_slot, line);
     struct_set_key(chunk, "character_set_name", line);
     chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(missing);
-    chunk.emit_op(Op::FALSE, line);
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1492,12 +1662,11 @@ pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     lget(chunk, dbh_slot, line);
     struct_get_key(chunk, "__connection", line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    chunk.emit_op(Op::TRUE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(missing);
+    chunk.emit_if_value(line);
     chunk.emit_op(Op::FALSE, line);
-    chunk.patch_jump(done);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_errno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1563,12 +1732,14 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
         lset(chunk, field_name_slot, line);
     }
 
-    let missing_field = {
+    {
         let chunk = &mut chunks[current];
         lget(chunk, field_name_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_jump(Op::BR_IF_TRUE, line)
-    };
+        chunk.emit_if_value(line);
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_else(line);
+    }
 
     {
         let chunk = &mut chunks[current];
@@ -1580,17 +1751,10 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
     }
 
     let field_slot = emit_mysqli_field_object(chunks, current, field_name_slot, line);
-    let done = {
-        let chunk = &mut chunks[current];
-        lget(chunk, field_slot, line);
-        chunk.emit_jump(Op::BR, line)
-    };
-
     {
         let chunk = &mut chunks[current];
-        chunk.patch_jump(missing_field);
-        chunk.emit_op(Op::NULL, line);
-        chunk.patch_jump(done);
+        lget(chunk, field_slot, line);
+        chunk.emit_end(line);
     }
 }
 
@@ -1662,7 +1826,10 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, dbh_slot, line);
     struct_get_key(chunk, "__connection", line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_else(line);
 
     {
         let chunk = &mut chunks[current];
@@ -1670,24 +1837,22 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
         struct_get_key(chunk, "__connection", line);
     }
     call_import(chunks, current, "wasi:sql", "close", 1, line);
-    let done = {
+    {
         let chunk = &mut chunks[current];
         lget(chunk, dbh_slot, line);
         chunk.emit_op(Op::NULL, line);
         struct_set_key(chunk, "__connection", line);
         chunk.emit_op(Op::TRUE, line);
-        chunk.emit_jump(Op::BR, line)
-    };
-
-    {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(missing);
-        chunk.emit_op(Op::FALSE, line);
-        chunk.patch_jump(done);
+        chunk.emit_end(line);
     }
 }
 
-pub fn emit_php_mysqli_real_escape_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_mysqli_real_escape_string(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let data_slot = alloc_local(chunk);
     let dbh_slot = alloc_local(chunk);
@@ -1709,7 +1874,12 @@ pub fn emit_php_mysqli_real_escape_string(chunks: &mut [Chunk], current: usize, 
     lget(chunk, data_slot, line);
 }
 
-pub fn emit_php_mysqli_character_set_name(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_mysqli_character_set_name(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let dbh_slot = alloc_local(chunk);
     lset(chunk, dbh_slot, line);
@@ -1722,13 +1892,11 @@ pub fn emit_php_mysqli_character_set_name(chunks: &mut [Chunk], current: usize, 
 
     lget(chunk, charset_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    lget(chunk, charset_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(missing);
+    chunk.emit_if_value(line);
     push_str(chunk, "utf8mb4", line);
-    chunk.patch_jump(done);
+    chunk.emit_else(line);
+    lget(chunk, charset_slot, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_mysqli_get_client_info(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1749,9 +1917,15 @@ pub fn emit_php_mysqli_get_server_info(chunks: &mut [Chunk], current: usize, arg
 
 pub fn emit_php_mysqli_fetch_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let flags_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let flags_slot = if argc >= 2 {
+        Some(alloc_local(chunk))
+    } else {
+        None
+    };
     let result_slot = alloc_local(chunk);
-    if let Some(slot) = flags_slot { lset(chunk, slot, line); }
+    if let Some(slot) = flags_slot {
+        lset(chunk, slot, line);
+    }
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);

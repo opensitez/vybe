@@ -12,9 +12,9 @@
 //! `__type` distinguishes `DateTime` / `DateTimeImmutable` /
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
@@ -60,7 +60,14 @@ fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -90,7 +97,13 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
 ///
 /// Stack on entry: `[s]` (string arg) or `[]` (no-arg)
 /// Stack on exit: `[obj]` with `__type=tag`, `__time=ms`.
-fn emit_datetime_ctor(chunks: &mut [Chunk], current: usize, type_tag: &'static str, has_arg: bool, line: u32) {
+fn emit_datetime_ctor(
+    chunks: &mut [Chunk],
+    current: usize,
+    type_tag: &'static str,
+    has_arg: bool,
+    line: u32,
+) {
     if has_arg {
         // Stack: [s] → ecma:date.parse → [ms_or_NaN]. NaN flow-through
         // is acceptable for the suite — invalid dates produce NaN
@@ -299,7 +312,9 @@ pub fn emit_datetime_format(chunks: &mut [Chunk], current: usize, line: u32) {
     let dt_slot = alloc_local(chunk);
     local_set(chunk, fmt_slot, line);
     local_set(chunk, dt_slot, line);
-    emit_format_dt_runtime(chunks, current, dt_slot, fmt_slot, /* mode_strftime */ false, line);
+    emit_format_dt_runtime(
+        chunks, current, dt_slot, fmt_slot, /* mode_strftime */ false, line,
+    );
 }
 
 /// Append the top-of-stack value (string or number) onto the
@@ -429,202 +444,502 @@ fn emit_format_code_dispatch(
     if !mode_strftime {
         // PHP `date()` codes.
         // Y: full year as string
-        emit_code_arm(chunks, current, matched_slot, c_slot, "Y", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "Y",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // y: last two digits, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "y", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-            // % 100
-            let idx = chunks[current].add_constant(Value::F64(100.0));
-            chunks[current].emit_op_u16(Op::CONST, idx, line);
-            crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "y",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+                // % 100
+                let idx = chunks[current].add_constant(Value::F64(100.0));
+                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // m: month 01-12, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "m", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-            let idx = chunks[current].add_constant(Value::F64(1.0));
-            chunks[current].emit_op_u16(Op::CONST, idx, line);
-            chunks[current].emit_op(Op::F64_ADD, line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "m",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
+                let idx = chunks[current].add_constant(Value::F64(1.0));
+                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_op(Op::F64_ADD, line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // n: month 1-12, no padding
-        emit_code_arm(chunks, current, matched_slot, c_slot, "n", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-            let idx = chunks[current].add_constant(Value::F64(1.0));
-            chunks[current].emit_op_u16(Op::CONST, idx, line);
-            chunks[current].emit_op(Op::F64_ADD, line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "n",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
+                let idx = chunks[current].add_constant(Value::F64(1.0));
+                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_op(Op::F64_ADD, line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // d: day 01-31, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "d", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "d",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // j: day 1-31, no padding
-        emit_code_arm(chunks, current, matched_slot, c_slot, "j", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "j",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // H: hour 00-23, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "H", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "H",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getHours", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // G: hour 0-23, no padding
-        emit_code_arm(chunks, current, matched_slot, c_slot, "G", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "G",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getHours", line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // i: minute 00-59, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "i", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "i",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // s: second 00-59, zero-padded
-        emit_code_arm(chunks, current, matched_slot, c_slot, "s", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "s",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // U: secs since epoch (floor of __time / 1000)
-        emit_code_arm(chunks, current, matched_slot, c_slot, "U", line, |chunks, current| {
-            let chunk = &mut chunks[current];
-            chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
-            struct_get(chunk, TIME_KEY, line);
-            push_const(chunk, Value::F64(MS_PER_SECOND), line);
-            chunk.emit_op(Op::F64_DIV, line);
-            chunk.emit_op(Op::F64_FLOOR, line);
-            emit_stringify(chunk, line);
-            emit_append_to_result(chunk, result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "U",
+            line,
+            |chunks, current| {
+                let chunk = &mut chunks[current];
+                chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
+                struct_get(chunk, TIME_KEY, line);
+                push_const(chunk, Value::F64(MS_PER_SECOND), line);
+                chunk.emit_op(Op::F64_DIV, line);
+                chunk.emit_op(Op::F64_FLOOR, line);
+                emit_stringify(chunk, line);
+                emit_append_to_result(chunk, result_slot, line);
+            },
+        );
         // a / A: am/pm
-        emit_code_arm(chunks, current, matched_slot, c_slot, "a", line, |chunks, current| {
-            emit_am_pm(chunks, current, dt_slot, /*upper=*/false, result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "A", line, |chunks, current| {
-            emit_am_pm(chunks, current, dt_slot, /*upper=*/true, result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "a",
+            line,
+            |chunks, current| {
+                emit_am_pm(
+                    chunks,
+                    current,
+                    dt_slot,
+                    /*upper=*/ false,
+                    result_slot,
+                    line,
+                );
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "A",
+            line,
+            |chunks, current| {
+                emit_am_pm(
+                    chunks,
+                    current,
+                    dt_slot,
+                    /*upper=*/ true,
+                    result_slot,
+                    line,
+                );
+            },
+        );
         // l (lowercase L): full weekday name
-        emit_code_arm(chunks, current, matched_slot, c_slot, "l", line, |chunks, current| {
-            emit_weekday_name(chunks, current, dt_slot, /*full=*/true, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "l",
+            line,
+            |chunks, current| {
+                emit_weekday_name(chunks, current, dt_slot, /*full=*/ true, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // D: short weekday name
-        emit_code_arm(chunks, current, matched_slot, c_slot, "D", line, |chunks, current| {
-            emit_weekday_name(chunks, current, dt_slot, /*full=*/false, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "D",
+            line,
+            |chunks, current| {
+                emit_weekday_name(chunks, current, dt_slot, /*full=*/ false, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // F: full month name
-        emit_code_arm(chunks, current, matched_slot, c_slot, "F", line, |chunks, current| {
-            emit_month_name(chunks, current, dt_slot, /*full=*/true, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "F",
+            line,
+            |chunks, current| {
+                emit_month_name(chunks, current, dt_slot, /*full=*/ true, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // M: short month name
-        emit_code_arm(chunks, current, matched_slot, c_slot, "M", line, |chunks, current| {
-            emit_month_name(chunks, current, dt_slot, /*full=*/false, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "M",
+            line,
+            |chunks, current| {
+                emit_month_name(chunks, current, dt_slot, /*full=*/ false, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // w: numeric day-of-week (Sunday=0..6)
-        emit_code_arm(chunks, current, matched_slot, c_slot, "w", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getDay", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "w",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getDay", line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
         // T: literal "UTC"
-        emit_code_arm(chunks, current, matched_slot, c_slot, "T", line, |chunks, current| {
-            push_str(&mut chunks[current], "UTC", line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "T",
+            line,
+            |chunks, current| {
+                push_str(&mut chunks[current], "UTC", line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
     } else {
         // POSIX strftime codes — same shape, different code letters.
         // Y, y, m, d, e (no-pad day), H, M, S, A (full weekday),
         // a (short weekday), B (full month), b/h (short month), p, P, %.
-        emit_code_arm(chunks, current, matched_slot, c_slot, "Y", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "y", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-            let idx = chunks[current].add_constant(Value::F64(100.0));
-            chunks[current].emit_op_u16(Op::CONST, idx, line);
-            crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "m", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-            let idx = chunks[current].add_constant(Value::F64(1.0));
-            chunks[current].emit_op_u16(Op::CONST, idx, line);
-            chunks[current].emit_op(Op::F64_ADD, line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "d", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "e", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-            emit_stringify(&mut chunks[current], line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "H", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "M", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "S", line, |chunks, current| {
-            emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
-            emit_pad_to_width(&mut chunks[current], 2, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "A", line, |chunks, current| {
-            emit_weekday_name(chunks, current, dt_slot, /*full=*/true, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "a", line, |chunks, current| {
-            emit_weekday_name(chunks, current, dt_slot, /*full=*/false, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "B", line, |chunks, current| {
-            emit_month_name(chunks, current, dt_slot, /*full=*/true, line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
-        for code in &["b", "h"] {
-            emit_code_arm(chunks, current, matched_slot, c_slot, code, line, |chunks, current| {
-                emit_month_name(chunks, current, dt_slot, /*full=*/false, line);
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "Y",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+                emit_stringify(&mut chunks[current], line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
-            });
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "y",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+                let idx = chunks[current].add_constant(Value::F64(100.0));
+                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "m",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
+                let idx = chunks[current].add_constant(Value::F64(1.0));
+                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_op(Op::F64_ADD, line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "d",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "e",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "H",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getHours", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "M",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "S",
+            line,
+            |chunks, current| {
+                emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "A",
+            line,
+            |chunks, current| {
+                emit_weekday_name(chunks, current, dt_slot, /*full=*/ true, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "a",
+            line,
+            |chunks, current| {
+                emit_weekday_name(chunks, current, dt_slot, /*full=*/ false, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "B",
+            line,
+            |chunks, current| {
+                emit_month_name(chunks, current, dt_slot, /*full=*/ true, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        for code in &["b", "h"] {
+            emit_code_arm(
+                chunks,
+                current,
+                matched_slot,
+                c_slot,
+                code,
+                line,
+                |chunks, current| {
+                    emit_month_name(chunks, current, dt_slot, /*full=*/ false, line);
+                    emit_append_to_result(&mut chunks[current], result_slot, line);
+                },
+            );
         }
-        emit_code_arm(chunks, current, matched_slot, c_slot, "p", line, |chunks, current| {
-            emit_am_pm(chunks, current, dt_slot, /*upper=*/true, result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "P", line, |chunks, current| {
-            emit_am_pm(chunks, current, dt_slot, /*upper=*/false, result_slot, line);
-        });
-        emit_code_arm(chunks, current, matched_slot, c_slot, "%", line, |chunks, current| {
-            push_str(&mut chunks[current], "%", line);
-            emit_append_to_result(&mut chunks[current], result_slot, line);
-        });
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "p",
+            line,
+            |chunks, current| {
+                emit_am_pm(
+                    chunks,
+                    current,
+                    dt_slot,
+                    /*upper=*/ true,
+                    result_slot,
+                    line,
+                );
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "P",
+            line,
+            |chunks, current| {
+                emit_am_pm(
+                    chunks,
+                    current,
+                    dt_slot,
+                    /*upper=*/ false,
+                    result_slot,
+                    line,
+                );
+            },
+        );
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "%",
+            line,
+            |chunks, current| {
+                push_str(&mut chunks[current], "%", line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
     }
 
     // Default arm: append the raw character itself when no format arm matched.
@@ -664,20 +979,41 @@ fn emit_am_pm(
 /// Stack on exit: `[name_string]`.
 fn emit_weekday_name(chunks: &mut [Chunk], current: usize, dt_slot: u16, full: bool, line: u32) {
     let names: &[&str] = if full {
-        &["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+        &[
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]
     } else {
-        &["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+        &["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     };
     emit_indexed_name(chunks, current, dt_slot, "getDay", names, line);
 }
 
 fn emit_month_name(chunks: &mut [Chunk], current: usize, dt_slot: u16, full: bool, line: u32) {
     let names: &[&str] = if full {
-        &["January","February","March","April","May","June",
-          "July","August","September","October","November","December"]
+        &[
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
     } else {
-        &["Jan","Feb","Mar","Apr","May","Jun",
-          "Jul","Aug","Sep","Oct","Nov","Dec"]
+        &[
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
     };
     emit_indexed_name(chunks, current, dt_slot, "getMonth", names, line);
 }
@@ -735,13 +1071,17 @@ fn emit_format_dt_runtime(
     chunk.emit_op(Op::STR_LENGTH, line);
     local_set(chunk, len_slot, line);
 
-    // while i < len:
-    let (loop_patch, _) = chunk.emit_loop_s(line);
+    // while i < len:  block { loop { ... } } — WASM structured control flow
+    // via the shared loop emitter. The surrounding block makes `br_if 1`
+    // (break) and `br 1` (continue, from inside one nested `if`) valid labels.
+    let lstate = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(1, line);
+    // i >= len → break out of the enclosing block.
+    chunk.emit_br_if(lstate.break_depth(0) as u32, line);
 
     //   c = fmt.charAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
@@ -780,7 +1120,13 @@ fn emit_format_dt_runtime(
         chunk.emit_end(line);
         // Fall through to dispatch on c.
         emit_format_code_dispatch(
-            chunks, current, dt_slot, c_slot, result_slot, /*mode_strftime=*/false, line,
+            chunks,
+            current,
+            dt_slot,
+            c_slot,
+            result_slot,
+            /*mode_strftime=*/ false,
+            line,
         );
     } else {
         // strftime mode: each `%` introduces a code; consume next char.
@@ -805,7 +1151,13 @@ fn emit_format_dt_runtime(
         chunk.emit_op(Op::STR_CHAR_AT, line);
         local_set(chunk, c_slot, line);
         emit_format_code_dispatch(
-            chunks, current, dt_slot, c_slot, result_slot, /*mode_strftime=*/true, line,
+            chunks,
+            current,
+            dt_slot,
+            c_slot,
+            result_slot,
+            /*mode_strftime=*/ true,
+            line,
         );
         chunks[current].emit_else(line);
         // OOB: append "%"
@@ -829,12 +1181,11 @@ fn emit_format_dt_runtime(
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         local_set(chunk, i_slot, line);
-        chunk.emit_br(0, line);
-        chunk.emit_end(line);
-        chunk.patch_loop(loop_patch);
-        // push result
-        chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     }
+    // br 0 (continue); end loop; end block — WASM structured CF via common emitter.
+    crate::emitter::loops::emit_loop_end(chunks, current, lstate, line);
+    // push result
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 /// PHP `date($fmt, $ts)` adapter.
@@ -871,7 +1222,9 @@ pub fn emit_php_date(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
 
-    emit_format_dt_runtime(chunks, current, dt_slot, fmt_slot, /*mode_strftime=*/false, line);
+    emit_format_dt_runtime(
+        chunks, current, dt_slot, fmt_slot, /*mode_strftime=*/ false, line,
+    );
 }
 
 /// PHP `strftime($fmt, $ts)` adapter — POSIX `%`-codes.
@@ -899,7 +1252,9 @@ pub fn emit_php_strftime(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
 
-    emit_format_dt_runtime(chunks, current, dt_slot, fmt_slot, /*mode_strftime=*/true, line);
+    emit_format_dt_runtime(
+        chunks, current, dt_slot, fmt_slot, /*mode_strftime=*/ true, line,
+    );
 }
 
 /// PHP `mktime($h, $min, $s, $month, $day, $year)` adapter.
@@ -945,18 +1300,62 @@ pub fn emit_php_mktime(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         emit_wrap_ms(chunk, "Date", line);
         local_set(chunk, now_dt_slot, line);
         // Defaults for unset slots.
-        let need_year  = argc < 6;
-        let need_day   = argc < 5;
+        let need_year = argc < 6;
+        let need_day = argc < 5;
         let need_month = argc < 4;
-        let need_s     = argc < 3;
-        let need_min   = argc < 2;
-        let need_h     = argc < 1;
-        if need_year   { default_now_component(chunks, current, now_dt_slot, year_slot,  "getFullYear", 0.0, line); }
-        if need_day    { default_now_component(chunks, current, now_dt_slot, day_slot,   "getDate",     0.0, line); }
-        if need_month  { default_now_component(chunks, current, now_dt_slot, month_slot, "getMonth",    1.0, line); }
-        if need_s      { default_now_component(chunks, current, now_dt_slot, s_slot,     "getSeconds",  0.0, line); }
-        if need_min    { default_now_component(chunks, current, now_dt_slot, min_slot,   "getMinutes",  0.0, line); }
-        if need_h      { default_now_component(chunks, current, now_dt_slot, h_slot,     "getHours",    0.0, line); }
+        let need_s = argc < 3;
+        let need_min = argc < 2;
+        let need_h = argc < 1;
+        if need_year {
+            default_now_component(
+                chunks,
+                current,
+                now_dt_slot,
+                year_slot,
+                "getFullYear",
+                0.0,
+                line,
+            );
+        }
+        if need_day {
+            default_now_component(chunks, current, now_dt_slot, day_slot, "getDate", 0.0, line);
+        }
+        if need_month {
+            default_now_component(
+                chunks,
+                current,
+                now_dt_slot,
+                month_slot,
+                "getMonth",
+                1.0,
+                line,
+            );
+        }
+        if need_s {
+            default_now_component(
+                chunks,
+                current,
+                now_dt_slot,
+                s_slot,
+                "getSeconds",
+                0.0,
+                line,
+            );
+        }
+        if need_min {
+            default_now_component(
+                chunks,
+                current,
+                now_dt_slot,
+                min_slot,
+                "getMinutes",
+                0.0,
+                line,
+            );
+        }
+        if need_h {
+            default_now_component(chunks, current, now_dt_slot, h_slot, "getHours", 0.0, line);
+        }
     }
     // Stack: [].
     // Push UTC args: (Y, M-1, D, h, min, s).
@@ -1017,7 +1416,11 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let result_slot = alloc_local(chunk);
     chunk.emit_op(Op::TRUE, line);
     local_set(chunk, result_slot, line);
-    for &(slot, lo, hi) in &[(m_slot, 1.0_f64, 12.0_f64), (d_slot, 1.0, 31.0), (y_slot, 1.0, 32767.0)] {
+    for &(slot, lo, hi) in &[
+        (m_slot, 1.0_f64, 12.0_f64),
+        (d_slot, 1.0, 31.0),
+        (y_slot, 1.0, 32767.0),
+    ] {
         local_get(chunk, slot, line);
         push_const(chunk, Value::F64(lo), line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -1127,11 +1530,11 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let setters: &[(&str, &str, f64)] = &[
         ("seconds", "getSeconds", 0.0),
         ("minutes", "getMinutes", 0.0),
-        ("hours",   "getHours",   0.0),
-        ("mday",    "getDate",    0.0),
-        ("wday",    "getDay",     0.0),
-        ("mon",     "getMonth",   1.0), // 0-indexed → +1
-        ("year",    "getFullYear",0.0),
+        ("hours", "getHours", 0.0),
+        ("mday", "getDate", 0.0),
+        ("wday", "getDay", 0.0),
+        ("mon", "getMonth", 1.0), // 0-indexed → +1
+        ("year", "getFullYear", 0.0),
     ];
     let _ = chunk;
     for (key, getter, bias) in setters {
@@ -1150,16 +1553,38 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         chunk.emit_op(Op::ARRAY_SET, line);
     }
 
-    let weekday_full = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    let month_full   = ["January","February","March","April","May","June",
-                         "July","August","September","October","November","December"];
+    let weekday_full = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let month_full = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
 
     // info["weekday"] = weekday_full[getDay(dt)]
     {
         let chunk = &mut chunks[current];
         local_get(chunk, out_slot, line);
         push_str(chunk, "weekday", line);
-        for n in &weekday_full { push_str(chunk, n, line); }
+        for n in &weekday_full {
+            push_str(chunk, n, line);
+        }
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, weekday_full.len() as u16, line);
         local_get(chunk, dt_slot, line);
     }
@@ -1172,7 +1597,9 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         // info["month"] = month_full[getMonth(dt)]
         local_get(chunk, out_slot, line);
         push_str(chunk, "month", line);
-        for n in &month_full { push_str(chunk, n, line); }
+        for n in &month_full {
+            push_str(chunk, n, line);
+        }
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, month_full.len() as u16, line);
         local_get(chunk, dt_slot, line);
     }
@@ -1478,7 +1905,11 @@ pub fn format_php_literal_to_ast(
     }
     fn member(obj: Expression, field: &str, span: &crate::ast::Span) -> Expression {
         Expression::with_span(
-            ExprKind::Member { object: Box::new(obj), field: field.to_string(), null_safe: false },
+            ExprKind::Member {
+                object: Box::new(obj),
+                field: field.to_string(),
+                null_safe: false,
+            },
             span.clone(),
         )
     }
@@ -1522,36 +1953,74 @@ pub fn format_php_literal_to_ast(
     }
     fn add(left: Expression, right: Expression, span: &crate::ast::Span) -> Expression {
         Expression::with_span(
-            ExprKind::Binary { op: BinOp::Add, left: Box::new(left), right: Box::new(right) },
+            ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
             span.clone(),
         )
     }
     fn concat(left: Expression, right: Expression, span: &crate::ast::Span) -> Expression {
         Expression::with_span(
-            ExprKind::Binary { op: BinOp::Concat, left: Box::new(left), right: Box::new(right) },
+            ExprKind::Binary {
+                op: BinOp::Concat,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
             span.clone(),
         )
     }
     fn array_index_str(items: &[&str], idx: Expression, span: &crate::ast::Span) -> Expression {
         // Build an array literal then index it. Walker-shaped AST:
         // Array([items..])[idx].
-        let elems: Vec<crate::ast::ArrayElement> = items.iter().map(|s| {
-            crate::ast::ArrayElement {
-                key: None, value: lit_str(s, span), spread: false, by_ref: false,
-            }
-        }).collect();
+        let elems: Vec<crate::ast::ArrayElement> = items
+            .iter()
+            .map(|s| crate::ast::ArrayElement {
+                key: None,
+                value: lit_str(s, span),
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
         let arr = Expression::with_span(ExprKind::Array(elems), span.clone());
         Expression::with_span(
-            ExprKind::Index { object: Box::new(arr), index: Box::new(idx), null_safe: false },
+            ExprKind::Index {
+                object: Box::new(arr),
+                index: Box::new(idx),
+                null_safe: false,
+            },
             span.clone(),
         )
     }
 
-    let weekday_full = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    let weekday_abbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-    let month_full   = ["January","February","March","April","May","June",
-                         "July","August","September","October","November","December"];
-    let month_abbr   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    let weekday_full = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let weekday_abbr = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let month_full = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let month_abbr = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
 
     let mut chars = fmt.chars().peekable();
     let mut parts: Vec<Expression> = Vec::new();
@@ -1585,7 +2054,11 @@ pub fn format_php_literal_to_ast(
                 );
                 Some(pad(mod100, 2, span))
             }
-            'm' => Some(pad(add(dt_call(dt_expr, "getMonth", span), lit_int(1, span), span), 2, span)),
+            'm' => Some(pad(
+                add(dt_call(dt_expr, "getMonth", span), lit_int(1, span), span),
+                2,
+                span,
+            )),
             'n' => Some(stringify(
                 add(dt_call(dt_expr, "getMonth", span), lit_int(1, span), span),
                 span,
@@ -1635,10 +2108,26 @@ pub fn format_php_literal_to_ast(
                     span.clone(),
                 ))
             }
-            'l' => Some(array_index_str(&weekday_full, dt_call(dt_expr, "getDay", span), span)),
-            'D' => Some(array_index_str(&weekday_abbr, dt_call(dt_expr, "getDay", span), span)),
-            'F' => Some(array_index_str(&month_full, dt_call(dt_expr, "getMonth", span), span)),
-            'M' => Some(array_index_str(&month_abbr, dt_call(dt_expr, "getMonth", span), span)),
+            'l' => Some(array_index_str(
+                &weekday_full,
+                dt_call(dt_expr, "getDay", span),
+                span,
+            )),
+            'D' => Some(array_index_str(
+                &weekday_abbr,
+                dt_call(dt_expr, "getDay", span),
+                span,
+            )),
+            'F' => Some(array_index_str(
+                &month_full,
+                dt_call(dt_expr, "getMonth", span),
+                span,
+            )),
+            'M' => Some(array_index_str(
+                &month_abbr,
+                dt_call(dt_expr, "getMonth", span),
+                span,
+            )),
             'N' => {
                 // ISO weekday: 1=Mon..7=Sun; JS getDay: 0=Sun..6=Sat.
                 let dow = dt_call(dt_expr, "getDay", span);
@@ -1672,16 +2161,24 @@ pub fn format_php_literal_to_ast(
                     },
                     span.clone(),
                 );
-                let floor = call(member(
-                    Expression::with_span(ExprKind::Ident("Math".to_string()), span.clone()),
-                    "floor", span,
-                ), vec![div], span);
+                let floor = call(
+                    member(
+                        Expression::with_span(ExprKind::Ident("Math".to_string()), span.clone()),
+                        "floor",
+                        span,
+                    ),
+                    vec![div],
+                    span,
+                );
                 Some(stringify(floor, span))
             }
             // Unknown placeholder — abort the optimization, let the
             // runtime adapter handle it.
             _ if c.is_ascii_alphabetic() => return None,
-            other => { buffer.push(other); continue; }
+            other => {
+                buffer.push(other);
+                continue;
+            }
         };
         if let Some(p) = placeholder {
             flush(&mut parts, &mut buffer, span);
@@ -1722,11 +2219,11 @@ pub fn parse_relative_delta(s: &str) -> Option<(i64, &'static str)> {
     let canon: &'static str = match unit {
         "second" => "second",
         "minute" => "minute",
-        "hour"   => "hour",
-        "day"    => "day",
-        "week"   => "week",
-        "month"  => "month",
-        "year"   => "year",
+        "hour" => "hour",
+        "day" => "day",
+        "week" => "week",
+        "month" => "month",
+        "year" => "year",
         _ => return None,
     };
     Some((n * sign, canon))
@@ -2038,8 +2535,12 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     struct_set(chunk, TYPE_KEY, line);
 
     let pairs: &[(&str, u16)] = &[
-        ("y", y_slot), ("m", m_slot), ("d", d_slot),
-        ("h", h_slot), ("i", i_slot), ("s", s_slot),
+        ("y", y_slot),
+        ("m", m_slot),
+        ("d", d_slot),
+        ("h", h_slot),
+        ("i", i_slot),
+        ("s", s_slot),
     ];
     for (key, slot) in pairs {
         chunk.emit_op(Op::DUP, line);
@@ -2069,7 +2570,10 @@ pub fn parse_iso_duration(s: &str) -> (i64, i64, i64, i64, i64, i64) {
         let mut in_time = false;
         let mut num = String::new();
         for c in rest.chars() {
-            if c == 'T' { in_time = true; continue; }
+            if c == 'T' {
+                in_time = true;
+                continue;
+            }
             if c.is_ascii_digit() {
                 num.push(c);
             } else {
@@ -2077,7 +2581,13 @@ pub fn parse_iso_duration(s: &str) -> (i64, i64, i64, i64, i64, i64) {
                 num.clear();
                 match c {
                     'Y' => y = n,
-                    'M' => if in_time { mi = n } else { mo = n },
+                    'M' => {
+                        if in_time {
+                            mi = n
+                        } else {
+                            mo = n
+                        }
+                    }
                     'D' => d = n,
                     'H' => h = n,
                     'S' => se = n,

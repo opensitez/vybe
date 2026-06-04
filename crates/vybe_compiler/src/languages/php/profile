@@ -10,6 +10,13 @@ extensions = ["php", "phtml"]
 
 [compiler]
 function_return = "explicit"
+string_aware_relational = true      # `<`/`>`/`<=`/`>=`/`<=>` compare strings
+                                    # lexicographically, else numeric/dynamic;
+                                    # DateTime operands unboxed first.
+supports_autoload = true            # undefined class ctor → spl_autoload_register
+                                    # callback, then retry.
+buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
+                                    # getReturn(); foreach buffers current value.
 self_keyword = "$this"              # PHP variables canonicalize with the $
                                     # sigil (see strip_dollar in walker.rs).
                                     # `$this` IS the scope name; matching
@@ -353,6 +360,7 @@ iterator_to_array   = { emit = "common:php.iterator_to_array",     min_args = 1,
 # surface, one CVE surface.
 array_keys          = { emit = "common:php.array_keys",         min_args = 1, max_args = 3 }
 array_values        = { emit = "common:php.array_values",       min_args = 1, max_args = 1 }
+array_is_list        = { emit = "common:php.array_is_list",      min_args = 1, max_args = 1 }
 # Argument order is normalized to canonical `(obj, key)` at the PHP
 # walker layer (`canonicalize_php_call_args`), so both entries below
 # bind directly to the portable `ecma:object.hasOwn` — identical
@@ -434,7 +442,7 @@ date_default_timezone_set = { emit = "intrinsic:php_date_default_timezone_set", 
 
 # ── String formatting ──────────────────────────────────────────────────────
 
-sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_args = 255 }
+sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_args = 255 }
 # `substr` walker-rewritten to `__php_substr($s, $start, $length?)`.
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────

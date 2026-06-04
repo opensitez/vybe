@@ -14,9 +14,9 @@
 //! generator infrastructure already uses, so this is bytecode-level
 //! reuse — no new VM ops, no new host fns.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;
@@ -49,7 +49,7 @@ pub fn emit_php_fiber_suspend(chunks: &mut [Chunk], current: usize, argc: u8, li
         chunk.emit_op(Op::NULL, line);
     }
     let tag = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::SUSPEND, tag, line);
+    crate::emitter::generators::emit_suspend_tagged(chunk, tag, line);
 }
 
 /// `$fiber->start($v)` — start the fiber with `$v` as the initial
@@ -69,10 +69,12 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     } else if argc > 2 {
         // Multi-arg start: drop extras (rest pattern would require
         // bound-args wiring — pending tests).
-        for _ in 2..argc { chunk.emit_op(Op::DROP, line); }
+        for _ in 2..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
     }
     let tag = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::RESUME, tag, line);
+    crate::emitter::generators::emit_resume_tagged(chunk, tag, line);
 }
 
 /// `$fiber->resume($v)` — resume with `$v`. Same shape as start;
@@ -122,5 +124,7 @@ pub fn emit_php_fiber_is_terminated(chunks: &mut [Chunk], current: usize, _argc:
 // Suppress unused-import warnings if some helpers grow.
 #[allow(dead_code)]
 fn _touch(_c: &mut Chunk, _s: u16, _l: u32) {
-    let _ = lset; let _ = lget; let _ = alloc_local;
+    let _ = lset;
+    let _ = lget;
+    let _ = alloc_local;
 }
