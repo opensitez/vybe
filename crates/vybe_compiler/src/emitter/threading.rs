@@ -12,10 +12,10 @@
 //!
 //! The VM implements these with real Rust atomics on shared memory.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::Value;
 use crate::emitter::functions::create_function_chunk;
+use vybe_bytecode::Chunk;
+use vybe_bytecode::Value;
+use vybe_bytecode::opcode::Op;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
 
@@ -187,8 +187,7 @@ pub fn emit_thread_join(chunk: &mut Chunk, line: u32) {
 /// Emit suspend — yield from current continuation (stack switching).
 /// Stack before: [value]  Stack after: (suspended — caller gets value)
 pub fn emit_suspend(chunk: &mut Chunk, line: u32) {
-    let tag = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::SUSPEND, tag, line);
+    crate::emitter::generators::emit_suspend(chunk, line);
 }
 
 /// Emit Thread.Sleep(ms) — blocks the current thread for the given duration.
@@ -219,8 +218,8 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let mut worker = create_function_chunk("__task_delay_worker", 1);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     worker.emit_op_u16(Op::CALL_IMPORT, sleep_idx, line);
-    worker.emit(1, line);                 // argc = 1
-    worker.emit_op(Op::DROP, line);       // drop sleep's null return
+    worker.emit(1, line); // argc = 1
+    worker.emit_op(Op::DROP, line); // drop sleep's null return
     worker.emit_op(Op::NULL, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;
@@ -232,7 +231,7 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // THREAD_SPAWN pops [ms, func_ref] and spawns the worker with ms as
     // its slot-0 arg.
     chunk.emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
-    chunk.emit(0, line);   // 0 upvalues — no closure capture needed
+    chunk.emit(0, line); // 0 upvalues — no closure capture needed
     chunk.emit_op(Op::THREAD_SPAWN, line);
 }
 

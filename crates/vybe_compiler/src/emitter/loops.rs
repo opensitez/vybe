@@ -49,7 +49,11 @@ impl LoopState {
         if self.loop_patch == 0 {
             nesting_offset // block-only: break targets the block itself (depth 0)
         } else {
-            let levels = if self.body_block_patch.is_some() { 3 } else { 2 };
+            let levels = if self.body_block_patch.is_some() {
+                3
+            } else {
+                2
+            };
             nesting_offset + levels - 1
         }
     }
@@ -68,7 +72,11 @@ impl LoopState {
 pub fn emit_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopState {
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
-    LoopState { block_patch, loop_patch, body_block_patch: None }
+    LoopState {
+        block_patch,
+        loop_patch,
+        body_block_patch: None,
+    }
 }
 
 /// After condition is on stack: convert to bool, branch out of block if false.
@@ -94,12 +102,22 @@ pub fn emit_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, lin
 pub fn emit_do_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopState {
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
-    LoopState { block_patch, loop_patch, body_block_patch: None }
+    LoopState {
+        block_patch,
+        loop_patch,
+        body_block_patch: None,
+    }
 }
 
 /// End of do-while: condition on stack, branch back to loop if true.
 /// `negate` = true for `until` (loop while condition is FALSE).
-pub fn emit_do_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, negate: bool, line: u32) {
+pub fn emit_do_loop_end(
+    chunks: &mut [Chunk],
+    current: usize,
+    state: LoopState,
+    negate: bool,
+    line: u32,
+) {
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     if negate {
         crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
@@ -119,7 +137,13 @@ pub fn emit_do_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, 
 /// Returns (loop_start, exit_jump) — caller must pass these to `emit_for_in_end`.
 ///
 /// Stack after: [element] on top (caller assigns to loop variable)
-pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, idx_slot: u16, line: u32) -> LoopState {
+pub fn emit_for_in_start(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) -> LoopState {
     // i = 0
     chunks[current].emit_op(Op::I32_CONST_0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
@@ -138,7 +162,7 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     {
-        let idx = chunks[0].add_import("ecma:array", "length");
+        let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunks[current].emit(1u8, line);
     }
@@ -153,11 +177,21 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
 
-    LoopState { block_patch, loop_patch, body_block_patch: Some(body_block_patch) }
+    LoopState {
+        block_patch,
+        loop_patch,
+        body_block_patch: Some(body_block_patch),
+    }
 }
 
 /// Emit the end of a for-in loop: increment index, continue loop, close block+loop.
-pub fn emit_for_in_end(chunks: &mut [Chunk], current: usize, idx_slot: u16, state: LoopState, line: u32) {
+pub fn emit_for_in_end(
+    chunks: &mut [Chunk],
+    current: usize,
+    idx_slot: u16,
+    state: LoopState,
+    line: u32,
+) {
     // Close body block (continue lands here, before increment)
     if let Some(bp) = state.body_block_patch {
         chunks[current].emit_end(line);
@@ -186,7 +220,15 @@ pub fn emit_for_in_end(chunks: &mut [Chunk], current: usize, idx_slot: u16, stat
 /// Emit `map(fn, arr)` → new array with fn(x) for each x in arr.
 /// Caller must have stored fn in `fn_slot` and array in `arr_slot`.
 /// Stack after: [result_array]
-pub fn emit_map(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
+pub fn emit_map(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    result_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -205,7 +247,8 @@ pub fn emit_map(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u1
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     emit_for_in_end(chunks, current, idx_slot, state, line);
 
@@ -215,7 +258,16 @@ pub fn emit_map(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u1
 /// Emit `filter(fn, arr)` → new array with elements where fn(x) is true.
 /// Caller must have stored fn in `fn_slot` and array in `arr_slot`.
 /// Stack after: [result_array]
-pub fn emit_filter(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u16, result_slot: u16, idx_slot: u16, elem_slot: u16, line: u32) {
+pub fn emit_filter(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    result_slot: u16,
+    idx_slot: u16,
+    elem_slot: u16,
+    line: u32,
+) {
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -239,7 +291,8 @@ pub fn emit_filter(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_end(line); // end if block
     chunks[current].patch_block(if_block);
@@ -251,7 +304,14 @@ pub fn emit_filter(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
 
 /// Emit `forEach(fn, arr)` → call fn(x) for each x, returns null.
 /// Stack after: [null]
-pub fn emit_foreach(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u16, idx_slot: u16, line: u32) {
+pub fn emit_foreach(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
     chunks[current].emit_op(Op::DROP, line);
@@ -271,8 +331,15 @@ pub fn emit_foreach(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot
 
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...
 /// Stack after: [accumulated_value]
-pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u16, acc_slot: u16, idx_slot: u16, line: u32) {
-    
+pub fn emit_reduce(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    acc_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
     use vybe_bytecode::Value;
 
     // acc = arr[0]
@@ -295,7 +362,7 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     {
-        let idx = chunks[0].add_import("ecma:array", "length");
+        let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunks[current].emit(1u8, line);
     }
@@ -328,7 +395,15 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
 /// Emit `every(fn, arr)` → true if fn(x) is true for all x.
 /// `is_any=true` for any(), `is_any=false` for every().
 /// Stack after: [bool]
-pub fn emit_any_every(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot: u16, idx_slot: u16, is_any: bool, line: u32) {
+pub fn emit_any_every(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    idx_slot: u16,
+    is_any: bool,
+    line: u32,
+) {
     // Implements: arr.any(fn) / arr.every(fn) as INLINE bytecode that leaves
     // a single bool on the stack — must NOT use Op::return because that
     // aborts the enclosing user function.
@@ -341,7 +416,11 @@ pub fn emit_any_every(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_sl
     let result_local = idx_slot + 1; // assume caller allocated enough locals
 
     // Set default result BEFORE the loop
-    if is_any { chunks[current].emit_op(Op::FALSE, line); } else { chunks[current].emit_op(Op::TRUE, line); }
+    if is_any {
+        chunks[current].emit_op(Op::FALSE, line);
+    } else {
+        chunks[current].emit_op(Op::TRUE, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunks[current].emit_op(Op::DROP, line);
 

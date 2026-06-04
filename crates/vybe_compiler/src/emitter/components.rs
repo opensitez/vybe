@@ -9,9 +9,9 @@
 //! The Dart compiler emits a Component with import ("module", "greet").
 //! The Linker wires them together.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::component::{Component, Language, ExportImpl};
 use std::collections::HashMap;
+use vybe_bytecode::Chunk;
+use vybe_bytecode::component::{Component, ExportImpl, Language};
 
 /// Build a Component from compiled chunks.
 /// Scans chunks for top-level functions and classes, registers them as exports.
@@ -23,7 +23,9 @@ pub fn build_component(name: &str, language: Language, chunks: Vec<Chunk>) -> Co
 
     // Scan chunks for named functions (chunk 0 is script, others are functions/constructors)
     for (i, chunk) in chunks.iter().enumerate() {
-        if i == 0 { continue; } // skip script chunk
+        if i == 0 {
+            continue;
+        } // skip script chunk
         let fname = &chunk.name;
         if fname.is_empty() || fname.starts_with("__") || fname.starts_with("<") {
             continue; // skip internal/anonymous chunks
@@ -35,10 +37,7 @@ pub fn build_component(name: &str, language: Language, chunks: Vec<Chunk>) -> Co
             (name.to_string(), fname.to_string()),
             ExportImpl::ChunkFn(i),
         );
-        exports.insert(
-            ("*".to_string(), fname.to_string()),
-            ExportImpl::ChunkFn(i),
-        );
+        exports.insert(("*".to_string(), fname.to_string()), ExportImpl::ChunkFn(i));
         // Also export lowercase for case-insensitive languages
         let lower = fname.to_lowercase();
         if lower != *fname {
@@ -97,5 +96,7 @@ pub fn add_export(component: &mut Component, interface: &str, func_name: &str, c
 /// Register an import requirement.
 /// Use this when the compiler encounters an unresolved reference to another module.
 pub fn add_import(component: &mut Component, interface: &str, func_name: &str) {
-    component.imports.push((interface.to_string(), func_name.to_string()));
+    component
+        .imports
+        .push((interface.to_string(), func_name.to_string()));
 }

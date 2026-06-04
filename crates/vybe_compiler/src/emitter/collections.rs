@@ -1,17 +1,17 @@
 //! Collection operations — arrays, sets, sorting, range.
 //!
 //! Every helper that emits a `wasm:js-*` import takes `chunks: &mut [Chunk]`
-//! and `current: usize` so imports register on `chunks[0]` (the single
-//! module-level import section per WASM semantics) while bytecode emits
-//! on `chunks[current]`. Helpers that don't need imports still take
-//! `&mut Chunk` directly.
+//! and `current: usize` so imports register on the chunk that emits the
+//! bytecode. The VM resolves `CALL_IMPORT` against the executing chunk,
+//! and the WASM writer can still aggregate those imports into a module
+//! section.
 
+#[allow(unused_imports)]
+use crate::emitter::Target;
 use std::sync::Arc;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
-#[allow(unused_imports)]
-use crate::emitter::Target;
 
 // ── `ecma:array.*` import helpers (Phase D) ─────────────────
 //
@@ -19,16 +19,16 @@ use crate::emitter::Target;
 // emitted .wasm asks for `ecma:array.*` imports whether it runs on
 // Vybe's built-in handlers, on v8 (native JS glue), or on plain
 // wasmtime with the polyfill module.
-//
-// **WASM import sections are module-level, not per-function.** Vybe
-// represents a single user module as many chunks (one per function),
-// but the imports section is stored by convention on `chunks[0]`.
-// Every helper here adds imports to `chunks[0]` and emits code to
-// `chunks[current]` — passing them as `(chunks, current)` gives safe
-// disjoint mutable access via array indexing even when `current == 0`.
 
-fn emit_import_call(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
-    let idx = chunks[0].add_import(module, name);
+fn emit_import_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
+    let idx = chunks[current].add_import(module, name);
     let c = &mut chunks[current];
     c.emit_op_u16(Op::CALL_IMPORT, idx, line);
     c.emit(argc, line);
@@ -43,7 +43,14 @@ fn emit_import_call(chunks: &mut [Chunk], current: usize, module: &str, name: &s
 /// passed `imports` chunk (caller ensures that's the module-level
 /// imports chunk = `chunks[0]` of the final program), and the
 /// CALL_IMPORT opcode emits in `code`.
-pub(crate) fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
+pub(crate) fn emit_import_call_into(
+    imports: &mut Chunk,
+    code: &mut Chunk,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = imports.add_import(module, name);
     code.emit_op_u16(Op::CALL_IMPORT, idx, line);
     code.emit(argc, line);
@@ -74,157 +81,16 @@ fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
     chunk.emit_op_u16(Op::CONST, idx, line);
 }
 
-fn emit_php_array_iter_tracked_loop(
-    chunks: &mut [Chunk],
-    current: usize,
-    line: u32,
-    want_entries: bool,
-    iter_slot: u16,
-    out_slot: u16,
-    i_slot: u16,
-    len_slot: u16,
-    keys_slot: u16,
-) {
-    emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, out_slot, line);
-    push_f64(chunk, 0.0, line);
-    lset(chunk, i_slot, line);
-
-    let block_patch = chunk.emit_block(line);
-    let (loop_patch, _) = chunk.emit_loop_s(line);
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(1, line);
-
-    lget(chunk, out_slot, line);
-    if want_entries {
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        let _ = chunk;
-        emit_get(chunks, current, line);
-        emit_array_new(chunks, current, 2, line);
-    } else {
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        let _ = chunk;
-        emit_get(chunks, current, line);
-    }
-
-    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    lget(chunk, i_slot, line);
-    push_f64(chunk, 1.0, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_br(0, line);
-    chunk.emit_end(line);
-    chunk.patch_loop(loop_patch);
-    chunk.emit_end(line);
-    chunk.patch_block(block_patch);
-    lget(chunk, out_slot, line);
-}
-
 fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_entries: bool) {
-    let chunk = &mut chunks[current];
-    let iter_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let keys_slot = alloc_local(chunk);
-    let csv_slot = alloc_local(chunk);
-    let source_slot = alloc_local(chunk);
-
-    lset(chunk, iter_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    lset(chunk, source_slot, line);
-
-    lget(chunk, iter_slot, line);
-    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
-    chunk.emit_op_u16(Op::STRUCT_GET, keys_key, line);
-    lset(chunk, keys_slot, line);
-
-    lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, len_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    chunk.emit_op(Op::I32_CONST_1, line);
-    lset(chunk, source_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-
-    lget(chunk, source_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::I32_EQ, line);
-    chunk.emit_if(line);
-    lget(chunk, iter_slot, line);
-    let csv_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
-    chunk.emit_op_u16(Op::STRUCT_GET, csv_key, line);
-    lset(chunk, csv_slot, line);
-
-    lget(chunk, csv_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, csv_slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, csv_slot, line);
-    push_str(chunk, "\x1F", line);
-    emit_import_call(chunks, current, "ecma:string", "split", 2, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, keys_slot, line);
-    lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, len_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    let csv_source = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, csv_source, line);
-    lset(chunk, source_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-
-    lget(chunk, source_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::I32_EQ, line);
-    chunk.emit_if_value(line);
-    lget(chunk, iter_slot, line);
-    let _ = chunk;
+    // Unified iteration via the host — the single iterator every language
+    // shares. `ecma:object.entries` / `iterForOf` dispatch per `ObjectKind`:
+    //   - Map    → native IndexMap insertion order
+    //   - Array  → index order
+    //   - Object → `__keys`-tracked order (handled host-side in
+    //              `ordinary_ordered_keys`)
+    // The old compiler-side `__keys` / `vybe$assoc_keys_csv` source-selection
+    // duplicated exactly this and was the source of the assoc-iteration bugs,
+    // so it's retired. Stack: [iterable] → [entries-or-values array].
     emit_import_call(
         chunks,
         current,
@@ -233,41 +99,6 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
         1,
         line,
     );
-    let chunk = &mut chunks[current];
-    chunk.emit_else(line);
-    lget(chunk, source_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
-    chunk.emit_op(Op::I32_EQ, line);
-    chunk.emit_if_value(line);
-    let _ = chunk;
-    emit_php_array_iter_tracked_loop(
-        chunks,
-        current,
-        line,
-        want_entries,
-        iter_slot,
-        out_slot,
-        i_slot,
-        len_slot,
-        keys_slot,
-    );
-    let chunk = &mut chunks[current];
-    chunk.emit_else(line);
-    let _ = chunk;
-    emit_php_array_iter_tracked_loop(
-        chunks,
-        current,
-        line,
-        want_entries,
-        iter_slot,
-        out_slot,
-        i_slot,
-        len_slot,
-        keys_slot,
-    );
-    let chunk = &mut chunks[current];
-    chunk.emit_end(line);
-    chunk.emit_end(line);
 }
 
 /// Create an empty array (common case). Stack: [] → [array] via
@@ -307,7 +138,11 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     lget(&mut chunks[current], value_slot, line);
     chunks[current].emit_op(Op::REF_IS_STRING, line);
-    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // REF_IS_STRING already returns I32(0/1) — use it directly as the if
+    // condition. Do NOT call emit_dyn_to_bool here: that registers imports on
+    // chunks[current] via chunk.add_import, which collides with the global
+    // import indices emitted by emit_import_call (chunks[0]-based) below,
+    // causing CALL_IMPORT to resolve the wrong host function at runtime.
     chunks[current].emit_if_value(line);
 
     // String — wasm:js-string.length.
@@ -328,7 +163,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // REF_IS_NULL returns I32(0/1) — use directly, same reason as above.
     chunks[current].emit_if_value(line);
 
     lget(&mut chunks[current], value_slot, line);
@@ -338,10 +173,10 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, map_len_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
+    // map_len != 0: ecma:map.size returns I32 — use I32_NE directly.
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
-    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_NE, line);
     chunks[current].emit_if_value(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
@@ -404,12 +239,14 @@ pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Push an array of values. Stack: [iterable] → [array_of_values].
 ///
-/// Uses `iterForOf` so for-of semantics match Symbol.iterator: Array/Set
-/// yields values, Map yields [k, v] pairs, String yields code-points.
-/// `Object.values(...)` keeps its spec-strict behaviour at the user-facing
-/// `ecma:object.values` entry — that's a different call site.
+/// `ecma:object.values` yields the entry VALUES uniformly: Array → elements,
+/// Map → `m.values()`, Object → property values. This is the correct primitive
+/// for value-iteration (`foreach ($a as $v)`, Python `for v in d`). JS `for-of`
+/// of a Map (which yields `[k,v]` pairs) pre-drains the Map to a pair-array
+/// before reaching here (see the `__vybe_iter_drain` path), so its pairs are
+/// preserved as the array's elements — `values` returns them unchanged.
 pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_php_array_iter(chunks, current, line, false);
+    emit_import_call(chunks, current, "ecma:object", "values", 1, line);
 }
 
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →
@@ -509,8 +346,10 @@ pub fn emit_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
         s
     };
     let arr_slot = sep_slot + 1;
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, sep_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sep_slot, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sep_slot, line);
     emit_import_call(chunks, current, "ecma:array", "join", 2, line);
@@ -749,7 +588,13 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// monotonically per call site (no reuse across calls) which trades
 /// a few extra Null slots per frame for not requiring Compiler-level
 /// scope tracking from this helper.
-pub fn emit_stdlib_call(chunks: &mut [Chunk], current: usize, global: &'static str, argc: u8, line: u32) {
+pub fn emit_stdlib_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    global: &'static str,
+    argc: u8,
+    line: u32,
+) {
     let base = chunks[current].local_count;
     chunks[current].local_count += argc as u16;
     // Stash args (top-of-stack is arg N-1 → highest slot).
@@ -777,13 +622,7 @@ pub fn emit_stdlib_call(chunks: &mut [Chunk], current: usize, global: &'static s
 /// allocated local slots (typically via `scope.define()` in the
 /// vybex compiler). The caller owns the slots; this helper only
 /// reads/writes them.
-pub fn emit_pack_n(
-    chunks: &mut [Chunk],
-    current: usize,
-    n: u16,
-    slot_base: u16,
-    line: u32,
-) {
+pub fn emit_pack_n(chunks: &mut [Chunk], current: usize, n: u16, slot_base: u16, line: u32) {
     if n == 0 {
         emit_array_new(chunks, current, 0, line);
         return;
@@ -811,8 +650,10 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     let v2 = chunks[current].local_count;
     let v1 = chunks[current].local_count + 1;
     chunks[current].local_count += 2;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line); chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
     chunks[current].emit_op(Op::DUP, line);
@@ -868,8 +709,13 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let str_block = code.emit_block(line);
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
     code.emit_op(Op::REF_IS_STRING, line);
-    crate::emitter::ops::emit_dyn_not(code, line);
-    // `br_if 0` pops the bool. When `!is_string` is true we jump out of
+    // REF_IS_STRING already yields i32(0/1); invert with I32_EQZ. Do NOT use
+    // emit_dyn_not here — it calls emit_dyn_to_bool, which registers imports
+    // on `code` via add_import. Those collide with the chunks[0]-based global
+    // import indices used by emit_import_call_into below, making CALL_IMPORT
+    // resolve the wrong host fn (ecma:array.length → wasm:js-string.length).
+    code.emit_op(Op::I32_EQZ, line);
+    // `br_if 0` pops the i32. When `!is_string` is true we jump out of
     // `str_block`, falling through to the array-length branch.
     code.emit_br_if(0, line);
     // String path — stash length and exit outer block.
@@ -949,8 +795,10 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let v1 = code.local_count + 1;
     code.local_count += 2;
     // Stack: [v1, v2] — stash both into temp slots (peek-set + drop).
-    code.emit_op_u16(Op::LOCAL_SET, v2, line); code.emit_op(Op::DROP, line);
-    code.emit_op_u16(Op::LOCAL_SET, v1, line); code.emit_op(Op::DROP, line);
+    code.emit_op_u16(Op::LOCAL_SET, v2, line);
+    code.emit_op(Op::DROP, line);
+    code.emit_op_u16(Op::LOCAL_SET, v1, line);
+    code.emit_op(Op::DROP, line);
     // arr = ecma:array.newWithLength(0)
     code.emit_op(Op::I32_CONST_0, line);
     emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
@@ -982,7 +830,13 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, line: u32
 /// Target-aware range — inline loop on pure WASM (saves a chunk call),
 /// `__vybe_range` polyfill otherwise. Single-arg case stays inlined
 /// since it's the most common shape; multi-arg routes to the polyfill.
-pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, _target: &Target, line: u32) {
+pub fn emit_range_targeted(
+    chunks: &mut [Chunk],
+    current: usize,
+    arg_count: u8,
+    _target: &Target,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         if arg_count == 1 {

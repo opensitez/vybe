@@ -28,8 +28,8 @@
 //! different GUI binding) requires no compiler changes.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 // ─── Canonical control type registry ─────────────────────────────────────────
 //
@@ -47,45 +47,45 @@ use vybe_bytecode::opcode::Op;
 pub fn canonical_control_name(name: &str) -> String {
     match name.to_ascii_lowercase().as_str() {
         // ── Buttons & inputs ──
-        "button"          => "Button",
-        "checkbox"        => "CheckBox",
-        "radiobutton"     => "RadioButton",
-        "togglebutton"    => "ToggleButton",
+        "button" => "Button",
+        "checkbox" => "CheckBox",
+        "radiobutton" => "RadioButton",
+        "togglebutton" => "ToggleButton",
         "linkbutton" | "linklabel" => "LinkLabel",
 
         // ── Text ──
-        "label"           => "Label",
+        "label" => "Label",
         "textbox" | "entry" | "textfield" => "TextBox",
-        "richtextbox"     => "RichTextBox",
-        "maskedtextbox"   => "MaskedTextBox",
+        "richtextbox" => "RichTextBox",
+        "maskedtextbox" => "MaskedTextBox",
 
         // ── Selection ──
         "combobox" | "dropdown" => "ComboBox",
-        "listbox"         => "ListBox",
-        "listview"        => "ListView",
-        "treeview"        => "TreeView",
+        "listbox" => "ListBox",
+        "listview" => "ListView",
+        "treeview" => "TreeView",
 
         // ── Containers ──
         "panel" | "container" => "Panel",
-        "groupbox"        => "GroupBox",
+        "groupbox" => "GroupBox",
         "tabcontrol" | "tabbedpane" => "TabControl",
-        "tabpage"         => "TabPage",
-        "splitcontainer"  => "SplitContainer",
+        "tabpage" => "TabPage",
+        "splitcontainer" => "SplitContainer",
         "flowlayoutpanel" => "FlowLayoutPanel",
         "tablelayoutpanel" => "TableLayoutPanel",
 
         // ── Date / time / numeric ──
-        "datetimepicker"  => "DateTimePicker",
-        "monthcalendar"   => "MonthCalendar",
-        "numericupdown"   => "NumericUpDown",
+        "datetimepicker" => "DateTimePicker",
+        "monthcalendar" => "MonthCalendar",
+        "numericupdown" => "NumericUpDown",
 
         // ── Progress / indicators ──
-        "progressbar"     => "ProgressBar",
+        "progressbar" => "ProgressBar",
         "trackbar" | "slider" => "TrackBar",
 
         // ── Images / media ──
         "picturebox" | "image" => "PictureBox",
-        "webbrowser"      => "WebBrowser",
+        "webbrowser" => "WebBrowser",
 
         // ── Data / grids ──
         "datagridview" | "datagrid" => "DataGridView",
@@ -97,25 +97,25 @@ pub fn canonical_control_name(name: &str) -> String {
         "contextmenustrip" | "contextmenu" => "ContextMenuStrip",
 
         // ── Scrollbars ──
-        "hscrollbar"      => "HScrollBar",
-        "vscrollbar"      => "VScrollBar",
+        "hscrollbar" => "HScrollBar",
+        "vscrollbar" => "VScrollBar",
 
         // ── Dialogs ──
-        "openfiledialog"  => "OpenFileDialog",
-        "savefiledialog"  => "SaveFileDialog",
+        "openfiledialog" => "OpenFileDialog",
+        "savefiledialog" => "SaveFileDialog",
         "folderbrowserdialog" => "FolderBrowserDialog",
-        "colordialog"     => "ColorDialog",
-        "fontdialog"      => "FontDialog",
+        "colordialog" => "ColorDialog",
+        "fontdialog" => "FontDialog",
 
         // ── Non-visual / lifecycle ──
-        "timer"           => "Timer",
-        "tooltip"         => "ToolTip",
-        "imagelist"       => "ImageList",
-        "notifyicon"      => "NotifyIcon",
-        "errorprovider"   => "ErrorProvider",
-        "helpprovider"    => "HelpProvider",
+        "timer" => "Timer",
+        "tooltip" => "ToolTip",
+        "imagelist" => "ImageList",
+        "notifyicon" => "NotifyIcon",
+        "errorprovider" => "ErrorProvider",
+        "helpprovider" => "HelpProvider",
         "backgroundworker" => "BackgroundWorker",
-        "bindingsource"   => "BindingSource",
+        "bindingsource" => "BindingSource",
         "bindingnavigator" => "BindingNavigator",
 
         // ── Forms ──
@@ -191,9 +191,9 @@ pub const GUI_MODULE: &str = "vybe:gui";
 /// so all languages automatically get GUI functions without per-language
 /// profile duplication (similar to WASI registration).
 pub fn gui_component_exports() -> Vec<vybe_bytecode::component_model::ComponentExport> {
-    use vybe_bytecode::component_model::{ComponentExport, ComponentItemKind};
     use vybe_bytecode::component::{FuncSig, ValType};
-    
+    use vybe_bytecode::component_model::{ComponentExport, ComponentItemKind};
+
     vec![
         // Control creation
         ComponentExport {
@@ -432,7 +432,6 @@ pub fn emit_raise_event(chunk: &mut Chunk, import_idx: u16, total_args: u8, line
     chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(total_args, line);
 }
-
 
 /// Push a string constant onto the stack (helper used when assembling
 /// arguments for the GUI host calls above).

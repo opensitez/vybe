@@ -83,7 +83,6 @@ pub fn emit_print_file(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit(argc, line);
 }
 
-
 /// Read from file handle (Input). Stack: [handle] → [string]
 pub fn emit_input_file(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "inputFile");

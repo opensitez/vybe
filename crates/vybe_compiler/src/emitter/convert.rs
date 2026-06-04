@@ -3,9 +3,9 @@
 //! WASM has: i32.trunc_f64_s, f64.convert_i32_s, i32.wrap_i64, etc.
 //! String conversion uses host imports (not in WASM spec).
 
+use crate::emitter::Target;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use crate::emitter::Target;
 
 // ── Direct WASM opcodes ─────────────────────────────────────
 

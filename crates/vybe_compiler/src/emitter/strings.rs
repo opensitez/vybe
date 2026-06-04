@@ -5,8 +5,8 @@
 //! toString each expression, concatenate.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// Emit toString conversion on TOS via host call.
 /// Stack before: [value]  Stack after: [string]
@@ -63,40 +63,66 @@ pub fn emit_literal_part(chunk: &mut Chunk, text: &str, line: u32) {
 // Single-opcode wrappers for consistency across all compilers.
 
 /// String length. Stack: [string] → [i32]
-pub fn emit_length(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_LENGTH, line); }
+pub fn emit_length(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_LENGTH, line);
+}
 
 /// Substring. Stack: [string, start, length] → [string]
-pub fn emit_substring(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_SUBSTRING, line); }
+pub fn emit_substring(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+}
 
 /// Index of substring. Stack: [haystack, needle] → [i32]
-pub fn emit_index_of(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_INDEX_OF, line); }
+pub fn emit_index_of(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_INDEX_OF, line);
+}
 
 /// Last index of substring. Stack: [haystack, needle] → [i32]
-pub fn emit_last_index_of(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_LAST_INDEX_OF, line); }
+pub fn emit_last_index_of(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_LAST_INDEX_OF, line);
+}
 
 /// Replace. Stack: [string, search, replace] → [string]
-pub fn emit_replace(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_REPLACE, line); }
+pub fn emit_replace(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_REPLACE, line);
+}
 
 /// Split. Stack: [string, delimiter] → [array]
-pub fn emit_split(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_SPLIT, line); }
+pub fn emit_split(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_SPLIT, line);
+}
 
 /// To lowercase. Stack: [string] → [string]
-pub fn emit_to_lower(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_TO_LOWER, line); }
+pub fn emit_to_lower(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_TO_LOWER, line);
+}
 
 /// To uppercase. Stack: [string] → [string]
-pub fn emit_to_upper(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_TO_UPPER, line); }
+pub fn emit_to_upper(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_TO_UPPER, line);
+}
 
 /// Trim whitespace. Stack: [string] → [string]
-pub fn emit_trim(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_TRIM, line); }
+pub fn emit_trim(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_TRIM, line);
+}
 
 /// Trim start. Stack: [string] → [string]
-pub fn emit_trim_start(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_TRIM_START, line); }
+pub fn emit_trim_start(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_TRIM_START, line);
+}
 
 /// Trim end. Stack: [string] → [string]
-pub fn emit_trim_end(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_TRIM_END, line); }
+pub fn emit_trim_end(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_TRIM_END, line);
+}
 
 /// Repeat string. Stack: [string, count] → [string]
-pub fn emit_repeat(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_REPEAT, line); }
+pub fn emit_repeat(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_REPEAT, line);
+}
 
 /// Pairwise concatenation. Stack: [a, b] → [ab]
-pub fn emit_str_concat(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::STR_CONCAT, line); }
+pub fn emit_str_concat(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::STR_CONCAT, line);
+}

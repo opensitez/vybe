@@ -5,8 +5,8 @@
 //! callers can compile language-specific sub-expressions in between.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 // ── Undefined sentinel ─────────────────────────────────────────────────
 //
@@ -222,7 +222,14 @@ pub fn emit_null_safe_end(chunk: &mut Chunk, block: usize, _line: u32) {
 /// Emit rich arithmetic: tries user-defined __add__/etc, falls back to primitive opcode.
 /// Caller must store left in `left_slot` and right in `right_slot`.
 /// Stack before: []  Stack after: [result_value]
-pub fn emit_rich_arithmetic(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
+pub fn emit_rich_arithmetic(
+    chunk: &mut Chunk,
+    left_slot: u16,
+    right_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
     emit_rich_compare_locals(chunk, left_slot, right_slot, dunder, fallback_fn, line);
 }
 
@@ -245,14 +252,14 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      let to_str = chunk.add_import("ecma:string", "String");
-      chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-      chunk.emit(1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
+    chunk.emit(1, line);
     chunk.emit_end(line);
 }
 
@@ -275,12 +282,12 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_end(line);
 }
 
@@ -300,7 +307,12 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 ///
 /// `dunder`: the method name to look for (e.g. "__lt__", "__gt__")
 /// `fallback_fn`: the emitter to use if no method (e.g. `crate::emitter::ops::emit_dyn_lt`)
-pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
+pub fn emit_rich_compare(
+    chunk: &mut Chunk,
+    _dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
     // Stack: [left, right]
     // Save right to temp, check left for dunder method
     // We need to: peek at left (under right), struct_get dunder, check null
@@ -330,7 +342,14 @@ pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_fn: fn(&mut 
 /// Stack before: []  Stack after: [bool_result]
 ///
 /// Emits: check left.__lt__ → if found, call it(right) → else dyn_lt(left, right)
-pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
+pub fn emit_rich_compare_locals(
+    chunk: &mut Chunk,
+    left_slot: u16,
+    right_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
 
@@ -345,42 +364,42 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-      // Found method: call it with self=left, arg=right → result
-      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-      chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    // Found method: call it with self=left, arg=right → result
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
     chunk.emit_else(line);
 
     // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
-      let done = chunk.emit_block(line);
-      for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
-          let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
-          chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-          chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
-          chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-          chunk.emit_op(Op::DROP, line);
+    let done = chunk.emit_block(line);
+    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
+        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+        chunk.emit_op(Op::DROP, line);
 
-          chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-          chunk.emit_op(Op::REF_IS_NULL, line);
-          chunk.emit_op(Op::I32_EQZ, line);
-          chunk.emit_if(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-            chunk.emit_op_u8(Op::CALL_REF, 2, line);
-            chunk.emit_op(Op::I32_CONST_0, line);
-            fallback_fn(chunk, line);
-            chunk.emit_br(1, line);
-          chunk.emit_end(line);
-      }
+        chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op(Op::I32_CONST_0, line);
+        fallback_fn(chunk, line);
+        chunk.emit_br(1, line);
+        chunk.emit_end(line);
+    }
 
-      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-      fallback_fn(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
 
-      chunk.emit_end(line);
-      chunk.patch_block(done);
+    chunk.emit_end(line);
+    chunk.patch_block(done);
     chunk.emit_end(line);
 }
 
@@ -407,11 +426,11 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-      chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_end(line);
 }

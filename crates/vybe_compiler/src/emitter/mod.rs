@@ -9,42 +9,58 @@
 //! Language compilers call these instead of reimplementing the same patterns.
 //! Everything emitted is standard WASM — no custom opcodes.
 
-pub mod dict;
-pub mod references;
-pub mod math;
-pub mod convert;
-pub mod io;
-pub mod collections;
+pub mod bundle;
+pub mod canonical;
 pub mod channels;
 pub mod classes;
-pub mod loops;
-pub mod errors;
-pub mod strings;
-pub mod functions;
-pub mod delegates;
-pub mod expressions;
-pub mod threading;
+pub mod collections;
 pub mod components;
-pub mod target;
-pub mod stdlib;
-pub mod bundle;
-pub mod imports;
-pub mod ops;
-pub mod gui;
-pub mod dotnet;
+pub mod convert;
+pub mod delegates;
+pub mod dict;
 pub mod dispatch;
-pub mod type_registry;
-pub mod canonical;
+pub mod dotnet;
+pub mod errors;
+pub mod expressions;
+pub mod functions;
+pub mod generators;
+pub mod gui;
+pub mod imports;
 pub mod invoke;
+pub mod io;
+pub mod loops;
+pub mod math;
+pub mod ops;
+pub mod references;
+pub mod sprintf;
+pub mod stdlib;
+pub mod strings;
+pub mod target;
+pub mod threading;
+pub mod type_registry;
 
+pub use crate::languages::cobol::emitter as cobol;
+pub use crate::languages::dart::emitter as dart;
+pub use crate::languages::fortran::emitter as fortran;
+pub use crate::languages::js::emitter as js;
 pub use crate::languages::php::emitter as php;
 pub use crate::languages::python::emitter as python;
-pub use crate::languages::fortran::emitter as fortran;
-pub use crate::languages::dart::emitter as dart;
-pub use crate::languages::js::emitter as js;
+pub use crate::languages::ruby::emitter as ruby;
 pub use crate::languages::vb::emitter as vb;
-pub use crate::languages::cobol::emitter as cobol;
 
+pub use stdlib::StdLib;
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;
-pub use stdlib::StdLib;
+
+/// Resolve a shared *platform* emit dispatcher by its `common:<prefix>.*`
+/// prefix. Platforms are emit surfaces shared by more than one language —
+/// currently only `dotnet` (VB / C# / JS). Each platform module under
+/// `emitter/` registers its prefix here; languages register their own via
+/// [`crate::languages::Language::emit_dispatch`]. Returns `None` for
+/// non-platform prefixes.
+pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
+    match prefix {
+        "dotnet" => Some(dotnet::dispatch::dispatch),
+        _ => None,
+    }
+}

@@ -31,29 +31,31 @@ pub enum CommonImport {
 pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
     match name.to_lowercase().as_str() {
         // ── I/O ──────────────────────────────────────────────────────────
-        "print" | "puts" | "echo" | "display" | "writeline" | "write"
-            => Some(CommonImport::Host("wasi:cli", "log")),
+        "print" | "puts" | "echo" | "display" | "writeline" | "write" => {
+            Some(CommonImport::Host("wasi:cli", "log"))
+        }
 
-        "readline" | "input" | "gets" | "prompt"
-            => Some(CommonImport::Host("wasi:cli", "readLine")),
+        "readline" | "input" | "gets" | "prompt" => {
+            Some(CommonImport::Host("wasi:cli", "readLine"))
+        }
 
         // ── Type conversion ──────────────────────────────────────────────
         // Integer conversions: `Number(x)` then floor — preserves
         // `cint(3.7) = 3` semantics every caller expects. Routed through
         // `intrinsic:cint` so the floor + Number coercion is a single
         // arm in the compiler.
-        "parseint" | "cint" | "int" | "to_i" | "intval"
-            => Some(CommonImport::Intrinsic("cint")),
+        "parseint" | "cint" | "int" | "to_i" | "intval" => Some(CommonImport::Intrinsic("cint")),
 
         // Character/ordinal helpers used across frontend lowerings.
-        "asc" | "ord"
-            => Some(CommonImport::Intrinsic("asc")),
-        "chr" | "chr$" | "chrw" | "str_from_char_code"
-            => Some(CommonImport::Intrinsic("str_from_char_code")),
+        "asc" | "ord" => Some(CommonImport::Intrinsic("asc")),
+        "chr" | "chr$" | "chrw" | "str_from_char_code" => {
+            Some(CommonImport::Intrinsic("str_from_char_code"))
+        }
 
         // Float conversion is `Number(x)` exactly — no truncation.
-        "parsefloat" | "cdbl" | "float" | "to_f" | "floatval"
-            => Some(CommonImport::Host("ecma:number", "Number")),
+        "parsefloat" | "cdbl" | "float" | "to_f" | "floatval" => {
+            Some(CommonImport::Host("ecma:number", "Number"))
+        }
 
         // Direct numeric formatting helpers used by frontend adapters
         // (notably Fortran formatted I/O) to avoid routing through a
@@ -63,16 +65,15 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "toprecision" => Some(CommonImport::Host("ecma:number", "toPrecision")),
 
         // String coercion — §22.1.1.1 ToString.
-        "tostring" | "str" | "to_s" | "strval" | "cstr"
-            => Some(CommonImport::Host("ecma:string", "String")),
+        "tostring" | "str" | "to_s" | "strval" | "cstr" => {
+            Some(CommonImport::Host("ecma:string", "String"))
+        }
 
-        "padstart" | "padleft"
-            => Some(CommonImport::Host("ecma:string", "padStart")),
-        "padend" | "padright"
-            => Some(CommonImport::Host("ecma:string", "padEnd")),
+        "padstart" | "padleft" => Some(CommonImport::Host("ecma:string", "padStart")),
+        "padend" | "padright" => Some(CommonImport::Host("ecma:string", "padEnd")),
 
         // JS: isNaN, isFinite — same name across languages
-        "isnan"    => Some(CommonImport::Host("ecma:number", "isNaN")),
+        "isnan" => Some(CommonImport::Host("ecma:number", "isNaN")),
         "isfinite" => Some(CommonImport::Host("ecma:number", "isFinite")),
 
         // ── Encoding ─────────────────────────────────────────────────────
@@ -85,10 +86,8 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         // (space → "%20"). Let each language bind its own urlencode
         // variant via the profile so the on-the-wire bytes match the
         // language's spec.
-        "encodeuricomponent"
-            => Some(CommonImport::Host("ecma:string", "encodeURIComponent")),
-        "decodeuricomponent"
-            => Some(CommonImport::Host("ecma:string", "decodeURIComponent")),
+        "encodeuricomponent" => Some(CommonImport::Host("ecma:string", "encodeURIComponent")),
+        "decodeuricomponent" => Some(CommonImport::Host("ecma:string", "decodeURIComponent")),
 
         // ── JSON ─────────────────────────────────────────────────────────
         "json_decode" => Some(CommonImport::Host("ecma:json", "parse")),
@@ -106,17 +105,27 @@ mod tests {
     use super::*;
 
     fn host(r: Option<CommonImport>) -> Option<(&'static str, &'static str)> {
-        match r { Some(CommonImport::Host(m, n)) => Some((m, n)), _ => None }
+        match r {
+            Some(CommonImport::Host(m, n)) => Some((m, n)),
+            _ => None,
+        }
     }
     fn intrinsic(r: Option<CommonImport>) -> Option<&'static str> {
-        match r { Some(CommonImport::Intrinsic(n)) => Some(n), _ => None }
+        match r {
+            Some(CommonImport::Intrinsic(n)) => Some(n),
+            _ => None,
+        }
     }
 
     #[test]
     fn common_print_variants() {
         for name in &["print", "puts", "echo", "DISPLAY", "WriteLine"] {
-            assert_eq!(host(resolve_common_import(name)), Some(("wasi:cli", "log")),
-                "failed for {}", name);
+            assert_eq!(
+                host(resolve_common_import(name)),
+                Some(("wasi:cli", "log")),
+                "failed for {}",
+                name
+            );
         }
     }
 
@@ -125,8 +134,12 @@ mod tests {
         // `cint`/`parseint`/`int`/`to_i`/`intval` must floor — using
         // `Number(x)` directly (no floor) regresses VB `CInt(3.7) = 3`.
         for name in &["parseInt", "CInt", "int", "to_i", "intval"] {
-            assert_eq!(intrinsic(resolve_common_import(name)), Some("cint"),
-                "failed for {}", name);
+            assert_eq!(
+                intrinsic(resolve_common_import(name)),
+                Some("cint"),
+                "failed for {}",
+                name
+            );
         }
     }
 
@@ -138,11 +151,20 @@ mod tests {
 
     #[test]
     fn encoding_variants() {
-        assert_eq!(host(resolve_common_import("btoa")), Some(("ecma:string", "btoa")));
-        assert_eq!(host(resolve_common_import("base64_encode")), Some(("ecma:string", "btoa")));
+        assert_eq!(
+            host(resolve_common_import("btoa")),
+            Some(("ecma:string", "btoa"))
+        );
+        assert_eq!(
+            host(resolve_common_import("base64_encode")),
+            Some(("ecma:string", "btoa"))
+        );
         // PHP `urlencode` differs from `encodeURIComponent` (space → +
         // vs %20) — handled per-language via the profile binding.
         assert!(resolve_common_import("urlencode").is_none());
-        assert_eq!(host(resolve_common_import("encodeuricomponent")), Some(("ecma:string", "encodeURIComponent")));
+        assert_eq!(
+            host(resolve_common_import("encodeuricomponent")),
+            Some(("ecma:string", "encodeURIComponent"))
+        );
     }
 }

@@ -2,7 +2,8 @@ use super::*;
 
 impl Compiler {
     fn is_known_gui_event_name(&self, event: &str) -> bool {
-        matches!(self.canon(event).as_str(),
+        matches!(
+            self.canon(event).as_str(),
             "click"
                 | "dblclick"
                 | "doubleclick"
@@ -131,7 +132,8 @@ impl Compiler {
                     return false;
                 };
                 if !self.pending_classes.contains_key(&self.canon(&parent)) {
-                    return self.reflection_is_assignable_from("System.Windows.Forms.Control", &parent);
+                    return self
+                        .reflection_is_assignable_from("System.Windows.Forms.Control", &parent);
                 }
                 current = parent;
             }
@@ -147,9 +149,15 @@ impl Compiler {
 
         if self.profile.namespaces.use_dotnet
             && self.is_known_gui_event_name(event)
-            && self.event_receiver_type_hint(control).as_deref().is_some_and(|type_hint| {
-                matches!(Self::normalize_type_hint(type_hint).as_str(), "object" | "system.object")
-            })
+            && self
+                .event_receiver_type_hint(control)
+                .as_deref()
+                .is_some_and(|type_hint| {
+                    matches!(
+                        Self::normalize_type_hint(type_hint).as_str(),
+                        "object" | "system.object"
+                    )
+                })
         {
             return true;
         }
@@ -159,7 +167,11 @@ impl Compiler {
             .unwrap_or(true)
     }
 
-    fn compile_delegate_event_invoke(&mut self, target: &Expression, args: &[Expression]) -> Result<(), String> {
+    fn compile_delegate_event_invoke(
+        &mut self,
+        target: &Expression,
+        args: &[Expression],
+    ) -> Result<(), String> {
         let delegate_slot = self.define_local("__raise_event_delegate");
         self.compile_expr(target)?;
         self.emit_u16(Op::LOCAL_SET, delegate_slot);

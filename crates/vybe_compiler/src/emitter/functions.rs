@@ -13,8 +13,8 @@
 //! all produce the same Chunk structure.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 // ── Default parameter handling ──────────────────────────────────────────
 
@@ -166,8 +166,7 @@ pub fn emit_async_wrapper(chunk: &mut Chunk, body_chunk_idx: usize, line: u32) {
     chunk.emit_op(Op::CONT_NEW, line);
     // Resume the continuation immediately — it will suspend at each await point
     // The VM's event loop handles re-resumption when promises resolve
-    let zero_tag = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::RESUME, zero_tag, line);
+    crate::emitter::generators::emit_resume(chunk, line);
 }
 
 /// Create an async function body chunk.

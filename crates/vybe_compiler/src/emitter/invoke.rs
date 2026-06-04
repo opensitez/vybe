@@ -38,9 +38,9 @@
 //! The helper splices the method-name constant between `receiver` and
 //! the args using temp local slots (no `SWAP` / `INSERT` opcodes).
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// Emit a polymorphic `receiver.method(args)` invocation.
 ///

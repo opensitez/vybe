@@ -27,8 +27,8 @@
 //!
 //! No changes needed in the language-agnostic compiler.
 
-use vybe_bytecode::Chunk;
 use crate::emitter::{collections, strings};
+use vybe_bytecode::Chunk;
 
 /// A canonical builtin operation. Walkers normalize language-specific syntax to these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +80,14 @@ impl CanonicalOp {
 /// imports section) while the code emits on `chunks[current]`.
 pub fn emit_canonical(op: CanonicalOp, chunks: &mut [Chunk], current: usize, line: u32) {
     match op {
-        CanonicalOp::Len => collections::emit_len(chunks, current, line),
+        // Use Op::ARRAY_LENGTH (WASM GC array.len) — handles both
+        // ObjectKind::Array and Value::String in the interpreter and
+        // emits the native array.len byte in the wasm tier.  No host
+        // call, no import-table indirection; avoids the import-index
+        // collision that emit_len (chunks[current]-relative indices vs
+        // the VM's chunks[0]-based resolution) causes when .length is
+        // accessed inside a nested function chunk.
+        CanonicalOp::Len => collections::emit_array_length(&mut chunks[current], line),
         CanonicalOp::Str => {
             // __vybe_tostring is populated by bundle::finalize_with_stdlib.
             strings::emit_to_string(&mut chunks[current], line);

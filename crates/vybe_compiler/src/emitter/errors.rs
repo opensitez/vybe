@@ -1,17 +1,23 @@
 //! Exception handling helpers — shared try/catch/finally bytecode patterns.
 //!
 //! All compilers emit the same opcodes for exception handling:
-//! - try_start → body → try_end → handler
-//! - try_table for typed multi-catch
+//! - try_table (real WASM EH Phase 4) → body → try_end → handler
+//! - try_end pops the handler on normal (non-throwing) exit
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// Build a standard exception constructor chunk.
 /// All languages should use this shape: { __type, __exception_type, name, message }.
 /// This ensures Python `except ValueError` can catch a Dart `throw ValueError("...")`.
-pub fn emit_exception_constructor(chunk: &mut Chunk, this_slot: u16, exc_name: &str, msg_slot: u16, line: u32) {
+pub fn emit_exception_constructor(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    exc_name: &str,
+    msg_slot: u16,
+    line: u32,
+) {
     // Create object
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
@@ -80,14 +86,17 @@ pub fn canonical_exception_name(name: &str) -> &str {
     }
 }
 
-/// Emit the start of a try block. Returns the catch_jump offset to patch later.
-/// Layout: [try_start, u16 catch_offset, u16 finally_offset]
+/// Emit the start of a try block. Returns the offset_pos to patch later.
+/// Layout: [try_table, u8 handler_count=1, u8 tag=0, u16 catch_offset]
 /// Stack: unchanged
 pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
-    let catch_jump = chunk.emit_jump(Op::TRY_START, line);
-    chunk.emit(0u8, line); // finally offset high byte (reserved)
-    chunk.emit(0u8, line); // finally offset low byte (reserved)
-    catch_jump
+    chunk.emit_op(Op::TRY_TABLE, line); // real WASM Phase 4 EH opcode
+    chunk.emit(1u8, line); // handler_count = 1
+    chunk.emit(0u8, line); // tag = 0 (catch-all)
+    let offset_pos = chunk.current_offset();
+    chunk.emit(0u8, line); // catch offset hi (placeholder)
+    chunk.emit(0u8, line); // catch offset lo (placeholder)
+    offset_pos
 }
 
 /// Emit the end of the try body (normal exit path).
@@ -97,14 +106,13 @@ pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
 
 /// Patch the catch handler offset after the handler code has been emitted.
 ///
-/// The VM reads `catch_offset` then `finally_offset` (2+2 bytes) before computing
-/// `catch_ip = ip + catch_offset`, where ip is *after* all 4 operand bytes.
-/// `chunk.patch_jump` assumes ip is right after the 2 patched bytes, so we
-/// subtract 2 to account for the extra finally-offset bytes the VM skips.
-pub fn patch_catch(chunk: &mut Chunk, catch_jump: usize) {
-    let jump = chunk.current_offset() as i32 - (catch_jump as i32 + 2) - 2;
-    chunk.code[catch_jump] = (jump >> 8) as u8;
-    chunk.code[catch_jump + 1] = (jump & 0xff) as u8;
+/// The VM reads `offset` (2 bytes) and computes `catch_ip = ip + offset`,
+/// where ip is the position right after those 2 bytes (`offset_pos + 2`).
+/// The forward distance from that ip to the current end of code is the offset.
+pub fn patch_catch(chunk: &mut Chunk, offset_pos: usize) {
+    let jump = chunk.current_offset() as i32 - (offset_pos as i32 + 2);
+    chunk.code[offset_pos] = (jump >> 8) as u8;
+    chunk.code[offset_pos + 1] = (jump & 0xff) as u8;
 }
 
 /// Emit a throw — takes the exception value from TOS.
@@ -120,7 +128,8 @@ pub fn emit_throw(chunk: &mut Chunk, line: u32) {
 /// only requires extending `canonical_exception_name`.
 pub fn is_exception_type(name: &str) -> bool {
     let lower = name.to_lowercase();
-    matches!(lower.as_str(),
+    matches!(
+        lower.as_str(),
         // Generic
         "exception" | "error" | "throwable"
         // Python / canonical
@@ -187,7 +196,11 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     // __type and __exception_type use the canonical name (for cross-language
     // catch dispatch). `name` uses the original (language-specific) name
     // so `err.name` returns what the language expects.
-    for (key, val) in [("__type", canon), ("__exception_type", canon), ("name", original)] {
+    for (key, val) in [
+        ("__type", canon),
+        ("__exception_type", canon),
+        ("name", original),
+    ] {
         chunk.emit_op(Op::DUP, line);
         let v = chunk.add_constant(Value::String(Arc::from(val)));
         chunk.emit_op_u16(Op::CONST, v, line);
@@ -198,17 +211,17 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
 
     // constructor = { name: original } — so e.constructor.name works per ECMA-262 §20.5.3.
     // Stack: [obj]
-    chunk.emit_op(Op::DUP, line);                                          // [obj, obj]
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);                            // [obj, obj, ctor]
-    chunk.emit_op(Op::DUP, line);                                          // [obj, obj, ctor, ctor]
+    chunk.emit_op(Op::DUP, line); // [obj, obj]
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line); // [obj, obj, ctor]
+    chunk.emit_op(Op::DUP, line); // [obj, obj, ctor, ctor]
     let cn_val = chunk.add_constant(Value::String(Arc::from(original)));
-    chunk.emit_op_u16(Op::CONST, cn_val, line);                            // [obj, obj, ctor, ctor, name]
+    chunk.emit_op_u16(Op::CONST, cn_val, line); // [obj, obj, ctor, ctor, name]
     let cn_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, cn_key, line);                       // [obj, obj, ctor, ?]
-    chunk.emit_op(Op::DROP, line);                                         // [obj, obj, ctor]
+    chunk.emit_op_u16(Op::STRUCT_SET, cn_key, line); // [obj, obj, ctor, ?]
+    chunk.emit_op(Op::DROP, line); // [obj, obj, ctor]
     let ctor_key = chunk.add_constant(Value::String(Arc::from("constructor")));
-    chunk.emit_op_u16(Op::STRUCT_SET, ctor_key, line);                     // [obj, ?]
-    chunk.emit_op(Op::DROP, line);                                         // [obj]
+    chunk.emit_op_u16(Op::STRUCT_SET, ctor_key, line); // [obj, ?]
+    chunk.emit_op(Op::DROP, line); // [obj]
 }
 
 /// Emit the disposal half of a resource-management block (C# `using`,
@@ -224,12 +237,7 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
 ///
 /// `dispose_method`: the canonical method name (`"Dispose"` for .NET,
 /// `"__exit__"` for Python, `"close"` for Java AutoCloseable, etc.).
-pub fn emit_resource_dispose(
-    chunk: &mut Chunk,
-    slot: u16,
-    dispose_method: &str,
-    line: u32,
-) {
+pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str, line: u32) {
     let dispose_key = chunk.add_constant(Value::String(Arc::from(dispose_method)));
     let dispose_block = chunk.emit_block(line);
     // method = resource[<dispose_method>]

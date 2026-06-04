@@ -12,22 +12,22 @@
 //! Each sibling is a separate `impl Compiler { ... }` block; the public
 //! surface is unchanged (`Compiler::with_profile`, `Compiler::compile`).
 
-mod classes;
-mod expressions;
 mod calls;
+mod classes;
 mod events;
+mod expressions;
 #[path = "../php/compiler.rs"]
 mod php;
 
-use std::sync::Arc;
+use crate::ast::*;
+use crate::emitter as common;
+use crate::profile::*;
+use crate::scope::Scope;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use vybe_bytecode::{Chunk, Value};
+use std::sync::Arc;
 use vybe_bytecode::chunk::Import as BytecodeImport;
 use vybe_bytecode::opcode::Op;
-use crate::profile::*;
-use crate::emitter as common;
-use crate::ast::*;
-use crate::scope::Scope;
+use vybe_bytecode::{Chunk, Value};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Loop context for break/continue patching
@@ -112,7 +112,10 @@ impl CallSignature {
                 .iter()
                 .map(|param| param.name.trim_start_matches('$').to_string())
                 .collect(),
-            min_arity: params.iter().take_while(|param| param.default.is_none() && !param.is_rest).count(),
+            min_arity: params
+                .iter()
+                .take_while(|param| param.default.is_none() && !param.is_rest)
+                .count(),
             has_rest: params.last().is_some_and(|param| param.is_rest),
         }
     }
@@ -174,11 +177,28 @@ pub(crate) struct ReflectionTypeMetadata {
 #[derive(Debug, Clone)]
 pub(crate) enum ReflectionBinding {
     Type(String),
-    Constructor { type_name: String, #[allow(dead_code)] param_types: Vec<String> },
-    Method { type_name: String, method_name: String },
-    Property { type_name: String, property_name: String },
-    Field { type_name: String, field_name: String },
-    Parameter { type_name: String, method_name: String, index: usize },
+    Constructor {
+        type_name: String,
+        #[allow(dead_code)]
+        param_types: Vec<String>,
+    },
+    Method {
+        type_name: String,
+        method_name: String,
+    },
+    Property {
+        type_name: String,
+        property_name: String,
+    },
+    Field {
+        type_name: String,
+        field_name: String,
+    },
+    Parameter {
+        type_name: String,
+        method_name: String,
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -296,18 +316,25 @@ pub struct Compiler {
     capture_by_value_vars: Vec<String>,
     pointer_cell_bindings: HashMap<usize, HashSet<String>>,
 
-
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
     /// of the same arity. Populated by a pre-pass before any function is
     /// compiled so both callee (set `chunk.result_arity`, push N values
     /// without packing) and caller (destructure directly off the stack)
     /// can agree on the multi-value ABI at emit time.
     multi_return_functions: HashMap<String, u8>,
-    /// Functions compiled with `chunk.is_generator = true` — tracked
-    /// by canonical name so `for v in gen()` call-site emission knows
-    /// to use the `RESUME`-loop iterator protocol rather than the
-    /// array-index protocol.
+    /// Synchronous functions compiled with `chunk.is_generator = true`
+    /// — tracked by canonical name so `for v in gen()` call-site
+    /// emission knows to use the stack-switching iterator protocol
+    /// rather than the array-index protocol. Async generators are
+    /// deliberately excluded; they route through the async iterator
+    /// path so await points stay JSPI-compliant.
     generator_functions: HashSet<String>,
+    /// Number of user-visible parameters (excluding the hidden control
+    /// slot) for each synchronous generator function. Used at call
+    /// sites to pad missing optional args with `undefined` so the
+    /// null resume value in GEN_NEXT never lands in an optional
+    /// parameter slot and prevents default-parameter application.
+    generator_param_counts: HashMap<String, usize>,
     /// ESM host-module import bindings: canon(local) → (module, func).
     /// Populated from user `import { X } from "wasi:foo"` statements.
     /// Calls and reads both go through the installed runtime binding so
@@ -403,18 +430,27 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
             expr.as_ref().map_or(false, expr_uses_proxy)
                 || cause.as_ref().map_or(false, expr_uses_proxy)
         }
-        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| {
-            d.init.as_ref().map_or(false, expr_uses_proxy)
-        }),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|d| d.init.as_ref().map_or(false, expr_uses_proxy)),
         StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => {
             expr_uses_proxy(value)
         }
         StmtKind::Block(stmts) => stmts.iter().any(stmt_uses_proxy),
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             expr_uses_proxy(cond)
                 || then_body.iter().any(stmt_uses_proxy)
-                || elifs.iter().any(|(c, b)| expr_uses_proxy(c) || b.iter().any(stmt_uses_proxy))
-                || else_body.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
+                || elifs
+                    .iter()
+                    .any(|(c, b)| expr_uses_proxy(c) || b.iter().any(stmt_uses_proxy))
+                || else_body
+                    .as_ref()
+                    .map_or(false, |b| b.iter().any(stmt_uses_proxy))
         }
         StmtKind::While { cond, body, .. } => {
             expr_uses_proxy(cond) || body.iter().any(stmt_uses_proxy)
@@ -422,7 +458,13 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
         StmtKind::DoWhile { cond, body, .. } => {
             expr_uses_proxy(cond) || body.iter().any(stmt_uses_proxy)
         }
-        StmtKind::For { init, cond, update, body, .. } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
             init.as_ref().map_or(false, |i| stmt_uses_proxy(i))
                 || cond.as_ref().map_or(false, expr_uses_proxy)
                 || update.as_ref().map_or(false, expr_uses_proxy)
@@ -437,15 +479,26 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
             ClassMember::Constructor { body, .. } => body.iter().any(stmt_uses_proxy),
             ClassMember::Field { init, .. } => init.as_ref().map_or(false, expr_uses_proxy),
             ClassMember::Property { getter, setter, .. } => {
-                getter.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
-                    || setter.as_ref().map_or(false, |s| s.body.iter().any(stmt_uses_proxy))
+                getter
+                    .as_ref()
+                    .map_or(false, |b| b.iter().any(stmt_uses_proxy))
+                    || setter
+                        .as_ref()
+                        .map_or(false, |s| s.body.iter().any(stmt_uses_proxy))
             }
             _ => false,
         }),
-        StmtKind::Try { body, catches, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
             body.iter().any(stmt_uses_proxy)
                 || catches.iter().any(|c| c.body.iter().any(stmt_uses_proxy))
-                || finally.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
+                || finally
+                    .as_ref()
+                    .map_or(false, |b| b.iter().any(stmt_uses_proxy))
         }
         _ => false,
     }
@@ -455,28 +508,28 @@ fn expr_uses_proxy(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::New { class, args } => {
             if let ExprKind::Ident(name) = &class.kind {
-                if name == "Proxy" { return true; }
+                if name == "Proxy" {
+                    return true;
+                }
             }
             args.iter().any(|a| expr_uses_proxy(&a.value))
         }
         ExprKind::Call { callee, args, .. } => {
             expr_uses_proxy(callee) || args.iter().any(|a| expr_uses_proxy(&a.value))
         }
-        ExprKind::Binary { left, right, .. } => {
-            expr_uses_proxy(left) || expr_uses_proxy(right)
-        }
+        ExprKind::Binary { left, right, .. } => expr_uses_proxy(left) || expr_uses_proxy(right),
         ExprKind::Unary { expr, .. } => expr_uses_proxy(expr),
         ExprKind::Member { object, .. } => expr_uses_proxy(object),
-        ExprKind::Index { object, index, .. } => {
-            expr_uses_proxy(object) || expr_uses_proxy(index)
-        }
+        ExprKind::Index { object, index, .. } => expr_uses_proxy(object) || expr_uses_proxy(index),
         ExprKind::Ternary { cond, then, else_ } => {
             expr_uses_proxy(cond) || expr_uses_proxy(then) || expr_uses_proxy(else_)
         }
         ExprKind::Array(elems) => elems.iter().any(|e| expr_uses_proxy(&e.value)),
         ExprKind::Object(props) => props.iter().any(|p| match p {
             ObjectProperty::KeyValue { value, .. } => expr_uses_proxy(value),
-            ObjectProperty::Computed { key, value } => expr_uses_proxy(key) || expr_uses_proxy(value),
+            ObjectProperty::Computed { key, value } => {
+                expr_uses_proxy(key) || expr_uses_proxy(value)
+            }
             _ => false,
         }),
         ExprKind::Assign { value, .. } => expr_uses_proxy(value),
@@ -496,40 +549,57 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
             expr.as_ref().is_some_and(expr_uses_js_arguments)
                 || cause.as_ref().is_some_and(expr_uses_js_arguments)
         }
-        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
-            decl.init.as_ref().is_some_and(expr_uses_js_arguments)
-        }),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(expr_uses_js_arguments)),
         StmtKind::Assign { targets, value } => {
             targets.iter().any(expr_uses_js_arguments) || expr_uses_js_arguments(value)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
             expr_uses_js_arguments(target) || expr_uses_js_arguments(value)
         }
-        StmtKind::Block(body)
-        | StmtKind::Using { body, .. }
-        | StmtKind::Lock { body, .. } => body.iter().any(stmt_uses_js_arguments),
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::Block(body) | StmtKind::Using { body, .. } | StmtKind::Lock { body, .. } => {
+            body.iter().any(stmt_uses_js_arguments)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             expr_uses_js_arguments(cond)
                 || then_body.iter().any(stmt_uses_js_arguments)
                 || elifs.iter().any(|(cond, body)| {
                     expr_uses_js_arguments(cond) || body.iter().any(stmt_uses_js_arguments)
                 })
-                || else_body.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
         }
         StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             expr_uses_js_arguments(cond) || body.iter().any(stmt_uses_js_arguments)
         }
-        StmtKind::For { init, cond, update, body, .. } => {
-            init.as_ref().is_some_and(|stmt| stmt_uses_js_arguments(stmt))
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            init.as_ref()
+                .is_some_and(|stmt| stmt_uses_js_arguments(stmt))
                 || cond.as_ref().is_some_and(expr_uses_js_arguments)
                 || update.as_ref().is_some_and(expr_uses_js_arguments)
                 || body.iter().any(stmt_uses_js_arguments)
         }
         StmtKind::ForIn { iter, body, .. } => {
-            expr_uses_js_arguments(iter)
-                || body.iter().any(stmt_uses_js_arguments)
+            expr_uses_js_arguments(iter) || body.iter().any(stmt_uses_js_arguments)
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             expr_uses_js_arguments(expr)
                 || cases.iter().any(|case| {
                     case.conditions.iter().any(|condition| match condition {
@@ -538,31 +608,51 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
                             expr_uses_js_arguments(from) || expr_uses_js_arguments(to)
                         }
                         CaseCondition::Comparison { expr, .. } => expr_uses_js_arguments(expr),
-                    })
-                        || case.body.iter().any(stmt_uses_js_arguments)
+                    }) || case.body.iter().any(stmt_uses_js_arguments)
                 })
-                || default.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                || default
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             body.iter().any(stmt_uses_js_arguments)
-                || catches.iter().any(|catch| catch.body.iter().any(stmt_uses_js_arguments))
-                || else_body.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
-                || finally.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                || catches
+                    .iter()
+                    .any(|catch| catch.body.iter().any(stmt_uses_js_arguments))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
         }
         StmtKind::FunctionDecl { params, body, .. } => {
-            params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+            params
+                .iter()
+                .any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
                 || body.iter().any(stmt_uses_js_arguments)
         }
         StmtKind::ClassDecl { members, .. } => members.iter().any(|member| match member {
             ClassMember::Method(stmt) => stmt_uses_js_arguments(stmt),
             ClassMember::Constructor { params, body, .. } => {
-                params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                params
+                    .iter()
+                    .any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
                     || body.iter().any(stmt_uses_js_arguments)
             }
             ClassMember::Field { init, .. } => init.as_ref().is_some_and(expr_uses_js_arguments),
             ClassMember::Property { getter, setter, .. } => {
-                getter.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
-                    || setter.as_ref().is_some_and(|setter| setter.body.iter().any(stmt_uses_js_arguments))
+                getter
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                    || setter
+                        .as_ref()
+                        .is_some_and(|setter| setter.body.iter().any(stmt_uses_js_arguments))
             }
             _ => false,
         }),
@@ -582,7 +672,9 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
         | ExprKind::TypeOf(expr)
         | ExprKind::Delete(expr)
         | ExprKind::Void(expr) => expr_uses_js_arguments(expr),
-        ExprKind::Yield(expr) => expr.as_ref().is_some_and(|expr| expr_uses_js_arguments(expr)),
+        ExprKind::Yield(expr) => expr
+            .as_ref()
+            .is_some_and(|expr| expr_uses_js_arguments(expr)),
         ExprKind::YieldFrom(expr) => expr_uses_js_arguments(expr),
         ExprKind::Call { callee, args, .. } => {
             expr_uses_js_arguments(callee)
@@ -619,7 +711,9 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
             expr_uses_js_arguments(target) || expr_uses_js_arguments(value)
         }
         ExprKind::Lambda { params, body, .. } => {
-            params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+            params
+                .iter()
+                .any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
                 || match body {
                     LambdaBody::Expr(expr) => expr_uses_js_arguments(expr),
                     LambdaBody::Block(body) => body.iter().any(stmt_uses_js_arguments),
@@ -717,9 +811,9 @@ impl Compiler {
             capture_by_value_vars: Vec::new(),
             pointer_cell_bindings: HashMap::new(),
 
-
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
+            generator_param_counts: HashMap::new(),
             host_import_bindings: HashMap::new(),
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
@@ -735,7 +829,9 @@ impl Compiler {
     }
 
     fn current_js_arguments_binding(&self) -> Option<&JsArgumentsBinding> {
-        self.js_arguments_bindings.last().and_then(|binding| binding.as_ref())
+        self.js_arguments_bindings
+            .last()
+            .and_then(|binding| binding.as_ref())
     }
 
     fn js_arguments_alias_for_name(&self, name: &str) -> Option<(u16, usize)> {
@@ -752,7 +848,11 @@ impl Compiler {
             })
     }
 
-    fn js_arguments_alias_for_index_target(&self, object: &Expression, index: &Expression) -> Option<(u16, u16, usize)> {
+    fn js_arguments_alias_for_index_target(
+        &self,
+        object: &Expression,
+        index: &Expression,
+    ) -> Option<(u16, u16, usize)> {
         let binding = self.current_js_arguments_binding()?;
         let ExprKind::Ident(name) = &object.kind else {
             return None;
@@ -762,7 +862,9 @@ impl Compiler {
         }
         let index = match &index.kind {
             ExprKind::Lit(Literal::Int(value)) if *value >= 0 => *value as usize,
-            ExprKind::Lit(Literal::Float(value)) if *value >= 0.0 && value.fract() == 0.0 => *value as usize,
+            ExprKind::Lit(Literal::Float(value)) if *value >= 0.0 && value.fract() == 0.0 => {
+                *value as usize
+            }
             _ => return None,
         };
         let slot = *binding.aliased_indices.get(&index)?;
@@ -822,8 +924,7 @@ impl Compiler {
                 | StmtKind::ClassDecl { name, .. }
                 | StmtKind::StructDecl { name, .. }
                 | StmtKind::EnumDecl { name, .. }
-                | StmtKind::ModuleDecl { name, .. }
-                 => {
+                | StmtKind::ModuleDecl { name, .. } => {
                     self.reserve_shared_global_name(&self.canon(name));
                 }
                 StmtKind::VarDecl { declarations, .. } => {
@@ -872,7 +973,11 @@ impl Compiler {
         }
     }
 
-    fn register_interface_method_signatures(&mut self, interface_name: &str, members: &[InterfaceMember]) {
+    fn register_interface_method_signatures(
+        &mut self,
+        interface_name: &str,
+        members: &[InterfaceMember],
+    ) {
         let interface_canonical = self.canon(interface_name);
         let operator_symbol = self.fortran_interface_operator_symbol(interface_name);
 
@@ -883,7 +988,8 @@ impl Compiler {
                 return_type,
                 signature_source,
                 ..
-            } = member else {
+            } = member
+            else {
                 continue;
             };
 
@@ -898,25 +1004,36 @@ impl Compiler {
             if let Some(source_name) = signature_source.as_ref() {
                 let source_canonical = self.canon(source_name);
                 for canonical in &canonical_names {
-                    if let Some(source_modes) = self.function_param_modes.get(&source_canonical).cloned() {
+                    if let Some(source_modes) =
+                        self.function_param_modes.get(&source_canonical).cloned()
+                    {
                         self.function_param_modes
                             .entry(canonical.clone())
                             .or_insert(source_modes);
                     }
-                    if let Some(source_types) = self.function_param_types.get(&source_canonical).cloned() {
+                    if let Some(source_types) =
+                        self.function_param_types.get(&source_canonical).cloned()
+                    {
                         self.function_param_types
                             .entry(canonical.clone())
                             .or_insert(source_types);
                     }
-                    if let Some(min_arity) = self.function_min_arity.get(&source_canonical).copied() {
-                        self.function_min_arity.entry(canonical.clone()).or_insert(min_arity);
+                    if let Some(min_arity) = self.function_min_arity.get(&source_canonical).copied()
+                    {
+                        self.function_min_arity
+                            .entry(canonical.clone())
+                            .or_insert(min_arity);
                     }
-                    if let Some(signatures) = self.function_signatures.get(&source_canonical).cloned() {
+                    if let Some(signatures) =
+                        self.function_signatures.get(&source_canonical).cloned()
+                    {
                         self.function_signatures
                             .entry(canonical.clone())
                             .or_insert(signatures);
                     }
-                    if let Some(source_return_type) = self.function_return_types.get(&source_canonical).cloned() {
+                    if let Some(source_return_type) =
+                        self.function_return_types.get(&source_canonical).cloned()
+                    {
                         self.function_return_types
                             .entry(canonical.clone())
                             .or_insert(source_return_type);
@@ -924,7 +1041,8 @@ impl Compiler {
                 }
             } else {
                 let param_modes: Vec<PassBy> = params.iter().map(|param| param.pass_by).collect();
-                let param_types: Vec<Option<String>> = params.iter().map(|param| param.type_hint.clone()).collect();
+                let param_types: Vec<Option<String>> =
+                    params.iter().map(|param| param.type_hint.clone()).collect();
                 let min_arity = params
                     .iter()
                     .take_while(|param| param.default.is_none() && !param.is_rest)
@@ -942,7 +1060,10 @@ impl Compiler {
                         .entry(canonical.clone())
                         .or_insert(min_arity);
 
-                    let signatures = self.function_signatures.entry(canonical.clone()).or_default();
+                    let signatures = self
+                        .function_signatures
+                        .entry(canonical.clone())
+                        .or_default();
                     if !signatures.iter().any(|existing| {
                         existing.param_names == signature.param_names
                             && existing.min_arity == signature.min_arity
@@ -970,8 +1091,14 @@ impl Compiler {
                 };
 
                 if let Some(symbol) = operator_symbol.as_ref() {
-                    let overloads = self.fortran_operator_overloads.entry(symbol.clone()).or_default();
-                    if !overloads.iter().any(|existing| existing.target_name == overload.target_name) {
+                    let overloads = self
+                        .fortran_operator_overloads
+                        .entry(symbol.clone())
+                        .or_default();
+                    if !overloads
+                        .iter()
+                        .any(|existing| existing.target_name == overload.target_name)
+                    {
                         overloads.push(overload);
                     }
                 } else {
@@ -979,7 +1106,10 @@ impl Compiler {
                         .fortran_interface_overloads
                         .entry(interface_canonical.clone())
                         .or_default();
-                    if !overloads.iter().any(|existing| existing.target_name == overload.target_name) {
+                    if !overloads
+                        .iter()
+                        .any(|existing| existing.target_name == overload.target_name)
+                    {
                         overloads.push(overload);
                     }
                 }
@@ -1006,7 +1136,11 @@ impl Compiler {
         if let Some(inner) = trimmed
             .strip_prefix("type(")
             .and_then(|rest| rest.strip_suffix(')'))
-            .or_else(|| trimmed.strip_prefix("class(").and_then(|rest| rest.strip_suffix(')')))
+            .or_else(|| {
+                trimmed
+                    .strip_prefix("class(")
+                    .and_then(|rest| rest.strip_suffix(')'))
+            })
         {
             return self.canon(inner.trim());
         }
@@ -1026,7 +1160,10 @@ impl Compiler {
         self.canon(trimmed)
     }
 
-    fn fortran_overload_target_param_types(&self, overload: &FortranInterfaceOverload) -> Vec<Option<String>> {
+    fn fortran_overload_target_param_types(
+        &self,
+        overload: &FortranInterfaceOverload,
+    ) -> Vec<Option<String>> {
         self.function_param_types
             .get(&overload.target_name)
             .cloned()
@@ -1042,7 +1179,10 @@ impl Compiler {
     ) -> Option<String> {
         let arg_types: Vec<Option<String>> = arg_exprs
             .iter()
-            .map(|expr| self.infer_expr_type_hint(expr).map(|hint| self.normalize_fortran_dispatch_type(&hint)))
+            .map(|expr| {
+                self.infer_expr_type_hint(expr)
+                    .map(|hint| self.normalize_fortran_dispatch_type(&hint))
+            })
             .collect();
         let has_known_arg_types = arg_types.iter().any(Option::is_some);
 
@@ -1142,7 +1282,9 @@ impl Compiler {
 
         self.fortran_operator_overloads
             .get(symbol)
-            .and_then(|overloads| self.resolve_fortran_overload_target_with_fallback(overloads, arg_exprs, false))
+            .and_then(|overloads| {
+                self.resolve_fortran_overload_target_with_fallback(overloads, arg_exprs, false)
+            })
     }
 
     fn reserve_runtime_global_names(&mut self) {
@@ -1164,9 +1306,10 @@ impl Compiler {
     }
 
     fn shared_global_slot(&self, name: &str) -> u16 {
-        *self.shared_global_slots.get(name).unwrap_or_else(|| {
-            panic!("missing shared global slot for {name}")
-        })
+        *self
+            .shared_global_slots
+            .get(name)
+            .unwrap_or_else(|| panic!("missing shared global slot for {name}"))
     }
 
     fn global_name_const_idx(&mut self, name: &str) -> u16 {
@@ -1247,9 +1390,9 @@ impl Compiler {
         // on `Partial Class`; other languages leave it false and skip the
         // merge entirely). After merging, the body has exactly one ClassDecl
         // per class name with all fields/methods pooled together.
-        let has_partial = module.body.iter().any(|s| {
-            matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial)
-        });
+        let has_partial = module.body.iter().any(
+            |s| matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial),
+        );
         let merged_body = if has_partial {
             merge_partial_classes(&module.body, self.case_sensitive)
         } else {
@@ -1290,7 +1433,11 @@ impl Compiler {
         // Auto-call entry point if defined
         if let Some(ref ep) = self.profile.entry_point.clone() {
             let has_ep = self.defined_globals.contains(ep)
-                || (!self.case_sensitive && self.defined_globals.iter().any(|g| g.eq_ignore_ascii_case(ep)));
+                || (!self.case_sensitive
+                    && self
+                        .defined_globals
+                        .iter()
+                        .any(|g| g.eq_ignore_ascii_case(ep)));
             if has_ep {
                 self.emit_var_get(ep);
                 self.emit_u8(Op::CALL_REF, 0);
@@ -1326,7 +1473,9 @@ impl Compiler {
     /// Drain the compiler's host-import metadata into the shape the VM
     /// setup expects.
     fn collected_host_imports(&self) -> HostImportMetadata {
-        let mut named: Vec<HostImportNamed> = self.host_import_bindings.iter()
+        let mut named: Vec<HostImportNamed> = self
+            .host_import_bindings
+            .iter()
             .map(|(local, (module, func))| HostImportNamed {
                 local: local.clone(),
                 module: module.clone(),
@@ -1334,7 +1483,9 @@ impl Compiler {
             })
             .collect();
         named.sort_by(|a, b| a.local.cmp(&b.local));
-        let mut wildcard: Vec<HostWildcardImport> = self.host_namespace_aliases.iter()
+        let mut wildcard: Vec<HostWildcardImport> = self
+            .host_namespace_aliases
+            .iter()
             .map(|(alias, module)| HostWildcardImport {
                 alias: alias.clone(),
                 module: module.clone(),
@@ -1383,8 +1534,10 @@ impl Compiler {
                 let operand_start = ip + 2;
                 let operand_len = op.operand_format().size_in(code, operand_start);
                 if op == Op::CALL_IMPORT && operand_start + 1 < code.len() {
-                    let old_idx = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
-                    let remapped = local_remap.get(old_idx as usize)
+                    let old_idx =
+                        u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                    let remapped = local_remap
+                        .get(old_idx as usize)
                         .copied()
                         .or_else(|| script_remap.get(old_idx as usize).copied());
                     if let Some(new_idx) = remapped {
@@ -1457,7 +1610,12 @@ impl Compiler {
 
         for member in members {
             match member {
-                ClassMember::Field { name, type_hint, modifiers, .. } => {
+                ClassMember::Field {
+                    name,
+                    type_hint,
+                    modifiers,
+                    ..
+                } => {
                     let field_name = self.canon(name);
                     if modifiers.is_shared {
                         static_fields.push(field_name.clone());
@@ -1474,7 +1632,13 @@ impl Compiler {
                     }
                 }
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: method_name, modifiers, params, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl {
+                        name: method_name,
+                        modifiers,
+                        params,
+                        ..
+                    } = &stmt.kind
+                    {
                         let canonical = self.canon(method_name);
                         if modifiers.is_shared {
                             static_method_names.push(canonical);
@@ -1495,22 +1659,24 @@ impl Compiler {
         }
 
         self.defined_globals.insert(format!("{}$arity0", name));
-        self.pending_classes.entry(name.to_string()).or_insert(PendingClass {
-            parent: None,
-            enclosing_class: self.current_class.clone(),
-            fields,
-            is_value_type: true,
-            instance_member_names,
-            instance_pointer_method_names,
-            instance_field_types,
-            static_fields,
-            static_field_types,
-            static_method_names,
-            instance_method_overloads: HashMap::new(),
-            static_method_overloads: HashMap::new(),
-            nested_types: Vec::new(),
-            statics: Vec::new(),
-        });
+        self.pending_classes
+            .entry(name.to_string())
+            .or_insert(PendingClass {
+                parent: None,
+                enclosing_class: self.current_class.clone(),
+                fields,
+                is_value_type: true,
+                instance_member_names,
+                instance_pointer_method_names,
+                instance_field_types,
+                static_fields,
+                static_field_types,
+                static_method_names,
+                instance_method_overloads: HashMap::new(),
+                static_method_overloads: HashMap::new(),
+                nested_types: Vec::new(),
+                statics: Vec::new(),
+            });
     }
 
     fn register_module_static_container(&mut self, module_name: &str, members: &[ClassMember]) {
@@ -1521,7 +1687,9 @@ impl Compiler {
 
         for member in members {
             match member {
-                ClassMember::Field { name, type_hint, .. } => {
+                ClassMember::Field {
+                    name, type_hint, ..
+                } => {
                     let field_name = self.canon(name);
                     module_static_fields.push(field_name.clone());
                     if let Some(type_hint) = type_hint.as_ref() {
@@ -1529,7 +1697,9 @@ impl Compiler {
                             .insert(field_name, Self::normalize_type_hint(type_hint));
                     }
                 }
-                ClassMember::Const { name, type_hint, .. } => {
+                ClassMember::Const {
+                    name, type_hint, ..
+                } => {
                     let const_name = self.canon(name);
                     module_static_fields.push(const_name.clone());
                     if let Some(type_hint) = type_hint.as_ref() {
@@ -1538,7 +1708,13 @@ impl Compiler {
                     }
                 }
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: method_name, params, return_type, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl {
+                        name: method_name,
+                        params,
+                        return_type,
+                        ..
+                    } = &stmt.kind
+                    {
                         let method_canon = self.canon(method_name);
                         module_static_methods.push(method_canon.clone());
                         self.function_param_modes
@@ -1578,22 +1754,25 @@ impl Compiler {
             }
         }
 
-        self.pending_classes.insert(module_name.to_string(), PendingClass {
-            parent: None,
-            enclosing_class: self.current_class.clone(),
-            fields: Vec::new(),
-            is_value_type: false,
-            instance_member_names: Vec::new(),
-            instance_pointer_method_names: Vec::new(),
-            instance_field_types: HashMap::new(),
-            static_fields: module_static_fields,
-            static_field_types: module_static_field_types,
-            static_method_names: module_static_methods,
-            instance_method_overloads: HashMap::new(),
-            static_method_overloads: HashMap::new(),
-            nested_types: module_nested_types,
-            statics: Vec::new(),
-        });
+        self.pending_classes.insert(
+            module_name.to_string(),
+            PendingClass {
+                parent: None,
+                enclosing_class: self.current_class.clone(),
+                fields: Vec::new(),
+                is_value_type: false,
+                instance_member_names: Vec::new(),
+                instance_pointer_method_names: Vec::new(),
+                instance_field_types: HashMap::new(),
+                static_fields: module_static_fields,
+                static_field_types: module_static_field_types,
+                static_method_names: module_static_methods,
+                instance_method_overloads: HashMap::new(),
+                static_method_overloads: HashMap::new(),
+                nested_types: module_nested_types,
+                statics: Vec::new(),
+            },
+        );
     }
 
     /// The Linker phase — ECMA-262 §16.2.1.5 Link adapted for Vybe.
@@ -1621,15 +1800,23 @@ impl Compiler {
         let defaults = self.profile.esm_defaults.clone();
         for d in &defaults {
             match d {
-                crate::profile::EsmDefault::Named { local, module: m, name } => {
+                crate::profile::EsmDefault::Named {
+                    local,
+                    module: m,
+                    name,
+                } => {
                     let key = self.canon(local);
-                    self.host_import_bindings.insert(key, (m.clone(), name.clone()));
+                    self.host_import_bindings
+                        .insert(key, (m.clone(), name.clone()));
                 }
                 crate::profile::EsmDefault::Namespace { alias, module: m } => {
                     let key = self.canon(alias);
                     self.host_namespace_aliases.insert(key, m.clone());
                 }
-                crate::profile::EsmDefault::PackageRoot { prefix, module_root } => {
+                crate::profile::EsmDefault::PackageRoot {
+                    prefix,
+                    module_root,
+                } => {
                     // Component Model package names are lowercase by
                     // spec; store + look up in lowercase regardless of
                     // the language's case sensitivity.
@@ -1650,12 +1837,19 @@ impl Compiler {
             // Profile-driven: JS routes `'fs'` → `'node:fs'` via the
             // [bare_module_aliases] table; Python's profile leaves it
             // empty so `import os` keeps Python's stdlib semantics.
-            bare_aliases.get(path).cloned().unwrap_or_else(|| path.to_string())
+            bare_aliases
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| path.to_string())
         };
         for imp in &module.imports {
             match &imp.kind {
-                crate::ast::ImportKind::Simple { path, alias: Some(alias) } => {
-                    self.source_type_aliases.insert(self.canon(alias), path.clone());
+                crate::ast::ImportKind::Simple {
+                    path,
+                    alias: Some(alias),
+                } => {
+                    self.source_type_aliases
+                        .insert(self.canon(alias), path.clone());
                 }
                 crate::ast::ImportKind::Named { path, names, .. } => {
                     let path = normalize_bare(path);
@@ -1663,7 +1857,8 @@ impl Compiler {
                         for n in names {
                             let raw_local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             let key = self.canon(&raw_local);
-                            self.host_import_bindings.insert(key, (path.clone(), n.name.clone()));
+                            self.host_import_bindings
+                                .insert(key, (path.clone(), n.name.clone()));
                         }
                     } else if let Some(adapter_exports) = self.module_exports.get(&path).cloned() {
                         // Adapter module: each name is a pre-resolved
@@ -1684,15 +1879,16 @@ impl Compiler {
                 }
                 crate::ast::ImportKind::Wildcard { path, alias } => {
                     let path = normalize_bare(path);
-                    if !is_host_specifier(&path) { continue; }
+                    if !is_host_specifier(&path) {
+                        continue;
+                    }
                     if let Some(ns) = alias {
                         let key = self.canon(ns);
                         self.host_namespace_aliases.insert(key, path);
                     }
                 }
                 // Default + Simple: no meaning for host modules; skip.
-                crate::ast::ImportKind::Default { .. }
-                | crate::ast::ImportKind::Simple { .. } => {}
+                crate::ast::ImportKind::Default { .. } | crate::ast::ImportKind::Simple { .. } => {}
             }
         }
     }
@@ -1736,7 +1932,10 @@ impl Compiler {
         None
     }
 
-    fn pascal_array_type_hint_metadata(&self, type_hint: &str) -> Option<PascalArrayBoundsMetadata> {
+    fn pascal_array_type_hint_metadata(
+        &self,
+        type_hint: &str,
+    ) -> Option<PascalArrayBoundsMetadata> {
         let trimmed = type_hint.trim().trim_end_matches('?').trim();
         let lowered = trimmed.to_ascii_lowercase();
         if !lowered.starts_with("array") {
@@ -1751,7 +1950,11 @@ impl Compiler {
         };
         let bracket_end = trimmed[bracket_start + 1..].find(']')? + bracket_start + 1;
         let mut dimensions = Vec::new();
-        for dim in trimmed[bracket_start + 1..bracket_end].split(',').map(str::trim).filter(|dim| !dim.is_empty()) {
+        for dim in trimmed[bracket_start + 1..bracket_end]
+            .split(',')
+            .map(str::trim)
+            .filter(|dim| !dim.is_empty())
+        {
             let (lower, upper) = dim.split_once("..")?;
             let (lower, lower_is_char) = Self::parse_pascal_array_bound_token(lower)?;
             let (upper, upper_is_char) = Self::parse_pascal_array_bound_token(upper)?;
@@ -1800,7 +2003,11 @@ impl Compiler {
         }
 
         if let Some((_, remaining_dims)) = dims.split_once(',') {
-            Some(format!("array[{}] of {}", remaining_dims.trim(), element_type))
+            Some(format!(
+                "array[{}] of {}",
+                remaining_dims.trim(),
+                element_type
+            ))
         } else {
             Some(element_type.to_string())
         }
@@ -1836,7 +2043,11 @@ impl Compiler {
                 );
             }
             StmtKind::StructDecl {
-                name, interfaces, members, decorators, ..
+                name,
+                interfaces,
+                members,
+                decorators,
+                ..
             } => {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
@@ -1857,9 +2068,9 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 let metadata = ReflectionTypeMetadata {
                     parents: parents
-                    .iter()
-                    .map(|parent| self.reflection_runtime_type_name(parent, None))
-                    .collect(),
+                        .iter()
+                        .map(|parent| self.reflection_runtime_type_name(parent, None))
+                        .collect(),
                     decorators: decorators.clone(),
                     interfaces: parents
                         .iter()
@@ -1889,7 +2100,8 @@ impl Compiler {
                 );
             }
             StmtKind::NamespaceDecl { name, body } => {
-                let namespace_runtime = self.reflection_runtime_type_name(name, parent_runtime_name);
+                let namespace_runtime =
+                    self.reflection_runtime_type_name(name, parent_runtime_name);
                 for nested in body {
                     self.collect_reflection_stmt(nested, Some(namespace_runtime.as_str()));
                 }
@@ -1914,9 +2126,9 @@ impl Compiler {
     ) {
         let mut metadata = ReflectionTypeMetadata {
             parents: parents
-            .iter()
-            .map(|parent| self.reflection_runtime_type_name(parent, None))
-            .collect(),
+                .iter()
+                .map(|parent| self.reflection_runtime_type_name(parent, None))
+                .collect(),
             interfaces: interfaces
                 .iter()
                 .map(|parent| self.reflection_runtime_type_name(parent, None))
@@ -1940,7 +2152,9 @@ impl Compiler {
                         let mut method_decorators = Vec::new();
                         let mut param_decorators: HashMap<usize, Vec<Expression>> = HashMap::new();
                         for decorator in &modifiers.decorators {
-                            if let Some((index, attr)) = self.unpack_param_decorator_carrier(decorator) {
+                            if let Some((index, attr)) =
+                                self.unpack_param_decorator_carrier(decorator)
+                            {
                                 param_decorators.entry(index).or_default().push(attr);
                             } else {
                                 method_decorators.push(decorator.clone());
@@ -1956,7 +2170,9 @@ impl Compiler {
                                     .enumerate()
                                     .map(|(index, param)| ReflectionParamMetadata {
                                         name: param.name.clone(),
-                                        decorators: param_decorators.remove(&index).unwrap_or_default(),
+                                        decorators: param_decorators
+                                            .remove(&index)
+                                            .unwrap_or_default(),
                                     })
                                     .collect(),
                             },
@@ -1979,9 +2195,7 @@ impl Compiler {
                     );
                 }
                 ClassMember::Field {
-                    name,
-                    modifiers,
-                    ..
+                    name, modifiers, ..
                 } => {
                     metadata.fields.insert(
                         name.clone(),
@@ -1996,10 +2210,12 @@ impl Compiler {
                     metadata.constructors.push(ReflectionConstructorMetadata {
                         param_types: params
                             .iter()
-                            .map(|param| self.reflection_runtime_type_name(
-                                param.type_hint.as_deref().unwrap_or("Object"),
-                                None,
-                            ))
+                            .map(|param| {
+                                self.reflection_runtime_type_name(
+                                    param.type_hint.as_deref().unwrap_or("Object"),
+                                    None,
+                                )
+                            })
                             .collect(),
                     });
                 }
@@ -2022,7 +2238,8 @@ impl Compiler {
             }
         }
 
-        self.reflection_types.insert(runtime_name.to_string(), metadata);
+        self.reflection_types
+            .insert(runtime_name.to_string(), metadata);
         let usage = self.extract_attribute_usage(decorators);
         self.attribute_usage.insert(runtime_name.to_string(), usage);
         for stmt in nested_types {
@@ -2047,10 +2264,12 @@ impl Compiler {
             for arg in args {
                 match arg.name.as_deref() {
                     Some("AllowMultiple") => {
-                        usage.allow_multiple = matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
+                        usage.allow_multiple =
+                            matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
                     }
                     Some("Inherited") => {
-                        usage.inherited = matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
+                        usage.inherited =
+                            matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
                     }
                     _ => {}
                 }
@@ -2060,7 +2279,11 @@ impl Compiler {
         usage
     }
 
-    pub(crate) fn reflection_runtime_type_name(&self, type_name: &str, parent_runtime_name: Option<&str>) -> String {
+    pub(crate) fn reflection_runtime_type_name(
+        &self,
+        type_name: &str,
+        parent_runtime_name: Option<&str>,
+    ) -> String {
         let global_stripped = Self::strip_global_namespace_prefix(type_name);
         let trimmed = global_stripped.trim().trim_end_matches('?').trim();
         let mut without_generics = String::with_capacity(trimmed.len());
@@ -2091,7 +2314,9 @@ impl Compiler {
             "object" | "Object" => "Object",
             other => other,
         };
-        let normalized = normalized.strip_prefix("System.System.").unwrap_or(normalized);
+        let normalized = normalized
+            .strip_prefix("System.System.")
+            .unwrap_or(normalized);
         if let Some(parent) = parent_runtime_name {
             let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
             return format!("{parent}.{leaf}");
@@ -2119,7 +2344,12 @@ impl Compiler {
             let mut matches: Vec<String> = self
                 .reflection_types
                 .keys()
-                .filter(|known| known.rsplit('.').next().is_some_and(|leaf| leaf == raw_name))
+                .filter(|known| {
+                    known
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|leaf| leaf == raw_name)
+                })
                 .cloned()
                 .collect();
             matches.sort();
@@ -2152,7 +2382,10 @@ impl Compiler {
         self.reflection_runtime_type_name(type_name, None)
     }
 
-    pub(crate) fn reflection_type_metadata(&self, type_name: &str) -> Option<&ReflectionTypeMetadata> {
+    pub(crate) fn reflection_type_metadata(
+        &self,
+        type_name: &str,
+    ) -> Option<&ReflectionTypeMetadata> {
         let lookup = self.reflection_type_lookup_name(type_name);
         self.reflection_types.get(&lookup)
     }
@@ -2160,7 +2393,11 @@ impl Compiler {
     pub(crate) fn reflection_type_short_name(&self, type_name: &str) -> String {
         let trimmed = type_name.trim().trim_end_matches('?').trim();
         let without_namespace = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
-        let without_generics = without_namespace.split('<').next().unwrap_or(without_namespace).trim();
+        let without_generics = without_namespace
+            .split('<')
+            .next()
+            .unwrap_or(without_namespace)
+            .trim();
         without_generics.to_string()
     }
 
@@ -2173,12 +2410,18 @@ impl Compiler {
         let short_name = self.canon(&self.reflection_type_short_name(type_name));
         self.enum_value_names.contains_key(&lookup)
             || self.enum_value_names.contains_key(&short_name)
-            || self.enum_value_names.keys().any(|known| known.eq_ignore_ascii_case(&lookup) || known.eq_ignore_ascii_case(&short_name))
+            || self.enum_value_names.keys().any(|known| {
+                known.eq_ignore_ascii_case(&lookup) || known.eq_ignore_ascii_case(&short_name)
+            })
     }
 
     pub(crate) fn reflection_is_value_type(&self, type_name: &str) -> bool {
         let lookup = self.reflection_type_lookup_name(type_name);
-        if self.reflection_types.get(&lookup).is_some_and(|meta| meta.is_value_type) {
+        if self
+            .reflection_types
+            .get(&lookup)
+            .is_some_and(|meta| meta.is_value_type)
+        {
             return true;
         }
         matches!(
@@ -2207,14 +2450,21 @@ impl Compiler {
             .and_then(|meta| meta.parents.first().cloned())
     }
 
-    pub(crate) fn reflection_nested_type_name(&self, type_name: &str, nested_name: &str) -> Option<String> {
+    pub(crate) fn reflection_nested_type_name(
+        &self,
+        type_name: &str,
+        nested_name: &str,
+    ) -> Option<String> {
         let parent = self.reflection_type_lookup_name(type_name);
         let desired = nested_name.trim();
-        self.reflection_types.keys().find(|candidate| {
-            candidate
-                .strip_prefix(&(parent.clone() + "."))
-                .is_some_and(|leaf| leaf.eq_ignore_ascii_case(desired))
-        }).cloned()
+        self.reflection_types
+            .keys()
+            .find(|candidate| {
+                candidate
+                    .strip_prefix(&(parent.clone() + "."))
+                    .is_some_and(|leaf| leaf.eq_ignore_ascii_case(desired))
+            })
+            .cloned()
     }
 
     pub(crate) fn reflection_generic_argument_types(&self, type_name: &str) -> Vec<String> {
@@ -2266,7 +2516,11 @@ impl Compiler {
             .unwrap_or_default()
     }
 
-    pub(crate) fn reflection_is_assignable_from(&self, target_type: &str, candidate_type: &str) -> bool {
+    pub(crate) fn reflection_is_assignable_from(
+        &self,
+        target_type: &str,
+        candidate_type: &str,
+    ) -> bool {
         let target = self.reflection_type_lookup_name(target_type);
         let mut pending = vec![self.reflection_type_lookup_name(candidate_type)];
         let mut visited = HashSet::new();
@@ -2288,12 +2542,14 @@ impl Compiler {
     }
 
     fn module_imports_namespace(&self, namespace: &str) -> bool {
-        self.current_module_imports.iter().any(|import| match &import.kind {
-            ImportKind::Simple { path, .. }
-            | ImportKind::Named { path, .. }
-            | ImportKind::Wildcard { path, .. }
-            | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case(namespace),
-        })
+        self.current_module_imports
+            .iter()
+            .any(|import| match &import.kind {
+                ImportKind::Simple { path, .. }
+                | ImportKind::Named { path, .. }
+                | ImportKind::Wildcard { path, .. }
+                | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case(namespace),
+            })
     }
 
     fn should_infer_winforms_form(&self, name: &str, parents: &[String]) -> bool {
@@ -2313,7 +2569,11 @@ impl Compiler {
         name.to_ascii_lowercase().contains("form")
     }
 
-    pub(crate) fn reflection_constructor_for_types(&self, type_name: &str, param_types: &[String]) -> Option<ReflectionBinding> {
+    pub(crate) fn reflection_constructor_for_types(
+        &self,
+        type_name: &str,
+        param_types: &[String],
+    ) -> Option<ReflectionBinding> {
         let lookup = self.reflection_type_lookup_name(type_name);
         let normalized_params: Vec<String> = param_types
             .iter()
@@ -2350,7 +2610,11 @@ impl Compiler {
         false
     }
 
-    fn js_private_member_storage_name_for_class(&self, owner_class: &str, field: &str) -> Option<String> {
+    fn js_private_member_storage_name_for_class(
+        &self,
+        owner_class: &str,
+        field: &str,
+    ) -> Option<String> {
         if !self.is_js_profile() || !field.starts_with('#') {
             return None;
         }
@@ -2387,13 +2651,17 @@ impl Compiler {
         let parts = self.flatten_member_chain(receiver);
         if !parts.is_empty() {
             let full_canon = self.canon(&parts.join("."));
-            if self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon) {
+            if self.defined_classes.contains(&full_canon)
+                || self.pending_classes.contains_key(&full_canon)
+            {
                 return self.js_member_storage_name_for_class(&full_canon, field);
             }
 
             if let Some(short_name) = parts.last() {
                 let short_canon = self.canon(short_name);
-                if self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon) {
+                if self.defined_classes.contains(&short_canon)
+                    || self.pending_classes.contains_key(&short_canon)
+                {
                     return self.js_member_storage_name_for_class(&short_canon, field);
                 }
             }
@@ -2439,7 +2707,6 @@ impl Compiler {
         true
     }
 
-
     /// Emit a `for v in gen():` loop that drives the generator via
     ///   block $exit
     ///     loop $loop
@@ -2476,20 +2743,24 @@ impl Compiler {
         let done_slot = self.define_local("__cit_done");
         let did_break_slot = self.define_local("__cit_did_break");
         self.emit(Op::FALSE);
-        self.emit_u16(Op::LOCAL_SET, did_break_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, did_break_slot);
+        self.emit(Op::DROP);
 
         // Get iterator method
         self.emit_u16(Op::LOCAL_GET, iter_slot);
         self.emit_u16(Op::STRUCT_GET, iterator_key);
         let iter_fn_slot = self.define_local("__cit_iter_fn");
-        self.emit_u16(Op::LOCAL_SET, iter_fn_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
+        self.emit(Op::DROP);
 
         // Call iterator() with __js_this = iter_slot
         self.emit_u16(Op::LOCAL_GET, iter_slot);
-        self.emit_u16(Op::GLOBAL_SET, js_this); self.emit(Op::DROP);
+        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
         self.emit_u8(Op::CALL_REF, 0);
-        self.emit_u16(Op::LOCAL_SET, it_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, it_slot);
+        self.emit(Op::DROP);
 
         // Emit BLOCK + LOOP
         let block_patch = self.chunk().emit_block(line);
@@ -2499,34 +2770,42 @@ impl Compiler {
         // next_method = it.next
         self.emit_u16(Op::LOCAL_GET, it_slot);
         self.emit_u16(Op::STRUCT_GET, next_key_c);
-        self.emit_u16(Op::LOCAL_SET, next_method_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, next_method_slot);
+        self.emit(Op::DROP);
 
         // Call next() with __js_this = it
         self.emit_u16(Op::LOCAL_GET, it_slot);
-        self.emit_u16(Op::GLOBAL_SET, js_this); self.emit(Op::DROP);
+        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, next_method_slot);
         self.emit_u8(Op::CALL_REF, 0);
-        self.emit_u16(Op::LOCAL_SET, step_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, step_slot);
+        self.emit(Op::DROP);
 
         // step.done check
         self.emit_u16(Op::LOCAL_GET, step_slot);
         self.emit_u16(Op::STRUCT_GET, done_key_c);
-        self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, done_slot);
+        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, done_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line); // done → exit block
 
         // var = step.value
         self.emit_u16(Op::LOCAL_GET, step_slot);
         self.emit_u16(Op::STRUCT_GET, value_key_c);
         let var_slot = self.define_local(var);
-        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, var_slot);
+        self.emit(Op::DROP);
 
         // Loop body in $body block for break/continue targeting
         let body_block = self.chunk().emit_block(line);
         self.label_depth += 1;
         let break_depth = self.label_depth - 2; // $exit
-        let continue_depth = self.label_depth;   // $body
+        let continue_depth = self.label_depth; // $body
         self.loops.push(LoopCtx {
             label: self.pending_label.take(),
             break_label_depth: break_depth,
@@ -2534,15 +2813,20 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             is_continuable: true,
         });
-        for s in body { self.compile_stmt(s)?; }
+        for s in body {
+            self.compile_stmt(s)?;
+        }
         self.loops.pop();
-        self.chunk().emit_end(line); self.chunk().patch_block(body_block);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(body_block);
         self.label_depth -= 1;
 
         // continue → loop
         self.chunk().emit_br(0, line);
-        self.chunk().emit_end(line); self.chunk().patch_loop(loop_patch);
-        self.chunk().emit_end(line); self.chunk().patch_block(block_patch);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(loop_patch);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(block_patch);
         self.label_depth -= 2;
 
         if let Some(else_stmts) = else_body {
@@ -2550,10 +2834,16 @@ impl Compiler {
             let skip = self.chunk().emit_block(line);
             self.label_depth += 1;
             self.emit_u16(Op::LOCAL_GET, did_break_slot);
-            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            };
             self.chunk().emit_br_if(0, line);
-            for s in else_stmts { self.compile_stmt(s)?; }
-            self.chunk().emit_end(line); self.chunk().patch_block(skip);
+            for s in else_stmts {
+                self.compile_stmt(s)?;
+            }
+            self.chunk().emit_end(line);
+            self.chunk().patch_block(skip);
             self.label_depth -= 1;
         }
 
@@ -2576,7 +2866,8 @@ impl Compiler {
         };
         self.compile_call(callee, args)?;
         let cont_slot = self.define_local("__gen_cont");
-        self.emit_u16(Op::LOCAL_SET, cont_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, cont_slot);
+        self.emit(Op::DROP);
 
         self.compile_generator_for_in_cont(var, key, cont_slot, body, else_body)
     }
@@ -2589,11 +2880,11 @@ impl Compiler {
         body: &[Statement],
         else_body: Option<&[Statement]>,
     ) -> Result<(), String> {
-
-        let key_index_slot = self.maybe_define_php_generator_key_index_slot(key);
-    let did_break_slot = self.define_local("__gen_for_did_break");
-    self.emit(Op::FALSE);
-    self.emit_u16(Op::LOCAL_SET, did_break_slot); self.emit(Op::DROP);
+        let key_index_slot = self.maybe_define_buffered_generator_key_index_slot(key);
+        let did_break_slot = self.define_local("__gen_for_did_break");
+        self.emit(Op::FALSE);
+        self.emit_u16(Op::LOCAL_SET, did_break_slot);
+        self.emit(Op::DROP);
 
         let line = self.line;
         let block_patch = self.chunk().emit_block(line);
@@ -2602,45 +2893,60 @@ impl Compiler {
 
         // Advance the generator. GEN_NEXT pops cont and pushes (value, has_more).
         self.emit_u16(Op::LOCAL_GET, cont_slot);
-        self.emit(Op::GEN_NEXT);
+        let line = self.line;
+        crate::emitter::generators::emit_next(self.chunk(), line);
         let has_more_slot = self.define_local("__gen_has_more");
-        self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, has_more_slot);
+        self.emit(Op::DROP);
         let value_slot = self.define_local("__gen_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
 
-        if self.is_php_profile() {
-            self.emit_php_generator_foreach_state(cont_slot, has_more_slot, value_slot);
+        if self.profile.buffered_iterator_methods {
+            self.emit_buffered_generator_foreach_state(cont_slot, has_more_slot, value_slot);
         } else {
             self.emit_u16(Op::LOCAL_GET, has_more_slot);
-            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            };
             // br_if_label 1 → jump to $exit when has_more was 0.
             self.chunk().emit_br_if(1, line);
         }
 
         if let Some(key_name) = key {
             let key_slot = self.define_local(key_name);
-            if self.is_php_profile() {
-                self.emit_php_generator_key_binding(key_slot, value_slot, key_index_slot);
+            if self.profile.buffered_iterator_methods {
+                self.emit_buffered_generator_key_binding(key_slot, value_slot, key_index_slot);
             } else {
                 self.emit(Op::NULL);
-                self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, key_slot);
+                self.emit(Op::DROP);
             }
         }
 
         let var_slot = self.define_local(var);
-        if self.is_php_profile() {
-            self.emit_php_generator_value_binding(var_slot, value_slot);
+        if self.profile.buffered_iterator_methods {
+            self.emit_buffered_generator_value_binding(var_slot, value_slot);
         } else {
             self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_SET, var_slot);
+            self.emit(Op::DROP);
         }
 
         if let Some(key_index_slot) = key_index_slot {
             self.emit_u16(Op::LOCAL_GET, key_index_slot);
             self.emit_const(Value::F64(1.0));
-            { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-            self.emit_u16(Op::LOCAL_SET, key_index_slot); self.emit(Op::DROP);
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            };
+            self.emit_u16(Op::LOCAL_SET, key_index_slot);
+            self.emit(Op::DROP);
         }
 
         // Compile loop body inside a `$body` block so `continue` can
@@ -2656,12 +2962,13 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             is_continuable: true,
         });
-        for s in body { self.compile_stmt(s)?; }
+        for s in body {
+            self.compile_stmt(s)?;
+        }
         self.loops.pop();
         self.chunk().emit_end(line);
         self.chunk().patch_block(body_block);
         self.label_depth -= 1;
-
 
         // Continue the loop.
         self.chunk().emit_br(0, line);
@@ -2674,21 +2981,31 @@ impl Compiler {
         let skip_cleanup = self.chunk().emit_block(line);
         self.label_depth += 1;
         self.emit_u16(Op::LOCAL_GET, did_break_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(0, line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         let is_done_idx = self.import("ecma:value", "isGeneratorDone");
         self.emit_host_call(is_done_idx, 1);
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        }
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit(Op::UNDEFINED);
         self.emit_generator_control_packet_from_stack("return");
-        self.emit_u16(Op::RESUME, 0);
+        let line = self.line;
+        crate::emitter::generators::emit_resume(self.chunk(), line);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit(Op::TRUE);
@@ -2705,9 +3022,14 @@ impl Compiler {
             let skip_else = self.chunk().emit_block(line);
             self.label_depth += 1;
             self.emit_u16(Op::LOCAL_GET, did_break_slot);
-            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            };
             self.chunk().emit_br_if(0, line);
-            for s in else_stmts { self.compile_stmt(s)?; }
+            for s in else_stmts {
+                self.compile_stmt(s)?;
+            }
             self.chunk().emit_end(line);
             self.chunk().patch_block(skip_else);
             self.label_depth -= 1;
@@ -2764,7 +3086,9 @@ impl Compiler {
         let mut first = 0u16;
         for i in 0..n {
             let s = self.define_local("__mv_pack");
-            if i == 0 { first = s; }
+            if i == 0 {
+                first = s;
+            }
         }
         common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, first, line);
     }
@@ -2776,10 +3100,14 @@ impl Compiler {
     ///     tagged multi-return with matching arity N
     /// For any other shape we return `None` and fall through to the
     /// existing heap-tuple destructuring path.
-    fn detect_multi_value_receive(&self, targets: &[Expression], value: &Expression)
-        -> Option<(u8, Vec<String>)>
-    {
-        if targets.len() != 1 { return None; }
+    fn detect_multi_value_receive(
+        &self,
+        targets: &[Expression],
+        value: &Expression,
+    ) -> Option<(u8, Vec<String>)> {
+        if targets.len() != 1 {
+            return None;
+        }
         let idents = match &targets[0].kind {
             ExprKind::Destructure(DestructurePattern::Array(pats)) => {
                 let mut names = Vec::with_capacity(pats.len());
@@ -2802,7 +3130,9 @@ impl Compiler {
             }
             _ => return None,
         };
-        if multi_n as usize != idents.len() { return None; }
+        if multi_n as usize != idents.len() {
+            return None;
+        }
         Some((multi_n, idents))
     }
 
@@ -2826,8 +3156,12 @@ impl Compiler {
     // Helpers
     // ════════════════════════════════════════════════════════════════════════
 
-    fn scope(&self) -> &Scope { self.scopes.last().unwrap() }
-    fn scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
+    fn scope(&self) -> &Scope {
+        self.scopes.last().unwrap()
+    }
+    fn scope_mut(&mut self) -> &mut Scope {
+        self.scopes.last_mut().unwrap()
+    }
 
     fn pointer_binding_key(&self, name: &str) -> String {
         if self.case_sensitive {
@@ -2846,7 +3180,10 @@ impl Compiler {
 
     fn mark_pointer_cell_binding(&mut self, name: &str) {
         let key = self.pointer_binding_key(name);
-        self.pointer_cell_bindings.entry(self.current).or_default().insert(key);
+        self.pointer_cell_bindings
+            .entry(self.current)
+            .or_default()
+            .insert(key);
     }
 
     fn resolve_named_local_slot(&self, name: &str) -> Option<u16> {
@@ -2862,7 +3199,12 @@ impl Compiler {
     fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
         let slot = self.resolve_named_local_slot(name)?;
         if !self.binding_uses_pointer_cell(name) {
-            common::references::emit_cell_new_from_local(&mut self.chunks, self.current, slot, self.line);
+            common::references::emit_cell_new_from_local(
+                &mut self.chunks,
+                self.current,
+                slot,
+                self.line,
+            );
             self.emit_u16(Op::LOCAL_SET, slot);
             self.emit(Op::DROP);
             self.mark_pointer_cell_binding(name);
@@ -2882,7 +3224,12 @@ impl Compiler {
             self.emit_u16(Op::GLOBAL_GET, idx);
             self.emit_u16(Op::LOCAL_SET, value_slot);
             self.emit(Op::DROP);
-            common::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
+            common::references::emit_cell_new(
+                &mut self.chunks,
+                self.current,
+                value_slot,
+                self.line,
+            );
             self.emit_u16(Op::GLOBAL_SET, idx);
             self.emit(Op::DROP);
             self.mark_pointer_cell_binding(name);
@@ -2913,7 +3260,10 @@ impl Compiler {
         let kind_key = self.str_const("__ref_kind");
         self.emit_u16(Op::STRUCT_GET, kind_key);
         self.emit_const(Value::String(Arc::from("cell")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        };
         let line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
@@ -2947,7 +3297,10 @@ impl Compiler {
                     return Ok(());
                 }
             }
-            ExprKind::Unary { op: UnaryOp::Deref, expr } => {
+            ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr,
+            } => {
                 self.compile_expr(expr)?;
                 return Ok(());
             }
@@ -3000,22 +3353,37 @@ impl Compiler {
         let arr_slot = self.define_local("__neg_idx_arr");
         let idx_slot = self.define_local("__neg_idx_i");
         // Stash [coll, idx] into locals (LOCAL_SET peeks; DROP pops).
-        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, arr_slot);
+        self.emit(Op::DROP);
         // if idx < 0: idx = arr.length + idx
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         self.emit_const(Value::I32(0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         let block_p = self.chunk().emit_block(line);
         self.label_depth += 1;
         self.chunk().emit_br_if(0, line); // skip wrap if !(idx < 0)
         self.emit_u16(Op::LOCAL_GET, arr_slot);
         common::collections::emit_array_length(&mut self.chunks[self.current], line);
         self.emit_u16(Op::LOCAL_GET, idx_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
         self.chunk().emit_end(line);
         self.chunk().patch_block(block_p);
         self.label_depth -= 1;
@@ -3025,16 +3393,13 @@ impl Compiler {
     }
 
     /// Emit RETURN, draining any function-local BLOCK/LOOP labels first.
-    /// Without this, an early `return` inside an `if` (or any nested
-    /// block) leaves stale labels on the VM's global label_stack —
-    /// the caller's later `br_label N` then targets the callee's
-    /// orphaned BLOCK and jumps into garbage bytecode.
+    ///
+    /// WASM `return` exits the function directly; it does not emit
+    /// synthetic `end` instructions for surrounding blocks. The VM
+    /// records each call frame's label-stack base and truncates labels
+    /// when the frame returns, which keeps bytecode structurally valid
+    /// even when a return appears inside an `if`/`else`, loop, or block.
     pub(crate) fn emit_return(&mut self) {
-        let line = self.line;
-        let drain = self.label_depth.saturating_sub(self.function_label_base);
-        for _ in 0..drain {
-            self.chunk().emit_end(line);
-        }
         self.emit(Op::RETURN);
     }
 
@@ -3140,7 +3505,11 @@ impl Compiler {
     /// Same as `define_local` but with a type hint — sugar around
     /// `Scope::define_typed`. Keeps the sync invariant.
     pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
-        let slot = self.scopes.last_mut().unwrap().define_typed(name, type_hint);
+        let slot = self
+            .scopes
+            .last_mut()
+            .unwrap()
+            .define_typed(name, type_hint);
         let high = self.scopes.last().unwrap().next_slot;
         let cur = self.current;
         if high > self.chunks[cur].local_count {
@@ -3148,22 +3517,37 @@ impl Compiler {
         }
         slot
     }
-    fn chunk(&mut self) -> &mut Chunk { &mut self.chunks[self.current] }
-
-    fn reserve_local_slot(&mut self, slot: u16) {
-        self.chunks[self.current].local_count = self.chunks[self.current]
-            .local_count
-            .max(slot + 1);
+    fn chunk(&mut self) -> &mut Chunk {
+        &mut self.chunks[self.current]
     }
 
-    fn emit(&mut self, op: Op) { let l = self.line; self.chunks[self.current].emit_op(op, l); }
-    fn emit_u16(&mut self, op: Op, v: u16) { let l = self.line; self.chunks[self.current].emit_op_u16(op, v, l); }
-    fn emit_u8(&mut self, op: Op, v: u8) { let l = self.line; self.chunks[self.current].emit_op_u8(op, v, l); }
-    fn emit_const(&mut self, val: Value) { let idx = self.chunks[self.current].add_constant(val); self.emit_u16(Op::CONST, idx); }
+    fn reserve_local_slot(&mut self, slot: u16) {
+        self.chunks[self.current].local_count = self.chunks[self.current].local_count.max(slot + 1);
+    }
+
+    fn emit(&mut self, op: Op) {
+        let l = self.line;
+        self.chunks[self.current].emit_op(op, l);
+    }
+    fn emit_u16(&mut self, op: Op, v: u16) {
+        let l = self.line;
+        self.chunks[self.current].emit_op_u16(op, v, l);
+    }
+    fn emit_u8(&mut self, op: Op, v: u8) {
+        let l = self.line;
+        self.chunks[self.current].emit_op_u8(op, v, l);
+    }
+    fn emit_const(&mut self, val: Value) {
+        let idx = self.chunks[self.current].add_constant(val);
+        self.emit_u16(Op::CONST, idx);
+    }
     /// Compute WASM `br` depth for `break`.
     fn break_depth(&self, label: Option<&str>) -> Option<u8> {
         let ctx = if let Some(lbl) = label {
-            self.loops.iter().rev().find(|c| c.label.as_deref() == Some(lbl))?
+            self.loops
+                .iter()
+                .rev()
+                .find(|c| c.label.as_deref() == Some(lbl))?
         } else {
             self.loops.last()?
         };
@@ -3173,7 +3557,10 @@ impl Compiler {
     /// Compute WASM `br` depth for `continue`.
     fn continue_depth(&self, label: Option<&str>) -> Option<u8> {
         let ctx = if let Some(lbl) = label {
-            self.loops.iter().rev().find(|c| c.label.as_deref() == Some(lbl))?
+            self.loops
+                .iter()
+                .rev()
+                .find(|c| c.label.as_deref() == Some(lbl))?
         } else {
             // Skip switch/labeled-block contexts — `continue` targets the
             // nearest actual loop (ECMA-262 §14.8.1).
@@ -3183,12 +3570,20 @@ impl Compiler {
     }
 
     #[allow(dead_code)]
-    fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
-    fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }
+    fn current_offset(&self) -> usize {
+        self.chunks[self.current].current_offset()
+    }
+    fn str_const(&mut self, s: &str) -> u16 {
+        self.chunks[self.current].add_constant(Value::String(Arc::from(s)))
+    }
     #[allow(dead_code)]
-    fn shared_str_const(&mut self, s: &str) -> u16 { self.chunks[0].add_constant(Value::String(Arc::from(s))) }
+    fn shared_str_const(&mut self, s: &str) -> u16 {
+        self.chunks[0].add_constant(Value::String(Arc::from(s)))
+    }
 
-    fn import(&mut self, module: &str, name: &str) -> u16 { self.chunks[self.current].add_import(module, name) }
+    fn import(&mut self, module: &str, name: &str) -> u16 {
+        self.chunks[self.current].add_import(module, name)
+    }
     fn emit_host_call(&mut self, idx: u16, argc: u8) {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(Op::CALL_IMPORT, idx, l);
@@ -3212,9 +3607,13 @@ impl Compiler {
     /// First join is `:` (package → interface), further joins use `/`,
     /// last segment is the function name. Everything is lowercased.
     fn resolve_component_model_call(&self, name: &str) -> Option<(String, String)> {
-        if !name.contains('\\') { return None; }
+        if !name.contains('\\') {
+            return None;
+        }
         let parts: Vec<&str> = name.split('\\').collect();
-        if parts.len() < 2 { return None; }
+        if parts.len() < 2 {
+            return None;
+        }
 
         // Consult the Linker's `host_package_roots` map instead of
         // `profile.namespaces.host_packages`. Populated at link time
@@ -3223,11 +3622,15 @@ impl Compiler {
         // Model package names are lowercase by spec — match
         // case-insensitively regardless of the language's case rules.
         let first_key = parts[0].to_ascii_lowercase();
-        if !self.host_package_roots.contains_key(&first_key) { return None; }
+        if !self.host_package_roots.contains_key(&first_key) {
+            return None;
+        }
 
         let lower: Vec<String> = parts.iter().map(|s| s.to_ascii_lowercase()).collect();
         let (func, path) = lower.split_last()?;
-        if path.is_empty() { return None; }
+        if path.is_empty() {
+            return None;
+        }
 
         let module = if path.len() == 1 {
             path[0].clone()
@@ -3250,8 +3653,12 @@ impl Compiler {
     // (`dotnet_register.rs`) but operates on Compiler internals. These
     // helpers expose just the bits that registration needs without
     // making the underlying fields `pub`.
-    pub(crate) fn chunks_mut(&mut self) -> &mut Vec<Chunk> { &mut self.chunks }
-    pub(crate) fn current_line(&self) -> u32 { self.line }
+    pub(crate) fn chunks_mut(&mut self) -> &mut Vec<Chunk> {
+        &mut self.chunks
+    }
+    pub(crate) fn current_line(&self) -> u32 {
+        self.line
+    }
     pub(crate) fn note_defined_global(&mut self, name: &str) {
         self.defined_globals.insert(name.to_string());
     }
@@ -3259,22 +3666,25 @@ impl Compiler {
         self.defined_classes.insert(name.to_string());
     }
     pub(crate) fn note_pending_class(&mut self, name: &str, parent: Option<String>) {
-        self.pending_classes.insert(name.to_string(), PendingClass {
-            parent,
-            enclosing_class: self.current_class.clone(),
-            fields: Vec::new(),
-            is_value_type: false,
-            instance_member_names: Vec::new(),
-            instance_pointer_method_names: Vec::new(),
-            instance_field_types: HashMap::new(),
-            static_fields: Vec::new(),
-            static_field_types: HashMap::new(),
-            static_method_names: Vec::new(),
-            instance_method_overloads: HashMap::new(),
-            static_method_overloads: HashMap::new(),
-            nested_types: Vec::new(),
-            statics: Vec::new(),
-        });
+        self.pending_classes.insert(
+            name.to_string(),
+            PendingClass {
+                parent,
+                enclosing_class: self.current_class.clone(),
+                fields: Vec::new(),
+                is_value_type: false,
+                instance_member_names: Vec::new(),
+                instance_pointer_method_names: Vec::new(),
+                instance_field_types: HashMap::new(),
+                static_fields: Vec::new(),
+                static_field_types: HashMap::new(),
+                static_method_names: Vec::new(),
+                instance_method_overloads: HashMap::new(),
+                static_method_overloads: HashMap::new(),
+                nested_types: Vec::new(),
+                statics: Vec::new(),
+            },
+        );
     }
 
     /// Push the canonical event-registry key for a control expression.
@@ -3284,7 +3694,11 @@ impl Compiler {
     /// the handler is wired must NOT break dispatch.
     ///
     pub(crate) fn canon(&self, name: &str) -> String {
-        if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
+        if self.case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        }
     }
 
     fn normalize_type_hint(type_hint: &str) -> String {
@@ -3294,13 +3708,14 @@ impl Compiler {
     pub(super) fn emit_default_value_for_type_hint(&mut self, type_hint: Option<&str>) {
         match type_hint.map(Self::normalize_type_hint).as_deref() {
             Some("integer") | Some("int") | Some("int32") | Some("longint") | Some("real")
-            | Some("double") | Some("float") | Some("single") | Some("decimal")
-            | Some("long") | Some("int64") | Some("short") | Some("int16")
-            | Some("uint") | Some("uint32") | Some("ulong") | Some("uint64")
-            | Some("ushort") | Some("uint16") | Some("byte") | Some("sbyte")
-            | Some("char") => self.emit(Op::F64_CONST_0),
+            | Some("double") | Some("float") | Some("single") | Some("decimal") | Some("long")
+            | Some("int64") | Some("short") | Some("int16") | Some("uint") | Some("uint32")
+            | Some("ulong") | Some("uint64") | Some("ushort") | Some("uint16") | Some("byte")
+            | Some("sbyte") | Some("char") => self.emit(Op::F64_CONST_0),
             Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-            Some(type_hint) if Self::is_string_type_hint(type_hint) => self.emit_const(Value::String(Arc::from(""))),
+            Some(type_hint) if Self::is_string_type_hint(type_hint) => {
+                self.emit_const(Value::String(Arc::from("")))
+            }
             _ => self.emit(Op::NULL),
         }
     }
@@ -3318,11 +3733,27 @@ impl Compiler {
     fn is_numeric_type_hint(type_hint: &str) -> bool {
         matches!(
             Self::normalize_type_hint(type_hint).as_str(),
-            "integer" | "int" | "int32" | "longint" | "real"
-                | "double" | "float" | "single" | "decimal"
-                | "long" | "int64" | "short" | "int16"
-                | "uint" | "uint32" | "ulong" | "uint64"
-                | "ushort" | "uint16" | "byte" | "sbyte"
+            "integer"
+                | "int"
+                | "int32"
+                | "longint"
+                | "real"
+                | "double"
+                | "float"
+                | "single"
+                | "decimal"
+                | "long"
+                | "int64"
+                | "short"
+                | "int16"
+                | "uint"
+                | "uint32"
+                | "ulong"
+                | "uint64"
+                | "ushort"
+                | "uint16"
+                | "byte"
+                | "sbyte"
         )
     }
 
@@ -3421,7 +3852,10 @@ impl Compiler {
     fn fortran_allocate_ctor_name(&self, target: &Expression) -> Option<String> {
         let type_hint = self.infer_expr_type_hint(target)?;
         let normalized = Self::normalize_type_hint(&type_hint);
-        let element_hint = normalized.strip_suffix("()").unwrap_or(normalized.as_str()).trim();
+        let element_hint = normalized
+            .strip_suffix("()")
+            .unwrap_or(normalized.as_str())
+            .trim();
         let ctor_name = Self::fortran_out_param_ctor_name(element_hint)?;
         self.can_instantiate_fortran_ctor_name(&ctor_name)
             .then_some(ctor_name)
@@ -3449,8 +3883,14 @@ impl Compiler {
         let (loop_patch, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         self.emit_u16(Op::LOCAL_GET, dim_slots[0]);
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        };
         self.emit(Op::I32_EQZ);
         self.chunk().emit_br_if(1, line);
 
@@ -3529,9 +3969,8 @@ impl Compiler {
         let line = self.line;
         self.chunk().emit_if(line);
         match normalized.as_str() {
-            "integer" | "int" | "int32" | "longint" | "long" | "int64"
-            | "short" | "int16" | "uint" | "uint32" | "ulong" | "uint64"
-            | "ushort" | "uint16" | "byte" | "sbyte" => {
+            "integer" | "int" | "int32" | "longint" | "long" | "int64" | "short" | "int16"
+            | "uint" | "uint32" | "ulong" | "uint64" | "ushort" | "uint16" | "byte" | "sbyte" => {
                 let number_idx = self.import("ecma:number", "Number");
                 self.emit_host_call(number_idx, 1);
                 common::convert::emit_to_int(self.chunk(), line);
@@ -3547,11 +3986,26 @@ impl Compiler {
 
     fn emit_file_key_compare(&mut self, relation: FileKeyRelation) {
         match relation {
-            FileKeyRelation::Equal => { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); },
-            FileKeyRelation::Greater => { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); },
-            FileKeyRelation::GreaterOrEqual => { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); },
-            FileKeyRelation::Less => { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); },
-            FileKeyRelation::LessOrEqual => { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); },
+            FileKeyRelation::Equal => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            }
+            FileKeyRelation::Greater => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+            }
+            FileKeyRelation::GreaterOrEqual => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+            }
+            FileKeyRelation::Less => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+            }
+            FileKeyRelation::LessOrEqual => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+            }
         }
     }
 
@@ -3622,8 +4076,14 @@ impl Compiler {
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, len_slot);
         self.emit(Op::I32_CONST_0);
-        { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(0, line);
         self.emit_u16(Op::LOCAL_GET, rows_slot);
         self.emit_u16(Op::LOCAL_GET, len_slot);
@@ -3631,8 +4091,14 @@ impl Compiler {
         self.emit(Op::I32_SUB);
         common::collections::emit_get(&mut self.chunks, self.current, line);
         self.emit_const(Value::String(Arc::from("")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(0, line);
         self.emit_u16(Op::LOCAL_GET, rows_slot);
         common::collections::emit_pop(&mut self.chunks, self.current, line);
@@ -3692,22 +4158,31 @@ impl Compiler {
         let line = self.line;
         let value_slot = self.define_local("__vb_fixed_string_value");
         let to_string = self.import("ecma:string", "String");
-        let pad_idx = self.import("ecma:string", if align_right { "padStart" } else { "padEnd" });
+        let pad_idx = self.import(
+            "ecma:string",
+            if align_right { "padStart" } else { "padEnd" },
+        );
 
         self.emit_host_call(to_string, 1);
         self.emit_u16(Op::LOCAL_SET, value_slot);
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
-    common::strings::emit_length(self.chunk(), line);
+        common::strings::emit_length(self.chunk(), line);
         self.emit_const(Value::I32(target_len));
-        { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        }
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit(Op::I32_CONST_0);
         self.emit_const(Value::I32(target_len));
-    common::strings::emit_substring(self.chunk(), line);
+        common::strings::emit_substring(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, value_slot);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
@@ -3765,7 +4240,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, target_slot);
         self.emit(Op::DROP);
         self.compile_expr(start)?;
-    common::convert::emit_to_int(self.chunk(), line);
+        common::convert::emit_to_int(self.chunk(), line);
         self.emit_const(Value::I32(1));
         self.emit(Op::I32_SUB);
         self.emit_u16(Op::LOCAL_SET, start_slot);
@@ -3773,8 +4248,14 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, start_slot);
         self.emit(Op::I32_CONST_0);
-        { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        }
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
         self.emit(Op::I32_CONST_0);
@@ -3788,14 +4269,20 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.compile_expr(count)?;
-    common::convert::emit_to_int(self.chunk(), line);
+        common::convert::emit_to_int(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, count_slot);
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, count_slot);
         self.emit_const(Value::I32(0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        }
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, count_slot);
         self.emit_u16(Op::LOCAL_SET, replace_slot);
@@ -3816,7 +4303,10 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, prefix_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.emit_u16(Op::LOCAL_GET, target_slot);
         self.emit_u16(Op::LOCAL_GET, start_slot);
         self.emit_u16(Op::LOCAL_GET, replace_slot);
@@ -3824,7 +4314,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, target_slot);
         common::strings::emit_length(self.chunk(), line);
         common::strings::emit_substring(self.chunk(), line);
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
 
         if let ExprKind::Ident(name) = &target.kind {
             if let Some(type_hint) = self.lookup_var_type_hint(name) {
@@ -3931,7 +4424,11 @@ impl Compiler {
         }
     }
 
-    fn compile_collection_key(&mut self, owner: &Expression, key: &Expression) -> Result<(), String> {
+    fn compile_collection_key(
+        &mut self,
+        owner: &Expression,
+        key: &Expression,
+    ) -> Result<(), String> {
         self.compile_array_index_operand_for_owner(owner, key)?;
         if self.expr_uses_case_insensitive_string_keys(owner) {
             let line = self.line;
@@ -3940,170 +4437,6 @@ impl Compiler {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn emit_php_array_assoc_key_tracking(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
-        let missing_slot = self.emit_php_array_assoc_key_is_missing(obj_slot, key_slot, line);
-        self.emit_php_array_assoc_key_tracking_when_missing(obj_slot, key_slot, missing_slot, line);
-    }
-
-    fn emit_php_array_assoc_key_is_missing(&mut self, obj_slot: u16, key_slot: u16, line: u32) -> u16 {
-        let missing_tmp = self.define_local("__php_assoc_key_missing");
-        let value_tmp = self.define_local("__php_assoc_key_probe");
-
-        self.emit_const(Value::Bool(false));
-        self.emit_u16(Op::LOCAL_SET, missing_tmp);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        self.emit(Op::REF_IS_STRING);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        common::collections::emit_get(&mut self.chunks, self.current, line);
-        self.emit_u16(Op::LOCAL_SET, value_tmp);
-        self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_GET, value_tmp);
-        self.emit(Op::REF_IS_NULL);
-        self.chunk().emit_if_value(line);
-        self.emit_const(Value::Bool(true));
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, value_tmp);
-        self.emit(Op::REF_IS_UNDEFINED);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_end(line);
-        self.emit_u16(Op::LOCAL_SET, missing_tmp);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_end(line);
-        missing_tmp
-    }
-
-    fn emit_php_array_assoc_key_tracking_when_missing(
-        &mut self,
-        obj_slot: u16,
-        key_slot: u16,
-        missing_slot: u16,
-        line: u32,
-    ) {
-        let tracker_tmp = self.define_local("__php_assoc_keys_csv");
-        let keys_tmp = self.define_local("__php_assoc_keys");
-        let tracker_key = self.str_const("vybe$assoc_keys_csv");
-        let keys_key = self.str_const("__keys");
-
-        self.emit_u16(Op::LOCAL_GET, missing_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, keys_key);
-        self.emit_u16(Op::LOCAL_SET, keys_tmp);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, keys_tmp);
-        self.emit(Op::REF_IS_NULL);
-        self.chunk().emit_if_value(line);
-        self.emit_const(Value::Bool(true));
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, keys_tmp);
-        self.emit(Op::REF_IS_UNDEFINED);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_end(line);
-        self.chunk().emit_if(line);
-        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-        self.emit_u16(Op::LOCAL_SET, keys_tmp);
-        self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::LOCAL_GET, keys_tmp);
-        self.emit_u16(Op::STRUCT_SET, keys_key);
-        self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_GET, keys_tmp);
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        common::collections::emit_push(&mut self.chunks, self.current, line);
-        self.emit(Op::DROP);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, keys_tmp);
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        common::collections::emit_push(&mut self.chunks, self.current, line);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, tracker_key);
-        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        self.emit(Op::REF_IS_NULL);
-        self.chunk().emit_if_value(line);
-        self.emit_const(Value::Bool(true));
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        self.emit(Op::REF_IS_UNDEFINED);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_end(line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        self.emit_u16(Op::STRUCT_SET, tracker_key);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_else(line);
-
-        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        self.emit_const(Value::String(Arc::from("\x1F")));
-        common::strings::emit_str_concat(self.chunk(), line);
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        common::strings::emit_str_concat(self.chunk(), line);
-        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        self.emit_u16(Op::STRUCT_SET, tracker_key);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-    }
-
-    fn emit_php_promote_empty_array_for_string_key(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
-        let is_array_idx = self.import("ecma:array", "isArray");
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
-        self.chunk().emit(1, line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, key_slot);
-        self.emit(Op::REF_IS_STRING);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit(Op::ARRAY_LENGTH);
-        self.emit(Op::I32_CONST_0);
-        { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-        let map_new_idx = self.import("ecma:map", "new");
-        self.chunk().emit_op_u16(Op::CALL_IMPORT, map_new_idx, line);
-        self.chunk().emit(0, line);
-        self.emit_u16(Op::LOCAL_SET, obj_slot);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-    }
 
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
@@ -4123,8 +4456,10 @@ impl Compiler {
             .next()
             .unwrap_or(leaf)
             .trim();
-        matches!(bare, "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter")
-            || lower.contains(" delegate")
+        matches!(
+            bare,
+            "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter"
+        ) || lower.contains(" delegate")
     }
 
     fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
@@ -4185,7 +4520,12 @@ impl Compiler {
         if self.scopes.len() > 1 {
             let class_name = self.current_class.as_deref().unwrap_or("<module>");
             let func_name = self.current_func_name.as_deref().unwrap_or("<top>");
-            format!("{}::{}::{}", self.canon(class_name), self.canon(func_name), canon_name)
+            format!(
+                "{}::{}::{}",
+                self.canon(class_name),
+                self.canon(func_name),
+                canon_name
+            )
         } else {
             canon_name
         }
@@ -4198,16 +4538,24 @@ impl Compiler {
 
     fn lookup_array_binding(&self, name: &str) -> Option<&ArrayBindingMetadata> {
         let key = self.array_binding_key(name);
-        self.array_bindings.get(&key).or_else(|| self.array_bindings.get(&self.canon(name)))
+        self.array_bindings
+            .get(&key)
+            .or_else(|| self.array_bindings.get(&self.canon(name)))
     }
 
-    fn pascal_array_index_bounds_for_owner(&self, owner: &Expression) -> Option<PascalArrayBoundsMetadata> {
+    fn pascal_array_index_bounds_for_owner(
+        &self,
+        owner: &Expression,
+    ) -> Option<PascalArrayBoundsMetadata> {
         if self.profile.name != "pascal" {
             return None;
         }
 
         if let ExprKind::Ident(name) = &owner.kind {
-            if let Some(bounds) = self.lookup_array_binding(name).and_then(|binding| binding.pascal_bounds.clone()) {
+            if let Some(bounds) = self
+                .lookup_array_binding(name)
+                .and_then(|binding| binding.pascal_bounds.clone())
+            {
                 return Some(bounds);
             }
         }
@@ -4223,7 +4571,11 @@ impl Compiler {
         }
     }
 
-    fn normalized_array_index_operand_for_owner(&self, owner: &Expression, index: Expression) -> Expression {
+    fn normalized_array_index_operand_for_owner(
+        &self,
+        owner: &Expression,
+        index: Expression,
+    ) -> Expression {
         if let Some(bounds) = self.pascal_array_index_bounds_for_owner(owner) {
             if let Some(dimension) = bounds.dimensions.first() {
                 let normalized_index = if dimension.uses_char_ordinal {
@@ -4257,12 +4609,20 @@ impl Compiler {
         }
     }
 
-    fn compile_array_index_operand_for_owner(&mut self, owner: &Expression, index: &Expression) -> Result<(), String> {
+    fn compile_array_index_operand_for_owner(
+        &mut self,
+        owner: &Expression,
+        index: &Expression,
+    ) -> Result<(), String> {
         let normalized = self.normalized_array_index_operand_for_owner(owner, index.clone());
         self.compile_expr(&normalized)
     }
 
-    fn compile_setlength(&mut self, target: &Expression, len_expr: &Expression) -> Result<(), String> {
+    fn compile_setlength(
+        &mut self,
+        target: &Expression,
+        len_expr: &Expression,
+    ) -> Result<(), String> {
         self.compile_expr(target)?;
         self.compile_expr(len_expr)?;
         let set_length_idx = self.import("ecma:array", "setLength");
@@ -4278,9 +4638,7 @@ impl Compiler {
         type_hint: Option<String>,
     ) -> Result<StaticLocalBinding, String> {
         let canon_name = self.canon(name);
-        let normalized_type_hint = type_hint
-            .as_deref()
-            .map(Self::normalize_type_hint);
+        let normalized_type_hint = type_hint.as_deref().map(Self::normalize_type_hint);
 
         if let Some(existing) = self
             .static_local_bindings
@@ -4301,7 +4659,10 @@ impl Compiler {
         let Some(bindings) = self.static_local_bindings.last_mut() else {
             return Err(format!("static local `{name}` declared outside a function"));
         };
-        let global_name = format!("__staticlocal_{}_{}_{}", self.current, func_name, canon_name);
+        let global_name = format!(
+            "__staticlocal_{}_{}_{}",
+            self.current, func_name, canon_name
+        );
         let binding = StaticLocalBinding {
             init_flag_name: format!("{}__init", global_name),
             global_name,
@@ -4320,7 +4681,10 @@ impl Compiler {
 
         self.compile_expr(&bounds[0])?;
         self.emit_const(Value::F64(1.0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
 
         if bounds.len() == 1 {
             common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
@@ -4346,8 +4710,14 @@ impl Compiler {
         let (fill_loop, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_u16(Op::LOCAL_GET, len_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line);
 
         self.emit_u16(Op::LOCAL_GET, array_slot);
@@ -4358,7 +4728,10 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_const(Value::F64(1.0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.emit(Op::DROP);
         self.chunk().emit_br(0, line);
@@ -4371,7 +4744,10 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_pascal_fixed_array_initializer(&mut self, dimensions: &[PascalArrayDimensionMetadata]) -> Result<(), String> {
+    fn emit_pascal_fixed_array_initializer(
+        &mut self,
+        dimensions: &[PascalArrayDimensionMetadata],
+    ) -> Result<(), String> {
         let line = self.line;
         if dimensions.is_empty() {
             self.emit(Op::NULL);
@@ -4404,8 +4780,14 @@ impl Compiler {
         let (fill_loop, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_u16(Op::LOCAL_GET, len_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line);
 
         self.emit_u16(Op::LOCAL_GET, array_slot);
@@ -4416,7 +4798,10 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_const(Value::F64(1.0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.emit(Op::DROP);
         self.chunk().emit_br(0, line);
@@ -4429,7 +4814,10 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_fortran_fixed_array_initializer(&mut self, bounds: &[Expression]) -> Result<(), String> {
+    fn emit_fortran_fixed_array_initializer(
+        &mut self,
+        bounds: &[Expression],
+    ) -> Result<(), String> {
         let line = self.line;
         if bounds.is_empty() {
             self.emit(Op::NULL);
@@ -4462,8 +4850,14 @@ impl Compiler {
         let (fill_loop, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_u16(Op::LOCAL_GET, len_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line);
 
         self.emit_u16(Op::LOCAL_GET, array_slot);
@@ -4474,7 +4868,10 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_const(Value::F64(1.0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.emit(Op::DROP);
         self.chunk().emit_br(0, line);
@@ -4497,16 +4894,30 @@ impl Compiler {
         )
     }
 
-    fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator, resolved_type_hint: Option<&str>) -> Result<(), String> {
+    fn emit_var_decl_initializer_value(
+        &mut self,
+        decl: &VarDeclarator,
+        resolved_type_hint: Option<&str>,
+    ) -> Result<(), String> {
         if let Some(ref init_expr) = decl.init {
             if self.profile.name == "fortran"
-                && decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty())
+                && decl
+                    .array_bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.is_empty())
                 && Self::is_fortran_fixed_array_synth_init(init_expr)
             {
-                self.emit_fortran_fixed_array_initializer(decl.array_bounds.as_ref().expect("checked non-empty bounds"))?;
+                self.emit_fortran_fixed_array_initializer(
+                    decl.array_bounds
+                        .as_ref()
+                        .expect("checked non-empty bounds"),
+                )?;
             } else {
                 self.compile_expr_with_value_copy(init_expr)?;
-                self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
+                self.maybe_promote_pascal_array_literal_to_set(
+                    decl.type_hint.as_deref(),
+                    init_expr,
+                );
             }
         } else if let Some(ref bounds) = decl.array_bounds {
             if self.profile.name == "fortran" {
@@ -4517,15 +4928,20 @@ impl Compiler {
                 let line = self.line;
                 self.compile_expr(size_expr)?;
                 self.emit_const(Value::F64(1.0));
-                { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                };
                 common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             } else {
                 self.emit(Op::NULL);
             }
         } else {
-            let resolved_type_hint = resolved_type_hint
-                .map(str::to_string)
-                .or_else(|| decl.type_hint.as_deref().map(|type_hint| self.resolve_source_type_alias(type_hint)));
+            let resolved_type_hint = resolved_type_hint.map(str::to_string).or_else(|| {
+                decl.type_hint
+                    .as_deref()
+                    .map(|type_hint| self.resolve_source_type_alias(type_hint))
+            });
             let effective_type_hint = resolved_type_hint.as_deref().or(decl.type_hint.as_deref());
 
             if let Some(metadata) = effective_type_hint
@@ -4541,7 +4957,10 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
-            } else if effective_type_hint.and_then(Self::vb_fixed_string_len).is_some() {
+            } else if effective_type_hint
+                .and_then(Self::vb_fixed_string_len)
+                .is_some()
+            {
                 self.emit_const(Value::String(Arc::from("")));
             } else if let Some(type_name) = decl
                 .type_hint
@@ -4562,16 +4981,23 @@ impl Compiler {
                 return Ok(());
             } else {
                 match effective_type_hint.map(|s| s.to_lowercase()).as_deref() {
-                    Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
+                    Some("integer") | Some("int") | Some("longint") | Some("real")
+                    | Some("double") | Some("float") => {
                         self.emit(Op::F64_CONST_0);
                     }
                     Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-                    Some(type_hint) if Self::is_string_type_hint(type_hint) => self.emit_const(Value::String(Arc::from(""))),
+                    Some(type_hint) if Self::is_string_type_hint(type_hint) => {
+                        self.emit_const(Value::String(Arc::from("")))
+                    }
                     _ => self.emit(Op::NULL),
                 }
             }
         }
-        if let Some(target_len) = decl.type_hint.as_deref().and_then(Self::vb_fixed_string_len) {
+        if let Some(target_len) = decl
+            .type_hint
+            .as_deref()
+            .and_then(Self::vb_fixed_string_len)
+        {
             self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
         }
         Ok(())
@@ -4594,7 +5020,11 @@ impl Compiler {
         None
     }
 
-    pub(super) fn prefers_type_qualified_member_lookup(&self, type_name: &str, member_name: &str) -> bool {
+    pub(super) fn prefers_type_qualified_member_lookup(
+        &self,
+        type_name: &str,
+        member_name: &str,
+    ) -> bool {
         if self.enum_member_ordinal(type_name, member_name).is_some() {
             return true;
         }
@@ -4603,17 +5033,28 @@ impl Compiler {
         let Some(pending) = self.pending_classes.get(&type_canon).or_else(|| {
             self.pending_classes
                 .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(type_name) || name.eq_ignore_ascii_case(&type_canon))
+                .find(|(name, _)| {
+                    name.eq_ignore_ascii_case(type_name) || name.eq_ignore_ascii_case(&type_canon)
+                })
                 .map(|(_, pending)| pending)
         }) else {
             return false;
         };
 
         let member_canon = self.canon(member_name);
-        pending.static_fields.iter().any(|name| name == &member_canon)
-            || pending.static_method_names.iter().any(|name| self.canon(name) == member_canon)
+        pending
+            .static_fields
+            .iter()
+            .any(|name| name == &member_canon)
+            || pending
+                .static_method_names
+                .iter()
+                .any(|name| self.canon(name) == member_canon)
             || pending.static_method_overloads.contains_key(&member_canon)
-            || pending.nested_types.iter().any(|name| self.canon(name) == member_canon)
+            || pending
+                .nested_types
+                .iter()
+                .any(|name| self.canon(name) == member_canon)
     }
 
     fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
@@ -4633,7 +5074,15 @@ impl Compiler {
         };
         let class_name = Self::expr_terminal_type_name(object)?;
         if class_name.eq_ignore_ascii_case("TimeSpan")
-            && matches!(field.as_str(), "FromDays" | "FromHours" | "FromMinutes" | "FromSeconds" | "FromMilliseconds" | "Zero")
+            && matches!(
+                field.as_str(),
+                "FromDays"
+                    | "FromHours"
+                    | "FromMinutes"
+                    | "FromSeconds"
+                    | "FromMilliseconds"
+                    | "Zero"
+            )
         {
             return Some("TimeSpan".into());
         }
@@ -4642,9 +5091,7 @@ impl Compiler {
         {
             return Some("DateTime".into());
         }
-        if class_name.eq_ignore_ascii_case("Convert")
-            && field.eq_ignore_ascii_case("ToDateTime")
-        {
+        if class_name.eq_ignore_ascii_case("Convert") && field.eq_ignore_ascii_case("ToDateTime") {
             return Some("DateTime".into());
         }
         if class_name.eq_ignore_ascii_case("Guid")
@@ -4652,9 +5099,7 @@ impl Compiler {
         {
             return Some("Guid".into());
         }
-        if class_name.eq_ignore_ascii_case("Version")
-            && matches!(field.as_str(), "Parse")
-        {
+        if class_name.eq_ignore_ascii_case("Version") && matches!(field.as_str(), "Parse") {
             return Some("Version".into());
         }
         None
@@ -4664,7 +5109,8 @@ impl Compiler {
         match &callee.kind {
             ExprKind::Ident(name) => {
                 if self.profile.name == "vb" {
-                    if name.eq_ignore_ascii_case("command") || name.eq_ignore_ascii_case("environ") {
+                    if name.eq_ignore_ascii_case("command") || name.eq_ignore_ascii_case("environ")
+                    {
                         return Some("String".into());
                     }
                     if name.eq_ignore_ascii_case("timer") {
@@ -4701,14 +5147,20 @@ impl Compiler {
         }
     }
 
-    fn infer_array_element_type_hint<'a>(&self, values: impl IntoIterator<Item = &'a Expression>) -> String {
+    fn infer_array_element_type_hint<'a>(
+        &self,
+        values: impl IntoIterator<Item = &'a Expression>,
+    ) -> String {
         let mut element_type: Option<String> = None;
         for value in values {
-            let inferred = self.infer_expr_type_hint(value).unwrap_or_else(|| "object".into());
+            let inferred = self
+                .infer_expr_type_hint(value)
+                .unwrap_or_else(|| "object".into());
             match &element_type {
                 None => element_type = Some(inferred),
                 Some(existing)
-                    if Self::normalize_type_hint(existing) == Self::normalize_type_hint(&inferred) => {}
+                    if Self::normalize_type_hint(existing)
+                        == Self::normalize_type_hint(&inferred) => {}
                 Some(_) => {
                     element_type = Some("object".into());
                     break;
@@ -4764,16 +5216,27 @@ impl Compiler {
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-            ExprKind::Unary { op: UnaryOp::Neg | UnaryOp::Pos, expr } => self.infer_expr_type_hint(expr),
+            ExprKind::Unary {
+                op: UnaryOp::Neg | UnaryOp::Pos,
+                expr,
+            } => self.infer_expr_type_hint(expr),
             ExprKind::RefOf(place) => {
                 let pointee_type = match place.as_ref() {
                     PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
-                    PlaceExpr::Member { object, field, null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
+                    PlaceExpr::Member {
+                        object,
+                        field,
+                        null_safe,
+                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: field.clone(),
                         null_safe: *null_safe,
                     })),
-                    PlaceExpr::Index { object, index, null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
+                    PlaceExpr::Index {
+                        object,
+                        index,
+                        null_safe,
+                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
                         object: object.clone(),
                         index: index.clone(),
                         null_safe: *null_safe,
@@ -4791,28 +5254,34 @@ impl Compiler {
                 }?;
                 Some(format!("*{}", pointee_type.trim()))
             }
-            ExprKind::Unary { op: UnaryOp::AddrOf, expr } => self
+            ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr,
+            } => self
                 .infer_expr_type_hint(expr)
                 .map(|type_hint| format!("*{}", type_hint.trim().trim_end_matches('?').trim())),
-            ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => self
-                .infer_expr_type_hint(expr)
-                .map(|type_hint| {
-                    type_hint
-                        .trim()
-                        .trim_end_matches('?')
-                        .trim()
-                        .trim_start_matches('*')
-                        .trim_start_matches('^')
-                        .trim()
-                        .to_string()
-                }),
+            ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr,
+            }
+            | ExprKind::RefLoad(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
+                type_hint
+                    .trim()
+                    .trim_end_matches('?')
+                    .trim()
+                    .trim_start_matches('*')
+                    .trim_start_matches('^')
+                    .trim()
+                    .to_string()
+            }),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Array(elements) => Some(format!(
                 "{}()",
                 self.infer_array_element_type_hint(elements.iter().map(|item| &item.value))
             )),
             ExprKind::Call { callee, args, .. } => {
-                if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array")) {
+                if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array"))
+                {
                     return Some(format!(
                         "{}()",
                         self.infer_array_element_type_hint(args.iter().map(|arg| &arg.value))
@@ -4824,34 +5293,45 @@ impl Compiler {
                         .infer_expr_type_hint(callee)
                         .as_deref()
                         .map(Self::normalize_type_hint)
-                        .is_some_and(|type_hint| type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint))
+                        .is_some_and(|type_hint| {
+                            type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint)
+                        })
                 {
-                    return self
-                        .infer_expr_type_hint(callee)
-                        .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string));
+                    return self.infer_expr_type_hint(callee).and_then(|type_hint| {
+                        type_hint
+                            .trim()
+                            .trim_end_matches('?')
+                            .trim()
+                            .strip_suffix("()")
+                            .map(str::to_string)
+                    });
                 }
                 self.infer_function_return_type(callee)
                     .or_else(|| self.infer_dotnet_factory_return_type(callee))
             }
-            ExprKind::Index { object, .. } => self
-                .infer_expr_type_hint(object)
-                .and_then(|type_hint| {
+            ExprKind::Index { object, .. } => {
+                self.infer_expr_type_hint(object).and_then(|type_hint| {
                     let trimmed = type_hint.trim().trim_end_matches('?').trim();
                     trimmed
                         .strip_suffix("()")
                         .map(str::to_string)
                         .or_else(|| Self::pascal_indexed_type_hint(trimmed))
-                }),
+                })
+            }
             ExprKind::Member { object, field, .. } => {
                 if let Some(type_hint) = self.infer_vb_runtime_member_type_hint(expr) {
                     return Some(type_hint);
                 }
                 if let Some(receiver_type) = self.infer_expr_type_hint(object) {
-                    if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&receiver_type) {
+                    if let Some(class_name) =
+                        self.resolve_pending_class_name_for_type_hint(&receiver_type)
+                    {
                         if let Some(type_hint) = self
                             .pending_classes
                             .get(class_name.as_str())
-                            .and_then(|pending| pending.instance_field_types.get(&self.canon(field)))
+                            .and_then(|pending| {
+                                pending.instance_field_types.get(&self.canon(field))
+                            })
                         {
                             return Some(type_hint.clone());
                         }
@@ -4862,7 +5342,9 @@ impl Compiler {
                     .contains_key(&self.canon(&enum_type))
                     .then_some(enum_type)
             }
-            ExprKind::Binary { op, left, right } if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) => {
+            ExprKind::Binary { op, left, right }
+                if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) =>
+            {
                 let left_type = self.infer_expr_type_hint(left)?;
                 let right_type = self.infer_expr_type_hint(right)?;
                 if left_type.eq_ignore_ascii_case(&right_type)
@@ -4902,20 +5384,25 @@ impl Compiler {
 
         for candidate in [
             Some(trimmed),
-            trimmed.rsplit('.').next().filter(|segment| *segment != trimmed),
+            trimmed
+                .rsplit('.')
+                .next()
+                .filter(|segment| *segment != trimmed),
         ]
         .into_iter()
         .flatten()
         {
             let canonical = self.canon(candidate);
-            if self.pending_classes.get(&canonical).is_some_and(|pending| pending.is_value_type) {
+            if self
+                .pending_classes
+                .get(&canonical)
+                .is_some_and(|pending| pending.is_value_type)
+            {
                 return Some(canonical);
             }
-            if let Some((name, _)) = self
-                .pending_classes
-                .iter()
-                .find(|(name, pending)| pending.is_value_type && name.eq_ignore_ascii_case(candidate))
-            {
+            if let Some((name, _)) = self.pending_classes.iter().find(|(name, pending)| {
+                pending.is_value_type && name.eq_ignore_ascii_case(candidate)
+            }) {
                 return Some(name.clone());
             }
         }
@@ -4938,7 +5425,9 @@ impl Compiler {
             .infer_expr_type_hint(expr)
             .as_deref()
             .map(Self::normalize_type_hint)
-            .is_some_and(|type_hint| type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint))
+            .is_some_and(|type_hint| {
+                type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint)
+            })
         {
             return true;
         }
@@ -4954,7 +5443,10 @@ impl Compiler {
                     if matches!(self.canon(name).as_str(), "array" | "str_split" | "str_getcsv"))
             }
             ExprKind::Binary { op, left, right }
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow) =>
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+                ) =>
             {
                 self.expr_is_array_like(left) || self.expr_is_array_like(right)
             }
@@ -4975,7 +5467,12 @@ impl Compiler {
         let lowered = trimmed.to_lowercase();
         let marker = "(of ";
         let start = lowered.find(marker)?;
-        let base = trimmed[..start].trim().rsplit('.').next().unwrap_or(trimmed[..start].trim()).trim();
+        let base = trimmed[..start]
+            .trim()
+            .rsplit('.')
+            .next()
+            .unwrap_or(trimmed[..start].trim())
+            .trim();
         let inner = trimmed.get(start + marker.len()..trimmed.len().saturating_sub(1))?;
         let mut depth = 0usize;
         let mut arity = 1usize;
@@ -5055,10 +5552,17 @@ impl Compiler {
                     .next()
                     .is_some_and(|leaf| leaf.eq_ignore_ascii_case(short_target))
         }) {
-            return Some(display_name.rsplit('.').next().unwrap_or(display_name).to_string());
+            return Some(
+                display_name
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(display_name)
+                    .to_string(),
+            );
         }
 
-        if self.reflection_type_metadata(trimmed).is_some() || self.reflection_is_enum_type(trimmed) {
+        if self.reflection_type_metadata(trimmed).is_some() || self.reflection_is_enum_type(trimmed)
+        {
             return Some(self.reflection_type_short_name(trimmed));
         }
         None
@@ -5088,8 +5592,10 @@ impl Compiler {
             return false;
         }
         match self.vb_typename_from_type_hint(trimmed).as_deref() {
-            Some("Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte" | "SByte"
-                | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date") => false,
+            Some(
+                "Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte" | "SByte"
+                | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date",
+            ) => false,
             Some("String" | "Object") => true,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
@@ -5108,8 +5614,10 @@ impl Compiler {
         }
         match self.vb_typename_from_type_hint(trimmed).as_deref() {
             Some("Object") => true,
-            Some("String" | "Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte"
-                | "SByte" | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date") => false,
+            Some(
+                "String" | "Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte"
+                | "SByte" | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date",
+            ) => false,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
             None => false,
@@ -5177,9 +5685,14 @@ impl Compiler {
     }
 
     fn emit_user_value_type_clone_from_stack(&mut self, type_name: &str) {
-        let Some((fields, instance_member_names)) = self.pending_classes.get(type_name).map(|pending| {
-            (pending.fields.clone(), pending.instance_member_names.clone())
-        }) else {
+        let Some((fields, instance_member_names)) =
+            self.pending_classes.get(type_name).map(|pending| {
+                (
+                    pending.fields.clone(),
+                    pending.instance_member_names.clone(),
+                )
+            })
+        else {
             return;
         };
 
@@ -5342,42 +5855,39 @@ impl Compiler {
         // Only do this when the name isn't shadowed by an actual global
         // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
         let is_js_runtime_global = self.is_js_profile()
-            && (
-                matches!(
-                    name,
-                    "Object"
-                        | "Boolean"
-                        | "Number"
-                        | "String"
-                        | "Array"
-                        | "Function"
-                        | "Symbol"
-                        | "BigInt"
-                        | "Error"
-                        | "EvalError"
-                        | "RangeError"
-                        | "ReferenceError"
-                        | "SyntaxError"
-                        | "TypeError"
-                        | "URIError"
-                        | "AggregateError"
-                        | "ArrayBuffer"
-                        | "SharedArrayBuffer"
-                        | "DataView"
-                        | "Int8Array"
-                        | "Uint8Array"
-                        | "Uint8ClampedArray"
-                        | "Int16Array"
-                        | "Uint16Array"
-                        | "Int32Array"
-                        | "Uint32Array"
-                        | "Float32Array"
-                        | "Float64Array"
-                        | "BigInt64Array"
-                        | "BigUint64Array"
-                )
-                || self.host_namespace_aliases.contains_key(&cname)
-            );
+            && (matches!(
+                name,
+                "Object"
+                    | "Boolean"
+                    | "Number"
+                    | "String"
+                    | "Array"
+                    | "Function"
+                    | "Symbol"
+                    | "BigInt"
+                    | "Error"
+                    | "EvalError"
+                    | "RangeError"
+                    | "ReferenceError"
+                    | "SyntaxError"
+                    | "TypeError"
+                    | "URIError"
+                    | "AggregateError"
+                    | "ArrayBuffer"
+                    | "SharedArrayBuffer"
+                    | "DataView"
+                    | "Int8Array"
+                    | "Uint8Array"
+                    | "Uint8ClampedArray"
+                    | "Int16Array"
+                    | "Uint16Array"
+                    | "Int32Array"
+                    | "Uint32Array"
+                    | "Float32Array"
+                    | "Float64Array"
+                    | "BigInt64Array"
+                    | "BigUint64Array"
+            ) || self.host_namespace_aliases.contains_key(&cname));
         if self.profile.known_types.contains_key(name)
             && !self.defined_globals.contains(name)
             && !self.defined_globals.contains(&cname)
@@ -5393,7 +5903,6 @@ impl Compiler {
             common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         }
     }
-
 
     fn emit_ensure_global_map(&mut self, name: &str) {
         let key = self.shared_global_slot(name);
@@ -5416,22 +5925,31 @@ impl Compiler {
         if let Some(slot) = self.scope().resolve(name) {
             if self.binding_uses_pointer_cell(name) {
                 let value_slot = self.define_local("__ref_cell_set_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, slot);
-                common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                common::references::emit_cell_store(
+                    &mut self.chunks,
+                    self.current,
+                    value_slot,
+                    self.line,
+                );
                 self.emit(Op::DROP);
             } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
                 let value_slot = self.define_local("__js_arguments_alias_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 self.emit_const(Value::F64(index as f64));
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 common::collections::emit_set(&mut self.chunks, self.current, self.line);
                 self.emit(Op::DROP);
             } else {
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
             }
             return;
         }
@@ -5439,22 +5957,31 @@ impl Compiler {
             if let Some(slot) = self.scope().resolve_ci(name) {
                 if self.binding_uses_pointer_cell(name) {
                     let value_slot = self.define_local("__ref_cell_set_value");
-                    self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, slot);
-                    common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                    common::references::emit_cell_store(
+                        &mut self.chunks,
+                        self.current,
+                        value_slot,
+                        self.line,
+                    );
                     self.emit(Op::DROP);
                 } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
                     let value_slot = self.define_local("__js_arguments_alias_value_ci");
-                    self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, args_slot);
                     self.emit_const(Value::F64(index as f64));
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     common::collections::emit_set(&mut self.chunks, self.current, self.line);
                     self.emit(Op::DROP);
                 } else {
-                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                 }
                 return;
             }
@@ -5476,7 +6003,8 @@ impl Compiler {
         }
         if self.current_class_implicit_self && self.is_class_field(name) {
             let value_slot = self.define_local("__implicit_self_value");
-            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
             if self.emit_self_ref() {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 let cname = self.canon(name);
@@ -5492,7 +6020,8 @@ impl Compiler {
         if let Some(class_name) = self.is_class_static_field(name) {
             // Stack: [value]. Need [class_obj, value] for STRUCT_SET.
             let value_slot = self.define_local("__static_set_value");
-            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
             let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -5525,7 +6054,12 @@ impl Compiler {
             self.emit(Op::DROP);
             let idx = self.global_name_const_idx(&cname);
             self.emit_u16(Op::GLOBAL_GET, idx);
-            common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+            common::references::emit_cell_store(
+                &mut self.chunks,
+                self.current,
+                value_slot,
+                self.line,
+            );
             self.emit(Op::DROP);
             return;
         }
@@ -5537,13 +6071,17 @@ impl Compiler {
     /// Walk up the scope chain to find a variable in a parent scope.
     /// Returns the upvalue index in the current scope if found.
     fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
-        if scope_idx == 0 { return None; }
+        if scope_idx == 0 {
+            return None;
+        }
         let parent = scope_idx - 1;
         // Check parent's locals
         let found_local = if self.case_sensitive {
             self.scopes[parent].resolve(name)
         } else {
-            self.scopes[parent].resolve(name).or_else(|| self.scopes[parent].resolve_ci(name))
+            self.scopes[parent]
+                .resolve(name)
+                .or_else(|| self.scopes[parent].resolve_ci(name))
         };
         if let Some(slot) = found_local {
             self.scopes[parent].mark_captured(slot);
@@ -5568,7 +6106,11 @@ impl Compiler {
                 while let Some(cn) = current {
                     if let Some(pc) = self.pending_classes.get(cn) {
                         if pc.static_fields.iter().any(|f| {
-                            if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                            if self.case_sensitive {
+                                f == name
+                            } else {
+                                f.eq_ignore_ascii_case(name)
+                            }
                         }) {
                             return Some(cn.to_string());
                         }
@@ -5614,7 +6156,11 @@ impl Compiler {
                 while let Some(cn) = current {
                     if let Some(pc) = self.pending_classes.get(cn) {
                         if pc.nested_types.iter().any(|n| {
-                            if self.case_sensitive { n == name } else { n.eq_ignore_ascii_case(name) }
+                            if self.case_sensitive {
+                                n == name
+                            } else {
+                                n.eq_ignore_ascii_case(name)
+                            }
                         }) {
                             return Some(cn.to_string());
                         }
@@ -5642,7 +6188,9 @@ impl Compiler {
         }
 
         let field_canon = self.canon(field);
-        let has_static = self.pending_classes.get(base)
+        let has_static = self
+            .pending_classes
+            .get(base)
             .or_else(|| self.pending_classes.get(base_canon.as_str()))
             .map(|pc| pc.static_fields.iter().any(|f| f == &field_canon))
             .unwrap_or(false);
@@ -5665,7 +6213,11 @@ impl Compiler {
                 while let Some(cn) = current {
                     if let Some(pc) = self.pending_classes.get(cn) {
                         if pc.static_method_names.iter().any(|m| {
-                            if self.case_sensitive { m == name } else { m.eq_ignore_ascii_case(name) }
+                            if self.case_sensitive {
+                                m == name
+                            } else {
+                                m.eq_ignore_ascii_case(name)
+                            }
                         }) {
                             return Some(cn.to_string());
                         }
@@ -5684,18 +6236,28 @@ impl Compiler {
         self.pending_classes
             .get(class_name)
             .and_then(|pc| pc.enclosing_class.clone())
-            .or_else(|| class_name.rsplit_once('.').map(|(outer, _)| outer.to_string()))
+            .or_else(|| {
+                class_name
+                    .rsplit_once('.')
+                    .map(|(outer, _)| outer.to_string())
+            })
     }
 
     /// Check if a name is a field of the current class (for implicit self resolution).
     fn is_class_field(&self, name: &str) -> bool {
-        if !self.current_class_implicit_self { return false; }
+        if !self.current_class_implicit_self {
+            return false;
+        }
         if let Some(ref class_name) = self.current_class {
             let mut current = Some(class_name.as_str());
             while let Some(cn) = current {
                 if let Some(pc) = self.pending_classes.get(cn) {
                     if pc.fields.iter().any(|f| {
-                        if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                        if self.case_sensitive {
+                            f == name
+                        } else {
+                            f.eq_ignore_ascii_case(name)
+                        }
                     }) {
                         return true;
                     }
@@ -5710,7 +6272,9 @@ impl Compiler {
 
     fn emit_self_ref(&mut self) -> bool {
         let self_kw = self.profile.self_keyword.clone();
-        if let Some(self_slot) = self.scope().resolve(&self_kw)
+        if let Some(self_slot) = self
+            .scope()
+            .resolve(&self_kw)
             .or_else(|| self.scope().resolve_ci(&self_kw))
         {
             self.emit_u16(Op::LOCAL_GET, self_slot);
@@ -5729,17 +6293,21 @@ impl Compiler {
         self.profile.name == "js"
     }
 
-    fn is_php_profile(&self) -> bool {
-        self.profile.name == "php"
-    }
 
     fn is_python_profile(&self) -> bool {
         self.profile.name == "python"
     }
 
     fn emit_condition_truthiness_from_stack(&mut self) {
-        if !self.is_python_profile() && !self.is_php_profile() {
-            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+        // PHP used to have a custom truthiness check here that referenced the
+        // removed __keys/vybe$assoc_keys_csv side-band, causing stack corruption.
+        // Array truthiness is now handled at the empty()/isset() call sites via
+        // the Map-aware emitter. emit_dyn_to_bool is correct for all languages.
+        if !self.is_python_profile() {
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            };
             return;
         }
 
@@ -5874,7 +6442,9 @@ impl Compiler {
         if !self.is_js_profile() {
             return None;
         }
-        let slot = self.scope().resolve(local_name)
+        let slot = self
+            .scope()
+            .resolve(local_name)
             .unwrap_or_else(|| self.define_local(local_name));
         let idx = self.str_const("__js_this");
         self.emit_u16(Op::GLOBAL_GET, idx);
@@ -5893,7 +6463,9 @@ impl Compiler {
     }
 
     fn restore_js_this(&mut self, slot: Option<u16>) {
-        let Some(slot) = slot else { return; };
+        let Some(slot) = slot else {
+            return;
+        };
         let idx = self.str_const("__js_this");
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_u16(Op::GLOBAL_SET, idx);
@@ -5904,7 +6476,9 @@ impl Compiler {
         if !self.is_js_profile() {
             return None;
         }
-        let slot = self.scope().resolve(local_name)
+        let slot = self
+            .scope()
+            .resolve(local_name)
             .unwrap_or_else(|| self.define_local(local_name));
         let idx = self.str_const("__js_new_target");
         self.emit_u16(Op::GLOBAL_GET, idx);
@@ -5923,7 +6497,9 @@ impl Compiler {
     }
 
     fn restore_js_new_target(&mut self, slot: Option<u16>) {
-        let Some(slot) = slot else { return; };
+        let Some(slot) = slot else {
+            return;
+        };
         let idx = self.str_const("__js_new_target");
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_u16(Op::GLOBAL_SET, idx);
@@ -5951,11 +6527,19 @@ impl Compiler {
                 .map(ToString::to_string)
                 .collect(),
             ExprKind::This => vec![self.profile.self_keyword.clone()],
-            ExprKind::Super => vec![self.profile.base_keyword.clone().unwrap_or_else(|| "super".into())],
+            ExprKind::Super => vec![
+                self.profile
+                    .base_keyword
+                    .clone()
+                    .unwrap_or_else(|| "super".into()),
+            ],
             ExprKind::Member { object, field, .. } => {
                 let mut parts = self.flatten_member_chain(object);
                 parts.push(field.clone());
-                if parts.first().is_some_and(|part| part.eq_ignore_ascii_case("global")) {
+                if parts
+                    .first()
+                    .is_some_and(|part| part.eq_ignore_ascii_case("global"))
+                {
                     parts.remove(0);
                 }
                 parts
@@ -5981,25 +6565,45 @@ impl Compiler {
             StmtKind::Expr(expr) => {
                 match &expr.kind {
                     ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt") && args.len() == 2 => {
-                        return self.compile_vb_fixed_string_stmt(&args[0].value, &args[1].value, false);
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt")
+                            && args.len() == 2 =>
+                    {
+                        return self.compile_vb_fixed_string_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            false,
+                        );
                     }
                     ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_rset_stmt") && args.len() == 2 => {
-                        return self.compile_vb_fixed_string_stmt(&args[0].value, &args[1].value, true);
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_rset_stmt")
+                            && args.len() == 2 =>
+                    {
+                        return self.compile_vb_fixed_string_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            true,
+                        );
                     }
                     ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt") && args.len() == 4 => {
-                        return self.compile_vb_mid_stmt(&args[0].value, &args[1].value, &args[2].value, &args[3].value);
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt")
+                            && args.len() == 4 =>
+                    {
+                        return self.compile_vb_mid_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            &args[2].value,
+                            &args[3].value,
+                        );
                     }
-                    ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") => {
+                    ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") =>
+                    {
                         return self.compile_vb_err_raise_stmt(args);
                     }
                     ExprKind::Ident(name)
                         if self.is_php_profile()
                             && (name.eq_ignore_ascii_case("exit")
-                                || name.eq_ignore_ascii_case("die")) => {
+                                || name.eq_ignore_ascii_case("die")) =>
+                    {
                         self.emit(Op::NULL);
                         self.emit_return_through_finally(1)?;
                         return Ok(());
@@ -6037,10 +6641,12 @@ impl Compiler {
                         self.emit(Op::DUP);
                         self.emit_u16(Op::STRUCT_GET, prop);
                         let fn_tmp = self.define_local("__fn");
-                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                        self.emit(Op::DROP);
                         let obj_tmp = self.define_local("__obj");
                         self.reserve_local_slot(obj_tmp);
-                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u8(Op::CALL_REF, 1);
@@ -6055,14 +6661,25 @@ impl Compiler {
 
             // ── Block ───────────────────────────────────────────────────
             StmtKind::Block(stmts) => {
-                let all_decls = stmts.iter().all(|s| matches!(s.kind,
-                    StmtKind::VarDecl { .. } | StmtKind::FunctionDecl { .. } |
-                    StmtKind::ClassDecl { .. } | StmtKind::EnumDecl { .. }
-                ));
+                let all_decls = stmts.iter().all(|s| {
+                    matches!(
+                        s.kind,
+                        StmtKind::VarDecl { .. }
+                            | StmtKind::FunctionDecl { .. }
+                            | StmtKind::ClassDecl { .. }
+                            | StmtKind::EnumDecl { .. }
+                    )
+                });
                 let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
-                if !all_decls && !hoisted_deconstruction { self.scope_mut().begin_scope(); }
-                for s in stmts { self.compile_stmt(s)?; }
-                if !all_decls && !hoisted_deconstruction { self.scope_mut().end_scope(); }
+                if !all_decls && !hoisted_deconstruction {
+                    self.scope_mut().begin_scope();
+                }
+                for s in stmts {
+                    self.compile_stmt(s)?;
+                }
+                if !all_decls && !hoisted_deconstruction {
+                    self.scope_mut().end_scope();
+                }
             }
 
             // ── Variable declarations ───────────────────────────────────
@@ -6076,8 +6693,9 @@ impl Compiler {
             StmtKind::Assign { targets, value } => {
                 if self.profile.name == "fortran" {
                     if let [target] = targets.as_slice() {
-                        let is_whole_array_target = matches!(target.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
-                            && self.expr_is_array_like(target);
+                        let is_whole_array_target =
+                            matches!(target.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
+                                && self.expr_is_array_like(target);
                         if is_whole_array_target {
                             let line = self.line;
                             let value_slot = self.define_local("__fortran_array_fill_value");
@@ -6106,7 +6724,11 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
                                 self.emit_const(Value::I32(0));
                                 self.emit_const(Value::I32(i32::MAX));
-                                common::collections::emit_fill(&mut self.chunks, self.current, line);
+                                common::collections::emit_fill(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
                                 self.compile_assign_target(target)?;
 
                                 self.chunk().emit_end(line);
@@ -6130,7 +6752,9 @@ impl Compiler {
                         }
                     }
                 }
-                if (self.profile.name == "csharp" || self.profile.name == "vb") && targets.len() == 1 {
+                if (self.profile.name == "csharp" || self.profile.name == "vb")
+                    && targets.len() == 1
+                {
                     if let ExprKind::Binary { op, left, right } = &value.kind {
                         if self.assign_target_matches_expr(&targets[0], left)
                             && self.is_csharp_delegate_handler_expr(right)
@@ -6139,14 +6763,22 @@ impl Compiler {
                                 BinOp::Add => {
                                     self.compile_expr(left)?;
                                     self.compile_expr(right)?;
-                                    common::delegates::emit_combine(&mut self.chunks, self.current, self.line);
+                                    common::delegates::emit_combine(
+                                        &mut self.chunks,
+                                        self.current,
+                                        self.line,
+                                    );
                                     self.compile_assign_target(&targets[0])?;
                                     return Ok(());
                                 }
                                 BinOp::Sub => {
                                     self.compile_expr(left)?;
                                     self.compile_expr(right)?;
-                                    common::delegates::emit_remove(&mut self.chunks, self.current, self.line);
+                                    common::delegates::emit_remove(
+                                        &mut self.chunks,
+                                        self.current,
+                                        self.line,
+                                    );
                                     self.compile_assign_target(&targets[0])?;
                                     return Ok(());
                                 }
@@ -6201,11 +6833,16 @@ impl Compiler {
                     if let [target] = targets.as_slice() {
                         if let ExprKind::Ident(name) = &target.kind {
                             let type_hint = self.lookup_var_type_hint(name).map(str::to_string);
-                            self.maybe_promote_pascal_array_literal_to_set(type_hint.as_deref(), value);
+                            self.maybe_promote_pascal_array_literal_to_set(
+                                type_hint.as_deref(),
+                                value,
+                            );
                         }
                     }
                     for (i, target) in targets.iter().enumerate() {
-                        if i < targets.len() - 1 { self.emit(Op::DUP); }
+                        if i < targets.len() - 1 {
+                            self.emit(Op::DUP);
+                        }
                         self.compile_assign_target(target)?;
                     }
                 }
@@ -6220,14 +6857,22 @@ impl Compiler {
                         CompoundOp::Add => {
                             self.compile_expr(target)?;
                             self.compile_expr(value)?;
-                            common::delegates::emit_combine(&mut self.chunks, self.current, self.line);
+                            common::delegates::emit_combine(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             self.compile_assign_target(target)?;
                             return Ok(());
                         }
                         CompoundOp::Sub => {
                             self.compile_expr(target)?;
                             self.compile_expr(value)?;
-                            common::delegates::emit_remove(&mut self.chunks, self.current, self.line);
+                            common::delegates::emit_remove(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             self.compile_assign_target(target)?;
                             return Ok(());
                         }
@@ -6253,7 +6898,8 @@ impl Compiler {
                 }
                 // Load current value
                 self.compile_expr(target)?;
-                let prefer_numeric_add = matches!(op, CompoundOp::Add) && self.expr_prefers_numeric_add(target);
+                let prefer_numeric_add =
+                    matches!(op, CompoundOp::Add) && self.expr_prefers_numeric_add(target);
                 self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;
                 if prefer_numeric_add {
                     self.emit(Op::F64_ADD);
@@ -6264,7 +6910,12 @@ impl Compiler {
             }
 
             // ── If / Elif / Else (structured CF with label tracking) ──
-            StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
                 let line = self.line;
                 let outer = self.chunk().emit_block(line);
                 self.label_depth += 1; // outer block
@@ -6274,11 +6925,16 @@ impl Compiler {
                 self.label_depth += 1;
                 self.compile_expr(cond)?;
                 self.emit_condition_truthiness_from_stack();
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
                 let line = self.line;
                 self.chunk().emit_br_if(0, line); // skip then if false
                 self.scope_mut().begin_scope();
-                for s in then_body { self.compile_stmt(s)?; }
+                for s in then_body {
+                    self.compile_stmt(s)?;
+                }
                 self.scope_mut().end_scope();
                 if !elifs.is_empty() || else_body.is_some() {
                     let line = self.line;
@@ -6296,11 +6952,16 @@ impl Compiler {
                     self.label_depth += 1;
                     self.compile_expr(elif_cond)?;
                     self.emit_condition_truthiness_from_stack();
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                     let line = self.line;
                     self.chunk().emit_br_if(0, line);
                     self.scope_mut().begin_scope();
-                    for s in elif_body { self.compile_stmt(s)?; }
+                    for s in elif_body {
+                        self.compile_stmt(s)?;
+                    }
                     self.scope_mut().end_scope();
                     let line = self.line;
                     self.chunk().emit_br(1, line); // to outer end
@@ -6312,7 +6973,9 @@ impl Compiler {
 
                 if let Some(else_stmts) = else_body {
                     self.scope_mut().begin_scope();
-                    for s in else_stmts { self.compile_stmt(s)?; }
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
                     self.scope_mut().end_scope();
                 }
 
@@ -6323,7 +6986,11 @@ impl Compiler {
             }
 
             // ── While (compiler_common::loops) ─────────────────────────
-            StmtKind::While { cond, body, else_body } => {
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => {
                 let line = self.line;
                 let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
                 // block + loop = 2 label stack entries
@@ -6331,31 +6998,50 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2; // loop is second (continue target)
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    is_continuable: true,
+                });
                 self.compile_expr(cond)?;
                 let line = self.line;
                 common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
-                for s in body { self.compile_stmt(s)?; }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
                 common::loops::emit_loop_end(&mut self.chunks, self.current, lp, line);
                 self.label_depth -= 2; // block + loop closed
                 if let Some(else_stmts) = else_body {
-                    for s in else_stmts { self.compile_stmt(s)?; }
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
                 }
             }
 
             // ── For C-style (compiler_common::loops) ────────────────────
-            StmtKind::For { init, cond, update, body } => {
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
                 self.scope_mut().begin_scope();
-                if let Some(init_stmt) = init { self.compile_stmt(init_stmt)?; }
+                if let Some(init_stmt) = init {
+                    self.compile_stmt(init_stmt)?;
+                }
                 let loop_capture_name = if self.profile.name == "vb" {
                     init.as_ref().and_then(|stmt| match &stmt.kind {
-                        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => match &declarations[0].pattern {
-                            BindingPattern::Ident(name) => Some(self.canon(name)),
-                            _ => None,
-                        },
+                        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
+                            match &declarations[0].pattern {
+                                BindingPattern::Ident(name) => Some(self.canon(name)),
+                                _ => None,
+                            }
+                        }
                         _ => None,
                     })
                 } else {
@@ -6384,13 +7070,25 @@ impl Compiler {
                     None
                 };
                 let continue_depth = self.label_depth; // innermost = continue target (body block or loop)
-                let lp = common::loops::LoopState { block_patch, loop_patch, body_block_patch: body_block };
+                let lp = common::loops::LoopState {
+                    block_patch,
+                    loop_patch,
+                    body_block_patch: body_block,
+                };
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    is_continuable: true,
+                });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
                     self.capture_by_value_vars.push(loop_capture_name);
                 }
-                for s in body { self.compile_stmt(s)?; }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 if loop_capture_name.is_some() {
                     self.capture_by_value_vars.pop();
                 }
@@ -6402,7 +7100,10 @@ impl Compiler {
                     self.chunk().patch_block(bp);
                     self.label_depth -= 1;
                 }
-                if let Some(u) = update { self.compile_expr(u)?; self.emit(Op::DROP); }
+                if let Some(u) = update {
+                    self.compile_expr(u)?;
+                    self.emit(Op::DROP);
+                }
                 let line = self.line;
                 self.chunk().emit_br(0, line); // br loop
                 self.chunk().emit_end(line); // end loop
@@ -6415,7 +7116,16 @@ impl Compiler {
             }
 
             // ── ForIn / ForOf ───────────────────────────────────────────
-            StmtKind::ForIn { var, key, iter, body, else_body, of, is_async, .. } => {
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                else_body,
+                of,
+                is_async,
+                ..
+            } => {
                 // Specialisation: if `iter` is a direct call to a
                 // function the pre-pass tagged as a true generator,
                 // emit a `GEN_NEXT`-driven loop rather than the
@@ -6423,12 +7133,19 @@ impl Compiler {
                 // `for v in @generator_fn()` iterate lazily via the
                 // WASM stack-switching coroutine machinery.
                 if self.is_direct_generator_call(iter) {
-                    self.compile_generator_for_in(var, key.as_deref(), iter, body, else_body.as_deref())?;
+                    self.compile_generator_for_in(
+                        var,
+                        key.as_deref(),
+                        iter,
+                        body,
+                        else_body.as_deref(),
+                    )?;
                 } else {
                     let line = self.line;
                     self.compile_expr(iter)?;
                     let iter_slot = self.define_local("__forin_iter");
-                    self.emit_u16(Op::LOCAL_SET, iter_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, iter_slot);
+                    self.emit(Op::DROP);
 
                     let runtime_generator_done = if *of && key.is_none() {
                         // Large PHP foreach bodies can exceed the i16 reach of
@@ -6445,10 +7162,19 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let is_gen_idx = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen_idx, 1);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        };
                         self.chunk().emit_br_if(0, line);
 
-                        self.compile_generator_for_in_cont(var, key.as_deref(), iter_slot, body, else_body.as_deref())?;
+                        self.compile_generator_for_in_cont(
+                            var,
+                            key.as_deref(),
+                            iter_slot,
+                            body,
+                            else_body.as_deref(),
+                        )?;
                         self.chunk().emit_br(1, line);
 
                         self.chunk().emit_end(line);
@@ -6464,7 +7190,11 @@ impl Compiler {
                     // when the `iterator` property is a BYTECODE function (REF_IS_FUNC).
                     // Built-in Map/Set iterators store a HostFunction there and fall through
                     // to iter_drain below. Exits done_block (BR 1) after completing the loop.
-                    if self.is_js_profile() && *of && key.is_none() && runtime_generator_done.is_some() {
+                    if self.is_js_profile()
+                        && *of
+                        && key.is_none()
+                        && runtime_generator_done.is_some()
+                    {
                         let line = self.line;
                         let custom_iter_gate = self.chunk().emit_block(line);
                         self.label_depth += 1;
@@ -6476,11 +7206,19 @@ impl Compiler {
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
                         self.emit(Op::REF_IS_FUNC);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        };
                         self.chunk().emit_br_if(0, line); // not a bytecode fn → fall to iter_drain
 
                         // Custom iterable: lazy next() loop (supports break on infinite iterators).
-                        self.compile_for_of_custom_iterator_lazy(iter_slot, &var.clone(), body, else_body.as_deref())?;
+                        self.compile_for_of_custom_iterator_lazy(
+                            iter_slot,
+                            &var.clone(),
+                            body,
+                            else_body.as_deref(),
+                        )?;
                         // Loop finished — skip the iter_drain path entirely.
                         self.chunk().emit_br(1, line); // exit done_block
 
@@ -6504,22 +7242,30 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, iter_slot);
 
                     let iter_type_hint = match &iter.kind {
-                        ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+                        ExprKind::Ident(name) => {
+                            self.lookup_var_type_hint(name).map(str::to_string)
+                        }
                         _ => self.infer_expr_type_hint(iter),
                     };
 
-                    let iterates_dictionary_entries = key.is_none() && *of && iter_type_hint
-                        .as_deref()
-                        .map(Self::is_dictionary_type_hint)
-                        .unwrap_or(false);
-                    let iterates_sorted_dictionary_entries = key.is_none() && *of && iter_type_hint
-                        .as_deref()
-                        .map(Self::is_sorted_dictionary_type_hint)
-                        .unwrap_or(false);
-                    let iterates_sorted_set_values = key.is_none() && *of && iter_type_hint
-                        .as_deref()
-                        .map(Self::is_sorted_set_type_hint)
-                        .unwrap_or(false);
+                    let iterates_dictionary_entries = key.is_none()
+                        && *of
+                        && iter_type_hint
+                            .as_deref()
+                            .map(Self::is_dictionary_type_hint)
+                            .unwrap_or(false);
+                    let iterates_sorted_dictionary_entries = key.is_none()
+                        && *of
+                        && iter_type_hint
+                            .as_deref()
+                            .map(Self::is_sorted_dictionary_type_hint)
+                            .unwrap_or(false);
+                    let iterates_sorted_set_values = key.is_none()
+                        && *of
+                        && iter_type_hint
+                            .as_deref()
+                            .map(Self::is_sorted_set_type_hint)
+                            .unwrap_or(false);
 
                     // Pick the polymorphic iteration primitive. All three
                     // dispatch on Array / Map / Ordinary uniformly so PHP
@@ -6530,7 +7276,11 @@ impl Compiler {
                     //   for k => v in X  → entries(X)       (PHP foreach, Ruby each_pair, JS for..of of Map/entries)
                     //   for k in X       → keys(X)          (JS for..in, Python dict iter-keys)
                     if key.is_some() || iterates_dictionary_entries {
-                        common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
+                        common::collections::emit_iter_entries(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
                     } else if *of {
                         common::collections::emit_iter_values(&mut self.chunks, self.current, line);
                     } else {
@@ -6544,7 +7294,8 @@ impl Compiler {
                     }
 
                     let arr_slot = self.define_local("__forin_arr");
-                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, arr_slot);
+                    self.emit(Op::DROP);
                     let idx_slot = self.define_local("__forin_idx");
                     // Allocate did_break slot BEFORE the for-in scaffolding
                     // so the assign-to-false initializer doesn't sit inside
@@ -6556,9 +7307,15 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, slot);
                         self.emit(Op::DROP);
                         Some(slot)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let lp = common::loops::emit_for_in_start(
-                        &mut self.chunks, self.current, arr_slot, idx_slot, line,
+                        &mut self.chunks,
+                        self.current,
+                        arr_slot,
+                        idx_slot,
+                        line,
                     );
                     // for_in_start emits: block + loop + cond + block $body = 3 labels
                     let break_depth = self.label_depth + 1; // outer block
@@ -6573,23 +7330,27 @@ impl Compiler {
                         //   DUP; index 0 → key_var
                         //   index 1 → value_var
                         let pair_slot = self.define_local("__forin_pair");
-                        self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, pair_slot);
+                        self.emit(Op::DROP);
                         // key = pair[0]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(0));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
                         let key_slot = self.define_local(k_name);
-                        self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, key_slot);
+                        self.emit(Op::DROP);
 
                         // var = pair[1]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(1));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
                         let var_slot = self.define_local(var);
-                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, var_slot);
+                        self.emit(Op::DROP);
                     } else if iterates_dictionary_entries {
                         let var_slot = self.define_local(var);
-                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, var_slot);
+                        self.emit(Op::DROP);
                     } else {
                         // Values path: TOS is the value, bind directly.
                         // `for await (let v of …)` per ECMA-262 §13.7.5
@@ -6598,38 +7359,62 @@ impl Compiler {
                         // promise values unwrap before the body runs;
                         // non-promises pass through unchanged.
                         if *is_async {
-                            self.emit(Op::PROMISE_SUSPEND);
+                            crate::emitter::functions::emit_await(self.chunk(), line);
                         }
-                        let value_type_hint = iter_type_hint
-                            .as_deref()
-                            .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string));
+                        let value_type_hint = iter_type_hint.as_deref().and_then(|type_hint| {
+                            type_hint
+                                .trim()
+                                .trim_end_matches('?')
+                                .trim()
+                                .strip_suffix("()")
+                                .map(str::to_string)
+                        });
                         let var_slot = if let Some(type_hint) = value_type_hint {
                             self.define_local_typed(var, Some(type_hint))
                         } else {
                             self.define_local(var)
                         };
-                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, var_slot);
+                        self.emit(Op::DROP);
                     }
 
                     self.loop_states.push(lp);
-                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot, is_continuable: true });
-                    for s in body { self.compile_stmt(s)?; }
+                    self.loops.push(LoopCtx {
+                        label: self.pending_label.take(),
+                        break_label_depth: break_depth,
+                        continue_label_depth: continue_depth,
+                        did_break_slot,
+                        is_continuable: true,
+                    });
+                    for s in body {
+                        self.compile_stmt(s)?;
+                    }
                     self.loops.pop();
                     let lp = self.loop_states.pop().unwrap();
                     common::loops::emit_for_in_end(
-                        &mut self.chunks, self.current, idx_slot, lp, line,
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        lp,
+                        line,
                     );
                     self.label_depth -= 3;
                     if let Some(else_stmts) = else_body {
                         // Python/Ruby for-else: skip else if any `break` fired.
                         // Wrap in `block { br_if 0 (if did_break); ...else... }`.
-                        let dbs = did_break_slot.expect("did_break_slot allocated when else_body present");
+                        let dbs = did_break_slot
+                            .expect("did_break_slot allocated when else_body present");
                         let skip = self.chunk().emit_block(line);
                         self.label_depth += 1;
                         self.emit_u16(Op::LOCAL_GET, dbs);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_br_if(0, line); // skip else if did_break
-                        for s in else_stmts { self.compile_stmt(s)?; }
+                        for s in else_stmts {
+                            self.compile_stmt(s)?;
+                        }
                         self.chunk().emit_end(line);
                         self.chunk().patch_block(skip);
                         self.label_depth -= 1;
@@ -6651,8 +7436,16 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2;
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
-                for s in body { self.compile_stmt(s)?; }
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    is_continuable: true,
+                });
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 self.compile_expr(cond)?;
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
@@ -6662,20 +7455,35 @@ impl Compiler {
             }
 
             // ── Switch / Select Case ────────────────────────────────────
-            StmtKind::Switch { expr, cases, default } => {
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 // Save switch expression to a local so checks can read it
                 // without leaving it on the stack during body execution.
                 self.compile_expr(expr)?;
                 let sw_slot = self.define_local("__sw_expr");
-                self.emit_u16(Op::LOCAL_SET, sw_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, sw_slot);
+                self.emit(Op::DROP);
 
                 // Switch uses a BLOCK for break — push onto loop stack so break can find it
                 let line = self.line;
                 let switch_block = self.chunk().emit_block(line);
                 self.label_depth += 1;
-                let switch_lp = common::loops::LoopState { block_patch: switch_block, loop_patch: 0, body_block_patch: None };
+                let switch_lp = common::loops::LoopState {
+                    block_patch: switch_block,
+                    loop_patch: 0,
+                    body_block_patch: None,
+                };
                 self.loop_states.push(switch_lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None, is_continuable: false });
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: self.label_depth,
+                    continue_label_depth: self.label_depth,
+                    did_break_slot: None,
+                    is_continuable: false,
+                });
 
                 // Merge legacy `default` field into the cases list.
                 // New walkers emit default as a case with empty conditions
@@ -6685,7 +7493,10 @@ impl Compiler {
                 let default_case_storage;
                 if let Some(def) = default {
                     if !def.is_empty() && !cases.iter().any(|c| c.conditions.is_empty()) {
-                        default_case_storage = SwitchCase { conditions: vec![], body: def.clone() };
+                        default_case_storage = SwitchCase {
+                            conditions: vec![],
+                            body: def.clone(),
+                        };
                         all_cases.push(&default_case_storage);
                     }
                 }
@@ -6713,9 +7524,15 @@ impl Compiler {
                                 if self.is_js_profile() {
                                     self.compile_binop(&BinOp::StrictEq);
                                 } else {
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                    };
                                 }
-                                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                };
                                 self.chunk().emit_if(line);
                                 self.emit_const(Value::Bool(true));
                                 self.emit_u16(Op::LOCAL_SET, case_match_slot);
@@ -6725,13 +7542,25 @@ impl Compiler {
                             CaseCondition::Range { from, to } => {
                                 self.emit_u16(Op::LOCAL_GET, sw_slot);
                                 self.compile_expr(from)?;
-                                { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-                                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                                };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                };
                                 self.chunk().emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, sw_slot);
                                 self.compile_expr(to)?;
-                                { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); };
-                                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                                };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                };
                                 self.chunk().emit_if(line);
                                 self.emit_const(Value::Bool(true));
                                 self.emit_u16(Op::LOCAL_SET, case_match_slot);
@@ -6743,14 +7572,35 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, sw_slot);
                                 self.compile_expr(cmp_expr)?;
                                 match op {
-                                    ComparisonOp::Eq => { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); },
-                                    ComparisonOp::NotEq => { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); },
-                                    ComparisonOp::Lt => { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); },
-                                    ComparisonOp::LtEq => { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); },
-                                    ComparisonOp::Gt => { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); },
-                                    ComparisonOp::GtEq => { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); },
+                                    ComparisonOp::Eq => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                    }
+                                    ComparisonOp::NotEq => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                                    }
+                                    ComparisonOp::Lt => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                                    }
+                                    ComparisonOp::LtEq => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                                    }
+                                    ComparisonOp::Gt => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                                    }
+                                    ComparisonOp::GtEq => {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                                    }
                                 }
-                                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                };
                                 self.chunk().emit_if(line);
                                 self.emit_const(Value::Bool(true));
                                 self.emit_u16(Op::LOCAL_SET, case_match_slot);
@@ -6762,11 +7612,20 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, dispatch_slot);
                     self.emit_const(Value::F64(0.0));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, case_match_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_const(Value::F64(i as f64));
                     self.emit_u16(Op::LOCAL_SET, dispatch_slot);
@@ -6779,8 +7638,14 @@ impl Compiler {
                 if let Some(default_idx) = default_idx {
                     self.emit_u16(Op::LOCAL_GET, dispatch_slot);
                     self.emit_const(Value::F64(0.0));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_const(Value::F64(default_idx as f64));
                     self.emit_u16(Op::LOCAL_SET, dispatch_slot);
@@ -6792,21 +7657,38 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, dispatch_slot);
                     self.emit_const(Value::F64(i as f64));
                     if self.profile.switch_fallthrough {
-                        { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if_value(line);
                         self.emit_u16(Op::LOCAL_GET, dispatch_slot);
                         self.emit_const(Value::F64(0.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                        };
                         self.chunk().emit_else(line);
                         self.emit_const(Value::Bool(false));
                         self.chunk().emit_end(line);
                     } else {
-                        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        };
                     }
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
-                    for s in &case.body { self.compile_stmt(s)?; }
+                    for s in &case.body {
+                        self.compile_stmt(s)?;
+                    }
                     self.chunk().emit_end(line);
                 }
                 self.loops.pop();
@@ -6818,7 +7700,12 @@ impl Compiler {
             }
 
             // ── Try / Catch / Finally ───────────────────────────────────
-            StmtKind::Try { body, catches, else_body, finally } => {
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
                 let line = self.line;
                 let finally_exc_slot = if catches.is_empty() && finally.is_some() {
                     let slot = self.define_local("__try_finally_exc");
@@ -6831,15 +7718,21 @@ impl Compiler {
                 };
                 let after_try_block = self.chunk().emit_block(line);
                 self.label_depth += 1;
-                let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                let catch_jump =
+                    common::errors::emit_try_start(&mut self.chunks[self.current], line);
                 if let Some(fin) = finally.clone() {
-                    self.active_finally_blocks.push(FinallyAction::Statements(fin));
+                    self.active_finally_blocks
+                        .push(FinallyAction::Statements(fin));
                 }
-                for s in body { self.compile_stmt(s)?; }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 // Python else: runs if no exception
                 if let Some(else_stmts) = else_body {
-                    for s in else_stmts { self.compile_stmt(s)?; }
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
                 }
                 self.chunk().emit_br(0, line);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
@@ -6866,11 +7759,13 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, handled_slot);
                     self.emit(Op::DROP);
                     for c in catches {
-                        let types: Vec<&str> = c.types.iter()
+                        let types: Vec<&str> = c
+                            .types
+                            .iter()
                             .map(|t| common::errors::canonical_exception_name(t))
                             .collect();
-                        let is_catch_all = types.is_empty()
-                            || types.iter().any(|t| *t == "Exception");
+                        let is_catch_all =
+                            types.is_empty() || types.iter().any(|t| *t == "Exception");
 
                         let arm_match_slot = self.define_local("__catch_arm_match");
                         self.emit_const(Value::Bool(is_catch_all));
@@ -6892,13 +7787,21 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
                                     let key = self.str_const("__exception_type");
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::STRUCT_GET, key, line);
+                                    self.chunks[self.current].emit_op_u16(
+                                        Op::STRUCT_GET,
+                                        key,
+                                        line,
+                                    );
                                     let v = self.str_const(expected);
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::CONST, v, line);
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                    self.chunks[self.current].emit_op_u16(Op::CONST, v, line);
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                    };
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                    };
                                     self.chunk().emit_if(line);
                                     self.emit_const(Value::Bool(true));
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -6915,13 +7818,21 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
                                     let key = self.str_const("__type");
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::STRUCT_GET, key, line);
+                                    self.chunks[self.current].emit_op_u16(
+                                        Op::STRUCT_GET,
+                                        key,
+                                        line,
+                                    );
                                     let v = self.str_const(expected);
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::CONST, v, line);
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                    self.chunks[self.current].emit_op_u16(Op::CONST, v, line);
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                    };
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                    };
                                     self.chunk().emit_if(line);
                                     self.emit_const(Value::Bool(true));
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -6936,21 +7847,35 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
                                     let types_key = self.str_const("__types");
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::STRUCT_GET, types_key, line);
+                                    self.chunks[self.current].emit_op_u16(
+                                        Op::STRUCT_GET,
+                                        types_key,
+                                        line,
+                                    );
                                     self.emit(Op::REF_IS_NULL);
                                     self.chunk().emit_if_value(line);
                                     self.emit(Op::FALSE);
                                     self.chunk().emit_else(line);
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let types_key = self.str_const("__types");
-                                    self.chunks[self.current]
-                                        .emit_op_u16(Op::STRUCT_GET, types_key, line);
-                                    let expected_const = Value::String(Arc::from(expected.as_str()));
+                                    self.chunks[self.current].emit_op_u16(
+                                        Op::STRUCT_GET,
+                                        types_key,
+                                        line,
+                                    );
+                                    let expected_const =
+                                        Value::String(Arc::from(expected.as_str()));
                                     self.emit_const(expected_const);
-                                    common::collections::emit_contains(&mut self.chunks, self.current, line);
+                                    common::collections::emit_contains(
+                                        &mut self.chunks,
+                                        self.current,
+                                        line,
+                                    );
                                     self.chunk().emit_end(line);
-                                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                                    {
+                                        let line = self.line;
+                                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                    };
                                     self.chunk().emit_if(line);
                                     self.emit_const(Value::Bool(true));
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -6961,11 +7886,17 @@ impl Compiler {
                         }
 
                         self.emit_u16(Op::LOCAL_GET, handled_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if_value(line);
                         self.emit_u16(Op::LOCAL_GET, arm_match_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_else(line);
                         self.emit_const(Value::Bool(false));
                         self.chunk().emit_end(line);
@@ -6983,12 +7914,17 @@ impl Compiler {
 
                         if let Some(cond) = &c.when_clause {
                             self.compile_expr(cond)?;
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
                         }
 
                         self.catch_depth += 1;
-                        for s in &c.body { self.compile_stmt(s)?; }
+                        for s in &c.body {
+                            self.compile_stmt(s)?;
+                        }
                         self.catch_depth = self.catch_depth.saturating_sub(1);
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, handled_slot);
@@ -7001,7 +7937,10 @@ impl Compiler {
                     }
                     // Fallthrough = no arm matched. Re-throw (through finally if any).
                     self.emit_u16(Op::LOCAL_GET, handled_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, exc_slot);
@@ -7015,7 +7954,9 @@ impl Compiler {
                     self.active_finally_blocks.pop();
                 }
                 if let Some(fin) = finally {
-                    for s in fin { self.compile_stmt(s)?; }
+                    for s in fin {
+                        self.compile_stmt(s)?;
+                    }
                 }
                 if let Some(exc_slot) = finally_exc_slot {
                     if self.catch_depth > 0 {
@@ -7042,7 +7983,9 @@ impl Compiler {
                 if let (Some(n), Some(v)) = (multi_n, val) {
                     if let ExprKind::Tuple(elems) = &v.kind {
                         if elems.len() == n as usize {
-                            for elem in elems { self.compile_expr(elem)?; }
+                            for elem in elems {
+                                self.compile_expr(elem)?;
+                            }
                             self.emit_return_through_finally(n as usize)?;
                             return Ok(());
                         }
@@ -7095,7 +8038,10 @@ impl Compiler {
                         }
                     }
                     BreakTarget::Label(label) => {
-                        if let Some(slot) = self.loops.iter().rev()
+                        if let Some(slot) = self
+                            .loops
+                            .iter()
+                            .rev()
                             .find(|c| c.label.as_deref() == Some(label))
                             .and_then(|c| c.did_break_slot)
                         {
@@ -7118,7 +8064,9 @@ impl Compiler {
             StmtKind::Continue(target) => {
                 let line = self.line;
                 match target {
-                    ContinueTarget::Implicit | ContinueTarget::Kind(_) | ContinueTarget::Level(_) => {
+                    ContinueTarget::Implicit
+                    | ContinueTarget::Kind(_)
+                    | ContinueTarget::Level(_) => {
                         if let Some(depth) = self.continue_depth(None) {
                             self.chunk().emit_br(depth.into(), line);
                         }
@@ -7133,7 +8081,11 @@ impl Compiler {
 
             // ── Throw ───────────────────────────────────────────────────
             StmtKind::Throw { expr, cause: _ } => {
-                if let Some(v) = expr { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
+                if let Some(v) = expr {
+                    self.compile_expr(v)?;
+                } else {
+                    self.emit(Op::NULL);
+                }
                 // Inside a catch arm, the VM exception handler is no longer active for
                 // this try block, so we must inline the finally block before throwing.
                 // In the try body, the VM routes exceptions to the catch handler first.
@@ -7146,17 +8098,44 @@ impl Compiler {
             }
 
             // ── Function declaration ────────────────────────────────────
-            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async, is_generator, is_sub } => {
-                self.compile_function_decl(name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body,
+                modifiers: _,
+                handles,
+                is_async,
+                is_generator,
+                is_sub,
+            } => {
+                self.compile_function_decl(
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    *is_sub,
+                    *is_generator,
+                    handles,
+                    *is_async,
+                )?;
             }
 
             // ── Class declaration ───────────────────────────────────────
-            StmtKind::ClassDecl { name, parents, interfaces, members, modifiers, .. } => {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                interfaces,
+                members,
+                modifiers,
+                ..
+            } => {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
                 self.defined_classes.insert(cname.clone());
                 let inferred_parents;
-                let effective_parents: &[String] = if self.should_infer_winforms_form(name, parents) {
+                let effective_parents: &[String] = if self.should_infer_winforms_form(name, parents)
+                {
                     inferred_parents = vec!["Form".to_string()];
                     &inferred_parents
                 } else {
@@ -7190,7 +8169,15 @@ impl Compiler {
             // Compiles to a namespace object: Color = { Red: 0, Green: 1, Blue: 2 }
             // Bare member references (e.g. Pascal `c := Green`) are resolved at
             // compile time via the enum_members map.
-            StmtKind::EnumDecl { name, members, is_flags, backing_type, interfaces, body_members, .. } => {
+            StmtKind::EnumDecl {
+                name,
+                members,
+                is_flags,
+                backing_type,
+                interfaces,
+                body_members,
+                ..
+            } => {
                 let cname = self.canon(name);
                 if *is_flags {
                     self.enum_flags.insert(cname.clone());
@@ -7200,11 +8187,13 @@ impl Compiler {
 
                 match self.profile.name.as_str() {
                     "dart" => {
-                        self.compile_dart_enum_decl(name, interfaces, body_members, members, stmt.span)?;
-                        return Ok(());
-                    }
-                    "php" => {
-                        self.compile_php_enum_decl(name, backing_type.as_ref(), interfaces, body_members, members, stmt.span)?;
+                        self.compile_dart_enum_decl(
+                            name,
+                            interfaces,
+                            body_members,
+                            members,
+                            stmt.span,
+                        )?;
                         return Ok(());
                     }
                     _ => {}
@@ -7241,7 +8230,14 @@ impl Compiler {
                 self.defined_classes.insert(cn.clone());
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cn, &[], &[], members, &crate::ast::ClassModifiers::default(), true,
+                    self,
+                    span,
+                    &cn,
+                    &[],
+                    &[],
+                    members,
+                    &crate::ast::ClassModifiers::default(),
+                    true,
                 )?;
             }
 
@@ -7275,7 +8271,9 @@ impl Compiler {
                                 member_names.push(mn);
                             }
                         }
-                        ClassMember::Field { name: fname, init, .. } => {
+                        ClassMember::Field {
+                            name: fname, init, ..
+                        } => {
                             if let Some(init_expr) = init {
                                 self.compile_expr(init_expr)?;
                             } else {
@@ -7288,7 +8286,9 @@ impl Compiler {
                             self.defined_globals.insert(cname.clone());
                             member_names.push(cname);
                         }
-                        ClassMember::Const { name: cname, value, .. } => {
+                        ClassMember::Const {
+                            name: cname, value, ..
+                        } => {
                             // Compile value once, install as global
                             // `<Class>.<Const>` (legacy access path)
                             // AND stamp on the class object so PHP
@@ -7331,7 +8331,9 @@ impl Compiler {
                                 | StmtKind::StructDecl { name: cname, .. }
                                 | StmtKind::EnumDecl { name: cname, .. }
                                 | StmtKind::InterfaceDecl { name: cname, .. }
-                                | StmtKind::ModuleDecl { name: cname, .. } => Some(self.canon(cname)),
+                                | StmtKind::ModuleDecl { name: cname, .. } => {
+                                    Some(self.canon(cname))
+                                }
                                 _ => None,
                             } {
                                 member_names.push(cn);
@@ -7454,7 +8456,11 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.defined_globals.insert(ns_name.clone());
 
-                let namespace_parts: Vec<&str> = ns_name.split('.').map(|part| part.trim()).filter(|part| !part.is_empty()).collect();
+                let namespace_parts: Vec<&str> = ns_name
+                    .split('.')
+                    .map(|part| part.trim())
+                    .filter(|part| !part.is_empty())
+                    .collect();
                 if namespace_parts.len() > 1 {
                     for depth in 1..namespace_parts.len() {
                         let parent_name = self.canon(&namespace_parts[..depth].join("."));
@@ -7496,10 +8502,13 @@ impl Compiler {
                     } else {
                         self.define_local("__with_target")
                     };
-                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
                     self.with_targets.push(slot);
                 }
-                for s in body { self.compile_stmt(s)?; }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 if !items.is_empty() {
                     self.with_targets.pop();
                 }
@@ -7518,20 +8527,29 @@ impl Compiler {
             // C# semantic exercised by `using_disposes_on_exception`.
             // Cross-language: Python `with`, Java try-with-resources,
             // JS Stage 3 `using` share the same lowering.
-            StmtKind::Using { var, resource, body } => {
+            StmtKind::Using {
+                var,
+                resource,
+                body,
+            } => {
                 self.compile_expr(resource)?;
                 let slot = self.define_local(var);
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
 
                 let line = self.line;
                 let after_using_try = self.chunk().emit_block(line);
-                let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
-                self.active_finally_blocks.push(FinallyAction::ResourceDispose {
-                    slot,
-                    method: "Dispose".to_string(),
-                    line,
-                });
-                for s in body { self.compile_stmt(s)?; }
+                let catch_jump =
+                    common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                self.active_finally_blocks
+                    .push(FinallyAction::ResourceDispose {
+                        slot,
+                        method: "Dispose".to_string(),
+                        line,
+                    });
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
                 self.active_finally_blocks.pop();
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.chunk().emit_br(0, line);
@@ -7539,11 +8557,10 @@ impl Compiler {
                 // Catch arm: dispose, then rethrow the exception
                 // (which is on TOS after `patch_catch`).
                 let exc_slot = self.define_local("__using_exc");
-                self.emit_u16(Op::LOCAL_SET, exc_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, exc_slot);
+                self.emit(Op::DROP);
                 self.label_depth += 1;
-                common::errors::emit_resource_dispose(
-                    self.chunk(), slot, "Dispose", line,
-                );
+                common::errors::emit_resource_dispose(self.chunk(), slot, "Dispose", line);
                 self.label_depth -= 1;
                 self.emit_u16(Op::LOCAL_GET, exc_slot);
                 common::errors::emit_throw(&mut self.chunks[self.current], line);
@@ -7551,16 +8568,16 @@ impl Compiler {
                 self.chunk().emit_end(line);
                 self.chunk().patch_block(after_using_try);
                 self.label_depth += 1;
-                common::errors::emit_resource_dispose(
-                    self.chunk(), slot, "Dispose", line,
-                );
+                common::errors::emit_resource_dispose(self.chunk(), slot, "Dispose", line);
                 self.label_depth -= 1;
             }
 
             // ── Lock ────────────────────────────────────────────────────
             StmtKind::Lock { body, .. } => {
                 // No real locking in our VM — just compile body
-                for s in body { self.compile_stmt(s)?; }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
             }
 
             // ── ReDim ───────────────────────────────────────────────────
@@ -7568,7 +8585,11 @@ impl Compiler {
             // `ReDim Preserve arr(N)` allocates a new array AND copies the
             // old elements over (extending with defaults if growing). The
             // upper bound is inclusive (N → N+1 length).
-            StmtKind::ReDim { array, bounds, preserve } => {
+            StmtKind::ReDim {
+                array,
+                bounds,
+                preserve,
+            } => {
                 if let Some(size_expr) = bounds.first() {
                     let line = self.line;
                     if *preserve {
@@ -7587,33 +8608,53 @@ impl Compiler {
 
                         // old = arr
                         self.emit_var_get(array);
-                        self.emit_u16(Op::LOCAL_SET, old_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, old_slot);
+                        self.emit(Op::DROP);
                         // new_len = N + 1
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-                        self.emit_u16(Op::LOCAL_SET, new_len_slot); self.emit(Op::DROP);
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        self.emit_u16(Op::LOCAL_SET, new_len_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, old_slot);
                         common::collections::emit_len(&mut self.chunks, self.current, line);
-                        self.emit_u16(Op::LOCAL_SET, old_len_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, old_len_slot);
+                        self.emit(Op::DROP);
                         // new = newWithLength(new_len) via common::collections
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
-                        self.emit_u16(Op::LOCAL_SET, new_slot); self.emit(Op::DROP);
+                        common::collections::emit_new_with_length(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit_u16(Op::LOCAL_SET, new_slot);
+                        self.emit(Op::DROP);
 
                         // Iterate old array with the canonical for-in helper.
                         // The helper leaves [element] on the stack each pass
                         // and exposes the index in `idx_slot`.
                         let lp = common::loops::emit_for_in_start(
-                            &mut self.chunks, self.current, old_slot, idx_slot, line);
+                            &mut self.chunks,
+                            self.current,
+                            old_slot,
+                            idx_slot,
+                            line,
+                        );
                         // Stack: [element]. If idx >= new_len, drop and break
                         // (don't write past the new array). Otherwise
                         // new[idx] = element.
                         let elem_slot = self.define_local("__redim_el");
-                        self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, elem_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        };
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         // in bounds: new[idx] = element via common::collections::emit_set.
@@ -7626,17 +8667,26 @@ impl Compiler {
                         self.chunk().emit_end(line);
 
                         common::loops::emit_for_in_end(
-                            &mut self.chunks, self.current, idx_slot, lp, line);
+                            &mut self.chunks,
+                            self.current,
+                            idx_slot,
+                            lp,
+                            line,
+                        );
 
                         // Fill any grown tail with the array's default value.
                         // Until arrays carry static element metadata, infer the
                         // default from the first existing element's runtime
                         // category: numbers -> 0, bools -> false, refs -> null.
                         self.emit(Op::NULL);
-                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, old_len_slot);
                         self.emit_const(Value::F64(0.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                        };
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
 
@@ -7644,34 +8694,47 @@ impl Compiler {
                         self.emit(Op::I32_CONST_0);
                         common::collections::emit_get(&mut self.chunks, self.current, line);
                         let seed_slot = self.define_local("__redim_seed");
-                        self.emit_u16(Op::LOCAL_SET, seed_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, seed_slot);
+                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, seed_slot);
                         self.emit(Op::REF_IS_BOOL);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit(Op::FALSE);
-                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.emit(Op::DROP);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, seed_slot);
                         self.emit(Op::REF_IS_NUMBER);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit(Op::I32_CONST_0);
-                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
 
                         self.emit_u16(Op::LOCAL_GET, old_len_slot);
-                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
+                        self.emit(Op::DROP);
                         let fill_block = self.chunk().emit_block(line);
                         let (fill_loop, _) = self.chunk().emit_loop_s(line);
                         self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_br_if(1, line);
 
                         self.emit_u16(Op::LOCAL_GET, new_slot);
@@ -7682,8 +8745,12 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
                         self.emit_const(Value::F64(1.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot); self.emit(Op::DROP);
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
+                        self.emit(Op::DROP);
                         self.chunk().emit_br(0, line);
                         self.chunk().emit_end(line);
                         self.chunk().patch_loop(fill_loop);
@@ -7700,8 +8767,15 @@ impl Compiler {
                         let line = self.line;
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        common::collections::emit_new_with_length(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
                         self.emit_var_set(array);
                     }
                 }
@@ -7715,7 +8789,6 @@ impl Compiler {
             //
             // The handler is registered under the SOURCE-CODE-STABLE control
             // identifier (field name, class name for `Me`/`This`, or runtime
-
             StmtKind::Erase { array } => {
                 let line = self.line;
                 let Some(binding) = self.lookup_array_binding(array).cloned() else {
@@ -7769,11 +8842,19 @@ impl Compiler {
             // `__control_name` for general expressions). This decouples the
             // registry key from the runtime `.Name` property — renaming a
             // control via `btn.Name = "x"` doesn't break wired-up handlers.
-            StmtKind::AddHandler { control, event, handler } => {
+            StmtKind::AddHandler {
+                control,
+                event,
+                handler,
+            } => {
                 self.compile_add_handler_stmt(control, event, handler)?;
             }
 
-            StmtKind::RemoveHandler { control, event, handler } => {
+            StmtKind::RemoveHandler {
+                control,
+                event,
+                handler,
+            } => {
                 self.compile_remove_handler_stmt(control, event, handler)?;
             }
 
@@ -7784,11 +8865,16 @@ impl Compiler {
             // ── VB legacy error handling ────────────────────────────────
             StmtKind::OnErrorResumeNext => { /* no-op in bytecode VM */ }
             StmtKind::OnErrorGoTo(_) => { /* no-op */ }
-            StmtKind::GoTo(_) => { /* no-op — structured bytecode doesn't support arbitrary gotos */ }
+            StmtKind::GoTo(_) => { /* no-op — structured bytecode doesn't support arbitrary gotos */
+            }
             StmtKind::Label(_) => { /* no-op */ }
 
             // ── VB legacy file I/O ──────────────────────────────────────
-            StmtKind::OpenFile { path, mode, file_number } => {
+            StmtKind::OpenFile {
+                path,
+                mode,
+                file_number,
+            } => {
                 let path_slot = self.define_local("__vb_open_path");
                 let file_slot = self.define_local("__vb_open_file_number");
                 let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
@@ -7874,19 +8960,26 @@ impl Compiler {
             }
             StmtKind::PrintFile { file_number, items } => {
                 self.compile_expr(file_number)?;
-                for item in items { self.compile_expr(item)?; }
+                for item in items {
+                    self.compile_expr(item)?;
+                }
                 let idx = self.import("wasi:filesystem", "printFile");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::DROP);
             }
             StmtKind::WriteFile { file_number, items } => {
                 self.compile_expr(file_number)?;
-                for item in items { self.compile_expr(item)?; }
+                for item in items {
+                    self.compile_expr(item)?;
+                }
                 let idx = self.import("wasi:filesystem", "writeFile_handle");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::DROP);
             }
-            StmtKind::InputFile { file_number, variables } => {
+            StmtKind::InputFile {
+                file_number,
+                variables,
+            } => {
                 let file_slot = self.define_local("__vb_input_file_number");
                 let values_slot = self.define_local("__vb_input_values");
                 let rows_slot = self.define_local("__vb_input_rows");
@@ -7899,7 +8992,11 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
-                self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_global_map_get_into_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    idx_slot,
+                );
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -7937,15 +9034,25 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, idx_slot);
                 self.emit(Op::DROP);
 
-                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_global_map_set_from_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    idx_slot,
+                );
 
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                };
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
-            StmtKind::LineInput { file_number, variable } => {
+            StmtKind::LineInput {
+                file_number,
+                variable,
+            } => {
                 let file_slot = self.define_local("__vb_line_input_file_number");
                 let rows_slot = self.define_local("__vb_line_input_rows");
                 let len_slot = self.define_local("__vb_line_input_len");
@@ -7957,7 +9064,11 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
-                self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_global_map_get_into_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    idx_slot,
+                );
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -7981,15 +9092,27 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, idx_slot);
                 self.emit(Op::DROP);
 
-                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_global_map_set_from_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    idx_slot,
+                );
 
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                };
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
-            StmtKind::StartFile { file_number, key_index, key_value, relation } => {
+            StmtKind::StartFile {
+                file_number,
+                key_index,
+                key_value,
+                relation,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_start_file_number");
                 let rows_slot = self.define_local("__vb_start_rows");
@@ -8012,7 +9135,13 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, found_slot);
                 self.emit(Op::DROP);
 
-                let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, rows_slot, idx_slot, line);
+                let state = common::loops::emit_for_in_start(
+                    &mut self.chunks,
+                    self.current,
+                    rows_slot,
+                    idx_slot,
+                    line,
+                );
                 self.emit_u16(Op::LOCAL_SET, row_slot);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, row_slot);
@@ -8025,27 +9154,57 @@ impl Compiler {
                 self.emit(Op::ARRAY_GET);
                 self.emit_u16(Op::LOCAL_GET, key_slot);
                 self.emit_file_key_compare(*relation);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_SET, found_slot);
                 self.emit(Op::DROP);
                 self.chunks[self.current].emit_br(state.break_depth(0).into(), line);
                 self.chunk().emit_end(line);
-                common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+                common::loops::emit_for_in_end(
+                    &mut self.chunks,
+                    self.current,
+                    idx_slot,
+                    state,
+                    line,
+                );
 
                 self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
                 self.emit_u16(Op::LOCAL_GET, found_slot);
                 self.emit(Op::REF_IS_NULL);
                 self.chunk().emit_if(line);
-                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, len_slot);
-                self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                self.emit_global_map_set_from_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    len_slot,
+                );
+                self.emit_global_map_set_const(
+                    "__vb_file_eof_by_handle",
+                    file_slot,
+                    Value::Bool(true),
+                );
                 self.chunk().emit_else(line);
-                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, found_slot);
-                self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                self.emit_global_map_set_from_local(
+                    "__vb_record_next_index_by_handle",
+                    file_slot,
+                    found_slot,
+                );
+                self.emit_global_map_set_const(
+                    "__vb_file_eof_by_handle",
+                    file_slot,
+                    Value::Bool(false),
+                );
                 self.chunk().emit_end(line);
             }
-            StmtKind::InputRecordFile { file_number, variables, key_index, key_value } => {
+            StmtKind::InputRecordFile {
+                file_number,
+                variables,
+                key_index,
+                key_value,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_record_file_number");
                 let rows_slot = self.define_local("__vb_record_rows");
@@ -8054,7 +9213,9 @@ impl Compiler {
                 let row_slot = self.define_local("__vb_record_row");
                 let values_slot = self.define_local("__vb_record_values");
                 let found_slot = self.define_local("__vb_record_found");
-                let key_slot = key_value.as_ref().map(|_| self.define_local("__vb_record_key"));
+                let key_slot = key_value
+                    .as_ref()
+                    .map(|_| self.define_local("__vb_record_key"));
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -8072,7 +9233,13 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, found_slot);
                     self.emit(Op::DROP);
 
-                    let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, rows_slot, idx_slot, line);
+                    let state = common::loops::emit_for_in_start(
+                        &mut self.chunks,
+                        self.current,
+                        rows_slot,
+                        idx_slot,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_SET, row_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, row_slot);
@@ -8085,21 +9252,34 @@ impl Compiler {
                     self.emit(Op::ARRAY_GET);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
                     self.emit_file_key_compare(FileKeyRelation::Equal);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit_u16(Op::LOCAL_SET, found_slot);
                     self.emit(Op::DROP);
                     self.chunks[self.current].emit_br(state.break_depth(0).into(), line);
                     self.chunk().emit_end(line);
-                    common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        state,
+                        line,
+                    );
 
                     self.emit_u16(Op::LOCAL_GET, found_slot);
                     self.emit(Op::REF_IS_NULL);
                     self.chunk().emit_if(line);
                     self.emit_record_assign_nulls(variables);
                     self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
-                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(true),
+                    );
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, rows_slot);
                     self.emit_u16(Op::LOCAL_GET, found_slot);
@@ -8112,17 +9292,33 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, values_slot);
                     self.emit(Op::DROP);
                     self.emit_record_assign_values_from_local(values_slot, variables);
-                    self.emit_global_map_set_from_local("__vb_record_current_index_by_handle", file_slot, found_slot);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_current_index_by_handle",
+                        file_slot,
+                        found_slot,
+                    );
                     self.emit_u16(Op::LOCAL_GET, found_slot);
                     self.emit(Op::I32_CONST_1);
                     self.emit(Op::I32_ADD);
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
                     self.emit(Op::DROP);
-                    self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
-                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(false),
+                    );
                     self.chunk().emit_end(line);
                 } else {
-                    self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                    self.emit_global_map_get_into_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::REF_IS_NULL);
                     self.chunk().emit_if(line);
@@ -8133,7 +9329,10 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, rows_slot);
@@ -8147,22 +9346,42 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, values_slot);
                     self.emit(Op::DROP);
                     self.emit_record_assign_values_from_local(values_slot, variables);
-                    self.emit_global_map_set_from_local("__vb_record_current_index_by_handle", file_slot, idx_slot);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_current_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::I32_CONST_1);
                     self.emit(Op::I32_ADD);
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
                     self.emit(Op::DROP);
-                    self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
-                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(false),
+                    );
                     self.chunk().emit_else(line);
                     self.emit_record_assign_nulls(variables);
                     self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
-                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(true),
+                    );
                     self.chunk().emit_end(line);
                 }
             }
-            StmtKind::RewriteRecordFile { file_number, items, field_formats } => {
+            StmtKind::RewriteRecordFile {
+                file_number,
+                items,
+                field_formats,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_rewrite_file_number");
                 let rows_slot = self.define_local("__vb_rewrite_rows");
@@ -8177,7 +9396,11 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, file_slot);
                 self.emit(Op::DROP);
                 self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
-                self.emit_global_map_get_into_local("__vb_record_current_index_by_handle", file_slot, current_slot);
+                self.emit_global_map_get_into_local(
+                    "__vb_record_current_index_by_handle",
+                    file_slot,
+                    current_slot,
+                );
                 self.emit_u16(Op::LOCAL_GET, current_slot);
                 self.emit(Op::REF_IS_NULL);
                 self.emit(Op::I32_EQZ);
@@ -8185,9 +9408,16 @@ impl Compiler {
 
                 for (index, item) in items.iter().enumerate() {
                     self.compile_expr(item)?;
-                    self.emit_record_rewrite_field_format(field_formats.get(index).and_then(|format| format.as_ref()));
+                    self.emit_record_rewrite_field_format(
+                        field_formats.get(index).and_then(|format| format.as_ref()),
+                    );
                 }
-                common::collections::emit_array_new(&mut self.chunks, self.current, items.len() as u16, line);
+                common::collections::emit_array_new(
+                    &mut self.chunks,
+                    self.current,
+                    items.len() as u16,
+                    line,
+                );
                 self.emit_u16(Op::LOCAL_SET, items_slot);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, items_slot);
@@ -8220,7 +9450,11 @@ impl Compiler {
             }
 
             // ── Export ──────────────────────────────────────────────────
-            StmtKind::Export { declaration, default, .. } => {
+            StmtKind::Export {
+                declaration,
+                default,
+                ..
+            } => {
                 if let Some(decl) = declaration {
                     self.compile_stmt(decl)?;
                 }
@@ -8240,18 +9474,31 @@ impl Compiler {
                 // we need to emit a WASM block + LoopCtx so that `break label`
                 // can find the label (ECMA-262 §14.13: labeled block statements
                 // accept `break <label>`).
-                let is_loop_body = matches!(&body.kind,
-                    StmtKind::While { .. } | StmtKind::DoWhile { .. }
-                    | StmtKind::For { .. } | StmtKind::ForIn { .. }
-                    | StmtKind::Switch { .. }
+                let is_loop_body = matches!(
+                    &body.kind,
+                    StmtKind::While { .. }
+                        | StmtKind::DoWhile { .. }
+                        | StmtKind::For { .. }
+                        | StmtKind::ForIn { .. }
+                        | StmtKind::Switch { .. }
                 );
                 let block_patch = if !is_loop_body {
                     let line = self.line;
                     let bp = self.chunk().emit_block(line);
                     self.label_depth += 1;
-                    let lp = common::loops::LoopState { block_patch: bp, loop_patch: 0, body_block_patch: None };
+                    let lp = common::loops::LoopState {
+                        block_patch: bp,
+                        loop_patch: 0,
+                        body_block_patch: None,
+                    };
                     self.loop_states.push(lp);
-                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None, is_continuable: false });
+                    self.loops.push(LoopCtx {
+                        label: self.pending_label.take(),
+                        break_label_depth: self.label_depth,
+                        continue_label_depth: self.label_depth,
+                        did_break_slot: None,
+                        is_continuable: false,
+                    });
                     Some(bp)
                 } else {
                     None
@@ -8285,7 +9532,10 @@ impl Compiler {
                             self.emit_u16(Op::GLOBAL_GET, tostring_global);
                             self.compile_expr(expr)?;
                             self.emit_u8(Op::CALL_REF, 1);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                            };
                         }
                     }
                     common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
@@ -8293,47 +9543,47 @@ impl Compiler {
                     for expr in exprs {
                         self.compile_expr(expr)?;
                         if php_echo {
-                        // PHP: when echoing an object with `__toString`,
-                        // call the method and print its result. Other
-                        // values pass through. The check is a runtime
-                        // struct_get on the value's `__toString` slot;
-                        // if non-null, invoke as a method.
-                        //
-                        // Also: PHP `echo null;` writes no bytes (vs.
-                        // Vybe's normal flow which would log ""); skip
-                        // the log call when the expression is null so
-                        // test-runner output entries match PHP-stdout
-                        // bytes.
-                        let v_slot = self.define_local("__echo_v");
-                        self.emit_u16(Op::LOCAL_SET, v_slot);
-                        self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        self.emit(Op::I32_EQZ);
-                        let line = self.line;
-                        self.chunk().emit_if(line);
-                        // Probe __toString.
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        let ts_key = self.str_const("__toString");
-                        self.emit_u16(Op::STRUCT_GET, ts_key);
-                        let fn_slot = self.define_local("__echo_ts_fn");
-                        self.emit_u16(Op::LOCAL_SET, fn_slot);
-                        self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        self.emit(Op::I32_EQZ);
-                        let line = self.line;
-                        self.chunk().emit_if_value(line);
-                        // Has __toString — invoke (fn, this).
-                        self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        self.chunk().emit_end(line);
-                        self.emit_common("php.echo_stringify", 1, line);
-                        common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
-                        self.chunk().emit_end(line);
+                            // PHP: when echoing an object with `__toString`,
+                            // call the method and print its result. Other
+                            // values pass through. The check is a runtime
+                            // struct_get on the value's `__toString` slot;
+                            // if non-null, invoke as a method.
+                            //
+                            // Also: PHP `echo null;` writes no bytes (vs.
+                            // Vybe's normal flow which would log ""); skip
+                            // the log call when the expression is null so
+                            // test-runner output entries match PHP-stdout
+                            // bytes.
+                            let v_slot = self.define_local("__echo_v");
+                            self.emit_u16(Op::LOCAL_SET, v_slot);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, v_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            self.emit(Op::I32_EQZ);
+                            let line = self.line;
+                            self.chunk().emit_if(line);
+                            // Probe __toString.
+                            self.emit_u16(Op::LOCAL_GET, v_slot);
+                            let ts_key = self.str_const("__toString");
+                            self.emit_u16(Op::STRUCT_GET, ts_key);
+                            let fn_slot = self.define_local("__echo_ts_fn");
+                            self.emit_u16(Op::LOCAL_SET, fn_slot);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            self.emit(Op::I32_EQZ);
+                            let line = self.line;
+                            self.chunk().emit_if_value(line);
+                            // Has __toString — invoke (fn, this).
+                            self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            self.emit_u16(Op::LOCAL_GET, v_slot);
+                            self.emit_u8(Op::CALL_REF, 1);
+                            self.chunk().emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, v_slot);
+                            self.chunk().emit_end(line);
+                            self.emit_common("php.echo_stringify", 1, line);
+                            common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                            self.chunk().emit_end(line);
                         } else {
                             common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                         }
@@ -8360,7 +9610,8 @@ impl Compiler {
                                     if step.is_none() {
                                         self.compile_expr(object)?;
                                         let obj_tmp = self.define_local("__delete_slice_obj");
-                                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                                        self.emit(Op::DROP);
 
                                         if let Some(lower) = lower {
                                             self.compile_expr(lower)?;
@@ -8368,27 +9619,38 @@ impl Compiler {
                                             self.emit(Op::I32_CONST_0);
                                         }
                                         let start_tmp = self.define_local("__delete_slice_start");
-                                        self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+                                        self.emit_u16(Op::LOCAL_SET, start_tmp);
+                                        self.emit(Op::DROP);
 
                                         if let Some(upper) = upper {
                                             self.compile_expr(upper)?;
                                         } else {
                                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                            common::collections::emit_len(&mut self.chunks, self.current, line);
+                                            common::collections::emit_len(
+                                                &mut self.chunks,
+                                                self.current,
+                                                line,
+                                            );
                                         }
                                         let end_tmp = self.define_local("__delete_slice_end");
-                                        self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+                                        self.emit_u16(Op::LOCAL_SET, end_tmp);
+                                        self.emit(Op::DROP);
 
                                         self.emit_u16(Op::LOCAL_GET, end_tmp);
                                         self.emit_u16(Op::LOCAL_GET, start_tmp);
                                         self.emit(Op::I32_SUB);
                                         let count_tmp = self.define_local("__delete_slice_count");
-                                        self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+                                        self.emit_u16(Op::LOCAL_SET, count_tmp);
+                                        self.emit(Op::DROP);
 
                                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                                         self.emit_u16(Op::LOCAL_GET, start_tmp);
                                         self.emit_u16(Op::LOCAL_GET, count_tmp);
-                                        common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                                        common::collections::emit_remove_range(
+                                            &mut self.chunks,
+                                            self.current,
+                                            line,
+                                        );
                                         self.emit(Op::DROP);
                                         continue;
                                     }
@@ -8397,24 +9659,34 @@ impl Compiler {
 
                             self.compile_expr(object)?;
                             let obj_tmp = self.define_local("__delete_obj");
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                            self.emit(Op::DROP);
                             self.compile_expr(index)?;
                             let key_tmp = self.define_local("__delete_key");
-                            self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, key_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             let is_array_idx = self.import("ecma:array", "isArray");
-                            self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+                            self.chunk()
+                                .emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
                             self.chunk().emit(1, line);
                             self.emit(Op::I32_CONST_0);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                            };
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                             self.chunk().emit_if(line);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            common::collections::emit_remove_at(&mut self.chunks, self.current, line);
+                            common::collections::emit_remove_at(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DROP);
 
                             self.chunk().emit_else(line);
@@ -8434,7 +9706,10 @@ impl Compiler {
             // ── Assert ──────────────────────────────────────────────────
             StmtKind::Assert { test, msg } => {
                 self.compile_expr(test)?;
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.emit(Op::I32_EQZ);
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -8457,33 +9732,48 @@ impl Compiler {
                 let line = self.line;
                 self.compile_expr(subject)?;
                 let subject_slot = self.define_local("__match_subject");
-                self.emit_u16(Op::LOCAL_SET, subject_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, subject_slot);
+                self.emit(Op::DROP);
                 let matched_slot = self.define_local("__match_done");
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
                 self.emit(Op::DROP);
                 for case in cases {
                     self.emit_u16(Op::LOCAL_GET, matched_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if(line);
-                    let pattern_match_slot = self.emit_match_pattern_match_slot(&case.pattern, subject_slot)?;
+                    let pattern_match_slot =
+                        self.emit_match_pattern_match_slot(&case.pattern, subject_slot)?;
                     self.emit_u16(Op::LOCAL_GET, pattern_match_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     if let Some(guard) = &case.guard {
                         self.compile_expr(guard)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if(line);
                         self.emit_match_pattern_bindings(&case.pattern, subject_slot)?;
-                        for s in &case.body { self.compile_stmt(s)?; }
+                        for s in &case.body {
+                            self.compile_stmt(s)?;
+                        }
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, matched_slot);
                         self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                     } else {
                         self.emit_match_pattern_bindings(&case.pattern, subject_slot)?;
-                        for s in &case.body { self.compile_stmt(s)?; }
+                        for s in &case.body {
+                            self.compile_stmt(s)?;
+                        }
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, matched_slot);
                         self.emit(Op::DROP);
@@ -8621,152 +9911,12 @@ impl Compiler {
         self.compile_enum_decl_as_class(name, Some("Enum"), interfaces, synthetic_members, span)
     }
 
-    fn compile_php_enum_decl(
+
+    fn emit_match_pattern_match_slot(
         &mut self,
-        name: &str,
-        backing_type: Option<&String>,
-        interfaces: &[String],
-        body_members: &[ClassMember],
-        members: &[EnumMember],
-        span: Span,
-    ) -> Result<(), String> {
-        let mut synthetic_members = Vec::new();
-
-        synthetic_members.extend(body_members.iter().cloned());
-
-        if !members.is_empty() {
-            let elements: Vec<ArrayElement> = members.iter().map(|member| ArrayElement {
-                key: None,
-                value: Expression::new(ExprKind::StaticAccess {
-                    class: Box::new(Expression::ident(name)),
-                    member: Box::new(Expression::ident(&member.name)),
-                }),
-                spread: false,
-                by_ref: false,
-            }).collect();
-            let cases_method = Statement::new(StmtKind::FunctionDecl {
-                name: "cases".to_string(),
-                params: vec![],
-                return_type: Some("array".to_string()),
-                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Array(elements)))) )],
-                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
-                handles: Vec::new(),
-                is_async: false,
-                is_generator: false,
-                is_sub: false,
-            });
-            synthetic_members.push(ClassMember::Method(Box::new(cases_method)));
-        }
-
-        if backing_type.is_some() && members.iter().any(|member| member.value.is_some()) {
-            let mk_param = |param_name: &str| Param {
-                name: param_name.to_string(),
-                type_hint: None,
-                default: None,
-                pass_by: PassBy::Value,
-                is_rest: false,
-                is_kwargs: false,
-                is_optional: false,
-                is_nullable: false,
-            };
-            let case_ref = |case_name: &str| Expression::new(ExprKind::StaticAccess {
-                class: Box::new(Expression::ident(name)),
-                member: Box::new(Expression::ident(case_name)),
-            });
-            let build_match_chain = |fallback: Statement| -> Vec<Statement> {
-                let mut body = Vec::new();
-                for member in members {
-                    if let Some(backing) = member.value.clone() {
-                        let cond = Expression::new(ExprKind::Binary {
-                            op: BinOp::StrictEq,
-                            left: Box::new(Expression::ident("v")),
-                            right: Box::new(backing),
-                        });
-                        body.push(Statement::new(StmtKind::If {
-                            cond,
-                            then_body: vec![Statement::new(StmtKind::Return(Some(case_ref(&member.name))))],
-                            elifs: Vec::new(),
-                            else_body: None,
-                        }));
-                    }
-                }
-                body.push(fallback);
-                body
-            };
-
-            let try_from_method = Statement::new(StmtKind::FunctionDecl {
-                name: "tryFrom".to_string(),
-                params: vec![mk_param("v")],
-                return_type: None,
-                body: build_match_chain(Statement::new(StmtKind::Return(Some(Expression::null())))),
-                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
-                handles: Vec::new(),
-                is_async: false,
-                is_generator: false,
-                is_sub: false,
-            });
-            synthetic_members.push(ClassMember::Method(Box::new(try_from_method)));
-
-            let from_method = Statement::new(StmtKind::FunctionDecl {
-                name: "from".to_string(),
-                params: vec![mk_param("v")],
-                return_type: None,
-                body: build_match_chain(Statement::new(StmtKind::Throw {
-                    expr: Some(Expression::new(ExprKind::New {
-                        class: Box::new(Expression::ident("Error")),
-                        args: vec![Argument::positional(Expression::string(&format!("Invalid backing value for enum \"{}\"", name)))],
-                    })),
-                    cause: None,
-                })),
-                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
-                handles: Vec::new(),
-                is_async: false,
-                is_generator: false,
-                is_sub: false,
-            });
-            synthetic_members.push(ClassMember::Method(Box::new(from_method)));
-        }
-
-        self.compile_enum_decl_as_class(name, None, interfaces, synthetic_members, span)?;
-
-        let class_global = self.str_const(&self.canon(name));
-        let name_key = self.str_const("name");
-        let value_key = self.str_const("value");
-        for member in members {
-            let case_slot = self.define_local(&format!("__php_enum_case_{}_{}", self.canon(name), self.canon(&member.name)));
-            let case_expr = Expression::new(ExprKind::New {
-                class: Box::new(Expression::ident(name)),
-                args: vec![],
-            });
-            self.compile_expr(&case_expr)?;
-            self.emit_u16(Op::LOCAL_SET, case_slot);
-            self.emit(Op::DROP);
-
-            self.emit_u16(Op::LOCAL_GET, case_slot);
-            self.emit_const(Value::String(Arc::from(member.name.as_str())));
-            self.emit_u16(Op::STRUCT_SET, name_key);
-            self.emit(Op::DROP);
-
-            self.emit_u16(Op::LOCAL_GET, case_slot);
-            if let Some(value_expr) = &member.value {
-                self.compile_expr(value_expr)?;
-            } else {
-                self.emit_const(Value::String(Arc::from(member.name.as_str())));
-            }
-            self.emit_u16(Op::STRUCT_SET, value_key);
-            self.emit(Op::DROP);
-
-            self.emit_u16(Op::GLOBAL_GET, class_global);
-            self.emit_u16(Op::LOCAL_GET, case_slot);
-            let case_key = self.str_const(&member.name);
-            self.emit_u16(Op::STRUCT_SET, case_key);
-            self.emit(Op::DROP);
-        }
-
-        Ok(())
-    }
-
-    fn emit_match_pattern_match_slot(&mut self, pattern: &Pattern, value_slot: u16) -> Result<u16, String> {
+        pattern: &Pattern,
+        value_slot: u16,
+    ) -> Result<u16, String> {
         let matched_slot = self.define_local("__match_pattern_ok");
         self.emit_const(Value::Bool(true));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -8775,8 +9925,14 @@ impl Compiler {
             Pattern::Value(expr) | Pattern::Singleton(expr) => {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.compile_expr(expr)?;
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.emit(Op::I32_EQZ);
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -8786,9 +9942,15 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
             Pattern::Sequence(items) => {
-                let star_index = items.iter().position(|item| matches!(item, Pattern::Star(_)));
+                let star_index = items
+                    .iter()
+                    .position(|item| matches!(item, Pattern::Star(_)));
                 let suffix_count = star_index.map(|index| items.len() - index - 1).unwrap_or(0);
-                let required_len = if star_index.is_some() { items.len().saturating_sub(1) } else { items.len() };
+                let required_len = if star_index.is_some() {
+                    items.len().saturating_sub(1)
+                } else {
+                    items.len()
+                };
                 let len_slot = self.define_local("__match_seq_len");
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 common::collections::emit_len(&mut self.chunks, self.current, self.line);
@@ -8797,8 +9959,18 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, len_slot);
                 self.emit_const(Value::F64(required_len as f64));
-                { let line = self.line; if star_index.is_some() { crate::emitter::ops::emit_dyn_ge(self.chunk(), line) } else { crate::emitter::ops::emit_dyn_eq(self.chunk(), line) } };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    if star_index.is_some() {
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line)
+                    } else {
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line)
+                    }
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.emit(Op::I32_EQZ);
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -8816,9 +9988,13 @@ impl Compiler {
                         common::collections::emit_get(&mut self.chunks, self.current, self.line);
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit(Op::DROP);
-                        let item_match_slot = self.emit_match_pattern_match_slot(item, elem_slot)?;
+                        let item_match_slot =
+                            self.emit_match_pattern_match_slot(item, elem_slot)?;
                         self.emit_u16(Op::LOCAL_GET, item_match_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.emit(Op::I32_EQZ);
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -8829,7 +10005,10 @@ impl Compiler {
                     }
                 }
             }
-            Pattern::As { pattern: Some(sub_pattern), .. } => {
+            Pattern::As {
+                pattern: Some(sub_pattern),
+                ..
+            } => {
                 let sub_match_slot = self.emit_match_pattern_match_slot(sub_pattern, value_slot)?;
                 self.emit_u16(Op::LOCAL_GET, sub_match_slot);
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -8843,12 +10022,20 @@ impl Compiler {
                     self.emit(Op::DROP);
                 }
             }
-            Pattern::Wildcard | Pattern::Star(_) | Pattern::As { pattern: None, .. } | Pattern::Mapping(_) | Pattern::Class { .. } => {}
+            Pattern::Wildcard
+            | Pattern::Star(_)
+            | Pattern::As { pattern: None, .. }
+            | Pattern::Mapping(_)
+            | Pattern::Class { .. } => {}
         }
         Ok(matched_slot)
     }
 
-    fn emit_match_pattern_bindings(&mut self, pattern: &Pattern, value_slot: u16) -> Result<(), String> {
+    fn emit_match_pattern_bindings(
+        &mut self,
+        pattern: &Pattern,
+        value_slot: u16,
+    ) -> Result<(), String> {
         match pattern {
             Pattern::As { pattern, name } => {
                 if let Some(sub_pattern) = pattern {
@@ -8856,13 +10043,18 @@ impl Compiler {
                 }
                 if let Some(name) = name {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    let slot = self.scope().resolve(name).unwrap_or_else(|| self.define_local(name));
+                    let slot = self
+                        .scope()
+                        .resolve(name)
+                        .unwrap_or_else(|| self.define_local(name));
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
                 }
             }
             Pattern::Sequence(items) => {
-                let star_index = items.iter().position(|item| matches!(item, Pattern::Star(_)));
+                let star_index = items
+                    .iter()
+                    .position(|item| matches!(item, Pattern::Star(_)));
                 let suffix_count = star_index.map(|index| items.len() - index - 1).unwrap_or(0);
 
                 if suffix_count == 0 {
@@ -8882,9 +10074,20 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, value_slot);
                             self.emit_const(Value::F64(star_pos as f64));
                             self.emit_u16(Op::LOCAL_GET, value_slot);
-                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
-                            common::collections::emit_slice(&mut self.chunks, self.current, self.line);
-                            let slot = self.scope().resolve(name).unwrap_or_else(|| self.define_local(name));
+                            common::collections::emit_len(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
+                            common::collections::emit_slice(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
+                            let slot = self
+                                .scope()
+                                .resolve(name)
+                                .unwrap_or_else(|| self.define_local(name));
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         }
@@ -8896,7 +10099,12 @@ impl Compiler {
                     self.emit_match_pattern_bindings(first, value_slot)?;
                 }
             }
-            Pattern::Value(_) | Pattern::Singleton(_) | Pattern::Wildcard | Pattern::Star(_) | Pattern::Mapping(_) | Pattern::Class { .. } => {}
+            Pattern::Value(_)
+            | Pattern::Singleton(_)
+            | Pattern::Wildcard
+            | Pattern::Star(_)
+            | Pattern::Mapping(_)
+            | Pattern::Class { .. } => {}
         }
         Ok(())
     }
@@ -8905,7 +10113,11 @@ impl Compiler {
     // Variable declarator compilation
     // ════════════════════════════════════════════════════════════════════════
 
-    fn compile_var_declarator(&mut self, decl: &VarDeclarator, kind: &VarDeclKind) -> Result<(), String> {
+    fn compile_var_declarator(
+        &mut self,
+        decl: &VarDeclarator,
+        kind: &VarDeclKind,
+    ) -> Result<(), String> {
         match &decl.pattern {
             BindingPattern::Ident(name) => {
                 let reflection_binding = decl
@@ -8917,7 +10129,9 @@ impl Compiler {
                     .as_ref()
                     .and_then(|expr| self.infer_expr_type_hint(expr));
                 let declared_type_hint = decl.type_hint.clone();
-                let mut inferred_type_hint = declared_type_hint.clone().or_else(|| init_type_hint.clone());
+                let mut inferred_type_hint = declared_type_hint
+                    .clone()
+                    .or_else(|| init_type_hint.clone());
 
                 // VB often spells dynamically-created controls as `As Object`
                 // even though the initializer is a concrete dotnet wrapper such
@@ -8928,12 +10142,20 @@ impl Compiler {
                     let declared_is_object = declared_type_hint
                         .as_deref()
                         .map(|type_hint| self.resolve_source_type_alias(type_hint))
-                        .map(|type_hint| matches!(Self::normalize_type_hint(&type_hint).as_str(), "object" | "system.object"))
+                        .map(|type_hint| {
+                            matches!(
+                                Self::normalize_type_hint(&type_hint).as_str(),
+                                "object" | "system.object"
+                            )
+                        })
                         .unwrap_or(false);
                     if declared_is_object {
                         if let Some(init_type_hint) = init_type_hint.as_deref() {
                             let resolved_init = self.resolve_source_type_alias(init_type_hint);
-                            if self.resolve_pending_class_name_for_type_hint(&resolved_init).is_some() {
+                            if self
+                                .resolve_pending_class_name_for_type_hint(&resolved_init)
+                                .is_some()
+                            {
                                 inferred_type_hint = Some(resolved_init);
                             }
                         }
@@ -8956,8 +10178,11 @@ impl Compiler {
                     && self.scopes.len() == 1
                     && self.scope().depth == 0;
                 if is_pascal_type_alias_decl {
-                    if let Some(type_hint) = resolved_type_hint.as_deref().or(decl.type_hint.as_deref()) {
-                        self.source_type_aliases.insert(self.canon(name), type_hint.to_string());
+                    if let Some(type_hint) =
+                        resolved_type_hint.as_deref().or(decl.type_hint.as_deref())
+                    {
+                        self.source_type_aliases
+                            .insert(self.canon(name), type_hint.to_string());
                     }
                     return Ok(());
                 }
@@ -8965,24 +10190,32 @@ impl Compiler {
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with("()"))
                     || decl.array_bounds.is_some()
-                    || resolved_type_hint
-                        .as_deref()
-                        .is_some_and(|type_hint| self.pascal_array_type_hint_metadata(type_hint).is_some())
+                    || resolved_type_hint.as_deref().is_some_and(|type_hint| {
+                        self.pascal_array_type_hint_metadata(type_hint).is_some()
+                    })
                 {
-                    let array_type_hint = resolved_type_hint.clone().or_else(|| inferred_type_hint.clone());
+                    let array_type_hint = resolved_type_hint
+                        .clone()
+                        .or_else(|| inferred_type_hint.clone());
                     let pascal_bounds = array_type_hint
                         .as_deref()
                         .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint));
-                    let is_fixed = decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty())
+                    let is_fixed = decl
+                        .array_bounds
+                        .as_ref()
+                        .is_some_and(|bounds| !bounds.is_empty())
                         || resolved_type_hint
                             .as_deref()
                             .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint))
                             .is_some_and(|metadata| metadata.is_fixed);
-                    self.record_array_binding(name, ArrayBindingMetadata {
-                        is_fixed,
-                        type_hint: array_type_hint,
-                        pascal_bounds,
-                    });
+                    self.record_array_binding(
+                        name,
+                        ArrayBindingMetadata {
+                            is_fixed,
+                            type_hint: array_type_hint,
+                            pascal_bounds,
+                        },
+                    );
                 }
                 // Top-level vars → globals.
                 // `let`/`const` inside a block scope (depth > 0) are locals
@@ -8990,15 +10223,18 @@ impl Compiler {
                 // ECMA-262 §10.2.11: `var` inside a function is function-
                 // scoped (a local), only script-level `var` is global.
                 let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
-                let is_hoisted = *kind == VarDeclKind::Var
-                    && self.profile.hoist_var
-                    && self.scopes.len() == 1;
+                let is_hoisted =
+                    *kind == VarDeclKind::Var && self.profile.hoist_var && self.scopes.len() == 1;
 
                 if *kind == VarDeclKind::Static {
-                    let binding = self.ensure_static_local_binding(name, inferred_type_hint.clone())?;
+                    let binding =
+                        self.ensure_static_local_binding(name, inferred_type_hint.clone())?;
                     let flag_idx = self.str_const(&binding.init_flag_name);
                     self.emit_u16(Op::GLOBAL_GET, flag_idx);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit(Op::I32_EQZ);
                     let line = self.line;
                     self.chunk().emit_if(line);
@@ -9027,11 +10263,14 @@ impl Compiler {
                 let mut predeclared_local_slot: Option<u16> = None;
                 if !is_toplevel && !is_hoisted {
                     if let Some(init_expr) = decl.init.as_ref() {
-                        let recursive_lambda_init = matches!(init_expr.kind,
-                            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_));
+                        let recursive_lambda_init = matches!(
+                            init_expr.kind,
+                            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
+                        );
                         if recursive_lambda_init {
                             let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                                self.scope_mut().define_at_function_scope(name, inferred_type_hint.clone())
+                                self.scope_mut()
+                                    .define_at_function_scope(name, inferred_type_hint.clone())
                             } else {
                                 self.define_local_typed(name, inferred_type_hint.clone())
                             };
@@ -9045,7 +10284,10 @@ impl Compiler {
 
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr_with_value_copy(init_expr)?;
-                    self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
+                    self.maybe_promote_pascal_array_literal_to_set(
+                        decl.type_hint.as_deref(),
+                        init_expr,
+                    );
                     // ECMA-262 §10.2.9 SetFunctionName — anonymous
                     // function expressions assigned to a binding take
                     // the binding name as their `name` property.
@@ -9080,7 +10322,8 @@ impl Compiler {
                     self.emit_u16(Op::GLOBAL_SET, idx);
                     self.emit(Op::DROP);
                     if let Some(type_hint) = inferred_type_hint.as_deref() {
-                        self.global_type_hints.insert(cn.clone(), Self::normalize_type_hint(type_hint));
+                        self.global_type_hints
+                            .insert(cn.clone(), Self::normalize_type_hint(type_hint));
                     }
                     self.defined_globals.insert(cn);
                 } else {
@@ -9091,7 +10334,8 @@ impl Compiler {
                     let slot = if let Some(slot) = predeclared_local_slot {
                         slot
                     } else if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                        self.scope_mut().define_at_function_scope(name, inferred_type_hint.clone())
+                        self.scope_mut()
+                            .define_at_function_scope(name, inferred_type_hint.clone())
                     } else {
                         self.define_local_typed(name, inferred_type_hint.clone())
                     };
@@ -9127,13 +10371,16 @@ impl Compiler {
         match pattern {
             BindingPattern::Ident(name) => {
                 let slot = self.define_local(name);
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.emit(Op::DROP);
             }
             BindingPattern::Object(props) => {
                 let obj_slot = self.define_local("__destruct_obj");
-                self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, obj_slot);
+                self.emit(Op::DROP);
                 // Collect non-rest named keys for rest exclusion.
-                let named_keys: Vec<String> = props.iter()
+                let named_keys: Vec<String> = props
+                    .iter()
                     .filter(|p| !p.is_rest)
                     .map(|p| p.key.clone())
                     .collect();
@@ -9143,7 +10390,8 @@ impl Compiler {
                         let new_idx = self.import("ecma:object", "new");
                         self.emit_host_call(new_idx, 0);
                         let rest_slot = self.define_local("__rest_obj");
-                        self.emit_u16(Op::LOCAL_SET, rest_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, rest_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, rest_slot);
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         let assign_idx = self.import("ecma:object", "assign");
@@ -9158,7 +10406,8 @@ impl Compiler {
                         }
                         self.emit_u16(Op::LOCAL_GET, rest_slot);
                         let rest_var_slot = self.define_local(&prop.key);
-                        self.emit_u16(Op::LOCAL_SET, rest_var_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, rest_var_slot);
+                        self.emit(Op::DROP);
                         continue;
                     }
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -9218,7 +10467,8 @@ impl Compiler {
                 // Continuation returns undefined otherwise.
                 if self.is_js_profile() {
                     let raw_slot = self.define_local("__destruct_raw");
-                    self.emit_u16(Op::LOCAL_SET, raw_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, raw_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, raw_slot);
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
@@ -9230,17 +10480,27 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, raw_slot);
                     self.emit_u8(Op::CALL_REF, 1);
                     self.chunk().emit_else(line);
+                    // Non-generator: route through iter_drain so custom iterables
+                    // (objects with [Symbol.iterator]) work. Arrays pass through
+                    // unchanged; plain arrays return as-is from iter_drain.
+                    let iter_drain_key = self.str_const("__vybe_iter_drain");
+                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
                     self.emit_u16(Op::LOCAL_GET, raw_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
                     self.chunk().emit_end(line);
                 }
                 let arr_slot = self.define_local("__destruct_arr");
-                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
+                self.emit(Op::DROP);
                 for (i, elem) in elems.iter().enumerate() {
                     match elem {
                         ArrayPatternElem::Pattern(pat, default) => {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_const(Value::F64(i as f64));
-                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                            {
+                                let l = self.line;
+                                common::collections::emit_get(&mut self.chunks, self.current, l);
+                            }
                             if let Some(def) = default {
                                 let value_slot = self.define_local("__destruct_default_value");
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -9260,11 +10520,15 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_const(Value::F64(i as f64));
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                            {
+                                let l = self.line;
+                                common::collections::emit_len(&mut self.chunks, self.current, l);
+                            }
                             let line = self.line;
                             common::collections::emit_slice(&mut self.chunks, self.current, line);
                             let slot = self.define_local(name);
-                            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
                         }
                         ArrayPatternElem::Hole => {}
                     }
@@ -9288,27 +10552,38 @@ impl Compiler {
                 ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     self.emit_var_set(name);
                 }
                 ArrayPatternElem::Pattern(BindingPattern::Array(items), _) => {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     let nested_slot = self.define_local("__destruct_nested_arr");
-                    self.emit_u16(Op::LOCAL_SET, nested_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, nested_slot);
+                    self.emit(Op::DROP);
                     self.compile_array_pattern_assignment_from_slot(nested_slot, items)?;
                 }
                 ArrayPatternElem::Rest(name) => {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_len(&mut self.chunks, self.current, l);
+                    }
                     let line = self.line;
                     common::collections::emit_slice(&mut self.chunks, self.current, line);
                     self.emit_var_set(name);
                 }
-                ArrayPatternElem::Hole | ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
+                ArrayPatternElem::Hole
+                | ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
             }
         }
         Ok(())
@@ -9319,7 +10594,11 @@ impl Compiler {
             ExprKind::Ident(name) => {
                 // FuncName := value assigns to Result slot (Pascal/VB)
                 if let Some(ref fn_name) = self.current_func_name.clone() {
-                    let matches = if self.case_sensitive { name == fn_name } else { name.eq_ignore_ascii_case(fn_name) };
+                    let matches = if self.case_sensitive {
+                        name == fn_name
+                    } else {
+                        name.eq_ignore_ascii_case(fn_name)
+                    };
                     if matches {
                         if let Some(rs) = self.current_result_slot {
                             self.emit_u16(Op::LOCAL_SET, rs);
@@ -9336,9 +10615,14 @@ impl Compiler {
                 // Implicit self field write (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
                     let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                    if let Some(slot) = self
+                        .scope()
+                        .resolve(&self_kw)
+                        .or_else(|| self.scope().resolve_ci(&self_kw))
+                    {
                         let tmp = self.define_local("__field_tmp");
-                        self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, slot);
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         let field_name = self.canon(name);
@@ -9367,7 +10651,9 @@ impl Compiler {
                         return Ok(());
                     }
                     let field_name = match &class.kind {
-                        ExprKind::Ident(class_name) => self.js_member_storage_name_for_class(class_name, name),
+                        ExprKind::Ident(class_name) => {
+                            self.js_member_storage_name_for_class(class_name, name)
+                        }
                         _ => self.canon(name),
                     };
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
@@ -9390,7 +10676,8 @@ impl Compiler {
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
                         let tmp = self.define_local("__tmp");
-                        self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         let idx = self.str_const(&key);
                         self.emit_u16(Op::GLOBAL_SET, idx);
@@ -9398,12 +10685,15 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    let needs_value_type_writeback = self.expr_user_value_type_name(object).is_some()
-                        || (self.profile.name == "fortran"
-                            && self
-                                .lookup_var_type_hint(obj_name)
-                                .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                                .is_some());
+                    let needs_value_type_writeback =
+                        self.expr_user_value_type_name(object).is_some()
+                            || (self.profile.name == "fortran"
+                                && self
+                                    .lookup_var_type_hint(obj_name)
+                                    .and_then(|type_hint| {
+                                        self.resolve_pending_class_name_for_type_hint(type_hint)
+                                    })
+                                    .is_some());
                     if needs_value_type_writeback {
                         let value_tmp = self.define_local("__tmp");
                         let obj_tmp = self.define_local("__value_type_member_obj");
@@ -9434,22 +10724,31 @@ impl Compiler {
                 // value, then call.
                 if self.is_js_profile() && self.uses_proxy {
                     let tmp = self.define_local("__proxy_set_v");
-                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
-                        &mut self.chunks, self.current, line,
+                        &mut self.chunks,
+                        self.current,
+                        line,
                     );
                     self.emit(Op::DROP); // adapter leaves [value] on stack
                     return Ok(());
                 }
                 let tmp = self.define_local("__tmp");
-                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                self.emit(Op::DROP);
                 let field_name = self.js_member_storage_name(field);
                 if self.profile.name == "fortran" {
-                    if let ExprKind::Index { object: collection_owner, index, .. } = &object.kind {
+                    if let ExprKind::Index {
+                        object: collection_owner,
+                        index,
+                        ..
+                    } = &object.kind
+                    {
                         let line = self.line;
                         let coll_tmp = self.define_local("__fortran_index_member_coll");
                         let key_tmp = self.define_local("__fortran_index_member_key");
@@ -9554,7 +10853,8 @@ impl Compiler {
                     // re-push, call, restore.
                     let line = self.line;
                     let obj_slot = self.define_local("__js_set_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
                     let saved_this = self.save_js_this("__js_prev_this_set");
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.set_js_this_from_stack();
@@ -9581,12 +10881,21 @@ impl Compiler {
                     self.emit(Op::DROP);
                 }
             }
-            ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => {
+            ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr,
+            }
+            | ExprKind::RefLoad(expr) => {
                 let value_slot = self.define_local("__ref_store_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit(Op::DROP);
                 self.compile_expr(expr)?;
-                common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                common::references::emit_cell_store(
+                    &mut self.chunks,
+                    self.current,
+                    value_slot,
+                    self.line,
+                );
                 self.emit(Op::DROP);
             }
             ExprKind::Index { object, index, .. } => {
@@ -9600,19 +10909,23 @@ impl Compiler {
                             let end_tmp = self.define_local("__fortran_slice_end");
                             let count_tmp = self.define_local("__fortran_slice_count");
                             let replacement_tmp = self.define_local("__fortran_slice_replacement");
-                            let string_value_tmp = self.define_local("__fortran_slice_string_value");
+                            let string_value_tmp =
+                                self.define_local("__fortran_slice_string_value");
 
-                            self.emit_u16(Op::LOCAL_SET, value_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, value_tmp);
+                            self.emit(Op::DROP);
 
                             self.compile_expr(object)?;
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                            self.emit(Op::DROP);
 
                             if let Some(lower) = lower {
                                 self.compile_expr(lower)?;
                             } else {
                                 self.emit(Op::I32_CONST_0);
                             }
-                            self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, start_tmp);
+                            self.emit(Op::DROP);
 
                             if let Some(upper) = upper {
                                 self.compile_expr(upper)?;
@@ -9620,12 +10933,14 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, end_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, end_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit(Op::I32_SUB);
-                            self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, count_tmp);
+                            self.emit(Op::DROP);
 
                             let known_string_object = self
                                 .infer_expr_type_hint(object)
@@ -9637,7 +10952,10 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                                 self.emit(Op::REF_IS_STRING);
                             }
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
 
                             let to_string = self.import("ecma:string", "String");
@@ -9645,20 +10963,28 @@ impl Compiler {
 
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
                             self.emit_host_call(to_string, 1);
-                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, string_value_tmp);
                             common::strings::emit_length(self.chunk(), line);
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                            };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
 
                             self.emit_u16(Op::LOCAL_GET, string_value_tmp);
                             self.emit(Op::I32_CONST_0);
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
                             common::strings::emit_substring(self.chunk(), line);
-                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp);
+                            self.emit(Op::DROP);
 
                             self.chunk().emit_end(line);
 
@@ -9666,7 +10992,8 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
                             self.emit_const(Value::String(Arc::from(" ")));
                             self.emit_host_call(pad_end, 3);
-                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit(Op::I32_CONST_0);
@@ -9685,34 +11012,51 @@ impl Compiler {
 
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
                             self.emit(Op::REF_IS_ARRAY);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
 
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
-                            self.emit_u16(Op::LOCAL_SET, replacement_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, replacement_tmp);
+                            self.emit(Op::DROP);
 
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
-                            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                            common::collections::emit_new_with_length(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DUP);
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
                             self.emit_const(Value::I32(0));
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
                             common::collections::emit_fill(&mut self.chunks, self.current, line);
                             self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_SET, replacement_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, replacement_tmp);
+                            self.emit(Op::DROP);
                             self.chunk().emit_end(line);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
-                            common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                            common::collections::emit_remove_range(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit_u16(Op::LOCAL_GET, replacement_tmp);
-                            common::collections::emit_insert_range(&mut self.chunks, self.current, line);
+                            common::collections::emit_insert_range(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DROP);
                             self.chunk().emit_end(line);
                             return Ok(());
@@ -9757,17 +11101,20 @@ impl Compiler {
                             let end_tmp = self.define_local("__py_slice_end");
                             let count_tmp = self.define_local("__py_slice_count");
 
-                            self.emit_u16(Op::LOCAL_SET, value_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, value_tmp);
+                            self.emit(Op::DROP);
 
                             self.compile_expr(object)?;
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                            self.emit(Op::DROP);
 
                             if let Some(lower) = lower {
                                 self.compile_expr(lower)?;
                             } else {
                                 self.emit(Op::I32_CONST_0);
                             }
-                            self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, start_tmp);
+                            self.emit(Op::DROP);
 
                             if let Some(upper) = upper {
                                 self.compile_expr(upper)?;
@@ -9775,23 +11122,33 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, end_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, end_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit(Op::I32_SUB);
-                            self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, count_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit_u16(Op::LOCAL_GET, count_tmp);
-                            common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                            common::collections::emit_remove_range(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_u16(Op::LOCAL_GET, start_tmp);
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
-                            common::collections::emit_insert_range(&mut self.chunks, self.current, line);
+                            common::collections::emit_insert_range(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.emit(Op::DROP);
                             return Ok(());
                         }
@@ -9802,13 +11159,16 @@ impl Compiler {
                 // but the key is a runtime expression.
                 if self.is_js_profile() && self.uses_proxy {
                     let tmp = self.define_local("__proxy_idx_set_v");
-                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
-                        &mut self.chunks, self.current, line,
+                        &mut self.chunks,
+                        self.current,
+                        line,
                     );
                     self.emit(Op::DROP);
                     return Ok(());
@@ -9818,14 +11178,14 @@ impl Compiler {
                 // Every emit here goes via common::collections so the
                 // provider (ecma:array / vybe:array / polyfill) is
                 // swappable in one place.
-                let is_append = matches!(
-                    &index.kind,
-                    ExprKind::Lit(crate::ast::Literal::Null)
-                );
+                let is_append = matches!(&index.kind, ExprKind::Lit(crate::ast::Literal::Null));
                 let line = self.line;
                 let tmp = self.define_local("__tmp");
-                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
-                if let Some((args_slot, param_slot, alias_index)) = self.js_arguments_alias_for_index_target(object, index) {
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                self.emit(Op::DROP);
+                if let Some((args_slot, param_slot, alias_index)) =
+                    self.js_arguments_alias_for_index_target(object, index)
+                {
                     self.emit_u16(Op::LOCAL_GET, args_slot);
                     self.emit_const(Value::F64(alias_index as f64));
                     self.emit_u16(Op::LOCAL_GET, tmp);
@@ -9837,31 +11197,46 @@ impl Compiler {
                     return Ok(());
                 }
                 if self.is_php_profile() {
-                    if let ExprKind::Member { object: recv, field, null_safe } = &object.kind {
+                    if let ExprKind::Member {
+                        object: recv,
+                        field,
+                        null_safe,
+                    } = &object.kind
+                    {
                         if !*null_safe {
                             let recv_tmp = self.define_local("__php_index_member_recv");
                             let coll_tmp = self.define_local("__php_index_member_coll");
                             let field_name = self.canon(field);
 
                             self.compile_expr(recv)?;
-                            self.emit_u16(Op::LOCAL_SET, recv_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, recv_tmp);
+                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             let field_idx = self.str_const(&field_name);
                             self.emit_u16(Op::STRUCT_GET, field_idx);
-                            self.emit_u16(Op::LOCAL_SET, coll_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, coll_tmp);
+                            self.emit(Op::DROP);
 
                             if is_append {
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_u16(Op::LOCAL_GET, tmp);
-                                common::collections::emit_push(&mut self.chunks, self.current, line);
+                                common::collections::emit_push(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
                                 self.emit(Op::DROP);
                             } else {
                                 self.compile_expr(index)?;
                                 let key_tmp = self.define_local("__php_index_member_key");
-                                self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                                self.emit_php_promote_empty_array_for_string_key(coll_tmp, key_tmp, line);
-                                let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(coll_tmp, key_tmp, line);
+                                self.emit_u16(Op::LOCAL_SET, key_tmp);
+                                self.emit(Op::DROP);
+                                // Promote to an ordered Map on first string key;
+                                // native Map order, no `__keys`/CSV side-band.
+                                self.emit_php_promote_empty_array_for_string_key(
+                                    coll_tmp, key_tmp, line,
+                                );
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
                                 self.emit_u16(Op::LOCAL_GET, tmp);
@@ -9872,13 +11247,6 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_u16(Op::STRUCT_SET, field_idx);
                                 self.emit(Op::DROP);
-
-                                self.emit_u16(Op::LOCAL_GET, recv_tmp);
-                                self.emit_u16(Op::STRUCT_GET, field_idx);
-                                self.emit_u16(Op::LOCAL_SET, coll_tmp);
-                                self.emit(Op::DROP);
-
-                                self.emit_php_array_assoc_key_tracking_when_missing(coll_tmp, key_tmp, needs_track_tmp, line);
                             }
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
@@ -9890,7 +11258,12 @@ impl Compiler {
                     }
                 }
                 if self.profile.name == "fortran" {
-                    if let ExprKind::Member { object: recv, field, null_safe } = &object.kind {
+                    if let ExprKind::Member {
+                        object: recv,
+                        field,
+                        null_safe,
+                    } = &object.kind
+                    {
                         if !*null_safe {
                             let recv_tmp = self.define_local("__fortran_index_member_recv");
                             let coll_tmp = self.define_local("__fortran_index_member_coll");
@@ -9940,13 +11313,15 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let setter_key = self.str_const("__set___index__");
                     self.emit_u16(Op::STRUCT_GET, setter_key);
                     let setter_tmp = self.define_local("__index_setter");
-                    self.emit_u16(Op::LOCAL_SET, setter_tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, setter_tmp);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit(Op::REF_IS_NULL);
@@ -9976,17 +11351,25 @@ impl Compiler {
                     if self.is_php_profile() {
                         let key_tmp = self.define_local("__php_idx_key");
                         let obj_tmp = self.define_local("__php_idx_obj");
-                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
+                        // Promote a sequential array to an ordered Map on first
+                        // string key so associative writes are `ObjectKind::Map`
+                        // (= Python dict / JS Map — identity-equal pass-around).
+                        // Insertion order is then native to the Map (IndexMap);
+                        // we deliberately do NOT maintain any `__keys`/CSV side
+                        // band — that stamps an extra property onto the Map and
+                        // makes `foreach`/`Object.keys` read the stale tracker
+                        // instead of the Map's real order.
                         self.emit_php_promote_empty_array_for_string_key(obj_tmp, key_tmp, line);
-                        let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(obj_tmp, key_tmp, line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         common::collections::emit_set(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
-                        self.emit_php_array_assoc_key_tracking_when_missing(obj_tmp, key_tmp, needs_track_tmp, line);
                         if let ExprKind::Ident(name) = &object.kind {
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.emit_var_set(name);
@@ -9996,15 +11379,21 @@ impl Compiler {
                     if self.is_python_profile() {
                         let key_tmp = self.define_local("__py_idx_key");
                         let obj_tmp = self.define_local("__py_idx_obj");
-                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let is_array_idx = self.import("ecma:array", "isArray");
-                        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+                        self.chunk()
+                            .emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
                         self.chunk().emit(1, line);
                         self.emit(Op::I32_CONST_0);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                        };
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if(line);
@@ -10013,7 +11402,8 @@ impl Compiler {
                         let keys_key = self.str_const("__keys");
                         self.emit_u16(Op::STRUCT_GET, keys_key);
                         let keys_tmp = self.define_local("__py_idx_keys");
-                        self.emit_u16(Op::LOCAL_SET, keys_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, keys_tmp);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, keys_tmp);
                         self.emit(Op::REF_IS_NULL);
                         self.emit(Op::I32_EQZ);
@@ -10022,7 +11412,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
                         common::collections::emit_index_of(&mut self.chunks, self.current, line);
                         self.emit(Op::I32_CONST_0);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        };
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -10041,71 +11434,91 @@ impl Compiler {
                         self.emit(Op::DROP);
                         return Ok(());
                     } else {
-                    if self.profile.name == "go" {
-                        let go_map_type = match &object.kind {
-                            ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
-                            _ => self.infer_expr_type_hint(object),
-                        };
-                        if go_map_type.as_deref().is_some_and(|type_hint| type_hint.trim().starts_with("map[")) {
-                            let key_tmp = self.define_local("__go_idx_key");
-                            let obj_tmp = self.define_local("__go_idx_obj");
-                            self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        if self.profile.name == "go" {
+                            let go_map_type = match &object.kind {
+                                ExprKind::Ident(name) => {
+                                    self.lookup_var_type_hint(name).map(str::to_string)
+                                }
+                                _ => self.infer_expr_type_hint(object),
+                            };
+                            if go_map_type
+                                .as_deref()
+                                .is_some_and(|type_hint| type_hint.trim().starts_with("map["))
+                            {
+                                let key_tmp = self.define_local("__go_idx_key");
+                                let obj_tmp = self.define_local("__go_idx_obj");
+                                self.emit_u16(Op::LOCAL_SET, key_tmp);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                                self.emit(Op::DROP);
 
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            let keys_key = self.str_const("__keys");
-                            self.emit_u16(Op::STRUCT_GET, keys_key);
-                            let keys_tmp = self.define_local("__go_idx_keys");
-                            self.emit_u16(Op::LOCAL_SET, keys_tmp); self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, keys_tmp);
-                            self.emit(Op::REF_IS_NULL);
-                            self.emit(Op::I32_EQZ);
-                            self.chunk().emit_if(line);
-                            self.emit_u16(Op::LOCAL_GET, keys_tmp);
-                            self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            common::collections::emit_index_of(&mut self.chunks, self.current, line);
-                            self.emit(Op::I32_CONST_0);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if(line);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, keys_key);
-                            self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            common::collections::emit_push(&mut self.chunks, self.current, line);
-                            self.emit(Op::DROP);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                let keys_key = self.str_const("__keys");
+                                self.emit_u16(Op::STRUCT_GET, keys_key);
+                                let keys_tmp = self.define_local("__go_idx_keys");
+                                self.emit_u16(Op::LOCAL_SET, keys_tmp);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, keys_tmp);
+                                self.emit(Op::REF_IS_NULL);
+                                self.emit(Op::I32_EQZ);
+                                self.chunk().emit_if(line);
+                                self.emit_u16(Op::LOCAL_GET, keys_tmp);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                common::collections::emit_index_of(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
+                                self.emit(Op::I32_CONST_0);
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                                };
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                self.chunk().emit_if(line);
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                self.emit_u16(Op::STRUCT_GET, keys_key);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                common::collections::emit_push(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
+                                self.emit(Op::DROP);
+                                self.chunk().emit_end(line);
+                                self.chunk().emit_end(line);
 
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            self.emit_u16(Op::LOCAL_GET, tmp);
-                            common::collections::emit_set(&mut self.chunks, self.current, line);
-                            self.emit(Op::DROP);
-                            return Ok(());
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                self.emit_u16(Op::LOCAL_GET, tmp);
+                                common::collections::emit_set(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+                                return Ok(());
+                            }
                         }
-                    }
-                    // JS profile: track insertion order via the
-                    // `__keys` side channel so `Object.keys` /
-                    // `Object.entries` / `Object.values` see the
-                    // correct order. The HashMap backing Ordinary
-                    // PHP polyfills that build assoc results
-                    // (`array_flip`, `array_diff_assoc`, etc.) and
-                    // any JS code that relies on §7.3.22 ordering.
-                    if self.is_js_profile() {
-                        let key_tmp = self.define_local("__idx_key");
-                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                        self.emit(Op::DUP);
-                        self.emit_u16(Op::LOCAL_GET, key_tmp);
-                        let track_idx = self.import("ecma:object", "trackKey");
-                        self.chunk().emit_op_u16(Op::CALL_IMPORT, track_idx, line);
-                        self.chunk().emit(2, line);
+                        // JS profile: track insertion order via the
+                        // `__keys` side channel so `Object.keys` /
+                        // `Object.entries` / `Object.values` see the
+                        // correct order. The HashMap backing Ordinary
+                        // PHP polyfills that build assoc results
+                        // (`array_flip`, `array_diff_assoc`, etc.) and
+                        // any JS code that relies on §7.3.22 ordering.
+                        if self.is_js_profile() {
+                            let key_tmp = self.define_local("__idx_key");
+                            self.emit_u16(Op::LOCAL_SET, key_tmp);
+                            self.emit(Op::DROP);
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            let track_idx = self.import("ecma:object", "trackKey");
+                            self.chunk().emit_op_u16(Op::CALL_IMPORT, track_idx, line);
+                            self.chunk().emit(2, line);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        }
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        // ecma:array.set leaves [null]; drop it.
                         self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, key_tmp);
-                    }
-                    self.emit_u16(Op::LOCAL_GET, tmp);
-                    common::collections::emit_set(&mut self.chunks, self.current, line);
-                    // ecma:array.set leaves [null]; drop it.
-                    self.emit(Op::DROP);
                     }
                 }
             }
@@ -10116,7 +11529,8 @@ impl Compiler {
                     && matches!(&callee.kind, ExprKind::Ident(name) if name == "__len__")
                 {
                     let tmp = self.define_local("__tmp");
-                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
                     self.compile_expr(&args[0].value)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.import("ecma:array", "setLength");
@@ -10128,7 +11542,8 @@ impl Compiler {
                 // path so Pascal char-bound arrays and other declaration-
                 // relative indices match the read path.
                 let tmp = self.define_local("__tmp");
-                self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                self.emit(Op::DROP);
                 self.compile_expr(callee)?;
                 self.compile_array_index_operand_for_owner(callee, &args[0].value)?;
                 self.emit_u16(Op::LOCAL_GET, tmp);
@@ -10141,8 +11556,10 @@ impl Compiler {
                 match pattern {
                     DestructurePattern::Object(props) => {
                         let obj_slot = self.define_local("__destruct_obj");
-                        self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
-                        let named_keys: Vec<String> = props.iter()
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+                        let named_keys: Vec<String> = props
+                            .iter()
                             .filter(|p| !p.is_rest)
                             .map(|p| p.key.clone())
                             .collect();
@@ -10151,7 +11568,8 @@ impl Compiler {
                                 let new_idx = self.import("ecma:object", "new");
                                 self.emit_host_call(new_idx, 0);
                                 let rest_slot = self.define_local("__rest_obj");
-                                self.emit_u16(Op::LOCAL_SET, rest_slot); self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_SET, rest_slot);
+                                self.emit(Op::DROP);
                                 self.emit_u16(Op::LOCAL_GET, rest_slot);
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 let assign_idx = self.import("ecma:object", "assign");
@@ -10170,7 +11588,10 @@ impl Compiler {
                             }
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_const(Value::String(Arc::from(prop.key.as_str())));
-                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                            {
+                                let l = self.line;
+                                common::collections::emit_get(&mut self.chunks, self.current, l);
+                            }
                             let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
                                 n.clone()
                             } else {
@@ -10181,7 +11602,8 @@ impl Compiler {
                     }
                     DestructurePattern::Array(elems) => {
                         let arr_slot = self.define_local("__destruct_arr");
-                        self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, arr_slot);
+                        self.emit(Op::DROP);
                         self.compile_array_pattern_assignment_from_slot(arr_slot, elems)?;
                     }
                 }
@@ -10193,29 +11615,40 @@ impl Compiler {
             // assignment to mirror the desugar `let _t = rhs; a = _t[0]; b = _t[1]`.
             ExprKind::Array(elems) => {
                 let arr_slot = self.define_local("__assign_destruct_arr");
-                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
+                self.emit(Op::DROP);
                 for (i, elem) in elems.iter().enumerate() {
-                    if elem.spread { continue; }
+                    if elem.spread {
+                        continue;
+                    }
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     let target = elem.value.clone();
                     self.compile_assign_target(&target)?;
                 }
             }
             ExprKind::Tuple(elems) => {
                 let arr_slot = self.define_local("__assign_tuple_arr");
-                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
+                self.emit(Op::DROP);
                 for (i, elem) in elems.iter().enumerate() {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     self.compile_assign_target(elem)?;
                 }
             }
             ExprKind::Object(props) => {
                 let obj_slot = self.define_local("__assign_destruct_obj");
-                self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, obj_slot);
+                self.emit(Op::DROP);
                 for prop in props {
                     if let crate::ast::ObjectProperty::Shorthand(name) = prop {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -10271,7 +11704,8 @@ impl Compiler {
     /// step 1 (ToNumber unboxes Objects with hint=number first).
     fn coerce_top_two_to_number(&mut self) {
         let t_b = self.define_local("__binop_b");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_b);
+        self.emit(Op::DROP);
         // a on top → coerce
         self.emit_to_primitive("number");
         self.emit_u16(Op::LOCAL_GET, t_b);
@@ -10283,99 +11717,31 @@ impl Compiler {
     /// compare and Date/valueOf-overriding instances both work.
     fn coerce_top_two_to_primitive(&mut self) {
         let t_b = self.define_local("__cmpop_b");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_b);
+        self.emit(Op::DROP);
         self.emit_to_primitive("number");
         self.emit_u16(Op::LOCAL_GET, t_b);
         self.emit_to_primitive("number");
     }
 
-    fn maybe_unbox_php_datetime_slot(&mut self, slot: u16) {
-        self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit(Op::REF_IS_OBJECT);
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
 
-        self.emit_u16(Op::LOCAL_GET, slot);
-        let time_key = self.str_const("__time");
-        self.emit_u16(Op::STRUCT_GET, time_key);
-        let time_slot = self.define_local("__php_cmp_time");
-        self.emit_u16(Op::LOCAL_SET, time_slot); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_GET, time_slot);
-        self.emit(Op::REF_IS_NULL);
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-        self.emit_u16(Op::LOCAL_GET, time_slot);
-        self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-    }
 
-    #[allow(dead_code)]
-    fn coerce_top_two_php_datetime_for_compare(&mut self) {
-        let t_b = self.define_local("__php_cmp_b");
-        let t_a = self.define_local("__php_cmp_a");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
-        self.maybe_unbox_php_datetime_slot(t_a);
-        self.maybe_unbox_php_datetime_slot(t_b);
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-    }
-
-    fn emit_php_relational_compare(&mut self, cmp_fn: fn(&mut Chunk, u32)) {
-        let t_b = self.define_local("__php_rel_cmp_b");
-        let t_a = self.define_local("__php_rel_cmp_a");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
-
-        self.maybe_unbox_php_datetime_slot(t_a);
-        self.maybe_unbox_php_datetime_slot(t_b);
-
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("string")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
-
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("string")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
-
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        self.emit(Op::STR_COMPARE);
-        self.emit_const(Value::I32(0));
-        cmp_fn(self.chunk(), line);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        cmp_fn(self.chunk(), line);
-        self.chunk().emit_end(line);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        cmp_fn(self.chunk(), line);
-        self.chunk().emit_end(line);
-    }
 
     fn emit_pascal_relational_compare(&mut self, cmp_fn: fn(&mut Chunk, u32)) {
         let t_b = self.define_local("__pas_cmp_b");
         let t_a = self.define_local("__pas_cmp_a");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_b);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_a);
+        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, t_a);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("string")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        };
         let line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
@@ -10412,7 +11778,8 @@ impl Compiler {
     /// back to toString.
     fn coerce_top_two_to_default_primitive(&mut self) {
         let t_b = self.define_local("__addop_b");
-        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_b);
+        self.emit(Op::DROP);
         self.emit_to_primitive("default");
         self.emit_u16(Op::LOCAL_GET, t_b);
         self.emit_to_primitive("default");
@@ -10447,7 +11814,10 @@ impl Compiler {
         self.chunk().emit_else(rhs_line);
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.chunk().emit_end(rhs_line);
         self.chunk().emit_end(line);
     }
@@ -10467,7 +11837,10 @@ impl Compiler {
         self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array, line);
         self.chunk().emit(1, line);
         self.emit(Op::I32_CONST_0);
-        { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+        };
         let array_line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), array_line);
         self.chunk().emit_if_value(array_line);
@@ -10488,13 +11861,18 @@ impl Compiler {
     fn emit_js_add(&mut self) {
         let rhs_slot = self.define_local("__js_add_rhs");
         let lhs_slot = self.define_local("__js_add_lhs");
-        self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, rhs_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, lhs_slot);
+        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("string")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        };
         let line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
@@ -10504,7 +11882,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("string")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        };
         let rhs_line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), rhs_line);
         self.chunk().emit_if_value(rhs_line);
@@ -10537,25 +11918,42 @@ impl Compiler {
                         self.emit_host_call(idx, 2);
                         return;
                     }
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                 } else {
                     self.emit(Op::F64_ADD);
                 }
             }
             BinOp::Sub => {
-                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
                 self.emit(Op::F64_SUB);
-            },
+            }
             BinOp::Mul => {
-                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
                 self.emit(Op::F64_MUL);
-            },
+            }
             BinOp::Div => {
-                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
                 self.emit(Op::F64_DIV);
-            },
-            BinOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
-            BinOp::FloorDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_floor(self.chunk(), l); }
+            }
+            BinOp::IDiv => {
+                self.emit(Op::F64_DIV);
+                let l = self.line;
+                common::math::emit_trunc(self.chunk(), l);
+            }
+            BinOp::FloorDiv => {
+                self.emit(Op::F64_DIV);
+                let l = self.line;
+                common::math::emit_floor(self.chunk(), l);
+            }
             BinOp::Mod => {
                 let l = self.line;
                 if self.is_python_profile() {
@@ -10564,22 +11962,34 @@ impl Compiler {
                     let idx = self.import("ecma:math", "fmod");
                     common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
                 }
-            },
-            BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
+            }
+            BinOp::Pow => {
+                let l = self.line;
+                common::math::emit_pow(self.chunk(), l);
+            }
             BinOp::Eq => {
-                if self.is_js_profile() {
+                // JS and PHP both use abstract (loose) equality: numeric strings
+                // coerce to numbers, null==undefined, etc. Other languages use
+                // strict value equality (emit_dyn_eq).
+                if self.is_js_profile() || self.is_php_profile() {
                     let idx = self.import("ecma:value", "abstractEq");
                     self.emit_host_call(idx, 2);
                 } else {
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
                 }
             }
             BinOp::NotEq => {
-                if self.is_js_profile() {
+                if self.is_js_profile() || self.is_php_profile() {
                     let idx = self.import("ecma:value", "abstractNe");
                     self.emit_host_call(idx, 2);
                 } else {
-                    { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                    };
                 }
             }
             BinOp::StrictEq => {
@@ -10590,21 +12000,29 @@ impl Compiler {
                 // else dyn_eq. Using temp locals to avoid deep stack ops.
                 let a_slot = self.define_local("__seq_a");
                 let b_slot = self.define_local("__seq_b");
-                self.emit_u16(Op::LOCAL_SET, b_slot); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, a_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, b_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, a_slot);
+                self.emit(Op::DROP);
                 // Compare types
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit(Op::REF_TYPEOF);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
                 self.emit(Op::REF_TYPEOF);
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 // Types match → dyn_eq
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
                 self.chunk().emit_else(line);
                 // Types differ → false
                 self.emit_const(Value::Bool(false));
@@ -10614,93 +12032,208 @@ impl Compiler {
                 // JS !==: same as !(===)
                 let a_slot = self.define_local("__sne_a");
                 let b_slot = self.define_local("__sne_b");
-                self.emit_u16(Op::LOCAL_SET, b_slot); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, a_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, b_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, a_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit(Op::REF_TYPEOF);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
                 self.emit(Op::REF_TYPEOF);
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 // Types match → dyn_ne
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                };
                 self.chunk().emit_else(line);
                 // Types differ → true
                 self.emit_const(Value::Bool(true));
                 self.chunk().emit_end(line);
             }
             BinOp::Lt => {
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_lt); return; }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt); }
-                else if self.is_js_profile() || self.is_php_profile() { { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); }; }
-                else {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_lt,
+                        line,
+                    );
+                    return;
+                }
+                if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
+                } else if self.is_js_profile() || self.is_php_profile() {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
-                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    self.emit(Op::DROP);
                     let line = self.line;
-                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__lt__", crate::emitter::ops::emit_dyn_lt, line);
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__lt__",
+                        crate::emitter::ops::emit_dyn_lt,
+                        line,
+                    );
                 }
-            },
+            }
             BinOp::Gt => {
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_gt); return; }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt); }
-                else if self.is_js_profile() || self.is_php_profile() { { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); }; }
-                else {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_gt,
+                        line,
+                    );
+                    return;
+                }
+                if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
+                } else if self.is_js_profile() || self.is_php_profile() {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    };
+                } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
-                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    self.emit(Op::DROP);
                     let line = self.line;
-                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__gt__", crate::emitter::ops::emit_dyn_gt, line);
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__gt__",
+                        crate::emitter::ops::emit_dyn_gt,
+                        line,
+                    );
                 }
-            },
+            }
             BinOp::LtEq => {
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_le); return; }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_le); }
-                else if self.is_js_profile() || self.is_php_profile() { { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); }; }
-                else {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_le,
+                        line,
+                    );
+                    return;
+                }
+                if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_le);
+                } else if self.is_js_profile() || self.is_php_profile() {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                    };
+                } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
-                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    self.emit(Op::DROP);
                     let line = self.line;
-                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__le__", crate::emitter::ops::emit_dyn_le, line);
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__le__",
+                        crate::emitter::ops::emit_dyn_le,
+                        line,
+                    );
                 }
-            },
+            }
             BinOp::GtEq => {
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_ge); return; }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_ge); }
-                else if self.is_js_profile() || self.is_php_profile() { { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); }; }
-                else {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_ge,
+                        line,
+                    );
+                    return;
+                }
+                if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_ge);
+                } else if self.is_js_profile() || self.is_php_profile() {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    };
+                } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
-                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    self.emit(Op::DROP);
                     let line = self.line;
-                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__ge__", crate::emitter::ops::emit_dyn_ge, line);
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__ge__",
+                        crate::emitter::ops::emit_dyn_ge,
+                        line,
+                    );
                 }
-            },
+            }
             BinOp::Spaceship => {
                 let right_slot = self.define_local("__spaceship_rhs");
                 let left_slot = self.define_local("__spaceship_lhs");
-                self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, right_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, left_slot);
+                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_lt); }
-                else if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt); }
-                else { { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); }; }
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_lt,
+                        line,
+                    );
+                } else if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
+                } else {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                }
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
@@ -10709,10 +12242,23 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
-                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.emit_php_relational_compare(crate::emitter::ops::emit_dyn_gt); }
-                else if self.profile.name == "pascal" { self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt); }
-                else { { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); }; }
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_primitive();
+                } else if self.profile.string_aware_relational {
+                    let line = self.line;
+                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                        self.chunk(),
+                        crate::emitter::ops::emit_dyn_gt,
+                        line,
+                    );
+                } else if self.profile.name == "pascal" {
+                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
+                } else {
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    };
+                }
                 let gt_line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gt_line);
                 self.chunk().emit_if_value(gt_line);
@@ -10725,25 +12271,48 @@ impl Compiler {
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
             BinOp::Xor => {
                 self.emit(Op::I32_XOR);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
             }
             BinOp::Eqv => {
                 self.emit(Op::I32_XOR);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
             }
             BinOp::Imp => {
                 let rhs_slot = self.define_local("__imp_rhs");
                 let lhs_slot = self.define_local("__imp_lhs");
-                self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, rhs_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, lhs_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
                 self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.emit(Op::I32_OR);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
             }
             BinOp::BitAnd => self.emit(Op::I32_AND),
             BinOp::BitOr => self.emit(Op::I32_OR),
@@ -10775,14 +12344,19 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, unsigned_slot);
                     self.chunk().emit_end(line);
                 }
-            },
-            BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
+            }
+            BinOp::Concat => {
+                let l = self.line;
+                common::strings::emit_str_concat(self.chunk(), l);
+            }
             BinOp::In => {
                 if self.is_python_profile() {
                     let t_y = self.define_local("__py_in_y");
                     let t_x = self.define_local("__py_in_x");
-                    self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_y);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_x);
+                    self.emit(Op::DROP);
                     self.emit_python_contains_from_locals(t_y, t_x);
                     return;
                 }
@@ -10790,8 +12364,10 @@ impl Compiler {
                 if self.profile.name == "pascal" {
                     let t_set = self.define_local("__pascal_in_set");
                     let t_value = self.define_local("__pascal_in_value");
-                    self.emit_u16(Op::LOCAL_SET, t_set); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, t_value); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_set);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_value);
+                    self.emit(Op::DROP);
                     let helper = self.str_const("__vybe_pascal_set_contains");
                     self.emit_u16(Op::GLOBAL_GET, helper);
                     self.emit_u16(Op::LOCAL_GET, t_value);
@@ -10809,8 +12385,10 @@ impl Compiler {
                 let l = self.line;
                 let t_y = self.define_local("__in_y");
                 let t_x = self.define_local("__in_x");
-                self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_y);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_x);
+                self.emit(Op::DROP);
 
                 // Proxy has-trap dispatch on the JS profile when the
                 // module references `Proxy`. Stack: [obj, key].
@@ -10818,7 +12396,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, t_y);
                     self.emit_u16(Op::LOCAL_GET, t_x);
                     crate::emitter::js::proxy_adapter::emit_proxy_has_dispatch(
-                        &mut self.chunks, self.current, l,
+                        &mut self.chunks,
+                        self.current,
+                        l,
                     );
                     return;
                 }
@@ -10828,7 +12408,11 @@ impl Compiler {
                 // JS uses prototype-walking `hasIn`; other languages
                 // (case-insensitive profiles or non-JS) keep own-only
                 // `hasOwn` semantics for their `in`-shaped operators.
-                let import = if self.is_js_profile() { "hasIn" } else { "hasOwn" };
+                let import = if self.is_js_profile() {
+                    "hasIn"
+                } else {
+                    "hasOwn"
+                };
                 let idx = self.import("ecma:object", import);
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
@@ -10837,46 +12421,63 @@ impl Compiler {
                 if self.is_python_profile() {
                     let t_y = self.define_local("__py_nin_y");
                     let t_x = self.define_local("__py_nin_x");
-                    self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_y);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_x);
+                    self.emit(Op::DROP);
                     self.emit_python_contains_from_locals(t_y, t_x);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                     return;
                 }
 
                 if self.profile.name == "pascal" {
                     let t_set = self.define_local("__pascal_nin_set");
                     let t_value = self.define_local("__pascal_nin_value");
-                    self.emit_u16(Op::LOCAL_SET, t_set); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, t_value); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_set);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_value);
+                    self.emit(Op::DROP);
                     let helper = self.str_const("__vybe_pascal_set_contains");
                     self.emit_u16(Op::GLOBAL_GET, helper);
                     self.emit_u16(Op::LOCAL_GET, t_value);
                     self.emit_u16(Op::LOCAL_GET, t_set);
                     self.emit_u8(Op::CALL_REF, 2);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                     return;
                 }
 
                 let l = self.line;
                 let t_y = self.define_local("__nin_y");
                 let t_x = self.define_local("__nin_x");
-                self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_y);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_x);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
                 // Same key-check as `in` above — route through hasOwn.
                 let idx = self.import("ecma:object", "hasOwn");
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
             }
             BinOp::InstanceOf => {
                 if self.is_js_profile() {
                     let rhs_slot = self.define_local("__js_instanceof_rhs");
                     let lhs_slot = self.define_local("__js_instanceof_lhs");
-                    self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, rhs_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, lhs_slot);
+                    self.emit(Op::DROP);
                     // ECMA-262 §13.10.2: `a instanceof B` first checks for
                     // `B[Symbol.hasInstance]` (canonical name `hasinstance`)
                     // and calls it as `B[hasinstance](a)` if present.
@@ -10889,7 +12490,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, rhs_slot);
                     self.emit_u16(Op::STRUCT_GET, has_inst_key);
                     let method_slot = self.define_local("__has_inst_method");
-                    self.emit_u16(Op::LOCAL_SET, method_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, method_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, method_slot);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
@@ -10905,9 +12507,13 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, lhs_slot);
                     self.emit_u8(Op::CALL_REF, 1);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     let result_slot = self.define_local("__has_inst_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
                     self.restore_js_this(saved_this);
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.chunk().emit_end(line);
@@ -10922,7 +12528,8 @@ impl Compiler {
                     // type-stamp the constructors install via `set_type_id`.
                     let l = self.line;
                     let t_ctor = self.define_local("__io_ctor");
-                    self.emit_u16(Op::LOCAL_SET, t_ctor); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_ctor);
+                    self.emit(Op::DROP);
                     // val is on top — get its __type
                     let type_key = self.str_const("__type");
                     self.chunk().emit_op_u16(Op::STRUCT_GET, type_key, l);
@@ -10944,11 +12551,20 @@ impl Compiler {
             }
             BinOp::Is => {
                 // Reference equality
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
             }
             BinOp::IsNot => {
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
             }
         }
     }
@@ -10964,7 +12580,10 @@ impl Compiler {
                     if self.is_js_profile() {
                         self.coerce_top_two_to_default_primitive();
                     }
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                 } else {
                     self.emit(Op::F64_ADD);
                 }
@@ -11003,16 +12622,28 @@ impl Compiler {
                 let l = self.line;
                 common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
             }
-            CompoundOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
-            CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
+            CompoundOp::Pow => {
+                let l = self.line;
+                common::math::emit_pow(self.chunk(), l);
+            }
+            CompoundOp::Concat => {
+                let l = self.line;
+                common::strings::emit_str_concat(self.chunk(), l);
+            }
             CompoundOp::BitAnd => self.emit(Op::I32_AND),
             CompoundOp::BitOr => self.emit(Op::I32_OR),
             CompoundOp::BitXor => self.emit(Op::I32_XOR),
             CompoundOp::Shl => self.emit(Op::I32_SHL),
             CompoundOp::Shr => self.emit(Op::I32_SHR_S),
             CompoundOp::UShr => self.emit(Op::I32_SHR_U),
-            CompoundOp::And => { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }, // simplified
-            CompoundOp::Or => { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); },  // simplified
+            CompoundOp::And => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            } // simplified
+            CompoundOp::Or => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            } // simplified
             CompoundOp::NullCoalesce => {
                 // a ??= b → if a is null, a = b
                 // At this point both are on stack already — no-op, the whole compound assign handles it
@@ -11055,8 +12686,16 @@ impl Compiler {
         match (&target.kind, &expr.kind) {
             (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
             (
-                ExprKind::Member { object: to, field: tf, .. },
-                ExprKind::Member { object: eo, field: ef, .. },
+                ExprKind::Member {
+                    object: to,
+                    field: tf,
+                    ..
+                },
+                ExprKind::Member {
+                    object: eo,
+                    field: ef,
+                    ..
+                },
             ) => {
                 if !tf.eq_ignore_ascii_case(ef) {
                     return false;
@@ -11076,8 +12715,8 @@ impl Compiler {
         let line = self.line;
 
         if self.is_js_profile() && name == "Object.groupBy" && args.len() == 2 {
-            self.compile_expr(args[0])?;  // arr → bottom
-            self.compile_expr(args[1])?;  // fn  → top
+            self.compile_expr(args[0])?; // arr → bottom
+            self.compile_expr(args[1])?; // fn  → top
             self.emit_object_group_by(line)?;
             return Ok(true);
         }
@@ -11101,7 +12740,9 @@ impl Compiler {
             globals.sort();
             globals.dedup();
             for global in globals {
-                if global == "__name__" { continue; }
+                if global == "__name__" {
+                    continue;
+                }
                 self.emit(Op::DUP);
                 self.emit_var_get(&global);
                 let key = self.str_const(&global);
@@ -11151,11 +12792,17 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, 1);
                     for arg in args.iter().skip(1) {
                         self.emit_const(Value::String(Arc::from(" ")));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
                         self.emit_u16(Op::GLOBAL_GET, tostring_global);
                         self.compile_expr(arg)?;
                         self.emit_u8(Op::CALL_REF, 1);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
                     }
                 }
 
@@ -11258,7 +12905,9 @@ impl Compiler {
         // separators to `\` before reaching here so this single resolver
         // handles them all.
         if let Some((module, func)) = self.resolve_component_model_call(name) {
-            for a in args { self.compile_expr(a)?; }
+            for a in args {
+                self.compile_expr(a)?;
+            }
             let idx = self.import(&module, &func);
             self.emit_host_call(idx, args.len() as u8);
             return Ok(true);
@@ -11296,7 +12945,7 @@ impl Compiler {
             // All emits route through compiler_common so the provider
             // (ecma:array / vybe:array / polyfill) is swappable in
             // one place.
-            self.compile_expr(args[0])?;  // push count
+            self.compile_expr(args[0])?; // push count
             common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             // Array is now on TOS. If the init is null-ish, we're done
             // (newWithLength already null-fills).
@@ -11328,8 +12977,14 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, arr_slot);
                 common::collections::emit_len(&mut self.chunks, self.current, line);
-                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
                 self.chunk().emit_br_if(1, line);
 
                 self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -11340,7 +12995,10 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_const(Value::I32(1));
-                { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                };
                 self.emit_u16(Op::LOCAL_SET, idx_slot);
                 self.emit(Op::DROP);
                 self.chunk().emit_br(0, line);
@@ -11385,9 +13043,15 @@ impl Compiler {
             }
             return Ok(true);
         }
-        if name.eq_ignore_ascii_case("__fortran_emit") || name.eq_ignore_ascii_case("__fortran_emitln") {
+        if name.eq_ignore_ascii_case("__fortran_emit")
+            || name.eq_ignore_ascii_case("__fortran_emitln")
+        {
             let flush = name.eq_ignore_ascii_case("__fortran_emitln");
-            let text_slot = self.define_local(if flush { "__fortran_emitln_text" } else { "__fortran_emit_text" });
+            let text_slot = self.define_local(if flush {
+                "__fortran_emitln_text"
+            } else {
+                "__fortran_emit_text"
+            });
             if let Some(arg) = args.first() {
                 self.compile_expr(arg)?;
             } else {
@@ -11444,7 +13108,11 @@ impl Compiler {
             self.emit_host_call(open_idx, 3);
             self.emit(Op::DROP);
 
-            self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+            self.emit_global_map_set_const(
+                "__vb_file_eof_by_handle",
+                file_slot,
+                Value::Bool(false),
+            );
             self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
             self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
             self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
@@ -11464,12 +13132,15 @@ impl Compiler {
         if name.eq_ignore_ascii_case("allocate") {
             for arg in args {
                 match &arg.kind {
-                    ExprKind::Call { callee, args: dims, .. } if !dims.is_empty() => {
+                    ExprKind::Call {
+                        callee, args: dims, ..
+                    } if !dims.is_empty() => {
                         if self.profile.name == "fortran" {
                             let mut dim_slots = Vec::with_capacity(dims.len());
                             for (index, dim) in dims.iter().enumerate() {
                                 self.compile_expr(&dim.value)?;
-                                let slot = self.define_local(&format!("__fortran_alloc_dim_{index}"));
+                                let slot =
+                                    self.define_local(&format!("__fortran_alloc_dim_{index}"));
                                 self.emit_u16(Op::LOCAL_SET, slot);
                                 self.emit(Op::DROP);
                                 dim_slots.push(slot);
@@ -11480,7 +13151,11 @@ impl Compiler {
                             self.compile_assign_target(callee)?;
                         } else {
                             self.compile_expr(&dims[0].value)?;
-                            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                            common::collections::emit_new_with_length(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             self.compile_assign_target(callee)?;
                         }
                     }
@@ -11519,7 +13194,10 @@ impl Compiler {
             if let Some(arg) = args.first() {
                 self.compile_expr(arg)?;
                 self.emit(Op::REF_IS_NULL);
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
             } else {
                 self.emit(Op::FALSE);
             }
@@ -11635,8 +13313,15 @@ impl Compiler {
                 }
             } else {
                 // Compile args, then dispatch to canonical emitter
-                for a in args { self.compile_expr(a)?; }
-                common::canonical::emit_canonical(canonical_op, &mut self.chunks, self.current, line);
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                common::canonical::emit_canonical(
+                    canonical_op,
+                    &mut self.chunks,
+                    self.current,
+                    line,
+                );
                 return Ok(true);
             }
         }
@@ -11645,9 +13330,7 @@ impl Compiler {
         // override the common import defaults (e.g. Dart `print` needs
         // toString conversion before logging, which is different from
         // generic `wasi:cli.log`).
-        if self.profile.name == "vb"
-            && args.len() == 1
-        {
+        if self.profile.name == "vb" && args.len() == 1 {
             if let Some(type_hint) = self.infer_expr_type_hint(&args[0]) {
                 let normalized = Self::normalize_type_hint(&type_hint);
                 if normalized == "datetime" || normalized.ends_with(".datetime") {
@@ -11683,7 +13366,9 @@ impl Compiler {
             if let Some(resolved) = common::imports::resolve_common_import(name) {
                 match resolved {
                     common::imports::CommonImport::Host(module, func) => {
-                        for a in args { self.compile_expr(a)?; }
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
                         let idx = self.import(module, func);
                         self.emit_host_call(idx, args.len() as u8);
                     }
@@ -11731,12 +13416,13 @@ impl Compiler {
                     // drain — a host fn can't drive coroutine resume,
                     // so we drain via the `__stdlib_drain_generator`
                     // bytecode helper before the host call.
-                    let drain_first_arg = self.is_js_profile()
-                        && (module == "ecma:array" && func == "from");
+                    let drain_first_arg =
+                        self.is_js_profile() && (module == "ecma:array" && func == "from");
                     if drain_first_arg && !args.is_empty() {
                         self.compile_expr(args[0])?;
                         let v_slot = self.define_local("__hc_iter_v");
-                        self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, v_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         let is_gen_idx = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen_idx, 1);
@@ -11750,9 +13436,13 @@ impl Compiler {
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         self.chunk().emit_end(line);
-                        for a in args.iter().skip(1) { self.compile_expr(a)?; }
+                        for a in args.iter().skip(1) {
+                            self.compile_expr(a)?;
+                        }
                     } else {
-                        for a in args { self.compile_expr(a)?; }
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
                     }
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, args.len() as u8);
@@ -11765,11 +13455,21 @@ impl Compiler {
                         if let ExprKind::Ident(var) = &first.kind {
                             let var = var.clone();
                             self.emit_var_get(&var);
-                            if args.len() > 1 { self.compile_expr(args[1])?; } else { self.emit_const(Value::F64(1.0)); }
+                            if args.len() > 1 {
+                                self.compile_expr(args[1])?;
+                            } else {
+                                self.emit_const(Value::F64(1.0));
+                            }
                             match op.as_str() {
-                                "add" => { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); },
+                                "add" => {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                                }
                                 "sub" => self.emit(Op::F64_SUB),
-                                _ => { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); },
+                                _ => {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                                }
                             }
                             self.emit_var_set(&var);
                         }
@@ -11786,7 +13486,9 @@ impl Compiler {
                     if name.eq_ignore_ascii_case("dotnet.console_writeline") && args.len() == 1 {
                         self.emit_dotnet_console_arg(args[0])?;
                     } else {
-                        for a in args { self.compile_expr(a)?; }
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
                     }
                     let line = self.line;
                     self.emit_common(name.as_str(), args.len() as u8, line);
@@ -11798,11 +13500,13 @@ impl Compiler {
                         .iter()
                         .map(|arg| Argument::positional((**arg).clone()))
                         .collect();
-                    let rest_signature = crate::emitter::stdlib::rest_fixed_arity(stdlib_name)
-                        .map(|fixed_count| CallSignature {
-                            param_names: vec![String::new(); fixed_count as usize + 1],
-                            min_arity: fixed_count as usize,
-                            has_rest: true,
+                    let rest_signature =
+                        crate::emitter::stdlib::rest_fixed_arity(stdlib_name).map(|fixed_count| {
+                            CallSignature {
+                                param_names: vec![String::new(); fixed_count as usize + 1],
+                                min_arity: fixed_count as usize,
+                                has_rest: true,
+                            }
                         });
 
                     if let Some(signature) = rest_signature.as_ref() {
@@ -11810,11 +13514,18 @@ impl Compiler {
                         self.emit_u16(Op::GLOBAL_GET, name_idx);
                         self.emit_u16(Op::LOCAL_SET, callee_slot);
                         self.emit(Op::DROP);
-                        self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, signature)?;
+                        self.emit_known_rest_call_from_local(
+                            callee_slot,
+                            None,
+                            &synthetic_args,
+                            signature,
+                        )?;
                     } else {
                         // Push func ref FIRST, then args, then call_ref.
                         self.emit_u16(Op::GLOBAL_GET, name_idx);
-                        for a in args { self.compile_expr(a)?; }
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
                     }
                 }
@@ -11864,7 +13575,8 @@ impl Compiler {
         }
         // Then the pure (chunk + line) common ops.
         let line2 = line;
-        let handled = common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
+        let handled =
+            common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
         if handled {
             self.sync_scope_slots_with_chunk();
         }
@@ -11897,9 +13609,18 @@ impl Compiler {
             "f64_max" => self.emit(Op::F64_MAX),
             "i32_from_f64" => self.emit(Op::I32_FROM_F64),
             "f64_from_i32" => self.emit(Op::F64_FROM_I32),
-            "dyn_eq" => { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); },
-            "dyn_to_bool" => { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); },
-            "dyn_not" => { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); },
+            "dyn_eq" => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            }
+            "dyn_to_bool" => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            }
+            "dyn_not" => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            }
             "ref_is_null" => self.emit(Op::REF_IS_NULL),
             "ref_is_array" => self.emit(Op::REF_IS_ARRAY),
             "ref_typeof" => self.emit(Op::REF_TYPEOF),
@@ -11921,7 +13642,10 @@ impl Compiler {
                 // includes → indexOf then check >= 0
                 self.emit(Op::STR_INDEX_OF);
                 self.emit(Op::I32_CONST_0);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                };
             }
             "str_contains" => self.emit(Op::STR_CONTAINS),
             "str_substring" => self.emit(Op::STR_SUBSTRING),
@@ -11937,28 +13661,76 @@ impl Compiler {
             // `ecma:array.*` imports. One-place-to-change: flip the
             // provider in collections.rs and every array op in every
             // language re-routes.
-            "array_push" => { let l = self.line; common::collections::emit_push(&mut self.chunks, self.current, l); }
-            "array_pop" => { let l = self.line; common::collections::emit_pop(&mut self.chunks, self.current, l); }
-            "array_shift" => { let l = self.line; common::collections::emit_shift(&mut self.chunks, self.current, l); }
-            "array_reverse" => { let l = self.line; common::collections::emit_reverse(&mut self.chunks, self.current, l); }
-            "array_join" => { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
-            "array_concat" => { let l = self.line; common::collections::emit_concat(&mut self.chunks, self.current, l); }
-            "array_fill" => { let l = self.line; common::collections::emit_fill(&mut self.chunks, self.current, l); }
-            "array_length" => { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
-            "array_slice" => { let l = self.line; common::collections::emit_slice(&mut self.chunks, self.current, l); }
-            "array_get" => { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
-            "array_set" => { let l = self.line; common::collections::emit_set(&mut self.chunks, self.current, l); }
-            "array_contains" => { let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l); }
-            "array_index_of" => { let l = self.line; common::collections::emit_index_of(&mut self.chunks, self.current, l); }
-            _ => { let c = self.str_const(op_name); self.emit_u16(Op::GLOBAL_GET, c); }
+            "array_push" => {
+                let l = self.line;
+                common::collections::emit_push(&mut self.chunks, self.current, l);
+            }
+            "array_pop" => {
+                let l = self.line;
+                common::collections::emit_pop(&mut self.chunks, self.current, l);
+            }
+            "array_shift" => {
+                let l = self.line;
+                common::collections::emit_shift(&mut self.chunks, self.current, l);
+            }
+            "array_reverse" => {
+                let l = self.line;
+                common::collections::emit_reverse(&mut self.chunks, self.current, l);
+            }
+            "array_join" => {
+                let l = self.line;
+                common::collections::emit_join(&mut self.chunks, self.current, l);
+            }
+            "array_concat" => {
+                let l = self.line;
+                common::collections::emit_concat(&mut self.chunks, self.current, l);
+            }
+            "array_fill" => {
+                let l = self.line;
+                common::collections::emit_fill(&mut self.chunks, self.current, l);
+            }
+            "array_length" => {
+                let l = self.line;
+                common::collections::emit_len(&mut self.chunks, self.current, l);
+            }
+            "array_slice" => {
+                let l = self.line;
+                common::collections::emit_slice(&mut self.chunks, self.current, l);
+            }
+            "array_get" => {
+                let l = self.line;
+                common::collections::emit_get(&mut self.chunks, self.current, l);
+            }
+            "array_set" => {
+                let l = self.line;
+                common::collections::emit_set(&mut self.chunks, self.current, l);
+            }
+            "array_contains" => {
+                let l = self.line;
+                common::collections::emit_contains(&mut self.chunks, self.current, l);
+            }
+            "array_index_of" => {
+                let l = self.line;
+                common::collections::emit_index_of(&mut self.chunks, self.current, l);
+            }
+            _ => {
+                let c = self.str_const(op_name);
+                self.emit_u16(Op::GLOBAL_GET, c);
+            }
         }
     }
 
     fn emit_builtin_opcode(&mut self, op_name: &str, args: &[&Expression]) -> Result<(), String> {
         let line = self.line;
         match op_name {
-            "abs" => { self.compile_expr(args[0])?; common::math::emit_abs(self.chunk(), line); }
-            "sqrt" => { self.compile_expr(args[0])?; common::math::emit_sqrt(self.chunk(), line); }
+            "abs" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_abs(self.chunk(), line);
+            }
+            "sqrt" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_sqrt(self.chunk(), line);
+            }
             "round" => {
                 if args.len() >= 2 {
                     let number = self.import("ecma:number", "Number");
@@ -11967,7 +13739,8 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     common::math::emit_pow(self.chunk(), line);
                     self.emit_host_call(number, 1);
-                    self.emit_u16(Op::LOCAL_SET, scale_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, scale_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[0])?;
                     self.emit_host_call(number, 1);
@@ -11981,17 +13754,66 @@ impl Compiler {
                     common::math::emit_round(self.chunk(), line);
                 }
             }
-            "trunc" => { self.compile_expr(args[0])?; common::math::emit_trunc(self.chunk(), line); }
-            "floor" => { self.compile_expr(args[0])?; common::math::emit_floor(self.chunk(), line); }
-            "ceil" => { self.compile_expr(args[0])?; common::math::emit_ceil(self.chunk(), line); }
-            "min" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_min(self.chunk(), line); } else { self.emit(Op::NULL); } }
-            "max" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_max(self.chunk(), line); } else { self.emit(Op::NULL); } }
-            "sqr" => { self.compile_expr(args[0])?; self.emit(Op::DUP); self.emit(Op::F64_MUL); }
-            "succ" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(1.0)); { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); }; }
-            "pred" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(1.0)); self.emit(Op::F64_SUB); }
-            "to_upper" => { self.compile_expr(args[0])?; common::strings::emit_to_upper(self.chunk(), line); }
-            "to_lower" => { self.compile_expr(args[0])?; common::strings::emit_to_lower(self.chunk(), line); }
-            "trim" => { self.compile_expr(args[0])?; common::strings::emit_trim(self.chunk(), line); }
+            "trunc" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_trunc(self.chunk(), line);
+            }
+            "floor" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_floor(self.chunk(), line);
+            }
+            "ceil" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_ceil(self.chunk(), line);
+            }
+            "min" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::math::emit_min(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "max" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::math::emit_max(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "sqr" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::DUP);
+                self.emit(Op::F64_MUL);
+            }
+            "succ" => {
+                self.compile_expr(args[0])?;
+                self.emit_const(Value::F64(1.0));
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                };
+            }
+            "pred" => {
+                self.compile_expr(args[0])?;
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::F64_SUB);
+            }
+            "to_upper" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_to_upper(self.chunk(), line);
+            }
+            "to_lower" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_to_lower(self.chunk(), line);
+            }
+            "trim" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_trim(self.chunk(), line);
+            }
             "str_contains" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
@@ -12019,12 +13841,42 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
-            "concat" => { for a in args { self.compile_expr(a)?; } common::strings::emit_concat(self.chunk(), args.len(), line); }
-            "replace" => { if args.len() >= 3 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.compile_expr(args[2])?; common::strings::emit_replace(self.chunk(), line); } }
-            "repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::strings::emit_repeat(self.chunk(), line); } }
-            "leftstr" => { self.compile_expr(args[0])?; self.emit_const(Value::F64(0.0)); self.compile_expr(args[1])?; common::strings::emit_substring(self.chunk(), line); }
-            "high" => { self.compile_expr(args[0])?; common::strings::emit_length(self.chunk(), line); self.emit_const(Value::F64(1.0)); self.emit(Op::F64_SUB); }
-            "low" => { self.emit_const(Value::F64(0.0)); }
+            "concat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                common::strings::emit_concat(self.chunk(), args.len(), line);
+            }
+            "replace" => {
+                if args.len() >= 3 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[2])?;
+                    common::strings::emit_replace(self.chunk(), line);
+                }
+            }
+            "repeat" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::strings::emit_repeat(self.chunk(), line);
+                }
+            }
+            "leftstr" => {
+                self.compile_expr(args[0])?;
+                self.emit_const(Value::F64(0.0));
+                self.compile_expr(args[1])?;
+                common::strings::emit_substring(self.chunk(), line);
+            }
+            "high" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_length(self.chunk(), line);
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::F64_SUB);
+            }
+            "low" => {
+                self.emit_const(Value::F64(0.0));
+            }
             "setlength" => {
                 if args.len() >= 2 {
                     self.compile_setlength(args[0], args[1])?;
@@ -12032,17 +13884,58 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
-            "trim_start" => { self.compile_expr(args[0])?; common::strings::emit_trim_start(self.chunk(), line); }
-            "trim_end" => { self.compile_expr(args[0])?; common::strings::emit_trim_end(self.chunk(), line); }
-            "pow" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::math::emit_pow(self.chunk(), line); } }
-            "log" => { self.compile_expr(args[0])?; common::math::emit_log(self.chunk(), line); }
-            "sin" => { self.compile_expr(args[0])?; common::math::emit_sin(self.chunk(), line); }
-            "cos" => { self.compile_expr(args[0])?; common::math::emit_cos(self.chunk(), line); }
-            "tan" => { self.compile_expr(args[0])?; common::math::emit_tan(self.chunk(), line); }
-            "exp" => { self.compile_expr(args[0])?; common::math::emit_exp(self.chunk(), line); }
-            "is_null" => { self.compile_expr(args[0])?; self.emit(Op::REF_IS_NULL); }
-            "space" => { self.emit_const(Value::String(Arc::from(" "))); self.compile_expr(args[0])?; common::strings::emit_repeat(self.chunk(), line); }
-            "assigned" => { self.compile_expr(args[0])?; self.emit(Op::REF_IS_NULL); { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); }; }
+            "trim_start" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_trim_start(self.chunk(), line);
+            }
+            "trim_end" => {
+                self.compile_expr(args[0])?;
+                common::strings::emit_trim_end(self.chunk(), line);
+            }
+            "pow" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::math::emit_pow(self.chunk(), line);
+                }
+            }
+            "log" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_log(self.chunk(), line);
+            }
+            "sin" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_sin(self.chunk(), line);
+            }
+            "cos" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_cos(self.chunk(), line);
+            }
+            "tan" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_tan(self.chunk(), line);
+            }
+            "exp" => {
+                self.compile_expr(args[0])?;
+                common::math::emit_exp(self.chunk(), line);
+            }
+            "is_null" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::REF_IS_NULL);
+            }
+            "space" => {
+                self.emit_const(Value::String(Arc::from(" ")));
+                self.compile_expr(args[0])?;
+                common::strings::emit_repeat(self.chunk(), line);
+            }
+            "assigned" => {
+                self.compile_expr(args[0])?;
+                self.emit(Op::REF_IS_NULL);
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
+            }
             "freeandnil" => {
                 if let Some(first) = args.first() {
                     if let ExprKind::Ident(var) = &first.kind {
@@ -12056,67 +13949,347 @@ impl Compiler {
             // Direct WASM opcode names.
             // Args may be absent in plain WAT form (operands already on stack);
             // compile whatever is provided, then emit the opcode unconditionally.
-            "f64_abs"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_ABS); }
-            "f64_floor"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_FLOOR); }
-            "f64_ceil"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_CEIL); }
-            "f64_sqrt"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_SQRT); }
-            "f64_trunc"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_TRUNC); }
-            "f64_nearest" => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_NEAREST); }
-            "f64_min"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_MIN); }
-            "f64_max"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_MAX); }
+            "f64_abs" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_ABS);
+            }
+            "f64_floor" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_FLOOR);
+            }
+            "f64_ceil" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_CEIL);
+            }
+            "f64_sqrt" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_SQRT);
+            }
+            "f64_trunc" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_TRUNC);
+            }
+            "f64_nearest" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_NEAREST);
+            }
+            "f64_min" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_MIN);
+            }
+            "f64_max" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_MAX);
+            }
             "i32_from_f64" | "to_int" => {
-                for a in args { self.compile_expr(a)?; }
+                for a in args {
+                    self.compile_expr(a)?;
+                }
                 let line = self.line;
                 common::convert::emit_to_int(self.chunk(), line);
             }
-            "f64_from_i32"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_FROM_I32); }
-            "dyn_to_bool"   => { for a in args { self.compile_expr(a)?; } { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); } }
-            "ref_is_null"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_IS_NULL); }
-            "ref_is_array"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_IS_ARRAY); }
-            "ref_typeof"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_TYPEOF); }
-            "str_length"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_LENGTH); }
-            "str_to_upper"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TO_UPPER); }
-            "str_to_lower"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TO_LOWER); }
-            "str_trim"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM); }
-            "str_trim_start"=> { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM_START); }
-            "str_trim_end"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM_END); }
-            "str_reverse"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_REVERSE); }
+            "f64_from_i32" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64_FROM_I32);
+            }
+            "dyn_to_bool" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                }
+            }
+            "ref_is_null" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::REF_IS_NULL);
+            }
+            "ref_is_array" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::REF_IS_ARRAY);
+            }
+            "ref_typeof" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::REF_TYPEOF);
+            }
+            "str_length" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_LENGTH);
+            }
+            "str_to_upper" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_TO_UPPER);
+            }
+            "str_to_lower" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_TO_LOWER);
+            }
+            "str_trim" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_TRIM);
+            }
+            "str_trim_start" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_TRIM_START);
+            }
+            "str_trim_end" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_TRIM_END);
+            }
+            "str_reverse" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::STR_REVERSE);
+            }
             // SIMD v128 ops — args may be absent in plain WAT form
-            "i8x16_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SPLAT); }
-            "i16x8_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_SPLAT); }
-            "i32x4_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_SPLAT); }
-            "i64x2_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_SPLAT); }
-            "f32x4_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SPLAT); }
-            "f64x2_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SPLAT); }
-            "v128_not"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_NOT); }
-            "v128_and"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_AND); }
-            "v128_andnot"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_ANDNOT); }
-            "v128_or"        => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_OR); }
-            "v128_xor"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_XOR); }
-            "v128_bitselect" => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_BITSELECT); }
-            "v128_any_true"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_ANY_TRUE); }
-            "i8x16_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_ADD); }
-            "i16x8_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_ADD); }
-            "i32x4_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_ADD); }
-            "i64x2_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_ADD); }
-            "i8x16_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SUB); }
-            "i16x8_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_SUB); }
-            "i32x4_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_SUB); }
-            "i64x2_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_SUB); }
-            "i32x4_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_MUL); }
-            "i64x2_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_MUL); }
-            "f32x4_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_ADD); }
-            "f64x2_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_ADD); }
-            "f32x4_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SUB); }
-            "f64x2_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SUB); }
-            "f32x4_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_MUL); }
-            "f64x2_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_MUL); }
-            "f32x4_div"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_DIV); }
-            "f64x2_div"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_DIV); }
-            "f32x4_sqrt"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SQRT); }
-            "f64x2_sqrt"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SQRT); }
-            "i8x16_shuffle"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SHUFFLE); }
-            "i8x16_swizzle"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SWIZZLE); }
+            "i8x16_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I8X16_SPLAT);
+            }
+            "i16x8_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I16X8_SPLAT);
+            }
+            "i32x4_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I32X4_SPLAT);
+            }
+            "i64x2_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I64X2_SPLAT);
+            }
+            "f32x4_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_SPLAT);
+            }
+            "f64x2_splat" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_SPLAT);
+            }
+            "v128_not" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_NOT);
+            }
+            "v128_and" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_AND);
+            }
+            "v128_andnot" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_ANDNOT);
+            }
+            "v128_or" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_OR);
+            }
+            "v128_xor" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_XOR);
+            }
+            "v128_bitselect" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_BITSELECT);
+            }
+            "v128_any_true" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::V128_ANY_TRUE);
+            }
+            "i8x16_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I8X16_ADD);
+            }
+            "i16x8_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I16X8_ADD);
+            }
+            "i32x4_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I32X4_ADD);
+            }
+            "i64x2_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I64X2_ADD);
+            }
+            "i8x16_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I8X16_SUB);
+            }
+            "i16x8_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I16X8_SUB);
+            }
+            "i32x4_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I32X4_SUB);
+            }
+            "i64x2_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I64X2_SUB);
+            }
+            "i32x4_mul" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I32X4_MUL);
+            }
+            "i64x2_mul" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I64X2_MUL);
+            }
+            "f32x4_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_ADD);
+            }
+            "f64x2_add" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_ADD);
+            }
+            "f32x4_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_SUB);
+            }
+            "f64x2_sub" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_SUB);
+            }
+            "f32x4_mul" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_MUL);
+            }
+            "f64x2_mul" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_MUL);
+            }
+            "f32x4_div" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_DIV);
+            }
+            "f64x2_div" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_DIV);
+            }
+            "f32x4_sqrt" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F32X4_SQRT);
+            }
+            "f64x2_sqrt" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::F64X2_SQRT);
+            }
+            "i8x16_shuffle" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I8X16_SHUFFLE);
+            }
+            "i8x16_swizzle" => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit(Op::I8X16_SWIZZLE);
+            }
             "str_last_index_of" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
@@ -12136,8 +14309,20 @@ impl Compiler {
                     self.emit(Op::STR_CONCAT);
                 }
             }
-            "str_compare" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_COMPARE); } }
-            "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_SPLIT); } }
+            "str_compare" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_COMPARE);
+                }
+            }
+            "str_split" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_SPLIT);
+                }
+            }
             "str_getcsv" => {
                 for arg in args {
                     self.compile_expr(arg)?;
@@ -12149,12 +14334,21 @@ impl Compiler {
                     line,
                 );
             }
-            "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_REPEAT); } }
+            "str_repeat" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_REPEAT);
+                }
+            }
             "array_join" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_join(&mut self.chunks, self.current, l);
+                    }
                 }
             }
             // setTimeout/setInterval — emit Op::SET_TIMER directly. Old JS
@@ -12202,7 +14396,9 @@ impl Compiler {
                             common::collections::emit_push(&mut self.chunks, self.current, line);
                             // Drop intermediate lengths; the final one
                             // is the expression's value.
-                            if i != tail - 1 { self.emit(Op::DROP); }
+                            if i != tail - 1 {
+                                self.emit(Op::DROP);
+                            }
                         }
                     }
                 } else {
@@ -12268,13 +14464,19 @@ impl Compiler {
                     self.emit(Op::FALSE);
                 }
             }
-            _ => { self.emit(Op::NULL); }
+            _ => {
+                self.emit(Op::NULL);
+            }
         }
         Ok(())
     }
 
     /// Emit a multi-opcode intrinsic sequence.
-    fn emit_fortran_scan_like(&mut self, args: &[&Expression], invert_match: bool) -> Result<(), String> {
+    fn emit_fortran_scan_like(
+        &mut self,
+        args: &[&Expression],
+        invert_match: bool,
+    ) -> Result<(), String> {
         let line = self.line;
         if args.len() < 2 {
             self.emit(Op::NULL);
@@ -12298,7 +14500,10 @@ impl Compiler {
 
         if let Some(back_arg) = args.get(2) {
             self.compile_expr(back_arg)?;
-            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            };
         } else {
             self.emit(Op::FALSE);
         }
@@ -12327,7 +14532,10 @@ impl Compiler {
         let (back_loop, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit(Op::I32_CONST_0);
-        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line);
 
         self.emit_u16(Op::LOCAL_GET, set_slot);
@@ -12336,7 +14544,10 @@ impl Compiler {
         self.emit(Op::STR_CHAR_AT);
         self.emit(Op::STR_CONTAINS);
         if invert_match {
-            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            };
         }
         self.chunk().emit_if(line);
 
@@ -12368,7 +14579,10 @@ impl Compiler {
         let (forward_loop, _) = self.chunk().emit_loop_s(line);
         self.emit_u16(Op::LOCAL_GET, index_slot);
         self.emit_u16(Op::LOCAL_GET, len_slot);
-        { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+        };
         self.chunk().emit_br_if(1, line);
 
         self.emit_u16(Op::LOCAL_GET, set_slot);
@@ -12377,7 +14591,10 @@ impl Compiler {
         self.emit(Op::STR_CHAR_AT);
         self.emit(Op::STR_CONTAINS);
         if invert_match {
-            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            };
         }
         self.chunk().emit_if(line);
 
@@ -12410,12 +14627,16 @@ impl Compiler {
             "cstr" => {
                 self.compile_expr(args[0])?;
                 let value_slot = self.define_local("__vb_cstr_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit(Op::REF_TYPEOF);
                 self.emit_const(Value::String(Arc::from("boolean")));
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
@@ -12485,7 +14706,8 @@ impl Compiler {
                     } else {
                         self.compile_expr(arg)?;
                         let value_slot = self.define_local("__vb_isobject_value");
-                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         self.emit(Op::REF_IS_ARRAY);
                         let line = self.line;
@@ -12509,7 +14731,8 @@ impl Compiler {
                     } else {
                         self.compile_expr(arg)?;
                         let value_slot = self.define_local("__vb_isref_value");
-                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         self.emit(Op::REF_IS_STRING);
@@ -12565,7 +14788,8 @@ impl Compiler {
                 let timer_idx = self.import("wasi:clocks", "vbTimer");
                 self.emit_host_call(timer_idx, 0);
                 let value_slot = self.define_local("__vb_timer_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit(Op::REF_IS_NUMBER);
@@ -12575,7 +14799,10 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit_const(Value::I32(0));
-                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                };
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_const(Value::I32(0));
@@ -12595,7 +14822,8 @@ impl Compiler {
                     for (index, arg) in args.iter().enumerate() {
                         self.compile_expr(arg)?;
                         let slot = self.define_local(&format!("__vb_switch_{index}"));
-                        self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
                         slots.push(slot);
                     }
 
@@ -12612,11 +14840,17 @@ impl Compiler {
                             break;
                         }
                         self.emit_u16(Op::LOCAL_GET, matched_slot);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, pair[0]);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, pair[1]);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -12661,7 +14895,8 @@ impl Compiler {
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
                     let v_slot = self.define_local("__php_isf_v");
-                    self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, v_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, v_slot);
                     self.emit(Op::REF_IS_NUMBER);
                     let line = self.line;
@@ -12670,7 +14905,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, v_slot);
                     let is_int_idx = self.import("ecma:number", "isInteger");
                     self.emit_host_call(is_int_idx, 1);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                     self.chunk().emit_else(line);
                     self.emit_const(Value::Bool(false));
                     self.chunk().emit_end(line);
@@ -12729,14 +14967,24 @@ impl Compiler {
                 }
             }
             "php_defined" => {
-                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
                     let global_name = self.canon(name);
                     let idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_GET, idx);
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("undefined")));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                 } else {
                     if let Some(arg) = args.first() {
                         self.compile_expr(arg)?;
@@ -12746,7 +14994,11 @@ impl Compiler {
                 }
             }
             "php_function_exists" => {
-                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
                     let builtin_exists = self.profile.lookup_builtin(name).is_some()
                         || common::imports::resolve_common_import(name).is_some();
                     if builtin_exists {
@@ -12756,8 +15008,14 @@ impl Compiler {
                         let idx = self.str_const(&global_name);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                         self.emit_const(Value::Undefined);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        };
                     }
                 } else {
                     if let Some(arg) = args.first() {
@@ -12769,8 +15027,14 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, name_slot);
                         self.emit(Op::REF_TYPEOF);
                         self.emit_const(Value::String(Arc::from("string")));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if_value(line);
 
                         self.emit_u16(Op::LOCAL_GET, name_slot);
@@ -12779,7 +15043,8 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, lowered_slot);
                         self.emit(Op::DROP);
 
-                        let mut known_functions: Vec<String> = self.defined_functions.iter().cloned().collect();
+                        let mut known_functions: Vec<String> =
+                            self.defined_functions.iter().cloned().collect();
                         known_functions.sort();
                         let exists_slot = self.define_local("__php_function_exists_result");
                         self.emit_const(Value::Bool(false));
@@ -12787,9 +15052,17 @@ impl Compiler {
                         self.emit(Op::DROP);
                         for function_name in known_functions {
                             self.emit_u16(Op::LOCAL_GET, lowered_slot);
-                            self.emit_const(Value::String(Arc::from(function_name.to_ascii_lowercase())));
-                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            self.emit_const(Value::String(Arc::from(
+                                function_name.to_ascii_lowercase(),
+                            )));
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
                             self.emit_const(Value::Bool(true));
                             self.emit_u16(Op::LOCAL_SET, exists_slot);
@@ -12806,7 +15079,11 @@ impl Compiler {
                 }
             }
             "php_class_exists" => {
-                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
                     for arg in args.iter().skip(1) {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
@@ -12816,8 +15093,14 @@ impl Compiler {
                     self.emit_u16(Op::GLOBAL_GET, idx);
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("undefined")));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                 } else {
                     if let Some(arg) = args.first() {
                         self.compile_expr(arg)?;
@@ -12865,7 +15148,10 @@ impl Compiler {
                     self.compile_expr(args[0])?;
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("function")));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
                 } else {
                     self.emit_const(Value::Bool(false));
                 }
@@ -12898,16 +15184,16 @@ impl Compiler {
                         self.emit(Op::DROP);
                         type CmpFn = fn(&mut Chunk, u32);
                         let cmp_ops: &[(&str, CmpFn)] = &[
-                            ("<",  crate::emitter::ops::emit_dyn_lt as CmpFn),
+                            ("<", crate::emitter::ops::emit_dyn_lt as CmpFn),
                             ("lt", crate::emitter::ops::emit_dyn_lt),
                             ("<=", crate::emitter::ops::emit_dyn_le),
                             ("le", crate::emitter::ops::emit_dyn_le),
-                            (">",  crate::emitter::ops::emit_dyn_gt),
+                            (">", crate::emitter::ops::emit_dyn_gt),
                             ("gt", crate::emitter::ops::emit_dyn_gt),
                             (">=", crate::emitter::ops::emit_dyn_ge),
                             ("ge", crate::emitter::ops::emit_dyn_ge),
                             ("==", crate::emitter::ops::emit_dyn_eq),
-                            ("=",  crate::emitter::ops::emit_dyn_eq),
+                            ("=", crate::emitter::ops::emit_dyn_eq),
                             ("eq", crate::emitter::ops::emit_dyn_eq),
                             ("!=", crate::emitter::ops::emit_dyn_ne),
                             ("<>", crate::emitter::ops::emit_dyn_ne),
@@ -12915,17 +15201,29 @@ impl Compiler {
                         ];
                         for (op_text, compare_fn) in cmp_ops {
                             self.emit_u16(Op::LOCAL_GET, matched_slot);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.emit(Op::I32_EQZ);
                             self.chunk().emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, op_slot);
                             self.emit_const(Value::String(Arc::from(*op_text)));
-                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                            { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
                             self.chunk().emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, cmp_slot);
                             self.emit_const(Value::F64(0.0));
-                            { let line = self.line; compare_fn(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                compare_fn(self.chunk(), line);
+                            };
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.emit(Op::DROP);
                             self.emit_const(Value::Bool(true));
@@ -12947,25 +15245,13 @@ impl Compiler {
                 if args.is_empty() {
                     self.emit_const(Value::I32(0));
                 } else {
-                    let global_name = Self::stdlib_global_name("sprintf");
-                    let name_idx = self.str_const(&global_name);
                     let result_slot = self.define_local("__php_printf_result");
                     let log_idx = self.import("wasi:cli", "log");
-                    let callee_slot = self.define_local("__php_printf_fn");
-                    let synthetic_args: Vec<Argument> = args
-                        .iter()
-                        .map(|arg| Argument::positional((**arg).clone()))
-                        .collect();
-                    let signature = CallSignature {
-                        param_names: vec![String::new(), String::new()],
-                        min_arity: 1,
-                        has_rest: true,
-                    };
 
-                    self.emit_u16(Op::GLOBAL_GET, name_idx);
-                    self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
-                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                    for arg in args {
+                        self.compile_expr(arg)?;
+                    }
+                    self.emit_common("sprintf.format", args.len() as u8, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
@@ -12981,30 +15267,12 @@ impl Compiler {
                 if args.len() < 2 {
                     self.emit_const(Value::I32(0));
                 } else {
-                    let global_name = Self::stdlib_global_name("sprintf");
-                    let name_idx = self.str_const(&global_name);
                     let result_slot = self.define_local("__php_vprintf_result");
                     let log_idx = self.import("wasi:cli", "log");
-                    let callee_slot = self.define_local("__php_vprintf_fn");
-                    let synthetic_args = vec![
-                        Argument::positional((**args.first().unwrap()).clone()),
-                        Argument {
-                            name: None,
-                            value: (**args.get(1).unwrap()).clone(),
-                            by_ref: false,
-                            spread: true,
-                        },
-                    ];
-                    let signature = CallSignature {
-                        param_names: vec![String::new(), String::new()],
-                        min_arity: 1,
-                        has_rest: true,
-                    };
 
-                    self.emit_u16(Op::GLOBAL_GET, name_idx);
-                    self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
-                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit_common("sprintf.format_array", 2, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
@@ -13020,28 +15288,9 @@ impl Compiler {
                 if args.len() < 2 {
                     self.emit_const(Value::String(Arc::from("")));
                 } else {
-                    let global_name = Self::stdlib_global_name("sprintf");
-                    let name_idx = self.str_const(&global_name);
-                    let callee_slot = self.define_local("__php_vsprintf_fn");
-                    let synthetic_args = vec![
-                        Argument::positional((**args.first().unwrap()).clone()),
-                        Argument {
-                            name: None,
-                            value: (**args.get(1).unwrap()).clone(),
-                            by_ref: false,
-                            spread: true,
-                        },
-                    ];
-                    let signature = CallSignature {
-                        param_names: vec![String::new(), String::new()],
-                        min_arity: 1,
-                        has_rest: true,
-                    };
-
-                    self.emit_u16(Op::GLOBAL_GET, name_idx);
-                    self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
-                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit_common("sprintf.format_array", 2, line);
                 }
             }
             "php_register_shutdown_function" => {
@@ -13068,7 +15317,8 @@ impl Compiler {
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
                     let arr_slot = self.define_local("__php_rsort_arr");
-                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, arr_slot);
+                    self.emit(Op::DROP);
                     let helper = self.str_const("__vybe_sort_in_place");
                     self.emit_u16(Op::GLOBAL_GET, helper);
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -13094,10 +15344,12 @@ impl Compiler {
                     let s_slot = self.define_local("__right_s");
                     let n_slot = self.define_local("__right_n");
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, s_slot);
+                    self.emit(Op::DROP);
                     self.compile_expr(args[1])?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, n_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, n_slot);
+                    self.emit(Op::DROP);
                     // substring(s, len(s) - n, len(s))
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     // start = len(s) - n
@@ -13106,11 +15358,18 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, n_slot);
                     self.emit(Op::I32_SUB);
                     let start_slot = self.define_local("__right_start");
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit(Op::I32_CONST_0);
                     self.chunk().emit_else(line);
@@ -13133,95 +15392,150 @@ impl Compiler {
                     let length_slot = self.define_local("__php_substr_length");
 
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, str_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, str_slot);
                     common::strings::emit_length(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, len_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, len_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit(Op::I32_ADD);
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit(Op::I32_CONST_0);
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     if args.len() >= 3 {
                         self.compile_expr(args[2])?;
                         common::convert::emit_to_int(self.chunk(), line);
-                        self.emit_u16(Op::LOCAL_SET, length_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, length_slot);
+                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, length_slot);
                         self.emit(Op::I32_CONST_0);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, len_slot);
                         self.emit_u16(Op::LOCAL_GET, length_slot);
                         self.emit(Op::I32_ADD);
-                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, end_slot);
+                        self.emit(Op::DROP);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, start_slot);
                         self.emit_u16(Op::LOCAL_GET, length_slot);
                         self.emit(Op::I32_ADD);
-                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, end_slot);
+                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                     } else {
                         self.emit_u16(Op::LOCAL_GET, len_slot);
-                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, end_slot);
+                        self.emit(Op::DROP);
                     }
 
                     self.emit_u16(Op::LOCAL_GET, end_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit(Op::I32_CONST_0);
-                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, end_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, end_slot);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, len_slot);
-                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, end_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, end_slot);
                     self.emit_u16(Op::LOCAL_GET, start_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, start_slot);
-                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, end_slot);
+                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, str_slot);
@@ -13241,10 +15555,12 @@ impl Compiler {
                     let idx_slot = self.define_local("__php_strpos_idx");
 
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, haystack_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, haystack_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
-                    self.emit_u16(Op::LOCAL_SET, needle_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, needle_slot);
+                    self.emit(Op::DROP);
 
                     if args.len() >= 3 {
                         self.compile_expr(args[2])?;
@@ -13252,7 +15568,8 @@ impl Compiler {
                     } else {
                         self.emit(Op::I32_CONST_0);
                     }
-                    self.emit_u16(Op::LOCAL_SET, offset_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, offset_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, haystack_slot);
                     self.emit_u16(Op::LOCAL_GET, offset_slot);
@@ -13260,11 +15577,15 @@ impl Compiler {
                     common::strings::emit_substring(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, needle_slot);
                     common::strings::emit_index_of(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.emit(Op::I32_EQZ);
@@ -13333,11 +15654,15 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     self.compile_expr(args[0])?;
                     common::collections::emit_index_of(&mut self.chunks, self.current, line);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.emit(Op::I32_EQZ);
@@ -13356,11 +15681,13 @@ impl Compiler {
                     let start_slot = self.define_local("__php_array_slice_start");
 
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, arr_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_u16(Op::LOCAL_GET, start_slot);
@@ -13387,22 +15714,29 @@ impl Compiler {
                     let stop_slot = self.define_local("__php_range_stop");
 
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
-                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, end_slot);
+                    self.emit(Op::DROP);
 
                     if args.len() >= 3 {
                         self.compile_expr(args[2])?;
                     } else {
                         self.emit(Op::I32_CONST_1);
                     }
-                    self.emit_u16(Op::LOCAL_SET, step_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, step_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, step_slot);
                     self.emit_u16(Op::LOCAL_GET, end_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-                    self.emit_u16(Op::LOCAL_SET, stop_slot); self.emit(Op::DROP);
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
+                    self.emit_u16(Op::LOCAL_SET, stop_slot);
+                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit_u16(Op::LOCAL_GET, stop_slot);
@@ -13442,7 +15776,10 @@ impl Compiler {
                     // not null branch: [s] → str_length → cmp 0
                     common::strings::emit_length(self.chunk(), line);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
                     self.chunk().emit_end(line);
                 } else {
                     self.emit(Op::TRUE);
@@ -13472,19 +15809,28 @@ impl Compiler {
             "number_isnan" => {
                 self.compile_expr(args[0])?;
                 self.emit(Op::DUP);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                };
             }
             "number_isfinite" => {
                 self.compile_expr(args[0])?;
                 common::math::emit_abs(self.chunk(), line);
                 self.emit_const(Value::F64(f64::MAX));
-                { let line = self.line; crate::emitter::ops::emit_dyn_le(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                };
             }
             "number_isinteger" => {
                 self.compile_expr(args[0])?;
                 self.emit(Op::DUP);
                 self.emit(Op::F64_TRUNC);
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
             }
             "map_size" => {
                 self.compile_expr(args[0])?;
@@ -13528,8 +15874,14 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit(Op::I32_CONST_0);
                     self.chunk().emit_else(line);
@@ -13557,7 +15909,10 @@ impl Compiler {
                     self.emit(Op::DROP);
                     if let Some(compare_arg) = args.get(2) {
                         self.compile_expr(compare_arg)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                     } else {
                         self.emit(Op::FALSE);
                     }
@@ -13565,7 +15920,10 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, text_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, left_slot);
                     common::strings::emit_to_lower(self.chunk(), line);
@@ -13605,8 +15963,14 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit(Op::I32_CONST_0);
-                        { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if_value(line);
                         self.emit(Op::I32_CONST_0);
                         self.chunk().emit_else(line);
@@ -13641,7 +16005,10 @@ impl Compiler {
 
                     if let Some(back_arg) = args.get(2) {
                         self.compile_expr(back_arg)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                     } else {
                         self.emit(Op::FALSE);
                     }
@@ -13649,7 +16016,10 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, back_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, source_slot);
@@ -13725,7 +16095,10 @@ impl Compiler {
 
                     if let Some(compare_arg) = args.get(5) {
                         self.compile_expr(compare_arg)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                     } else {
                         self.emit(Op::FALSE);
                     }
@@ -13738,7 +16111,10 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, text_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, find_slot);
                     common::strings::emit_to_lower(self.chunk(), line);
@@ -13754,8 +16130,14 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, prefix_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if(line);
                     self.emit(Op::I32_CONST_0);
@@ -13790,8 +16172,14 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, find_len_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, source_slot);
                     self.chunk().emit_else(line);
@@ -13801,18 +16189,33 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, count_slot);
                     self.emit_const(Value::I32(0));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, replaced_slot);
                     self.emit_u16(Op::LOCAL_GET, count_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_br_if(2, line);
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, text_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, remaining_slot);
                     common::strings::emit_to_lower(self.chunk(), line);
@@ -13830,8 +16233,14 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_br_if(1, line);
 
                     self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -13839,9 +16248,15 @@ impl Compiler {
                     self.emit(Op::I32_CONST_0);
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     common::strings::emit_substring(self.chunk(), line);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                     self.emit_u16(Op::LOCAL_GET, repl_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
@@ -13869,7 +16284,10 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.emit_u16(Op::LOCAL_GET, remaining_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                     self.chunk().emit_end(line);
                 } else {
                     self.emit(Op::NULL);
@@ -13898,13 +16316,19 @@ impl Compiler {
                     } else {
                         self.emit(Op::TRUE);
                     }
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit_u16(Op::LOCAL_SET, include_slot);
                     self.emit(Op::DROP);
 
                     if let Some(compare_arg) = args.get(3) {
                         self.compile_expr(compare_arg)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                     } else {
                         self.emit(Op::FALSE);
                     }
@@ -13915,12 +16339,21 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
-                    let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, arr_slot, idx_slot, line);
+                    let state = common::loops::emit_for_in_start(
+                        &mut self.chunks,
+                        self.current,
+                        arr_slot,
+                        idx_slot,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_SET, elem_slot);
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, text_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, elem_slot);
@@ -13936,13 +16369,22 @@ impl Compiler {
                     self.chunk().emit_end(line);
 
                     self.emit(Op::I32_CONST_0);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    };
 
                     self.emit_u16(Op::LOCAL_GET, include_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
 
                     let if_block = self.chunks[self.current].emit_block(line);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    };
                     self.chunks[self.current].emit_br_if(0, line);
 
                     self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -13953,7 +16395,13 @@ impl Compiler {
                     self.chunks[self.current].emit_end(line);
                     self.chunks[self.current].patch_block(if_block);
 
-                    common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        state,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                 } else {
                     self.emit(Op::NULL);
@@ -13995,7 +16443,10 @@ impl Compiler {
 
                 if let Some(compare_arg) = args.get(3) {
                     self.compile_expr(compare_arg)?;
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                 } else {
                     self.emit(Op::FALSE);
                 }
@@ -14008,7 +16459,10 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, text_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, delim_slot);
                 common::strings::emit_to_lower(self.chunk(), line);
@@ -14032,8 +16486,14 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, delim_len_slot);
                 self.emit(Op::I32_CONST_0);
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 self.emit_u16(Op::LOCAL_GET, source_slot);
@@ -14046,20 +16506,35 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, limit_slot);
                 self.emit_const(Value::I32(0));
-                { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, count_slot);
                 self.emit_u16(Op::LOCAL_GET, limit_slot);
                 self.emit_const(Value::I32(1));
                 self.emit(Op::I32_SUB);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ge(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_br_if(2, line);
                 self.chunk().emit_end(line);
 
                 self.emit_u16(Op::LOCAL_GET, text_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, remaining_slot);
                 common::strings::emit_to_lower(self.chunk(), line);
@@ -14077,8 +16552,14 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit(Op::I32_CONST_0);
-                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.chunk().emit_br_if(1, line);
 
                 self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -14134,11 +16615,13 @@ impl Compiler {
                 } else {
                     self.emit_const(Value::String(Arc::from(",")));
                 }
-                { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
+                {
+                    let l = self.line;
+                    common::collections::emit_join(&mut self.chunks, self.current, l);
+                }
             }
 
             // ── Pascal ordinal/array intrinsics (canonical compiler_common ops) ──
-
             "high" => {
                 // High(arr) → __len__(arr) - 1
                 self.compile_expr(args[0])?;
@@ -14154,7 +16637,10 @@ impl Compiler {
                 // Succ(x) → x + 1
                 self.compile_expr(args[0])?;
                 self.emit_const(Value::F64(1.0));
-                { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                };
             }
             "pred" => {
                 // Pred(x) → x - 1
@@ -14172,7 +16658,10 @@ impl Compiler {
                 // Assigned(x) → x is not null
                 self.compile_expr(args[0])?;
                 self.emit(Op::NULL);
-                { let line = self.line; crate::emitter::ops::emit_dyn_ne(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                };
             }
             "sizeof" => {
                 // SizeOf(x) → 4 (boxed value)
@@ -14248,7 +16737,8 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expr(args[0])?;
                     let s_slot = self.define_local("__rs_s");
-                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, s_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     common::strings::emit_length(self.chunk(), line);
@@ -14280,16 +16770,22 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expr(args[0])?;
                     let str_slot = self.define_local("__strtr_str");
-                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, str_slot);
+                    self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
                     common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
                     let entries_slot = self.define_local("__strtr_entries");
-                    self.emit_u16(Op::LOCAL_SET, entries_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, entries_slot);
+                    self.emit(Op::DROP);
 
                     let idx_slot = self.define_local("__strtr_idx");
                     let state = common::loops::emit_for_in_start(
-                        &mut self.chunks, self.current, entries_slot, idx_slot, line,
+                        &mut self.chunks,
+                        self.current,
+                        entries_slot,
+                        idx_slot,
+                        line,
                     );
                     // `emit_for_in_start` leaves the current entry on the
                     // stack — drop it; we re-fetch `[k, v]` via the index
@@ -14302,7 +16798,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     common::collections::emit_get(&mut self.chunks, self.current, line);
                     let pair_slot = self.define_local("__strtr_pair");
-                    self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, pair_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, pair_slot);
                     self.emit_const(Value::I32(0));
                     common::collections::emit_get(&mut self.chunks, self.current, line);
@@ -14310,10 +16807,15 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     common::collections::emit_get(&mut self.chunks, self.current, line);
                     self.emit(Op::STR_REPLACE);
-                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, str_slot);
+                    self.emit(Op::DROP);
 
                     common::loops::emit_for_in_end(
-                        &mut self.chunks, self.current, idx_slot, state, line,
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        state,
+                        line,
                     );
 
                     self.emit_u16(Op::LOCAL_GET, str_slot);
@@ -14329,7 +16831,6 @@ impl Compiler {
             // (ecma:string.padStart, ecma:string.toUpperCase, etc.) are
             // the single source of truth for semantics. The compositions
             // are well-known JS idioms — see comments per arm.
-
             "zfill" => {
                 // Python str.zfill(width) → padStart(width, "0").
                 if args.len() >= 2 {
@@ -14349,7 +16850,8 @@ impl Compiler {
                 if let Some(arg) = args.first() {
                     let s_slot = self.define_local("__cap_s");
                     self.compile_expr(arg)?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, s_slot);
+                    self.emit(Op::DROP);
                     // first char upper
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     self.emit(Op::I32_CONST_0);
@@ -14365,7 +16867,10 @@ impl Compiler {
                     let lower_idx = self.import("ecma:string", "toLowerCase");
                     self.emit_host_call(lower_idx, 1);
                     // concat
-                    { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -14378,16 +16883,19 @@ impl Compiler {
                     let w_slot = self.define_local("__cen_w");
                     let pad_slot = self.define_local("__cen_pad");
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, s_slot);
+                    self.emit(Op::DROP);
                     self.compile_expr(args[1])?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, w_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, w_slot);
+                    self.emit(Op::DROP);
                     if args.len() >= 3 {
                         self.compile_expr(args[2])?;
                     } else {
                         self.emit_const(Value::String(Arc::from(" ")));
                     }
-                    self.emit_u16(Op::LOCAL_SET, pad_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, pad_slot);
+                    self.emit(Op::DROP);
                     // Step 1: padStart with target = (w + len) / 2 + len_remainder
                     // For simplicity: padStart with (w + len + 1)/2.
                     self.emit_u16(Op::LOCAL_GET, s_slot);
@@ -14433,7 +16941,8 @@ impl Compiler {
                 if let Some(arg) = args.first() {
                     let s_slot = self.define_local("__chop_s");
                     self.compile_expr(arg)?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, s_slot);
+                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     self.emit(Op::I32_CONST_0);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
@@ -14479,15 +16988,27 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("string")));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     common::strings::emit_length(self.chunk(), line);
                     self.emit_const(Value::I32(1));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if(line);
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -14502,7 +17023,10 @@ impl Compiler {
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, handled_slot);
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -14534,16 +17058,28 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, frac_slot);
                     self.emit_const(Value::F64(0.5));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, floor_slot);
 
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, frac_slot);
                     self.emit_const(Value::F64(0.5));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_gt(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, ceil_slot);
 
@@ -14553,8 +17089,14 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_AND);
                     self.emit_const(Value::I32(0));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                    { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, floor_slot);
                     self.chunk().emit_else(line);
@@ -14609,7 +17151,9 @@ impl Compiler {
                 }
             }
 
-            _ => { self.emit(Op::NULL); }
+            _ => {
+                self.emit(Op::NULL);
+            }
         }
         Ok(())
     }
@@ -14640,7 +17184,9 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
                     *saw_any = true;
                     if let ExprKind::Tuple(elems) = &expr.kind {
                         let n = elems.len();
-                        if n < 2 || n > 255 { return false; }
+                        if n < 2 || n > 255 {
+                            return false;
+                        }
                         match arity {
                             None => *arity = Some(n as u8),
                             Some(a) if *a as usize == n => {}
@@ -14650,41 +17196,82 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
                         return false;
                     }
                 }
-                StmtKind::Return(None) => { *saw_any = true; return false; }
-                StmtKind::If { then_body, elifs, else_body, .. } => {
-                    if !walk(then_body, arity, saw_any) { return false; }
+                StmtKind::Return(None) => {
+                    *saw_any = true;
+                    return false;
+                }
+                StmtKind::If {
+                    then_body,
+                    elifs,
+                    else_body,
+                    ..
+                } => {
+                    if !walk(then_body, arity, saw_any) {
+                        return false;
+                    }
                     for (_, b) in elifs {
-                        if !walk(b, arity, saw_any) { return false; }
+                        if !walk(b, arity, saw_any) {
+                            return false;
+                        }
                     }
                     if let Some(b) = else_body {
-                        if !walk(b, arity, saw_any) { return false; }
+                        if !walk(b, arity, saw_any) {
+                            return false;
+                        }
                     }
                 }
-                StmtKind::While { body, else_body, .. }
-                | StmtKind::ForIn { body, else_body, .. } => {
-                    if !walk(body, arity, saw_any) { return false; }
+                StmtKind::While {
+                    body, else_body, ..
+                }
+                | StmtKind::ForIn {
+                    body, else_body, ..
+                } => {
+                    if !walk(body, arity, saw_any) {
+                        return false;
+                    }
                     if let Some(b) = else_body {
-                        if !walk(b, arity, saw_any) { return false; }
+                        if !walk(b, arity, saw_any) {
+                            return false;
+                        }
                     }
                 }
-                StmtKind::For { body, .. } | StmtKind::DoWhile { body, .. }
-                | StmtKind::With { body, .. } | StmtKind::Using { body, .. } => {
-                    if !walk(body, arity, saw_any) { return false; }
+                StmtKind::For { body, .. }
+                | StmtKind::DoWhile { body, .. }
+                | StmtKind::With { body, .. }
+                | StmtKind::Using { body, .. } => {
+                    if !walk(body, arity, saw_any) {
+                        return false;
+                    }
                 }
-                StmtKind::Try { body, catches, else_body, finally } => {
-                    if !walk(body, arity, saw_any) { return false; }
+                StmtKind::Try {
+                    body,
+                    catches,
+                    else_body,
+                    finally,
+                } => {
+                    if !walk(body, arity, saw_any) {
+                        return false;
+                    }
                     for c in catches {
-                        if !walk(&c.body, arity, saw_any) { return false; }
+                        if !walk(&c.body, arity, saw_any) {
+                            return false;
+                        }
                     }
                     if let Some(b) = else_body {
-                        if !walk(b, arity, saw_any) { return false; }
+                        if !walk(b, arity, saw_any) {
+                            return false;
+                        }
                     }
                     if let Some(b) = finally {
-                        if !walk(b, arity, saw_any) { return false; }
+                        if !walk(b, arity, saw_any) {
+                            return false;
+                        }
                     }
                 }
                 StmtKind::Block(b) => {
-                    if !walk(b, arity, saw_any) { return false; }
+                    if !walk(b, arity, saw_any) {
+                        return false;
+                    }
                 }
                 StmtKind::Labeled { body, .. } => {
                     if !walk(std::slice::from_ref(body.as_ref()), arity, saw_any) {
@@ -14698,14 +17285,30 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
         }
         true
     }
-    if !walk(body, &mut arity, &mut saw_any) { return None; }
+    if !walk(body, &mut arity, &mut saw_any) {
+        return None;
+    }
     if saw_any { arity } else { None }
 }
 
 fn is_hoisted_deconstruction_block(stmts: &[Statement]) -> bool {
     let call_stmt = match stmts {
-        [Statement { kind: StmtKind::Expr(expr), .. }] => expr,
-        [Statement { kind: StmtKind::VarDecl { .. }, .. }, Statement { kind: StmtKind::Expr(expr), .. }] => expr,
+        [
+            Statement {
+                kind: StmtKind::Expr(expr),
+                ..
+            },
+        ] => expr,
+        [
+            Statement {
+                kind: StmtKind::VarDecl { .. },
+                ..
+            },
+            Statement {
+                kind: StmtKind::Expr(expr),
+                ..
+            },
+        ] => expr,
         _ => return false,
     };
 
@@ -14723,13 +17326,11 @@ fn is_identity_stamp(stmt: &Statement) -> bool {
     if let StmtKind::Assign { targets, .. } = &stmt.kind {
         if targets.len() == 1 {
             if let ExprKind::Member { object, field, .. } = &targets[0].kind {
-                let obj_is_self = matches!(
-                    &object.kind,
-                    ExprKind::This | ExprKind::Super
-                ) || matches!(
-                    &object.kind,
-                    ExprKind::Ident(n) if matches!(n.to_lowercase().as_str(), "me" | "this" | "self")
-                );
+                let obj_is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
+                    || matches!(
+                        &object.kind,
+                        ExprKind::Ident(n) if matches!(n.to_lowercase().as_str(), "me" | "this" | "self")
+                    );
                 if obj_is_self && field.starts_with("__") {
                     return true;
                 }
@@ -14788,11 +17389,16 @@ fn body_has_identity_stamp(body: &[Statement]) -> bool {
 /// compile_class path.
 fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statement> {
     let key = |name: &str| -> String {
-        if case_sensitive { name.to_string() } else { name.to_lowercase() }
+        if case_sensitive {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        }
     };
 
     // First pass: collect (name → first_index)
-    let mut first_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut first_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for (i, stmt) in body.iter().enumerate() {
         if let StmtKind::ClassDecl { name, .. } = &stmt.kind {
             first_index.entry(key(name)).or_insert(i);
@@ -14825,7 +17431,8 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
                     parents: p,
                     interfaces: iface,
                     ..
-                } = &mut merged.kind {
+                } = &mut merged.kind
+                {
                     // Append members from every later declaration of this name.
                     // Skip duplicate Constructors — the VB walker's
                     // `inject_implicit_mybase_new` synthesizes a 2-stmt
@@ -14840,15 +17447,24 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
                     // injected Handles → AddHandler bindings). Keep the
                     // first Constructor; discard any later partial's
                     // Constructor clone.
-                    let mut has_ctor = m.iter().any(|mb| matches!(mb, ClassMember::Constructor { .. }));
+                    let mut has_ctor = m
+                        .iter()
+                        .any(|mb| matches!(mb, ClassMember::Constructor { .. }));
                     for later in body.iter().skip(i + 1) {
                         if let StmtKind::ClassDecl {
-                            name: ln, members: lm, parents: lp, interfaces: li, ..
-                        } = &later.kind {
+                            name: ln,
+                            members: lm,
+                            parents: lp,
+                            interfaces: li,
+                            ..
+                        } = &later.kind
+                        {
                             if key(ln) == k {
                                 for lmem in lm {
                                     if matches!(lmem, ClassMember::Constructor { .. }) {
-                                        if has_ctor { continue; }
+                                        if has_ctor {
+                                            continue;
+                                        }
                                         has_ctor = true;
                                     }
                                     m.push(lmem.clone());

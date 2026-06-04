@@ -124,8 +124,7 @@ impl CompileTimeTypes {
     /// System.ComponentModel.Component?
     /// These are the types whose derived classes use the InitializeComponent pattern.
     pub fn is_control_type(&self, name: &str) -> bool {
-        self.is_subtype_of(name, "control")
-            || self.is_subtype_of(name, "component")
+        self.is_subtype_of(name, "control") || self.is_subtype_of(name, "component")
     }
 
     /// Does this type derive from System.Windows.Forms.Form?
@@ -193,7 +192,11 @@ impl FrameworkTypeTable {
 
     fn add(&mut self, fqn: &str, parent: Option<&str>) {
         let fqn_lower = fqn.to_lowercase();
-        let short = fqn_lower.rsplit('.').next().unwrap_or(&fqn_lower).to_string();
+        let short = fqn_lower
+            .rsplit('.')
+            .next()
+            .unwrap_or(&fqn_lower)
+            .to_string();
         let parent_lower = parent.map(|p| p.to_lowercase());
         self.parents.insert(fqn_lower.clone(), parent_lower);
         self.short_to_fqn.entry(short).or_insert(fqn_lower);
@@ -254,14 +257,20 @@ impl FrameworkTypeTable {
         self.add("System.Collections.Hashtable", Some("System.Object"));
         self.add("System.Collections.SortedList", Some("System.Object"));
         self.add("System.Collections.Generic.List", Some("System.Object"));
-        self.add("System.Collections.Generic.Dictionary", Some("System.Object"));
+        self.add(
+            "System.Collections.Generic.Dictionary",
+            Some("System.Object"),
+        );
         self.add("System.Collections.Generic.Queue", Some("System.Object"));
         self.add("System.Collections.Generic.Stack", Some("System.Object"));
         self.add("System.Collections.Generic.HashSet", Some("System.Object"));
 
         // ── Text ─────────────────────────────────────────────────────────
         self.add("System.Text.StringBuilder", Some("System.Object"));
-        self.add("System.Text.RegularExpressions.Regex", Some("System.Object"));
+        self.add(
+            "System.Text.RegularExpressions.Regex",
+            Some("System.Object"),
+        );
 
         // ── Threading ────────────────────────────────────────────────────
         self.add("System.Threading.Thread", Some("System.Object"));
@@ -292,69 +301,240 @@ impl FrameworkTypeTable {
         // ── WinForms hierarchy (correct .NET chain) ──────────────────────
         // Form → ContainerControl → ScrollableControl → Control → Component → MarshalByRefObject → Object
         self.add("System.MarshalByRefObject", Some("System.Object"));
-        self.add("System.ComponentModel.Component", Some("System.MarshalByRefObject"));
-        self.add("System.Windows.Forms.Control", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.ScrollableControl", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.ContainerControl", Some("System.Windows.Forms.ScrollableControl"));
-        self.add("System.Windows.Forms.Form", Some("System.Windows.Forms.ContainerControl"));
-        self.add("System.Windows.Forms.UserControl", Some("System.Windows.Forms.ContainerControl"));
+        self.add(
+            "System.ComponentModel.Component",
+            Some("System.MarshalByRefObject"),
+        );
+        self.add(
+            "System.Windows.Forms.Control",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.ScrollableControl",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.ContainerControl",
+            Some("System.Windows.Forms.ScrollableControl"),
+        );
+        self.add(
+            "System.Windows.Forms.Form",
+            Some("System.Windows.Forms.ContainerControl"),
+        );
+        self.add(
+            "System.Windows.Forms.UserControl",
+            Some("System.Windows.Forms.ContainerControl"),
+        );
 
         // ── Controls ─────────────────────────────────────────────────────
-        self.add("System.Windows.Forms.ButtonBase", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.Button", Some("System.Windows.Forms.ButtonBase"));
-        self.add("System.Windows.Forms.Label", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.TextBoxBase", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.TextBox", Some("System.Windows.Forms.TextBoxBase"));
-        self.add("System.Windows.Forms.RichTextBox", Some("System.Windows.Forms.TextBoxBase"));
-        self.add("System.Windows.Forms.MaskedTextBox", Some("System.Windows.Forms.TextBoxBase"));
-        self.add("System.Windows.Forms.CheckBox", Some("System.Windows.Forms.ButtonBase"));
-        self.add("System.Windows.Forms.RadioButton", Some("System.Windows.Forms.ButtonBase"));
-        self.add("System.Windows.Forms.ListControl", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.ComboBox", Some("System.Windows.Forms.ListControl"));
-        self.add("System.Windows.Forms.ListBox", Some("System.Windows.Forms.ListControl"));
-        self.add("System.Windows.Forms.Panel", Some("System.Windows.Forms.ScrollableControl"));
-        self.add("System.Windows.Forms.GroupBox", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.TabControl", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.TabPage", Some("System.Windows.Forms.Panel"));
-        self.add("System.Windows.Forms.DataGridView", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.ProgressBar", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.TrackBar", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.NumericUpDown", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.DateTimePicker", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.PictureBox", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.ToolStrip", Some("System.Windows.Forms.ScrollableControl"));
-        self.add("System.Windows.Forms.MenuStrip", Some("System.Windows.Forms.ToolStrip"));
-        self.add("System.Windows.Forms.StatusStrip", Some("System.Windows.Forms.ToolStrip"));
-        self.add("System.Windows.Forms.SplitContainer", Some("System.Windows.Forms.ContainerControl"));
-        self.add("System.Windows.Forms.FlowLayoutPanel", Some("System.Windows.Forms.Panel"));
-        self.add("System.Windows.Forms.TableLayoutPanel", Some("System.Windows.Forms.Panel"));
-        self.add("System.Windows.Forms.LinkLabel", Some("System.Windows.Forms.Label"));
-        self.add("System.Windows.Forms.TreeView", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.ListView", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.WebBrowser", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.MonthCalendar", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.HScrollBar", Some("System.Windows.Forms.Control"));
-        self.add("System.Windows.Forms.VScrollBar", Some("System.Windows.Forms.Control"));
+        self.add(
+            "System.Windows.Forms.ButtonBase",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.Button",
+            Some("System.Windows.Forms.ButtonBase"),
+        );
+        self.add(
+            "System.Windows.Forms.Label",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.TextBoxBase",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.TextBox",
+            Some("System.Windows.Forms.TextBoxBase"),
+        );
+        self.add(
+            "System.Windows.Forms.RichTextBox",
+            Some("System.Windows.Forms.TextBoxBase"),
+        );
+        self.add(
+            "System.Windows.Forms.MaskedTextBox",
+            Some("System.Windows.Forms.TextBoxBase"),
+        );
+        self.add(
+            "System.Windows.Forms.CheckBox",
+            Some("System.Windows.Forms.ButtonBase"),
+        );
+        self.add(
+            "System.Windows.Forms.RadioButton",
+            Some("System.Windows.Forms.ButtonBase"),
+        );
+        self.add(
+            "System.Windows.Forms.ListControl",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.ComboBox",
+            Some("System.Windows.Forms.ListControl"),
+        );
+        self.add(
+            "System.Windows.Forms.ListBox",
+            Some("System.Windows.Forms.ListControl"),
+        );
+        self.add(
+            "System.Windows.Forms.Panel",
+            Some("System.Windows.Forms.ScrollableControl"),
+        );
+        self.add(
+            "System.Windows.Forms.GroupBox",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.TabControl",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.TabPage",
+            Some("System.Windows.Forms.Panel"),
+        );
+        self.add(
+            "System.Windows.Forms.DataGridView",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.ProgressBar",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.TrackBar",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.NumericUpDown",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.DateTimePicker",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.PictureBox",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.ToolStrip",
+            Some("System.Windows.Forms.ScrollableControl"),
+        );
+        self.add(
+            "System.Windows.Forms.MenuStrip",
+            Some("System.Windows.Forms.ToolStrip"),
+        );
+        self.add(
+            "System.Windows.Forms.StatusStrip",
+            Some("System.Windows.Forms.ToolStrip"),
+        );
+        self.add(
+            "System.Windows.Forms.SplitContainer",
+            Some("System.Windows.Forms.ContainerControl"),
+        );
+        self.add(
+            "System.Windows.Forms.FlowLayoutPanel",
+            Some("System.Windows.Forms.Panel"),
+        );
+        self.add(
+            "System.Windows.Forms.TableLayoutPanel",
+            Some("System.Windows.Forms.Panel"),
+        );
+        self.add(
+            "System.Windows.Forms.LinkLabel",
+            Some("System.Windows.Forms.Label"),
+        );
+        self.add(
+            "System.Windows.Forms.TreeView",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.ListView",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.WebBrowser",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.MonthCalendar",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.HScrollBar",
+            Some("System.Windows.Forms.Control"),
+        );
+        self.add(
+            "System.Windows.Forms.VScrollBar",
+            Some("System.Windows.Forms.Control"),
+        );
 
         // ── Non-visual components ────────────────────────────────────────
-        self.add("System.Windows.Forms.Timer", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.ToolTip", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.ImageList", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.BindingSource", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.ErrorProvider", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.HelpProvider", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.BackgroundWorker", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.NotifyIcon", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.BindingNavigator", Some("System.Windows.Forms.ToolStrip"));
+        self.add(
+            "System.Windows.Forms.Timer",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.ToolTip",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.ImageList",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.BindingSource",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.ErrorProvider",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.HelpProvider",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.BackgroundWorker",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.NotifyIcon",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.BindingNavigator",
+            Some("System.Windows.Forms.ToolStrip"),
+        );
 
         // ── Dialogs ──────────────────────────────────────────────────────
-        self.add("System.Windows.Forms.CommonDialog", Some("System.ComponentModel.Component"));
-        self.add("System.Windows.Forms.FileDialog", Some("System.Windows.Forms.CommonDialog"));
-        self.add("System.Windows.Forms.OpenFileDialog", Some("System.Windows.Forms.FileDialog"));
-        self.add("System.Windows.Forms.SaveFileDialog", Some("System.Windows.Forms.FileDialog"));
-        self.add("System.Windows.Forms.FolderBrowserDialog", Some("System.Windows.Forms.CommonDialog"));
-        self.add("System.Windows.Forms.ColorDialog", Some("System.Windows.Forms.CommonDialog"));
-        self.add("System.Windows.Forms.FontDialog", Some("System.Windows.Forms.CommonDialog"));
+        self.add(
+            "System.Windows.Forms.CommonDialog",
+            Some("System.ComponentModel.Component"),
+        );
+        self.add(
+            "System.Windows.Forms.FileDialog",
+            Some("System.Windows.Forms.CommonDialog"),
+        );
+        self.add(
+            "System.Windows.Forms.OpenFileDialog",
+            Some("System.Windows.Forms.FileDialog"),
+        );
+        self.add(
+            "System.Windows.Forms.SaveFileDialog",
+            Some("System.Windows.Forms.FileDialog"),
+        );
+        self.add(
+            "System.Windows.Forms.FolderBrowserDialog",
+            Some("System.Windows.Forms.CommonDialog"),
+        );
+        self.add(
+            "System.Windows.Forms.ColorDialog",
+            Some("System.Windows.Forms.CommonDialog"),
+        );
+        self.add(
+            "System.Windows.Forms.FontDialog",
+            Some("System.Windows.Forms.CommonDialog"),
+        );
 
         // ── Data ─────────────────────────────────────────────────────────
         self.add("System.Data.DataTable", Some("System.Object"));
@@ -364,8 +544,14 @@ impl FrameworkTypeTable {
         self.add("System.Data.SqlClient.SqlConnection", Some("System.Object"));
         self.add("System.Data.SqlClient.SqlCommand", Some("System.Object"));
         self.add("System.Data.SqlClient.SqlDataReader", Some("System.Object"));
-        self.add("System.Data.SqlClient.SqlDataAdapter", Some("System.Object"));
-        self.add("System.Data.SqlClient.SqlTransaction", Some("System.Object"));
+        self.add(
+            "System.Data.SqlClient.SqlDataAdapter",
+            Some("System.Object"),
+        );
+        self.add(
+            "System.Data.SqlClient.SqlTransaction",
+            Some("System.Object"),
+        );
         self.add("System.Data.OleDb.OleDbConnection", Some("System.Object"));
         self.add("System.Data.OleDb.OleDbCommand", Some("System.Object"));
         self.add("ADODB.Connection", Some("System.Object"));
@@ -379,7 +565,10 @@ impl FrameworkTypeTable {
         self.add("System.Net.Sockets.Socket", Some("System.Object"));
 
         // ── Security ─────────────────────────────────────────────────────
-        self.add("System.Security.Cryptography.HashAlgorithm", Some("System.Object"));
+        self.add(
+            "System.Security.Cryptography.HashAlgorithm",
+            Some("System.Object"),
+        );
 
         // ── XML ──────────────────────────────────────────────────────────
         self.add("System.Xml.Linq.XDocument", Some("System.Object"));
@@ -405,6 +594,8 @@ pub fn needs_auto_init_component(
     types: &CompileTimeTypes,
 ) -> bool {
     !has_explicit_ctor
-        && method_names.iter().any(|m| m.eq_ignore_ascii_case("initializecomponent"))
+        && method_names
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case("initializecomponent"))
         && base_type.map(|b| types.is_control_type(b)).unwrap_or(false)
 }

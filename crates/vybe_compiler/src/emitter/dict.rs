@@ -12,8 +12,8 @@
 //! All languages (Python, Dart, JS, VB, C#) use this same structure.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 // ── Creation ────────────────────────────────────────────────────────────
 
@@ -49,7 +49,8 @@ pub fn emit_set_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     let key_str = chunks[current].add_constant(Value::String(Arc::from(key)));
     chunks[current].emit_op_u16(Op::CONST, key_str, line);
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Emit bytecode to set a dynamic key (key on stack).
@@ -86,7 +87,8 @@ pub fn emit_method_set(chunks: &mut [Chunk], current: usize, dict_slot: u16, lin
 
     // Actually the simplest correct API: caller pushes [dict, key, value].
     // We do array_set + __keys push.
-    crate::emitter::collections::emit_set(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
     // Push key to __keys: need dict and key again
     // The dict is still accessible via dict_slot. The key was consumed by array_set.
     // We need the caller to compile key twice, or we save it.
@@ -99,7 +101,13 @@ pub fn emit_method_set(chunks: &mut [Chunk], current: usize, dict_slot: u16, lin
 /// Caller must store dict in `dict_slot` and key in `key_slot`.
 /// Value must be on stack.
 /// Stack before: [value]  Stack after: [dict]
-pub fn emit_method_set_tracked(chunks: &mut [Chunk], current: usize, dict_slot: u16, key_slot: u16, line: u32) {
+pub fn emit_method_set_tracked(
+    chunks: &mut [Chunk],
+    current: usize,
+    dict_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
     // array_set(dict, key, val)
     // Stack has [value]. Need [dict, key, value].
     // Save value, push dict+key, push value back.
@@ -128,14 +136,16 @@ pub fn emit_method_set_tracked(chunks: &mut [Chunk], current: usize, dict_slot: 
     chunks[current].emit_op(Op::DROP, line); // drop dict we just pushed
     // Forget it — the stack ordering is too complex without a swap opcode.
     // Just use array_set directly. Caller is responsible for stack order.
-    crate::emitter::collections::emit_set(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     // Push key to __keys
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     // Return dict for chaining
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
@@ -286,7 +296,8 @@ pub fn emit_method_size(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_set_add(chunks: &mut [Chunk], current: usize, line: u32) {
     // set[value] = true
     chunks[current].emit_op(Op::TRUE, line);
-    crate::emitter::collections::emit_set(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
     // TODO: __keys tracking (needs key saved to a local)
 }
 
@@ -331,7 +342,15 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Emit bytecode to get all values as an array.
 /// Requires dict in `dict_slot` (not consumed from stack).
 /// Stack before: []  Stack after: [array_of_values]
-pub fn emit_values_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u16, keys_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
+pub fn emit_values_from_local(
+    chunks: &mut [Chunk],
+    current: usize,
+    dict_slot: u16,
+    keys_slot: u16,
+    result_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
     // Get __keys array
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
@@ -345,7 +364,8 @@ pub fn emit_values_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u
     chunks[current].emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push(dict[keys[i]])
-    let state = crate::emitter::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
+    let state =
+        crate::emitter::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
     // Stack: [key_string]. Use it to get value from dict.
     // Store key, get dict[key], push to result
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
@@ -364,7 +384,8 @@ pub fn emit_values_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line); // keys[i] → key string
     crate::emitter::collections::emit_get(chunks, current, line); // dict[key] → value
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line); // result.push(value)
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line); // result.push(value)
     chunks[current].emit_op(Op::DROP, line);
 
     crate::emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -375,7 +396,15 @@ pub fn emit_values_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u
 /// Emit bytecode to get all [key, value] pairs as an array.
 /// Requires dict in `dict_slot`.
 /// Stack before: []  Stack after: [array_of_pairs]
-pub fn emit_items_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u16, keys_slot: u16, result_slot: u16, idx_slot: u16, line: u32) {
+pub fn emit_items_from_local(
+    chunks: &mut [Chunk],
+    current: usize,
+    dict_slot: u16,
+    keys_slot: u16,
+    result_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
     // Get __keys array
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
@@ -389,7 +418,8 @@ pub fn emit_items_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u1
     chunks[current].emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push([keys[i], dict[keys[i]]])
-    let state = crate::emitter::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
+    let state =
+        crate::emitter::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line); // drop element from for_in_start
 
     // Build [key, value] pair
@@ -438,7 +468,8 @@ pub fn emit_items_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u1
     crate::emitter::collections::emit_get(chunks, current, line); // key again
     crate::emitter::collections::emit_get(chunks, current, line); // dict[key] = value
     crate::emitter::collections::emit_array_pair(chunks, current, line); // [key, value]
-    crate::emitter::collections::emit_push(chunks, current, line); chunks[current].emit_op(Op::DROP, line); // result.push(pair)
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line); // result.push(pair)
     chunks[current].emit_op(Op::DROP, line);
 
     crate::emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -483,7 +514,8 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit(1, line);
 
     // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
-    let global_name = chunks[current].add_constant(Value::String(Arc::from("__vybe_dict_values_from_entries")));
+    let global_name =
+        chunks[current].add_constant(Value::String(Arc::from("__vybe_dict_values_from_entries")));
     let entries_local = chunks[current].local_count;
     chunks[current].local_count = entries_local + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
@@ -506,13 +538,18 @@ pub fn emit_items(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Start building a dict literal. Creates the dict with __keys tracking.
 /// Stack: [] → [dict]
-pub fn emit_literal(chunks: &mut [Chunk], current: usize, _entry_count: usize, line: u32) -> DictBuilder {
+pub fn emit_literal(
+    chunks: &mut [Chunk],
+    current: usize,
+    _entry_count: usize,
+    line: u32,
+) -> DictBuilder {
     emit_new(chunks, current, line);
-    DictBuilder { }
+    DictBuilder {}
 }
 
 /// Builder for dict literals. Call `set_entry()` for each key-value pair.
-pub struct DictBuilder { }
+pub struct DictBuilder {}
 
 impl DictBuilder {
     /// Set a string key entry. Value must be on stack.

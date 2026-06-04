@@ -6,6 +6,49 @@
 use super::*;
 
 impl Compiler {
+    /// Push a reference to the class constructor global `ctor_global`.
+    /// When the profile opts into autoloading (`supports_autoload`), emit
+    /// the autoload-fallback sequence keyed on `autoload_name`; otherwise a
+    /// plain `GLOBAL_GET`. Keeps the constructor-resolution sites
+    /// language-agnostic — the PHP autoload logic lives in the php emitter.
+    fn emit_constructor_global_ref(&mut self, ctor_global: &str, autoload_name: &str) {
+        if self.profile.supports_autoload {
+            let line = self.line;
+            crate::emitter::php::autoload_adapter::emit_constructor_ref_with_autoload(
+                self.chunk(),
+                ctor_global,
+                autoload_name,
+                line,
+            );
+        } else {
+            let idx = self.str_const(ctor_global);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+        }
+    }
+
+    /// Like [`Self::emit_constructor_global_ref`] but resolves a primary
+    /// constructor global then an optional fallback before autoloading.
+    fn emit_dynamic_constructor_global_ref(
+        &mut self,
+        primary_ctor_global: &str,
+        fallback_ctor_global: Option<&str>,
+        autoload_name: &str,
+    ) {
+        if self.profile.supports_autoload {
+            let line = self.line;
+            crate::emitter::php::autoload_adapter::emit_dynamic_constructor_ref_with_autoload(
+                self.chunk(),
+                primary_ctor_global,
+                fallback_ctor_global,
+                autoload_name,
+                line,
+            );
+        } else {
+            let idx = self.str_const(primary_ctor_global);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+        }
+    }
+
     fn emit_js_import_meta_object(&mut self) {
         let global_name = "__js_import_meta";
         let global_idx = self.str_const(global_name);
@@ -74,7 +117,10 @@ impl Compiler {
         if self.profile.name != "fortran" {
             return Ok(false);
         }
-        if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow) {
+        if !matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+        ) {
             return Ok(false);
         }
 
@@ -103,7 +149,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
 
-        let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, iter_slot, idx_slot, line);
+        let state = common::loops::emit_for_in_start(
+            &mut self.chunks,
+            self.current,
+            iter_slot,
+            idx_slot,
+            line,
+        );
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -178,165 +230,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_php_constructor_ref_with_autoload(&mut self, ctor_global: &str, autoload_name: &str) {
-        let idx = self.str_const(ctor_global);
-        let ctor_slot = self.define_local("__php_ctor_ref");
-        self.emit_u16(Op::GLOBAL_GET, idx);
-        self.emit_u16(Op::LOCAL_SET, ctor_slot);
-        self.emit(Op::DROP);
 
-        self.emit_u16(Op::LOCAL_GET, ctor_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        let autoload_slot = self.define_local("__php_autoload_ref");
-        let autoload_idx = self.str_const("__php_autoload_callback");
-        self.emit_u16(Op::GLOBAL_GET, autoload_idx);
-        self.emit_u16(Op::LOCAL_SET, autoload_slot);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-
-        let receiver_slot = self.define_local("__php_autoload_receiver");
-        let receiver_idx = self.str_const("__php_autoload_callback_receiver");
-        self.emit_u16(Op::GLOBAL_GET, receiver_idx);
-        self.emit_u16(Op::LOCAL_SET, receiver_slot);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit_const(Value::String(Arc::from(autoload_name)));
-        self.emit_u8(Op::CALL_REF, 1);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit_const(Value::String(Arc::from(autoload_name)));
-        self.emit_u8(Op::CALL_REF, 2);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-
-        self.emit_u16(Op::GLOBAL_GET, idx);
-        self.emit_u16(Op::LOCAL_SET, ctor_slot);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-        self.emit_u16(Op::LOCAL_GET, ctor_slot);
-    }
-
-    fn emit_php_dynamic_constructor_ref_with_autoload(
-        &mut self,
-        primary_ctor_global: &str,
-        fallback_ctor_global: Option<&str>,
-        autoload_name: &str,
-    ) {
-        let ctor_slot = self.define_local("__php_dyn_ctor_ref");
-        let primary_idx = self.str_const(primary_ctor_global);
-        self.emit_u16(Op::GLOBAL_GET, primary_idx);
-        self.emit_u16(Op::LOCAL_SET, ctor_slot);
-        self.emit(Op::DROP);
-
-        if let Some(fallback) = fallback_ctor_global {
-            self.emit_u16(Op::LOCAL_GET, ctor_slot);
-            self.emit(Op::REF_TYPEOF);
-            self.emit_const(Value::String(Arc::from("undefined")));
-            let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if(line);
-            let fallback_idx = self.str_const(fallback);
-            self.emit_u16(Op::GLOBAL_GET, fallback_idx);
-            self.emit_u16(Op::LOCAL_SET, ctor_slot);
-            self.emit(Op::DROP);
-            self.chunk().emit_end(line);
-        }
-
-        self.emit_u16(Op::LOCAL_GET, ctor_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        let autoload_slot = self.define_local("__php_dyn_autoload_ref");
-        let autoload_idx = self.str_const("__php_autoload_callback");
-        self.emit_u16(Op::GLOBAL_GET, autoload_idx);
-        self.emit_u16(Op::LOCAL_SET, autoload_slot);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-
-        let receiver_slot = self.define_local("__php_dyn_autoload_receiver");
-        let receiver_idx = self.str_const("__php_autoload_callback_receiver");
-        self.emit_u16(Op::GLOBAL_GET, receiver_idx);
-        self.emit_u16(Op::LOCAL_SET, receiver_slot);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit(Op::REF_TYPEOF);
-        self.emit_const(Value::String(Arc::from("undefined")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit_const(Value::String(Arc::from(autoload_name)));
-        self.emit_u8(Op::CALL_REF, 1);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, autoload_slot);
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit_const(Value::String(Arc::from(autoload_name)));
-        self.emit_u8(Op::CALL_REF, 2);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-
-        self.emit_u16(Op::GLOBAL_GET, primary_idx);
-        self.emit_u16(Op::LOCAL_SET, ctor_slot);
-        self.emit(Op::DROP);
-        if let Some(fallback) = fallback_ctor_global {
-            self.emit_u16(Op::LOCAL_GET, ctor_slot);
-            self.emit(Op::REF_TYPEOF);
-            self.emit_const(Value::String(Arc::from("undefined")));
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if(line);
-            let fallback_idx = self.str_const(fallback);
-            self.emit_u16(Op::GLOBAL_GET, fallback_idx);
-            self.emit_u16(Op::LOCAL_SET, ctor_slot);
-            self.emit(Op::DROP);
-            self.chunk().emit_end(line);
-        }
-
-        self.chunk().emit_end(line);
-        self.emit_u16(Op::LOCAL_GET, ctor_slot);
-    }
 
     fn emit_generator_return_from_resume_slot(&mut self, resume_slot: u16) -> Result<(), String> {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -345,72 +239,34 @@ impl Compiler {
         self.emit_return_through_finally(1)
     }
 
-    fn emit_php_generator_close_ident_if_needed(&mut self, name: &str) {
-        if !self.is_php_profile() {
-            return;
-        }
-
-        self.emit_var_get(name);
-        let gen_slot = self.define_local("__php_generator_overwrite");
-        self.emit_u16(Op::LOCAL_SET, gen_slot); self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, gen_slot);
-        let is_generator = self.import("ecma:value", "isGenerator");
-        self.emit_host_call(is_generator, 1);
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, gen_slot);
-        let started_key = self.str_const("__php_gen_started");
-        self.emit_u16(Op::STRUCT_GET, started_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, gen_slot);
-        let done_key = self.str_const("__php_gen_done");
-        self.emit_u16(Op::STRUCT_GET, done_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_EQZ);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, gen_slot);
-        self.emit(Op::NULL);
-        self.emit_generator_control_packet_from_stack("return");
-        self.emit_u16(Op::RESUME, 0);
-        self.emit(Op::DROP);
-
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-    }
 
     pub(super) fn emit_generator_resume_value(&mut self) -> Result<(), String> {
         let resume_slot = self.define_local("__yield_resume");
-        self.emit_u16(Op::LOCAL_SET, resume_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, resume_slot);
+        self.emit(Op::DROP);
 
         let result_slot = self.define_local("__yield_resume_value");
         self.emit_u16(Op::LOCAL_GET, resume_slot);
-        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+        self.emit(Op::DROP);
 
-        self.emit_u16(Op::LOCAL_GET, resume_slot);
-        self.emit(Op::REF_IS_OBJECT);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
+        let marker_slot = self.define_local("__yield_resume_is_control");
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_SET, marker_slot);
+        self.emit(Op::DROP);
 
+        self.emit_u16(Op::LOCAL_GET, marker_slot);
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
         self.emit(Op::STR_EQUALS);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.emit(Op::I32_AND);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -418,28 +274,29 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, value_key);
         self.emit(Op::THROW);
 
+        self.chunk().emit_else(line);
         self.chunk().emit_end(line);
+        self.emit_u16(Op::LOCAL_GET, marker_slot);
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
         self.emit(Op::STR_EQUALS);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.emit(Op::I32_AND);
         self.chunk().emit_if(line);
 
         self.emit_generator_return_from_resume_slot(resume_slot)?;
 
-        self.chunk().emit_end(line);
-        self.emit_u16(Op::LOCAL_GET, resume_slot);
-        self.emit_u16(Op::STRUCT_GET, value_key);
-        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
-
-        self.chunk().emit_end(line);
+        self.chunk().emit_else(line);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
     }
 
-    fn generator_keyed_yield_parts<'a>(&self, expr: &'a Expression) -> Option<(&'a Expression, &'a Expression)> {
+    fn generator_keyed_yield_parts<'a>(
+        &self,
+        expr: &'a Expression,
+    ) -> Option<(&'a Expression, &'a Expression)> {
         let ExprKind::Object(props) = &expr.kind else {
             return None;
         };
@@ -475,7 +332,8 @@ impl Compiler {
         let store_global = self.str_const("__vybe_generator_payloads");
         self.emit_u16(Op::GLOBAL_GET, store_global);
         let store_slot = self.define_local("__gen_payload_store");
-        self.emit_u16(Op::LOCAL_SET, store_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, store_slot);
+        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, store_slot);
         self.emit(Op::REF_IS_NULL);
@@ -483,7 +341,8 @@ impl Compiler {
         self.chunk().emit_if(line);
         common::dict::emit_new(&mut self.chunks, self.current, line);
         self.emit(Op::DUP);
-        self.emit_u16(Op::LOCAL_SET, store_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, store_slot);
+        self.emit(Op::DROP);
         self.emit_u16(Op::GLOBAL_SET, store_global);
         self.emit(Op::DROP);
 
@@ -495,19 +354,24 @@ impl Compiler {
         let next_global = self.str_const("__vybe_generator_payload_next_id");
         self.emit_u16(Op::GLOBAL_GET, next_global);
         let id_slot = self.define_local("__gen_payload_id_current");
-        self.emit_u16(Op::LOCAL_SET, id_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, id_slot);
+        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, id_slot);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunk().emit_if(line);
         self.emit_const(Value::F64(0.0));
-        self.emit_u16(Op::LOCAL_SET, id_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, id_slot);
+        self.emit(Op::DROP);
         self.chunk().emit_end(line);
 
         self.emit_u16(Op::LOCAL_GET, id_slot);
         self.emit_const(Value::F64(1.0));
-        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+        };
         self.emit_u16(Op::GLOBAL_SET, next_global);
         self.emit(Op::DROP);
 
@@ -531,7 +395,8 @@ impl Compiler {
         let payload_id_key = self.str_const("payload_id");
         self.emit_u16(Op::STRUCT_GET, payload_id_key);
         let payload_id_slot = self.define_local("__yield_payload_id");
-        self.emit_u16(Op::LOCAL_SET, payload_id_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, payload_id_slot);
+        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, payload_id_slot);
         self.emit(Op::REF_IS_NULL);
@@ -554,7 +419,11 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    pub(super) fn emit_generator_yield_key_or_fallback(&mut self, yielded_slot: u16, fallback_slot: Option<u16>) {
+    pub(super) fn emit_generator_yield_key_or_fallback(
+        &mut self,
+        yielded_slot: u16,
+        fallback_slot: Option<u16>,
+    ) {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         self.emit(Op::REF_IS_OBJECT);
         let line = self.line;
@@ -590,41 +459,68 @@ impl Compiler {
     pub(super) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
         match &expr.kind {
             // ── Literals ────────────────────────────────────────────────
-            ExprKind::Lit(lit) => {
-                match lit {
-                    Literal::Int(n) => self.emit_const(Value::F64(*n as f64)),
-                    Literal::Float(n) => self.emit_const(Value::F64(*n)),
-                    Literal::BigInt(n) => self.emit_const(Value::BigInt(*n)),
-                    Literal::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
-                    Literal::Char(c) => self.emit_const(Value::String(Arc::from(c.to_string().as_str()))),
-                    Literal::Bool(b) => if *b { self.emit(Op::TRUE) } else { self.emit(Op::FALSE) },
-                    Literal::Null => self.emit(Op::NULL),
-                    Literal::Undefined => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); }
-                    Literal::Ellipsis => self.emit(Op::NULL),
+            ExprKind::Lit(lit) => match lit {
+                Literal::Int(n) => self.emit_const(Value::F64(*n as f64)),
+                Literal::Float(n) => self.emit_const(Value::F64(*n)),
+                Literal::BigInt(n) => self.emit_const(Value::BigInt(*n)),
+                Literal::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                Literal::Char(c) => {
+                    self.emit_const(Value::String(Arc::from(c.to_string().as_str())))
                 }
-            }
+                Literal::Bool(b) => {
+                    if *b {
+                        self.emit(Op::TRUE)
+                    } else {
+                        self.emit(Op::FALSE)
+                    }
+                }
+                Literal::Null => self.emit(Op::NULL),
+                Literal::Undefined => {
+                    let l = self.line;
+                    common::expressions::emit_undefined(self.chunk(), l);
+                }
+                Literal::Ellipsis => self.emit(Op::NULL),
+            },
 
             // ── Identifier ──────────────────────────────────────────────
             ExprKind::Ident(name) => {
                 // JS global constants that aren't variables
                 match name.as_str() {
-                    "NaN" => { self.emit_const(Value::F64(f64::NAN)); return Ok(()); }
-                    "Infinity" => { self.emit_const(Value::F64(f64::INFINITY)); return Ok(()); }
+                    "NaN" => {
+                        self.emit_const(Value::F64(f64::NAN));
+                        return Ok(());
+                    }
+                    "Infinity" => {
+                        self.emit_const(Value::F64(f64::INFINITY));
+                        return Ok(());
+                    }
                     "__js_import_meta" if self.is_js_profile() => {
                         self.emit_js_import_meta_object();
                         return Ok(());
                     }
-                    "undefined" if self.case_sensitive => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); return Ok(()); }
+                    "undefined" if self.case_sensitive => {
+                        let l = self.line;
+                        common::expressions::emit_undefined(self.chunk(), l);
+                        return Ok(());
+                    }
                     _ => {}
                 }
                 if self.is_python_profile() {
                     match name.as_str() {
-                        "__debug__" => { self.emit(Op::TRUE); return Ok(()); }
-                        "__name__" => { self.emit_const(Value::String(Arc::from("__main__"))); return Ok(()); }
+                        "__debug__" => {
+                            self.emit(Op::TRUE);
+                            return Ok(());
+                        }
+                        "__name__" => {
+                            self.emit_const(Value::String(Arc::from("__main__")));
+                            return Ok(());
+                        }
                         _ => {}
                     }
                 }
-                if let (Some(function_name), Some(result_slot)) = (self.current_func_name.as_ref(), self.current_result_slot) {
+                if let (Some(function_name), Some(result_slot)) =
+                    (self.current_func_name.as_ref(), self.current_result_slot)
+                {
                     let matches = if self.case_sensitive {
                         name == function_name
                     } else {
@@ -667,7 +563,9 @@ impl Compiler {
                     if let Some(cv) = self.profile.lookup_constant(name) {
                         match cv {
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
-                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                            ConstantValue::Str(s) => {
+                                self.emit_const(Value::String(Arc::from(s.as_str())))
+                            }
                         }
                         return Ok(());
                     }
@@ -682,7 +580,10 @@ impl Compiler {
                     }
                 }
 
-                if self.profile.name == "vb" && !is_local && self.defined_functions.contains(name.as_str()) {
+                if self.profile.name == "vb"
+                    && !is_local
+                    && self.defined_functions.contains(name.as_str())
+                {
                     self.emit_var_get(name);
                     self.emit_u8(Op::CALL_REF, 0);
                     return Ok(());
@@ -696,10 +597,9 @@ impl Compiler {
                 if self.is_js_profile()
                     && self.current_class.is_some()
                     && self.current_func_name.as_deref() != Some("<lambda>")
-                    && self
-                        .current_func_name
-                        .as_deref()
-                        .is_some_and(|name| !name.eq_ignore_ascii_case(&self.profile.constructor_name))
+                    && self.current_func_name.as_deref().is_some_and(|name| {
+                        !name.eq_ignore_ascii_case(&self.profile.constructor_name)
+                    })
                 {
                     let idx = self.str_const("__js_this");
                     self.emit_u16(Op::GLOBAL_GET, idx);
@@ -707,7 +607,9 @@ impl Compiler {
                 }
 
                 let self_kw = &self.profile.self_keyword;
-                if let Some(slot) = self.scope().resolve(self_kw)
+                if let Some(slot) = self
+                    .scope()
+                    .resolve(self_kw)
                     .or_else(|| self.scope().resolve_ci(self_kw))
                     .or_else(|| self.scope().resolve("Self"))
                     .or_else(|| self.scope().resolve("self"))
@@ -744,7 +646,11 @@ impl Compiler {
                 // super refers to the parent class constructor.
                 // Look up the parent from the current class's PendingClass info.
                 if let Some(ref class_name) = self.current_class.clone() {
-                    if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|pc| pc.parent.clone()) {
+                    if let Some(parent_name) = self
+                        .pending_classes
+                        .get(class_name.as_str())
+                        .and_then(|pc| pc.parent.clone())
+                    {
                         let pname = self.canon(&parent_name);
                         let idx = self.str_const(&pname);
                         self.emit_u16(Op::GLOBAL_GET, idx);
@@ -772,45 +678,37 @@ impl Compiler {
                             .is_some_and(is_csharp_integral_type)
                 };
 
-                // Short-circuit for And/Or
+                // Short-circuit for And/Or — generic path for all languages.
+                // PHP used a custom truthiness path here that referenced the
+                // removed __keys/vybe$assoc_keys_csv side-band and left the
+                // stack unbalanced. emit_dyn_to_bool is correct: empty()/isset()
+                // already handle PHP array truthiness at the call site.
                 if *op == BinOp::And {
-                    if self.is_php_profile() {
-                        self.compile_expr(left)?;
-                        self.emit_condition_truthiness_from_stack();
-                        let line = self.line;
-                        self.chunk().emit_if_value(line);
-                        self.compile_expr(right)?;
-                        self.emit_condition_truthiness_from_stack();
-                        self.chunk().emit_else(line);
-                        self.emit(Op::FALSE);
-                        self.chunk().emit_end(line);
-                    } else {
-                        self.compile_expr(left)?;
-                        let line = self.line;
-                        let skip = common::expressions::emit_and_start(&mut self.chunks[self.current], line);
-                        self.compile_expr(right)?;
-                        common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
-                    }
+                    self.compile_expr(left)?;
+                    let line = self.line;
+                    let skip = common::expressions::emit_and_start(
+                        &mut self.chunks[self.current],
+                        line,
+                    );
+                    self.compile_expr(right)?;
+                    common::expressions::emit_short_circuit_end(
+                        &mut self.chunks[self.current],
+                        skip,
+                    );
                     return Ok(());
                 }
                 if *op == BinOp::Or {
-                    if self.is_php_profile() {
-                        self.compile_expr(left)?;
-                        self.emit_condition_truthiness_from_stack();
-                        let line = self.line;
-                        self.chunk().emit_if_value(line);
-                        self.emit(Op::TRUE);
-                        self.chunk().emit_else(line);
-                        self.compile_expr(right)?;
-                        self.emit_condition_truthiness_from_stack();
-                        self.chunk().emit_end(line);
-                    } else {
-                        self.compile_expr(left)?;
-                        let line = self.line;
-                        let skip = common::expressions::emit_or_start(&mut self.chunks[self.current], line);
-                        self.compile_expr(right)?;
-                        common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
-                    }
+                    self.compile_expr(left)?;
+                    let line = self.line;
+                    let skip = common::expressions::emit_or_start(
+                        &mut self.chunks[self.current],
+                        line,
+                    );
+                    self.compile_expr(right)?;
+                    common::expressions::emit_short_circuit_end(
+                        &mut self.chunks[self.current],
+                        skip,
+                    );
                     return Ok(());
                 }
                 // NullCoalesce as binary op
@@ -903,10 +801,11 @@ impl Compiler {
                         self.compile_expr(left)?;
                         let line = self.line;
                         let name_canon = self.canon(type_name);
-                        let idx = self.chunk().add_constant(
-                            vybe_bytecode::Value::String(std::sync::Arc::from(name_canon.as_str())),
-                        );
-                        self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
+                        let idx = self.chunk().add_constant(vybe_bytecode::Value::String(
+                            std::sync::Arc::from(name_canon.as_str()),
+                        ));
+                        self.chunk()
+                            .emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
                         return Ok(());
                     }
                 }
@@ -928,7 +827,10 @@ impl Compiler {
                         self.compile_expr(left)?;
                         common::collections::emit_contains(&mut self.chunks, self.current, line);
                         if *op == BinOp::NotIn {
-                            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                            };
                         }
                         return Ok(());
                     }
@@ -978,29 +880,29 @@ impl Compiler {
                 // `infer_expr_type_hint` returns "bigint" for BigInt literals
                 // and for variables initialised with BigInt values.
                 if self.is_js_profile() {
-                    let left_is_bigint = self.infer_expr_type_hint(left)
-                        .as_deref() == Some("bigint");
-                    let right_is_bigint = self.infer_expr_type_hint(right)
-                        .as_deref() == Some("bigint");
+                    let left_is_bigint =
+                        self.infer_expr_type_hint(left).as_deref() == Some("bigint");
+                    let right_is_bigint =
+                        self.infer_expr_type_hint(right).as_deref() == Some("bigint");
                     if left_is_bigint && right_is_bigint {
                         let fn_name: Option<&str> = match op {
-                            BinOp::Add    => Some("add"),
-                            BinOp::Sub    => Some("sub"),
-                            BinOp::Mul    => Some("mul"),
-                            BinOp::Div    => Some("div"),
-                            BinOp::Mod    => Some("rem"),
+                            BinOp::Add => Some("add"),
+                            BinOp::Sub => Some("sub"),
+                            BinOp::Mul => Some("mul"),
+                            BinOp::Div => Some("div"),
+                            BinOp::Mod => Some("rem"),
                             BinOp::BitAnd => Some("and"),
-                            BinOp::BitOr  => Some("or"),
+                            BinOp::BitOr => Some("or"),
                             BinOp::BitXor => Some("xor"),
-                            BinOp::Pow    => Some("pow"),
-                            BinOp::Shl    => Some("shl"),
-                            BinOp::Shr    => Some("shr"),
-                            BinOp::Eq | BinOp::StrictEq       => Some("eq"),
+                            BinOp::Pow => Some("pow"),
+                            BinOp::Shl => Some("shl"),
+                            BinOp::Shr => Some("shr"),
+                            BinOp::Eq | BinOp::StrictEq => Some("eq"),
                             BinOp::NotEq | BinOp::StrictNotEq => Some("ne"),
-                            BinOp::Lt     => Some("lt"),
-                            BinOp::LtEq   => Some("le"),
-                            BinOp::Gt     => Some("gt"),
-                            BinOp::GtEq   => Some("ge"),
+                            BinOp::Lt => Some("lt"),
+                            BinOp::LtEq => Some("le"),
+                            BinOp::Gt => Some("gt"),
+                            BinOp::GtEq => Some("ge"),
                             _ => None,
                         };
                         if let Some(name) = fn_name {
@@ -1011,29 +913,46 @@ impl Compiler {
                             return Ok(());
                         }
                     } else if left_is_bigint || right_is_bigint {
-                        if matches!(op,
-                            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
-                            | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+                        if matches!(
+                            op,
+                            BinOp::Add
+                                | BinOp::Sub
+                                | BinOp::Mul
+                                | BinOp::Div
+                                | BinOp::Mod
+                                | BinOp::BitAnd
+                                | BinOp::BitOr
+                                | BinOp::BitXor
+                                | BinOp::Shl
+                                | BinOp::Shr
                         ) {
                             // §21.2.1.1: arithmetic between BigInt and non-BigInt throws TypeError.
-                            self.emit_const(Value::String(Arc::from("Cannot mix BigInt and other types, use explicit conversions")));
+                            self.emit_const(Value::String(Arc::from(
+                                "Cannot mix BigInt and other types, use explicit conversions",
+                            )));
                             let line = self.line;
                             self.emit_js_exception_ctor_from_message_value("TypeError")?;
                             common::errors::emit_throw(self.chunk(), line);
                             return Ok(());
-                        } else if matches!(op,
-                            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                        } else if matches!(
+                            op,
+                            BinOp::Eq
+                                | BinOp::NotEq
+                                | BinOp::Lt
+                                | BinOp::LtEq
+                                | BinOp::Gt
+                                | BinOp::GtEq
                         ) {
                             // §7.2.13: BigInt == Number compares numerically.
                             // ecma:bigint comparisons use to_bigint() on both sides, which handles
                             // all numeric types (F64, I32, BigInt) correctly.
                             let fn_name = match op {
-                                BinOp::Eq    => "eq",
+                                BinOp::Eq => "eq",
                                 BinOp::NotEq => "ne",
-                                BinOp::Lt    => "lt",
-                                BinOp::LtEq  => "le",
-                                BinOp::Gt    => "gt",
-                                BinOp::GtEq  => "ge",
+                                BinOp::Lt => "lt",
+                                BinOp::LtEq => "le",
+                                BinOp::Gt => "gt",
+                                BinOp::GtEq => "ge",
                                 _ => unreachable!(),
                             };
                             let idx = self.import("ecma:bigint", fn_name);
@@ -1058,18 +977,29 @@ impl Compiler {
                     UnaryOp::PreInc | UnaryOp::PostInc => {
                         // ++x / x++ : load, add 1, store
                         self.compile_expr(inner)?;
-                        if *op == UnaryOp::PostInc { self.emit(Op::DUP); }
+                        if *op == UnaryOp::PostInc {
+                            self.emit(Op::DUP);
+                        }
                         self.emit_const(Value::F64(1.0));
-                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
-                        if *op == UnaryOp::PreInc { self.emit(Op::DUP); }
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        if *op == UnaryOp::PreInc {
+                            self.emit(Op::DUP);
+                        }
                         self.compile_assign_target(inner)?;
                     }
                     UnaryOp::PreDec | UnaryOp::PostDec => {
                         self.compile_expr(inner)?;
-                        if *op == UnaryOp::PostDec { self.emit(Op::DUP); }
+                        if *op == UnaryOp::PostDec {
+                            self.emit(Op::DUP);
+                        }
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::F64_SUB);
-                        if *op == UnaryOp::PreDec { self.emit(Op::DUP); }
+                        if *op == UnaryOp::PreDec {
+                            self.emit(Op::DUP);
+                        }
                         self.compile_assign_target(inner)?;
                     }
                     UnaryOp::AddrOf => {
@@ -1083,7 +1013,9 @@ impl Compiler {
                         match op {
                             UnaryOp::Neg => {
                                 let l = self.line;
-                                if self.is_js_profile() && self.infer_expr_type_hint(inner).as_deref() == Some("bigint") {
+                                if self.is_js_profile()
+                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
+                                {
                                     let idx = self.import("ecma:bigint", "neg");
                                     self.emit_host_call(idx, 1);
                                 } else {
@@ -1103,10 +1035,15 @@ impl Compiler {
                                 let idx = self.import("ecma:number", "Number");
                                 self.emit_host_call(idx, 1);
                             }
-                            UnaryOp::Not => { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); },
+                            UnaryOp::Not => {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                            }
                             UnaryOp::BitNot => {
                                 let l = self.line;
-                                if self.is_js_profile() && self.infer_expr_type_hint(inner).as_deref() == Some("bigint") {
+                                if self.is_js_profile()
+                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
+                                {
                                     let idx = self.import("ecma:bigint", "not");
                                     self.emit_host_call(idx, 1);
                                 } else {
@@ -1114,46 +1051,58 @@ impl Compiler {
                                 }
                             }
                             UnaryOp::Typeof => self.emit(Op::REF_TYPEOF),
-                            UnaryOp::Void => { self.emit(Op::DROP); self.emit(Op::UNDEFINED); }
-                            UnaryOp::Delete => { self.emit(Op::DROP); self.emit(Op::TRUE); }
+                            UnaryOp::Void => {
+                                self.emit(Op::DROP);
+                                self.emit(Op::UNDEFINED);
+                            }
+                            UnaryOp::Delete => {
+                                self.emit(Op::DROP);
+                                self.emit(Op::TRUE);
+                            }
                             UnaryOp::Await => {} // handled below in ExprKind::Await
-                            _ => {} // PreInc etc handled above
+                            _ => {}              // PreInc etc handled above
                         }
                     }
                 }
             }
 
-            ExprKind::RefOf(place) => {
-                match place.as_ref() {
-                    PlaceExpr::Ident(name) => {
-                        if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            self.compile_expr(&Expression::ident(name))?;
-                            self.emit_wrap_top_of_stack_in_pointer_cell();
-                        }
-                    }
-                    PlaceExpr::Deref(expr) => {
-                        self.compile_expr(expr)?;
-                    }
-                    PlaceExpr::Member { object, field, null_safe } => {
-                        self.compile_expr(&Expression::new(ExprKind::Member {
-                            object: object.clone(),
-                            field: field.clone(),
-                            null_safe: *null_safe,
-                        }))?;
-                        self.emit_wrap_top_of_stack_in_pointer_cell();
-                    }
-                    PlaceExpr::Index { object, index, null_safe } => {
-                        self.compile_expr(&Expression::new(ExprKind::Index {
-                            object: object.clone(),
-                            index: index.clone(),
-                            null_safe: *null_safe,
-                        }))?;
+            ExprKind::RefOf(place) => match place.as_ref() {
+                PlaceExpr::Ident(name) => {
+                    if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                    } else {
+                        self.compile_expr(&Expression::ident(name))?;
                         self.emit_wrap_top_of_stack_in_pointer_cell();
                     }
                 }
-            }
+                PlaceExpr::Deref(expr) => {
+                    self.compile_expr(expr)?;
+                }
+                PlaceExpr::Member {
+                    object,
+                    field,
+                    null_safe,
+                } => {
+                    self.compile_expr(&Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    }))?;
+                    self.emit_wrap_top_of_stack_in_pointer_cell();
+                }
+                PlaceExpr::Index {
+                    object,
+                    index,
+                    null_safe,
+                } => {
+                    self.compile_expr(&Expression::new(ExprKind::Index {
+                        object: object.clone(),
+                        index: index.clone(),
+                        null_safe: *null_safe,
+                    }))?;
+                    self.emit_wrap_top_of_stack_in_pointer_cell();
+                }
+            },
 
             ExprKind::RefLoad(expr) => {
                 self.compile_deref_expr(expr)?;
@@ -1172,7 +1121,11 @@ impl Compiler {
             }
 
             // ── Call ────────────────────────────────────────────────────
-            ExprKind::Call { callee, args, optional } => {
+            ExprKind::Call {
+                callee,
+                args,
+                optional,
+            } => {
                 if *optional {
                     // Optional call: callee?.() — short-circuit to undefined if callee is null/undefined.
                     // Per ECMA-262 §13.5.9: the result is `undefined` (not null) when short-circuiting.
@@ -1193,7 +1146,9 @@ impl Compiler {
                     self.emit(Op::UNDEFINED);
                     self.chunk().emit_else(undef_line);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    for a in args { self.compile_expr(&a.value)?; }
+                    for a in args {
+                        self.compile_expr(&a.value)?;
+                    }
                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                     self.chunk().emit_end(undef_line);
                     self.chunk().emit_end(line);
@@ -1228,7 +1183,11 @@ impl Compiler {
             }
 
             // ── Member access ───────────────────────────────────────────
-            ExprKind::Member { object, field, null_safe } => {
+            ExprKind::Member {
+                object,
+                field,
+                null_safe,
+            } => {
                 if self.js_private_member_access_forbidden(field) {
                     self.emit_js_private_access_denied(field)?;
                     return Ok(());
@@ -1247,11 +1206,19 @@ impl Compiler {
                             return Ok(());
                         }
                         (ReflectionBinding::Type(type_name), "IsEnum") => {
-                            self.emit(if self.reflection_is_enum_type(&type_name) { Op::TRUE } else { Op::FALSE });
+                            self.emit(if self.reflection_is_enum_type(&type_name) {
+                                Op::TRUE
+                            } else {
+                                Op::FALSE
+                            });
                             return Ok(());
                         }
                         (ReflectionBinding::Type(type_name), "IsValueType") => {
-                            self.emit(if self.reflection_is_value_type(&type_name) { Op::TRUE } else { Op::FALSE });
+                            self.emit(if self.reflection_is_value_type(&type_name) {
+                                Op::TRUE
+                            } else {
+                                Op::FALSE
+                            });
                             return Ok(());
                         }
                         (ReflectionBinding::Type(type_name), "BaseType") => {
@@ -1262,7 +1229,13 @@ impl Compiler {
                             }
                             return Ok(());
                         }
-                        (ReflectionBinding::Method { type_name, method_name }, "IsStatic") => {
+                        (
+                            ReflectionBinding::Method {
+                                type_name,
+                                method_name,
+                            },
+                            "IsStatic",
+                        ) => {
                             let is_static = self
                                 .reflection_type_metadata(&type_name)
                                 .and_then(|meta| meta.methods.get(&method_name))
@@ -1271,7 +1244,13 @@ impl Compiler {
                             self.emit(if is_static { Op::TRUE } else { Op::FALSE });
                             return Ok(());
                         }
-                        (ReflectionBinding::Property { type_name, property_name }, "CanWrite") => {
+                        (
+                            ReflectionBinding::Property {
+                                type_name,
+                                property_name,
+                            },
+                            "CanWrite",
+                        ) => {
                             let can_write = self
                                 .reflection_type_metadata(&type_name)
                                 .and_then(|meta| meta.properties.get(&property_name))
@@ -1294,7 +1273,10 @@ impl Compiler {
                         let is_enum = [full_name, short_name].into_iter().any(|candidate| {
                             let canon = self.canon(candidate);
                             self.enum_value_names.contains_key(&canon)
-                                || self.enum_value_names.keys().any(|known| known.eq_ignore_ascii_case(candidate))
+                                || self
+                                    .enum_value_names
+                                    .keys()
+                                    .any(|known| known.eq_ignore_ascii_case(candidate))
                         });
                         self.emit(if is_enum { Op::TRUE } else { Op::FALSE });
                         return Ok(());
@@ -1303,7 +1285,8 @@ impl Compiler {
 
                 // Namespace constant check (Math.PI, etc.)
                 if let ExprKind::Ident(obj_name) = &object.kind {
-                    let prefers_type_lookup = self.prefers_type_qualified_member_lookup(obj_name, field);
+                    let prefers_type_lookup =
+                        self.prefers_type_qualified_member_lookup(obj_name, field);
                     let obj_is_local = self.scope().resolve(obj_name).is_some()
                         || self.has_static_local_binding(obj_name)
                         || (!self.case_sensitive
@@ -1326,13 +1309,19 @@ impl Compiler {
                     if let Some(cv) = self.profile.lookup_constant(&compound) {
                         match cv {
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
-                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                            ConstantValue::Str(s) => {
+                                self.emit_const(Value::String(Arc::from(s.as_str())))
+                            }
                         }
                         return Ok(());
                     }
                     // Constructor call with 0 args: ClassName.Create
                     let ctor_nm = &self.profile.constructor_name;
-                    let is_ctor = if self.case_sensitive { field == ctor_nm } else { field.eq_ignore_ascii_case(ctor_nm) };
+                    let is_ctor = if self.case_sensitive {
+                        field == ctor_nm
+                    } else {
+                        field.eq_ignore_ascii_case(ctor_nm)
+                    };
                     let canon_obj = self.canon(obj_name);
                     let is_known_class = self.defined_classes.contains(&canon_obj)
                         && self.scope().resolve(obj_name).is_none();
@@ -1351,7 +1340,9 @@ impl Compiler {
                             && self.scope().resolve(obj_name).is_none();
                         if is_class {
                             let method_name = self.canon(field);
-                            let zero_arg_static = self.pending_classes.get(canon_obj.as_str())
+                            let zero_arg_static = self
+                                .pending_classes
+                                .get(canon_obj.as_str())
                                 .map(|pc| !pc.static_fields.iter().any(|name| name == &method_name))
                                 .unwrap_or(false);
                             if zero_arg_static {
@@ -1360,11 +1351,15 @@ impl Compiler {
                                 self.emit(Op::DUP);
                                 let method_idx = self.str_const(&method_name);
                                 self.emit_u16(Op::STRUCT_GET, method_idx);
-                                let fn_tmp = self.scope().resolve("__pascal_static_fn")
+                                let fn_tmp = self
+                                    .scope()
+                                    .resolve("__pascal_static_fn")
                                     .unwrap_or_else(|| self.define_local("__pascal_static_fn"));
                                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
                                 self.emit(Op::DROP);
-                                let cls_tmp = self.scope().resolve("__pascal_static_cls")
+                                let cls_tmp = self
+                                    .scope()
+                                    .resolve("__pascal_static_cls")
                                     .unwrap_or_else(|| self.define_local("__pascal_static_cls"));
                                 self.emit_u16(Op::LOCAL_SET, cls_tmp);
                                 self.emit(Op::DROP);
@@ -1380,24 +1375,29 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet {
                     let parts = self.flatten_member_chain(expr);
                     if !parts.is_empty() {
-                        let lower_parts: Vec<String> = parts.iter().map(|part| self.canon(part)).collect();
+                        let lower_parts: Vec<String> =
+                            parts.iter().map(|part| self.canon(part)).collect();
                         if common::dotnet::is_namespace_root(&lower_parts[0]) {
                             let scope = self.scope();
                             let dotnet_surface = common::dotnet::surface();
                             let mut imports = dotnet_surface.default_imports().to_vec();
                             imports.extend(self.profile.namespaces.extra_imports.clone());
-                            let field_set: std::collections::HashSet<String> = if let Some(ref class_name) = self.current_class {
-                                self.pending_classes.get(class_name.as_str())
-                                    .map(|pending| pending.fields.iter().cloned().collect())
-                                    .unwrap_or_default()
-                            } else {
-                                std::collections::HashSet::new()
-                            };
+                            let field_set: std::collections::HashSet<String> =
+                                if let Some(ref class_name) = self.current_class {
+                                    self.pending_classes
+                                        .get(class_name.as_str())
+                                        .map(|pending| pending.fields.iter().cloned().collect())
+                                        .unwrap_or_default()
+                                } else {
+                                    std::collections::HashSet::new()
+                                };
                             let defined_globals = self.defined_globals.clone();
                             let defined_classes = self.defined_classes.clone();
                             let is_user_class_fn = move |name: &str| -> bool {
                                 defined_classes.contains(name)
-                                    || defined_classes.iter().any(|class_name| class_name.eq_ignore_ascii_case(name))
+                                    || defined_classes
+                                        .iter()
+                                        .any(|class_name| class_name.eq_ignore_ascii_case(name))
                             };
                             let is_user_class_for_local = is_user_class_fn.clone();
                             let ctx = common::dotnet::ResolutionContext {
@@ -1408,13 +1408,16 @@ impl Compiler {
                                     scope.resolve(name).is_some()
                                         || scope.resolve_ci(name).is_some()
                                         || defined_globals.contains(name)
-                                        || defined_globals.iter().any(|global_name| global_name.eq_ignore_ascii_case(name))
+                                        || defined_globals.iter().any(|global_name| {
+                                            global_name.eq_ignore_ascii_case(name)
+                                        })
                                 },
                                 is_class_field: &|name: &str| field_set.contains(name),
                                 is_user_type: &is_user_class_fn,
                                 imports: &imports,
                             };
-                            let refs: Vec<&str> = lower_parts.iter().map(|part| part.as_str()).collect();
+                            let refs: Vec<&str> =
+                                lower_parts.iter().map(|part| part.as_str()).collect();
                             match common::dotnet::resolve_dotted_name(&refs, &ctx) {
                                 common::dotnet::DottedResolution::GlobalAccess { name } => {
                                     let idx = self.str_const(&name);
@@ -1430,7 +1433,9 @@ impl Compiler {
                                     self.emit_host_call(idx, 0);
                                     return Ok(());
                                 }
-                                common::dotnet::DottedResolution::NamespaceAccess { parts: ns_parts } => {
+                                common::dotnet::DottedResolution::NamespaceAccess {
+                                    parts: ns_parts,
+                                } => {
                                     if ns_parts.len() >= 2 {
                                         let mut found_window: Option<(usize, usize)> = None;
                                         'outer: for start in 0..ns_parts.len().saturating_sub(1) {
@@ -1444,10 +1449,18 @@ impl Compiler {
                                         }
                                         if let Some((_const_start, const_end)) = found_window {
                                             let key = ns_parts[_const_start..const_end].join(".");
-                                            let cv = self.profile.lookup_constant(&key).cloned().unwrap();
+                                            let cv = self
+                                                .profile
+                                                .lookup_constant(&key)
+                                                .cloned()
+                                                .unwrap();
                                             match cv {
-                                                ConstantValue::Float(f) => self.emit_const(Value::F64(f)),
-                                                ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                                                ConstantValue::Float(f) => {
+                                                    self.emit_const(Value::F64(f))
+                                                }
+                                                ConstantValue::Str(s) => self.emit_const(
+                                                    Value::String(Arc::from(s.as_str())),
+                                                ),
                                             }
                                             for part in &ns_parts[const_end..] {
                                                 let idx = self.str_const(part);
@@ -1473,7 +1486,9 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
                     crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
-                        &mut self.chunks, self.current, line,
+                        &mut self.chunks,
+                        self.current,
+                        line,
                     );
                     return Ok(());
                 }
@@ -1495,8 +1510,13 @@ impl Compiler {
                             let constructor_of = self.import("ecma:value", "constructorOf");
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_host_call(constructor_of, 1);
+                        } else if field == "length" {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            let line = self.line;
+                            common::collections::emit_array_length(self.chunk(), line);
                         } else {
-                            let field_name = self.js_member_storage_name_for_receiver(object, field);
+                            let field_name =
+                                self.js_member_storage_name_for_receiver(object, field);
                             let prop = self.str_const(&field_name);
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_u16(Op::STRUCT_GET, prop);
@@ -1543,7 +1563,9 @@ impl Compiler {
                         self.emit(Op::REF_IS_UNDEFINED);
                         let msg_line = self.line;
                         self.chunk().emit_if_value(msg_line);
-                        self.emit_const(Value::String(Arc::from("Cannot read properties of undefined")));
+                        self.emit_const(Value::String(Arc::from(
+                            "Cannot read properties of undefined",
+                        )));
                         self.chunk().emit_else(msg_line);
                         self.emit_const(Value::String(Arc::from("Cannot read properties of null")));
                         self.chunk().emit_end(msg_line);
@@ -1562,11 +1584,29 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             return Ok(());
                         }
+                        // `.length` on any value — strings, arrays, typed arrays.
+                        // Op::ARRAY_LENGTH handles both ObjectKind::Array and Value::String
+                        // directly (WASM GC array.len opcode in the wasm tier; inline
+                        // len check in the interpreter). No host call, no branch — pure
+                        // WASM opcode, same as the for-in loop emitters use.
+                        if field == "length" {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            let line = self.line;
+                            common::collections::emit_array_length(self.chunk(), line);
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.emit(Op::DROP);
+                            self.restore_js_this(saved_this);
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                            return Ok(());
+                        }
                         let symbol_end = if field == "description" {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::REF_TYPEOF);
                             self.emit_const(Value::String(Arc::from("symbol")));
-                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            };
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                             self.chunk().emit_if(line);
@@ -1603,7 +1643,8 @@ impl Compiler {
                         self.chunk().emit_end(lookup_line);
                         // Restore the caller's __js_this — value already
                         // on stack as the access result.
-                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit(Op::DROP);
                         if let Some(line) = symbol_end {
                             self.chunk().emit_end(line);
                         }
@@ -1619,10 +1660,9 @@ impl Compiler {
                 };
 
                 if self.profile.name == "pascal" && !*null_safe {
-                    if let Some(class_name) = receiver_type_hint
-                        .as_deref()
-                        .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                    {
+                    if let Some(class_name) = receiver_type_hint.as_deref().and_then(|type_hint| {
+                        self.resolve_pending_class_name_for_type_hint(type_hint)
+                    }) {
                         let member_name = self.canon(field);
                         let zero_arg_instance_method = self
                             .pending_classes
@@ -1668,27 +1708,29 @@ impl Compiler {
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
 
-                let receiver_array_rank = if matches!(self.profile.name.as_str(), "csharp" | "vb")
-                    && field == "Rank"
-                {
-                    let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let normalized = Self::normalize_type_hint(type_hint);
-                        let start = normalized.find('[')?;
-                        let rest = &normalized[start + 1..];
-                        let end = rest.find(']')?;
-                        Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
-                    });
-                    Some(inferred.unwrap_or(1))
-                } else {
-                    None
-                };
+                let receiver_array_rank =
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb") && field == "Rank" {
+                        let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            let start = normalized.find('[')?;
+                            let rest = &normalized[start + 1..];
+                            let end = rest.find(']')?;
+                            Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
+                        });
+                        Some(inferred.unwrap_or(1))
+                    } else {
+                        None
+                    };
 
                 if matches!(self.profile.name.as_str(), "csharp" | "vb") && receiver_is_nullable {
                     match field.as_str() {
                         "HasValue" => {
                             self.compile_expr(object)?;
                             self.emit(Op::REF_IS_NULL);
-                            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                            };
                             return Ok(());
                         }
                         "Value" => {
@@ -1704,51 +1746,56 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let receiver_is_collection_like = if matches!(self.profile.name.as_str(), "csharp" | "vb")
-                    && matches!(field.as_str(), "Length" | "Count")
-                {
-                    let unknown_receiver_default = field == "Length";
-                    let is_collection_like_type = |type_hint: &str| {
-                        let normalized = Self::normalize_type_hint(type_hint);
-                        let bare = normalized
-                            .split('<')
-                            .next()
-                            .unwrap_or(normalized.as_str())
-                            .trim_end_matches('?');
-                        let terminal = bare.rsplit('.').next().unwrap_or(bare);
-                        Self::is_string_type_hint(type_hint)
-                            || matches!(
-                                terminal,
-                                "list"
-                                    | "arraylist"
-                                    | "dictionary"
-                                    | "queue"
-                                    | "stack"
-                                    | "hashset"
-                                    | "set"
-                                    | "collection"
-                                    | "icollection"
-                                    | "readonlycollection"
-                                    | "enumerable"
-                                    | "ienumerable"
-                                    | "readonlylist"
-                                    | "ilist"
-                                    | "array"
-                            )
-                            || bare.ends_with("[]")
-                    };
+                let receiver_is_collection_like =
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && matches!(field.as_str(), "Length" | "Count")
+                    {
+                        let unknown_receiver_default = field == "Length";
+                        let is_collection_like_type = |type_hint: &str| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            let bare = normalized
+                                .split('<')
+                                .next()
+                                .unwrap_or(normalized.as_str())
+                                .trim_end_matches('?');
+                            let terminal = bare.rsplit('.').next().unwrap_or(bare);
+                            Self::is_string_type_hint(type_hint)
+                                || matches!(
+                                    terminal,
+                                    "list"
+                                        | "arraylist"
+                                        | "dictionary"
+                                        | "queue"
+                                        | "stack"
+                                        | "hashset"
+                                        | "set"
+                                        | "collection"
+                                        | "icollection"
+                                        | "readonlycollection"
+                                        | "enumerable"
+                                        | "ienumerable"
+                                        | "readonlylist"
+                                        | "ilist"
+                                        | "array"
+                                )
+                                || bare.ends_with("[]")
+                        };
 
-                    match &object.kind {
-                        ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => receiver_type_hint
-                            .as_deref()
-                            .map(is_collection_like_type)
-                            .unwrap_or(unknown_receiver_default),
-                        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) | ExprKind::Array(_) => true,
-                        _ => unknown_receiver_default,
-                    }
-                } else {
-                    false
-                };
+                        match &object.kind {
+                            ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => {
+                                receiver_type_hint
+                                    .as_deref()
+                                    .map(is_collection_like_type)
+                                    .unwrap_or(unknown_receiver_default)
+                            }
+                            ExprKind::Lit(Literal::Str(_))
+                            | ExprKind::Interpolation(_)
+                            | ExprKind::Array(_) => true,
+                            _ => unknown_receiver_default,
+                        }
+                    } else {
+                        false
+                    };
 
                 let is_dotnet_dictionary_accessor = !self.case_sensitive
                     && matches!(field.as_str(), "Keys" | "Values")
@@ -1768,7 +1815,11 @@ impl Compiler {
                 if is_dotnet_dictionary_accessor {
                     self.compile_expr(object)?;
                     if field == "Keys" {
-                        common::collections::emit_iter_keys(&mut self.chunks, self.current, self.line);
+                        common::collections::emit_iter_keys(
+                            &mut self.chunks,
+                            self.current,
+                            self.line,
+                        );
                     } else {
                         self.emit_common("dict.values", 1, self.line);
                     }
@@ -1783,16 +1834,17 @@ impl Compiler {
                         ExprKind::Ident(name)
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
-                let is_csharp_runtime_count_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
-                    && self.profile.namespaces.use_dotnet
-                    && field == "Count"
-                    && !is_csharp_len_accessor
-                    && !*null_safe
-                    && !matches!(
-                        &object.kind,
-                        ExprKind::Ident(name)
-                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
-                    );
+                let is_csharp_runtime_count_accessor =
+                    matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && self.profile.namespaces.use_dotnet
+                        && field == "Count"
+                        && !is_csharp_len_accessor
+                        && !*null_safe
+                        && !matches!(
+                            &object.kind,
+                            ExprKind::Ident(name)
+                                if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                        );
 
                 if *null_safe && is_csharp_len_accessor {
                     self.compile_expr(object)?;
@@ -1811,17 +1863,18 @@ impl Compiler {
                     self.emit_autoderef_pointer_cell();
                 }
 
-                let dotnet_instance_property = if matches!(self.profile.name.as_str(), "csharp" | "vb")
-                    && self.profile.namespaces.use_dotnet
-                    && !*null_safe
-                {
-                    receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let class_name = Self::normalize_type_hint(type_hint);
-                        common::dotnet::surface().lookup_instance_property(&class_name, field)
-                    })
-                } else {
-                    None
-                };
+                let dotnet_instance_property =
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && self.profile.namespaces.use_dotnet
+                        && !*null_safe
+                    {
+                        receiver_type_hint.as_deref().and_then(|type_hint| {
+                            let class_name = Self::normalize_type_hint(type_hint);
+                            common::dotnet::surface().lookup_instance_property(&class_name, field)
+                        })
+                    } else {
+                        None
+                    };
 
                 if let Some(target) = dotnet_instance_property {
                     match target {
@@ -1833,19 +1886,20 @@ impl Compiler {
                     }
                 }
 
-                let dotnet_instance_zero_arg_method = if matches!(self.profile.name.as_str(), "csharp" | "vb")
-                    && self.profile.namespaces.use_dotnet
-                    && !*null_safe
-                    && !is_csharp_len_accessor
-                    && !is_csharp_runtime_count_accessor
-                {
-                    receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let class_name = Self::normalize_type_hint(type_hint);
-                        common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
-                    })
-                } else {
-                    None
-                };
+                let dotnet_instance_zero_arg_method =
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && self.profile.namespaces.use_dotnet
+                        && !*null_safe
+                        && !is_csharp_len_accessor
+                        && !is_csharp_runtime_count_accessor
+                    {
+                        receiver_type_hint.as_deref().and_then(|type_hint| {
+                            let class_name = Self::normalize_type_hint(type_hint);
+                            common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
+                        })
+                    } else {
+                        None
+                    };
 
                 if let Some(target) = dotnet_instance_zero_arg_method {
                     if let common::dotnet::InstanceMethodTarget::Common { emit, .. } = &target {
@@ -1930,7 +1984,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("function")));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
@@ -1950,15 +2007,19 @@ impl Compiler {
                         let metadata_type_hint = self
                             .reflection_type_metadata(type_hint)
                             .map(|_| type_hint)
-                            .or_else(|| self.reflection_type_metadata(trimmed_type_hint).map(|_| trimmed_type_hint))?;
+                            .or_else(|| {
+                                self.reflection_type_metadata(trimmed_type_hint)
+                                    .map(|_| trimmed_type_hint)
+                            })?;
                         self.reflection_type_metadata(metadata_type_hint)
                             .and_then(|meta| {
-                                meta.fields
-                                    .iter()
-                                    .find(|(name, field_meta)| name.eq_ignore_ascii_case(field) && field_meta.is_static)
+                                meta.fields.iter().find(|(name, field_meta)| {
+                                    name.eq_ignore_ascii_case(field) && field_meta.is_static
+                                })
                             })
                             .map(|_| {
-                                let short_name = self.reflection_type_short_name(metadata_type_hint);
+                                let short_name =
+                                    self.reflection_type_short_name(metadata_type_hint);
                                 if self.defined_globals.contains(&self.canon(&short_name)) {
                                     short_name
                                 } else {
@@ -1999,7 +2060,10 @@ impl Compiler {
                     }
                 }
 
-                if *null_safe && matches!(self.profile.name.as_str(), "csharp" | "vb") && !is_csharp_len_accessor {
+                if *null_safe
+                    && matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && !is_csharp_len_accessor
+                {
                     let obj_slot = self.define_local("__dotnet_nullsafe_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit(Op::DROP);
@@ -2067,7 +2131,11 @@ impl Compiler {
             }
 
             // ── Index access ────────────────────────────────────────────
-            ExprKind::Index { object, index, null_safe } => {
+            ExprKind::Index {
+                object,
+                index,
+                null_safe,
+            } => {
                 // A Range used as the index is a slice operation
                 // (C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`).
                 // Route through compiler_common's polymorphic slice helper so
@@ -2101,7 +2169,11 @@ impl Compiler {
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
                             common::collections::emit_stdlib_call(
-                                &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                                &mut self.chunks,
+                                self.current,
+                                "__vybe_slice",
+                                3,
+                                line,
                             );
                         } else {
                             let obj_slot = self.define_local("__py_index_slice_obj");
@@ -2121,13 +2193,20 @@ impl Compiler {
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
                             common::collections::emit_stdlib_call(
-                                &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                                &mut self.chunks,
+                                self.current,
+                                "__vybe_slice",
+                                3,
+                                line,
                             );
                         }
                     } else {
                         let step_const = step.as_ref().and_then(|expr| match &expr.kind {
                             ExprKind::Lit(Literal::Int(n)) => Some(*n),
-                            ExprKind::Unary { op: UnaryOp::Neg, expr } => match &expr.kind {
+                            ExprKind::Unary {
+                                op: UnaryOp::Neg,
+                                expr,
+                            } => match &expr.kind {
                                 ExprKind::Lit(Literal::Int(n)) => Some(-*n),
                                 _ => None,
                             },
@@ -2144,9 +2223,17 @@ impl Compiler {
                                 self.chunk().emit_else(line);
                                 self.emit(Op::NULL);
                                 self.emit(Op::NULL);
-                                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                                if let Some(s) = step {
+                                    self.compile_expr(s)?;
+                                } else {
+                                    self.emit(Op::NULL);
+                                }
                                 common::collections::emit_stdlib_call(
-                                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                                    &mut self.chunks,
+                                    self.current,
+                                    "__vybe_slicestep",
+                                    4,
+                                    line,
                                 );
                                 self.chunk().emit_end(line);
                                 return Ok(());
@@ -2180,8 +2267,14 @@ impl Compiler {
                                 let (stride_loop, _) = self.chunk().emit_loop_s(line);
                                 self.emit_u16(Op::LOCAL_GET, index_slot);
                                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                                };
+                                {
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                };
                                 self.chunk().emit_br_if(1, line);
 
                                 self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -2208,23 +2301,49 @@ impl Compiler {
                                 self.chunk().emit_else(line);
                                 self.emit(Op::NULL);
                                 self.emit(Op::NULL);
-                                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                                if let Some(s) = step {
+                                    self.compile_expr(s)?;
+                                } else {
+                                    self.emit(Op::NULL);
+                                }
                                 common::collections::emit_stdlib_call(
-                                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                                    &mut self.chunks,
+                                    self.current,
+                                    "__vybe_slicestep",
+                                    4,
+                                    line,
                                 );
                                 self.chunk().emit_end(line);
                                 return Ok(());
                             }
                         }
 
-                        if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
-                        if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
-                        if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                        if let Some(l) = lower {
+                            self.compile_expr(l)?;
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        if let Some(u) = upper {
+                            self.compile_expr(u)?;
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        if let Some(s) = step {
+                            self.compile_expr(s)?;
+                        } else {
+                            self.emit(Op::NULL);
+                        }
                         common::collections::emit_stdlib_call(
-                            &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                            &mut self.chunks,
+                            self.current,
+                            "__vybe_slicestep",
+                            4,
+                            line,
                         );
                     }
-                } else if self.profile.name == "pascal" && self.expr_is_known_string_receiver(object) {
+                } else if self.profile.name == "pascal"
+                    && self.expr_is_known_string_receiver(object)
+                {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     self.emit_const(Value::F64(1.0));
@@ -2236,7 +2355,9 @@ impl Compiler {
                     self.compile_expr(index)?;
                     let line = self.line;
                     crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
-                        &mut self.chunks, self.current, line,
+                        &mut self.chunks,
+                        self.current,
+                        line,
                     );
                 } else if self.is_js_profile() && *null_safe {
                     self.compile_expr(object)?;
@@ -2252,21 +2373,24 @@ impl Compiler {
                     let key_slot = self.define_local("__js_index_key");
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match &index.kind {
-                        ExprKind::Member { object, field, null_safe: false }
-                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                let fallback_key = match field.as_str() {
-                                    "iterator" => Some("iterator"),
-                                    "asyncIterator" => Some("asyncIterator"),
-                                    "toPrimitive" => Some("toprimitive"),
-                                    "hasInstance" => Some("hasinstance"),
-                                    _ => None,
-                                };
-                                if let Some(fallback_key) = fallback_key {
-                                    self.emit_const(Value::String(Arc::from(fallback_key)));
-                                } else {
-                                    self.compile_expr(index)?;
-                                }
+                        ExprKind::Member {
+                            object,
+                            field,
+                            null_safe: false,
+                        } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                            let fallback_key = match field.as_str() {
+                                "iterator" => Some("iterator"),
+                                "asyncIterator" => Some("asyncIterator"),
+                                "toPrimitive" => Some("toprimitive"),
+                                "hasInstance" => Some("hasinstance"),
+                                _ => None,
+                            };
+                            if let Some(fallback_key) = fallback_key {
+                                self.emit_const(Value::String(Arc::from(fallback_key)));
+                            } else {
+                                self.compile_expr(index)?;
                             }
+                        }
                         _ => self.compile_expr(index)?,
                     }
                     if self.profile.negative_index_wraps {
@@ -2276,7 +2400,10 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     let val_slot = self.define_local("__js_index_val");
                     self.emit_u16(Op::LOCAL_SET, val_slot);
                     self.emit(Op::DROP);
@@ -2304,21 +2431,24 @@ impl Compiler {
                     self.emit_u16(Op::GLOBAL_GET, lookup);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match &index.kind {
-                        ExprKind::Member { object, field, null_safe: false }
-                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                let fallback_key = match field.as_str() {
-                                    "iterator" => Some("iterator"),
-                                    "asyncIterator" => Some("asyncIterator"),
-                                    "toPrimitive" => Some("toprimitive"),
-                                    "hasInstance" => Some("hasinstance"),
-                                    _ => None,
-                                };
-                                if let Some(fallback_key) = fallback_key {
-                                    self.emit_const(Value::String(Arc::from(fallback_key)));
-                                } else {
-                                    self.emit_u16(Op::LOCAL_GET, key_slot);
-                                }
+                        ExprKind::Member {
+                            object,
+                            field,
+                            null_safe: false,
+                        } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                            let fallback_key = match field.as_str() {
+                                "iterator" => Some("iterator"),
+                                "asyncIterator" => Some("asyncIterator"),
+                                "toPrimitive" => Some("toprimitive"),
+                                "hasInstance" => Some("hasinstance"),
+                                _ => None,
+                            };
+                            if let Some(fallback_key) = fallback_key {
+                                self.emit_const(Value::String(Arc::from(fallback_key)));
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, key_slot);
                             }
+                        }
                         _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                     }
                     self.emit_u8(Op::CALL_REF, 2);
@@ -2361,7 +2491,10 @@ impl Compiler {
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                     self.chunk().emit_else(getter_line);
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2386,7 +2519,9 @@ impl Compiler {
                         self.emit(Op::REF_IS_UNDEFINED);
                         let msg_line = self.line;
                         self.chunk().emit_if_value(msg_line);
-                        self.emit_const(Value::String(Arc::from("Cannot read properties of undefined")));
+                        self.emit_const(Value::String(Arc::from(
+                            "Cannot read properties of undefined",
+                        )));
                         self.chunk().emit_else(msg_line);
                         self.emit_const(Value::String(Arc::from("Cannot read properties of null")));
                         self.chunk().emit_end(msg_line);
@@ -2396,21 +2531,25 @@ impl Compiler {
 
                         let key_slot = self.define_local("__js_index_key");
                         match &index.kind {
-                            ExprKind::Member { object, field, null_safe: false }
-                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                    let fallback_key = match field.as_str() {
-                                        "iterator" => Some("iterator"),
-                                        "asyncIterator" => Some("asyncIterator"),
-                                        "toPrimitive" => Some("toprimitive"),
-                                        "hasInstance" => Some("hasinstance"),
-                                        _ => None,
-                                    };
-                                    if let Some(fallback_key) = fallback_key {
-                                        self.emit_const(Value::String(Arc::from(fallback_key)));
-                                    } else {
-                                        self.compile_array_index_operand_for_owner(object, index)?;
-                                    }
+                            ExprKind::Member {
+                                object,
+                                field,
+                                null_safe: false,
+                            } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
+                            {
+                                let fallback_key = match field.as_str() {
+                                    "iterator" => Some("iterator"),
+                                    "asyncIterator" => Some("asyncIterator"),
+                                    "toPrimitive" => Some("toprimitive"),
+                                    "hasInstance" => Some("hasinstance"),
+                                    _ => None,
+                                };
+                                if let Some(fallback_key) = fallback_key {
+                                    self.emit_const(Value::String(Arc::from(fallback_key)));
+                                } else {
+                                    self.compile_array_index_operand_for_owner(object, index)?;
                                 }
+                            }
                             _ => self.compile_array_index_operand_for_owner(object, index)?,
                         }
                         if self.profile.negative_index_wraps {
@@ -2421,7 +2560,10 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_u16(Op::LOCAL_GET, key_slot);
-                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                        {
+                            let l = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, l);
+                        }
                         let val_slot = self.define_local("__js_index_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
@@ -2449,21 +2591,25 @@ impl Compiler {
                         self.emit_u16(Op::GLOBAL_GET, lookup);
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         match &index.kind {
-                            ExprKind::Member { object, field, null_safe: false }
-                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                    let fallback_key = match field.as_str() {
-                                        "iterator" => Some("iterator"),
-                                        "asyncIterator" => Some("asyncIterator"),
-                                        "toPrimitive" => Some("toprimitive"),
-                                        "hasInstance" => Some("hasinstance"),
-                                        _ => None,
-                                    };
-                                    if let Some(fallback_key) = fallback_key {
-                                        self.emit_const(Value::String(Arc::from(fallback_key)));
-                                    } else {
-                                        self.emit_u16(Op::LOCAL_GET, key_slot);
-                                    }
+                            ExprKind::Member {
+                                object,
+                                field,
+                                null_safe: false,
+                            } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
+                            {
+                                let fallback_key = match field.as_str() {
+                                    "iterator" => Some("iterator"),
+                                    "asyncIterator" => Some("asyncIterator"),
+                                    "toPrimitive" => Some("toprimitive"),
+                                    "hasInstance" => Some("hasinstance"),
+                                    _ => None,
+                                };
+                                if let Some(fallback_key) = fallback_key {
+                                    self.emit_const(Value::String(Arc::from(fallback_key)));
+                                } else {
+                                    self.emit_u16(Op::LOCAL_GET, key_slot);
                                 }
+                            }
                             _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                         }
                         self.emit_u8(Op::CALL_REF, 2);
@@ -2478,7 +2624,10 @@ impl Compiler {
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                 }
             }
 
@@ -2528,7 +2677,9 @@ impl Compiler {
                             self.compile_expr(&args[1].value)?;
                             let line = self.line;
                             crate::emitter::js::proxy_adapter::emit_proxy_create(
-                                &mut self.chunks, self.current, line,
+                                &mut self.chunks,
+                                self.current,
+                                line,
                             );
                             return Ok(());
                         }
@@ -2537,7 +2688,9 @@ impl Compiler {
                 let class_parts = self.flatten_member_chain(class);
                 let dotted_type_name = match &class.kind {
                     ExprKind::Ident(name) => Some(self.resolve_source_type_alias(name)),
-                    ExprKind::Member { .. } if self.profile.namespaces.use_dotnet && !class_parts.is_empty() => {
+                    ExprKind::Member { .. }
+                        if self.profile.namespaces.use_dotnet && !class_parts.is_empty() =>
+                    {
                         Some(self.resolve_source_type_alias(&class_parts.join(".")))
                     }
                     _ => None,
@@ -2567,14 +2720,11 @@ impl Compiler {
                         // canonicalize to "inner", and the implicit-self-field
                         // check would mis-route to `me.inner` instead of the
                         // class global. Type names always come from globals.
-                        if self.is_php_profile() {
-                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
-                            self.emit_php_constructor_ref_with_autoload(&ctor_global, autoload_name);
-                        } else {
-                            let idx = self.str_const(&ctor_global);
-                            self.emit_u16(Op::GLOBAL_GET, idx);
+                        let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                        self.emit_constructor_global_ref(&ctor_global, autoload_name);
+                        for a in args {
+                            self.compile_expr(&a.value)?;
                         }
-                        for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
                         return Ok(());
                     }
@@ -2582,14 +2732,23 @@ impl Compiler {
                         let idx = self.str_const(&canon_type);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                         let ctor_slot = self.define_local("__js_ctor");
-                        self.emit_u16(Op::LOCAL_SET, ctor_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, ctor_slot);
+                        self.emit(Op::DROP);
                         let line = self.line;
-                        let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
+                        let saved_js_new_target =
+                            self.save_js_new_target("__js_prev_new_target_new");
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
                         self.set_js_new_target_from_stack();
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
-                        for a in args { self.compile_expr(&a.value)?; }
-                        common::collections::emit_array_new(&mut self.chunks, self.current, args.len() as u16, line);
+                        for a in args {
+                            self.compile_expr(&a.value)?;
+                        }
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            args.len() as u16,
+                            line,
+                        );
                         let reflect_construct = self.import("ecma:reflect", "construct");
                         self.emit_host_call(reflect_construct, 2);
                         self.restore_js_new_target(saved_js_new_target);
@@ -2600,14 +2759,21 @@ impl Compiler {
                             if let Some(flattened_name) = autoload_name.rsplit('\\').next() {
                                 let flattened_canon = self.canon(flattened_name);
                                 if self.defined_classes.contains(&flattened_canon) {
-                                    let overload_global = format!("{}$arity{}", flattened_canon, args.len());
-                                    let ctor_global = if self.defined_globals.contains(&overload_global) {
-                                        overload_global
-                                    } else {
-                                        flattened_canon
-                                    };
-                                    self.emit_php_constructor_ref_with_autoload(&ctor_global, autoload_name);
-                                    for a in args { self.compile_expr(&a.value)?; }
+                                    let overload_global =
+                                        format!("{}$arity{}", flattened_canon, args.len());
+                                    let ctor_global =
+                                        if self.defined_globals.contains(&overload_global) {
+                                            overload_global
+                                        } else {
+                                            flattened_canon
+                                        };
+                                    self.emit_constructor_global_ref(
+                                        &ctor_global,
+                                        autoload_name,
+                                    );
+                                    for a in args {
+                                        self.compile_expr(&a.value)?;
+                                    }
                                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                                     return Ok(());
                                 }
@@ -2622,14 +2788,11 @@ impl Compiler {
                         let last = class_parts.last().unwrap();
                         let canon_last = self.canon(last);
                         if self.defined_classes.contains(&canon_last) {
-                            if self.is_php_profile() {
-                                let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
-                                self.emit_php_constructor_ref_with_autoload(&canon_last, autoload_name);
-                            } else {
-                                let idx = self.str_const(&canon_last);
-                                self.emit_u16(Op::GLOBAL_GET, idx);
+                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                            self.emit_constructor_global_ref(&canon_last, autoload_name);
+                            for a in args {
+                                self.compile_expr(&a.value)?;
                             }
-                            for a in args { self.compile_expr(&a.value)?; }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
                         }
@@ -2647,7 +2810,11 @@ impl Compiler {
                                 self.compile_expr(&a.value)?;
                             }
                             let line = self.line;
-                            common::threading::emit_thread_new(&mut self.chunks, self.current, line);
+                            common::threading::emit_thread_new(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             return Ok(());
                         }
                         "task" => {
@@ -2656,7 +2823,11 @@ impl Compiler {
                                 self.compile_expr(&a.value)?;
                             }
                             let line = self.line;
-                            common::threading::emit_thread_new(&mut self.chunks, self.current, line);
+                            common::threading::emit_thread_new(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                             return Ok(());
                         }
                         "mutex" | "semaphore" => {
@@ -2691,23 +2862,37 @@ impl Compiler {
                     if !canonical.is_empty() && !dotnet_ctor_registered {
                         let host_name = common::gui::host_fn_new_control(&canonical);
                         let new_idx = self.import("vybe:gui", &host_name);
-                        for a in args { self.compile_expr(&a.value)?; }
+                        for a in args {
+                            self.compile_expr(&a.value)?;
+                        }
                         let line = self.line;
-                        common::gui::emit_new_control(self.chunk(), new_idx, args.len() as u8, line);
+                        common::gui::emit_new_control(
+                            self.chunk(),
+                            new_idx,
+                            args.len() as u8,
+                            line,
+                        );
                         return Ok(());
                     }
                     // Dotnet component descriptor constructors — fallback after
                     // GUI so .NET-only types like Dictionary still work.
                     let dotnet_constructor = common::dotnet::surface().lookup_constructor(bare_str);
                     if let Some(target) = dotnet_constructor.clone() {
-                        for a in args { self.compile_expr(&a.value)?; }
+                        for a in args {
+                            self.compile_expr(&a.value)?;
+                        }
                         // Proper-case class name (preserve from source) for
                         // the __type stamp. Some host fns (e.g.
                         // `vybe:types/collectionPeek`) compare __type with
                         // exact case, so a lowercase stamp would clobber.
                         let proper_name: String = type_name
-                            .split('(').next().unwrap_or(type_name).trim()
-                            .rsplit('.').next().unwrap_or(type_name)
+                            .split('(')
+                            .next()
+                            .unwrap_or(type_name)
+                            .trim()
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(type_name)
                             .to_string();
                         match target {
                             vybe_bytecode::component_model::ConstructorTarget::Host(target) => {
@@ -2763,8 +2948,14 @@ impl Compiler {
                     // Profile known types are now a fallback for entries not
                     // yet absorbed into the shared .NET surface.
                     if dotnet_constructor.is_none() {
-                        if let Some((module, func)) = self.profile.lookup_known_type(type_name).map(|(m, f)| (m.to_string(), f.to_string())) {
-                            for a in args { self.compile_expr(&a.value)?; }
+                        if let Some((module, func)) = self
+                            .profile
+                            .lookup_known_type(type_name)
+                            .map(|(m, f)| (m.to_string(), f.to_string()))
+                        {
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                             if module == "common" {
                                 let line = self.line;
                                 self.emit_common(&func, args.len() as u8, line);
@@ -2784,15 +2975,19 @@ impl Compiler {
                         };
                         if self.is_php_profile() {
                             let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
-                            self.emit_php_constructor_ref_with_autoload(&ctor_name, autoload_name);
+                            self.emit_constructor_global_ref(&ctor_name, autoload_name);
                         } else {
                             let ctor_idx = self.str_const(&ctor_name);
                             self.emit_u16(Op::GLOBAL_GET, ctor_idx);
                         }
-                        for a in args { self.compile_expr(&a.value)?; }
+                        for a in args {
+                            self.compile_expr(&a.value)?;
+                        }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
 
-                        if bare_str.eq_ignore_ascii_case("list") || bare_str.eq_ignore_ascii_case("arraylist") {
+                        if bare_str.eq_ignore_ascii_case("list")
+                            || bare_str.eq_ignore_ascii_case("arraylist")
+                        {
                             let sort_global = self.str_const("__vybe_sort_in_place");
                             let sort_key = self.str_const("sort");
                             self.emit(Op::DUP);
@@ -2811,16 +3006,22 @@ impl Compiler {
 
                     if self.is_php_profile() {
                         if let ExprKind::Ident(name) = &class.kind {
-                            let autoload_name = Self::strip_global_namespace_prefix(name).to_string();
-                            let ctor_base = autoload_name.rsplit('\\').next().unwrap_or(autoload_name.as_str());
+                            let autoload_name =
+                                Self::strip_global_namespace_prefix(name).to_string();
+                            let ctor_base = autoload_name
+                                .rsplit('\\')
+                                .next()
+                                .unwrap_or(autoload_name.as_str());
                             let fallback_ctor = self.canon(ctor_base);
                             let primary_ctor = format!("{}$arity{}", fallback_ctor, args.len());
-                            self.emit_php_dynamic_constructor_ref_with_autoload(
+                            self.emit_dynamic_constructor_global_ref(
                                 &primary_ctor,
                                 Some(&fallback_ctor),
                                 &autoload_name,
                             );
-                            for a in args { self.compile_expr(&a.value)?; }
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
                         }
@@ -2829,14 +3030,22 @@ impl Compiler {
                 if self.is_js_profile() {
                     self.compile_expr(class)?;
                     let ctor_slot = self.define_local("__js_ctor");
-                    self.emit_u16(Op::LOCAL_SET, ctor_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, ctor_slot);
+                    self.emit(Op::DROP);
                     let line = self.line;
                     let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     self.set_js_new_target_from_stack();
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
-                    for a in args { self.compile_expr(&a.value)?; }
-                    common::collections::emit_array_new(&mut self.chunks, self.current, args.len() as u16, line);
+                    for a in args {
+                        self.compile_expr(&a.value)?;
+                    }
+                    common::collections::emit_array_new(
+                        &mut self.chunks,
+                        self.current,
+                        args.len() as u16,
+                        line,
+                    );
                     let reflect_construct = self.import("ecma:reflect", "construct");
                     self.emit_host_call(reflect_construct, 2);
                     self.restore_js_new_target(saved_js_new_target);
@@ -2845,7 +3054,9 @@ impl Compiler {
 
                 // User-defined class constructor
                 self.compile_expr(class)?;
-                for a in args { self.compile_expr(&a.value)?; }
+                for a in args {
+                    self.compile_expr(&a.value)?;
+                }
                 self.emit_u8(Op::CALL_REF, args.len() as u8);
             }
 
@@ -2853,7 +3064,7 @@ impl Compiler {
             ExprKind::Assign { target, value } => {
                 if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
                     if let ExprKind::Ident(name) = &target.kind {
-                        self.emit_php_generator_close_ident_if_needed(name);
+                        self.emit_buffered_generator_close_ident_if_needed(name);
                     }
                 }
                 self.compile_expr(value)?;
@@ -2862,16 +3073,32 @@ impl Compiler {
             }
 
             // ── Lambda ──────────────────────────────────────────────────
-            ExprKind::Lambda { params, body, captures, is_async } => {
+            ExprKind::Lambda {
+                params,
+                body,
+                captures,
+                is_async,
+            } => {
                 if self.is_js_profile() {
                     let mut lexical_captures = captures.clone();
-                    if !lexical_captures.iter().any(|capture| capture == "__js_this" || capture == "&__js_this") {
+                    if !lexical_captures
+                        .iter()
+                        .any(|capture| capture == "__js_this" || capture == "&__js_this")
+                    {
                         lexical_captures.push("__js_this".to_string());
                     }
-                    if !lexical_captures.iter().any(|capture| capture == "__js_new_target" || capture == "&__js_new_target") {
+                    if !lexical_captures.iter().any(|capture| {
+                        capture == "__js_new_target" || capture == "&__js_new_target"
+                    }) {
                         lexical_captures.push("__js_new_target".to_string());
                     }
-                    self.compile_lambda_with_flags(params, body, &lexical_captures, *is_async, false)?;
+                    self.compile_lambda_with_flags(
+                        params,
+                        body,
+                        &lexical_captures,
+                        *is_async,
+                        false,
+                    )?;
                 } else {
                     self.compile_lambda_with_flags(params, body, captures, *is_async, false)?;
                 }
@@ -2901,7 +3128,9 @@ impl Compiler {
                         && matches!(&elem.key, Some(key) if matches!(key.kind, ExprKind::Lit(Literal::Int(-1))))
                         && matches!(elem.value.kind, ExprKind::Lit(Literal::Undefined))
                 };
-                let has_keys = elements.iter().any(|e| e.key.is_some() && !is_js_array_elision(e));
+                let has_keys = elements
+                    .iter()
+                    .any(|e| e.key.is_some() && !is_js_array_elision(e));
                 let has_elisions = is_js_profile && elements.iter().any(is_js_array_elision);
 
                 if has_keys {
@@ -2915,7 +3144,7 @@ impl Compiler {
                             continue;
                         }
                         // Stack: [map]
-                        self.emit(Op::DUP);              // [map, map]
+                        self.emit(Op::DUP); // [map, map]
                         match &elem.key {
                             Some(k) => {
                                 // Explicit key expression. If it's a
@@ -2927,7 +3156,9 @@ impl Compiler {
                                     ExprKind::Lit(crate::ast::Literal::Int(n)) => {
                                         next_auto_idx = *n + 1;
                                     }
-                                    ExprKind::Lit(crate::ast::Literal::Float(n)) if n.fract() == 0.0 => {
+                                    ExprKind::Lit(crate::ast::Literal::Float(n))
+                                        if n.fract() == 0.0 =>
+                                    {
                                         next_auto_idx = (*n as i64) + 1;
                                     }
                                     _ => {}
@@ -2965,51 +3196,93 @@ impl Compiler {
                         }
                     } else {
                         // All-unkeyed: use the array path (fast, small).
-                        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            0,
+                            line,
+                        );
                         for elem in elements {
                             if elem.spread {
-                            // Spread: `concat(current, other)` returns a NEW
-                            // array which replaces the one on TOS. JS
-                            // generators (Continuation values) can't be
-                            // spread by the host concat fn — the iterator
-                            // protocol needs Op::GEN_NEXT (WASM stack
-                            // switching). Drain via the stdlib helper
-                            // when isGenerator(elem) at runtime.
-                            self.compile_expr(&elem.value)?;
-                            if self.is_js_profile() {
-                                let v_slot = self.define_local("__arr_spread_v");
-                                self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                let is_gen_idx = self.import("ecma:value", "isGenerator");
-                                self.emit_host_call(is_gen_idx, 1);
-                                let line = self.line;
-                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                                self.chunk().emit_if_value(line);
-                                let drain_key = self.str_const("__vybe_drain_generator");
-                                self.emit_u16(Op::GLOBAL_GET, drain_key);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
-                                self.chunk().emit_else(line);
-                                // Non-generator branch: route through
-                                // `__vybe_iter_drain` JS polyfill which
-                                // calls `v.iterator()` and drains the
-                                // protocol with `__js_this` correctly
-                                // bound. For Array / built-ins it
-                                // returns the value unchanged so concat
-                                // sees the natural shape.
-                                let iter_drain_key = self.str_const("__vybe_iter_drain");
-                                self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
-                                self.chunk().emit_end(line);
-                            }
-                                common::collections::emit_concat(&mut self.chunks, self.current, line);
+                                // Spread: `concat(current, other)` returns a NEW
+                                // array which replaces the one on TOS. JS
+                                // generators (Continuation values) can't be
+                                // spread by the host concat fn — the iterator
+                                // protocol needs Op::GEN_NEXT (WASM stack
+                                // switching). When we know at compile time that
+                                // the spread value is a direct generator call,
+                                // use the common emitter (emit_drain_into_array)
+                                // which emits an inline GEN_NEXT loop — the same
+                                // opcode compile_generator_for_in uses directly.
+                                // No stdlib, no runtime dispatch, no isGenerator check.
+                                // For unknown-shape values, fall back to the runtime
+                                // isGenerator dispatch via stdlib.
+                                // A direct call to a generator function can be
+                                // drained at compile time via the common GEN_NEXT
+                                // loop (WASM stack switching) — works for ANY
+                                // language with generators (JS, PHP), no runtime
+                                // isGenerator check, no stdlib.
+                                let is_known_gen = (self.is_js_profile()
+                                    || self.profile.buffered_iterator_methods)
+                                    && self.is_direct_generator_call(&elem.value);
+                                self.compile_expr(&elem.value)?;
+                                if is_known_gen {
+                                    // continuation is on TOS; drain into array
+                                    crate::emitter::generators::emit_drain_into_array(
+                                        &mut self.chunks,
+                                        self.current,
+                                        line,
+                                    );
+                                    common::collections::emit_concat(
+                                        &mut self.chunks,
+                                        self.current,
+                                        line,
+                                    );
+                                    continue;
+                                }
+                                if self.is_js_profile() {
+                                    let v_slot = self.define_local("__arr_spread_v");
+                                    self.emit_u16(Op::LOCAL_SET, v_slot);
+                                    self.emit(Op::DROP);
+                                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                                    self.emit_host_call(is_gen_idx, 1);
+                                    let line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                    self.chunk().emit_if_value(line);
+                                    let drain_key = self.str_const("__vybe_drain_generator");
+                                    self.emit_u16(Op::GLOBAL_GET, drain_key);
+                                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                                    self.emit_u8(Op::CALL_REF, 1);
+                                    self.chunk().emit_else(line);
+                                    // Non-generator branch: route through
+                                    // `__vybe_iter_drain` JS polyfill which
+                                    // calls `v.iterator()` and drains the
+                                    // protocol with `__js_this` correctly
+                                    // bound. For Array / built-ins it
+                                    // returns the value unchanged so concat
+                                    // sees the natural shape.
+                                    let iter_drain_key = self.str_const("__vybe_iter_drain");
+                                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
+                                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                                    self.emit_u8(Op::CALL_REF, 1);
+                                    self.chunk().emit_end(line);
+                                }
+                                common::collections::emit_concat(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
                             } else {
-                            // DUP keeps the array on TOS; push returns the
-                            // new length, which we drop.
+                                // DUP keeps the array on TOS; push returns the
+                                // new length, which we drop.
                                 self.emit(Op::DUP);
                                 self.compile_expr(&elem.value)?;
-                                common::collections::emit_push(&mut self.chunks, self.current, line);
+                                common::collections::emit_push(
+                                    &mut self.chunks,
+                                    self.current,
+                                    line,
+                                );
                                 self.emit(Op::DROP);
                             }
                         }
@@ -3021,35 +3294,59 @@ impl Compiler {
             ExprKind::Tuple(elements) => {
                 let line = self.line;
                 let n = elements.len();
-                for elem in elements { self.compile_expr(elem)?; }
+                for elem in elements {
+                    self.compile_expr(elem)?;
+                }
                 // Allocate N consecutive slots; common::collections::emit_pack_n
                 // stashes stack values and re-pushes into a fresh array —
                 // same ecma:array.* surface as literals.
-                let base = if n == 0 { 0 } else {
+                let base = if n == 0 {
+                    0
+                } else {
                     let mut first = 0u16;
                     for i in 0..n {
                         let s = self.define_local("__pack");
-                        if i == 0 { first = s; }
+                        if i == 0 {
+                            first = s;
+                        }
                     }
                     first
                 };
-                common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, base, line);
+                common::collections::emit_pack_n(
+                    &mut self.chunks,
+                    self.current,
+                    n as u16,
+                    base,
+                    line,
+                );
             }
 
             // ── Set (Python) ────────────────────────────────────────────
             ExprKind::Set(elements) => {
                 let line = self.line;
                 let n = elements.len();
-                for elem in elements { self.compile_expr(elem)?; }
-                let base = if n == 0 { 0 } else {
+                for elem in elements {
+                    self.compile_expr(elem)?;
+                }
+                let base = if n == 0 {
+                    0
+                } else {
                     let mut first = 0u16;
                     for i in 0..n {
                         let s = self.define_local("__pack");
-                        if i == 0 { first = s; }
+                        if i == 0 {
+                            first = s;
+                        }
                     }
                     first
                 };
-                common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, base, line);
+                common::collections::emit_pack_n(
+                    &mut self.chunks,
+                    self.current,
+                    n as u16,
+                    base,
+                    line,
+                );
                 // Convert the packed array to a Set per ECMA-262 §24.2.1.1
                 // — `new Set(iterable)`. Same import V8 satisfies natively
                 // for `new Set([1,2,3])`.
@@ -3087,15 +3384,21 @@ impl Compiler {
                                         _ => false,
                                     };
                                     if should_infer_name {
-                                        let inferred_name = if let Some(stripped) = key_name.strip_prefix("__get_") {
+                                        let inferred_name = if let Some(stripped) =
+                                            key_name.strip_prefix("__get_")
+                                        {
                                             format!("get {}", stripped)
-                                        } else if let Some(stripped) = key_name.strip_prefix("__set_") {
+                                        } else if let Some(stripped) =
+                                            key_name.strip_prefix("__set_")
+                                        {
                                             format!("set {}", stripped)
                                         } else {
                                             key_name.clone()
                                         };
                                         self.emit(Op::DUP);
-                                        self.emit_const(Value::String(Arc::from(inferred_name.as_str())));
+                                        self.emit_const(Value::String(Arc::from(
+                                            inferred_name.as_str(),
+                                        )));
                                         let name_key = self.str_const("name");
                                         self.emit_u16(Op::STRUCT_SET, name_key);
                                         self.emit(Op::DROP);
@@ -3120,13 +3423,14 @@ impl Compiler {
                                 // causing `{ 1: "one" }` to be stored
                                 // under key "one" with value 1. Fix
                                 // matches the canonical emit_set contract.
-                                self.emit(Op::DUP);                // [dict, dict]
-                                self.compile_expr(key)?;           // [dict, dict, key]
-                                self.emit(Op::DUP);                // [dict, dict, key, key]
+                                self.emit(Op::DUP); // [dict, dict]
+                                self.compile_expr(key)?; // [dict, dict, key]
+                                self.emit(Op::DUP); // [dict, dict, key, key]
                                 let key_tmp = self.define_local("__obj_dyn_key");
-                                self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_SET, key_tmp);
+                                self.emit(Op::DROP);
                                 // [dict, dict, key]
-                                self.compile_expr(value)?;         // [dict, dict, key, value]
+                                self.compile_expr(value)?; // [dict, dict, key, value]
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
@@ -3170,7 +3474,14 @@ impl Compiler {
                         }
                         ObjectProperty::Method { key, value } => {
                             self.emit(Op::DUP);
-                            if let StmtKind::FunctionDecl { params, body, is_generator, is_async, .. } = &value.kind {
+                            if let StmtKind::FunctionDecl {
+                                params,
+                                body,
+                                is_generator,
+                                is_async,
+                                ..
+                            } = &value.kind
+                            {
                                 if self.is_js_profile() {
                                     self.compile_lambda_with_flags(
                                         params,
@@ -3183,9 +3494,13 @@ impl Compiler {
                                     // Object methods receive `this` as implicit first arg
                                     let mut method_params = vec![Param {
                                         name: self.profile.self_keyword.clone(),
-                                        type_hint: None, default: None,
-                                        pass_by: PassBy::Value, is_rest: false,
-                                        is_kwargs: false, is_optional: false, is_nullable: false,
+                                        type_hint: None,
+                                        default: None,
+                                        pass_by: PassBy::Value,
+                                        is_rest: false,
+                                        is_kwargs: false,
+                                        is_optional: false,
+                                        is_nullable: false,
                                     }];
                                     method_params.extend(params.iter().cloned());
                                     self.compile_lambda_with_flags(
@@ -3213,7 +3528,14 @@ impl Compiler {
                         }
                         ObjectProperty::Accessor { kind, key, value } => {
                             self.emit(Op::DUP);
-                            if let StmtKind::FunctionDecl { params, body, is_generator, is_async, .. } = &value.kind {
+                            if let StmtKind::FunctionDecl {
+                                params,
+                                body,
+                                is_generator,
+                                is_async,
+                                ..
+                            } = &value.kind
+                            {
                                 if self.is_js_profile() {
                                     self.compile_lambda_with_flags(
                                         params,
@@ -3226,9 +3548,13 @@ impl Compiler {
                                     // Accessors receive `this` as first arg
                                     let mut accessor_params = vec![Param {
                                         name: self.profile.self_keyword.clone(),
-                                        type_hint: None, default: None,
-                                        pass_by: PassBy::Value, is_rest: false,
-                                        is_kwargs: false, is_optional: false, is_nullable: false,
+                                        type_hint: None,
+                                        default: None,
+                                        pass_by: PassBy::Value,
+                                        is_rest: false,
+                                        is_kwargs: false,
+                                        is_optional: false,
+                                        is_nullable: false,
                                     }];
                                     accessor_params.extend(params.iter().cloned());
                                     self.compile_lambda_with_flags(
@@ -3265,7 +3591,8 @@ impl Compiler {
                             self.compile_expr(key)?;
                             self.emit(Op::DUP); // save key for trackKey
                             let key_tmp = self.define_local("__obj_comp_key");
-                            self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, key_tmp);
+                            self.emit(Op::DROP);
                             self.compile_expr(value)?;
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
@@ -3309,7 +3636,9 @@ impl Compiler {
 
                 for part in parts.iter() {
                     match part {
-                        InterpolPart::Text(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                        InterpolPart::Text(s) => {
+                            self.emit_const(Value::String(Arc::from(s.as_str())))
+                        }
                         InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
                             if use_to_primitive {
                                 self.compile_expr(e)?;
@@ -3346,13 +3675,26 @@ impl Compiler {
             }
 
             // ── Type operations ─────────────────────────────────────────
-            ExprKind::IsType { expr: inner, type_name } => {
+            ExprKind::IsType {
+                expr: inner,
+                type_name,
+            } => {
                 let canon_type = self.canon(type_name);
-                if matches!(canon_type.as_str(), "IEnumerable" | "ICollection" | "IList" | "IReadOnlyCollection" | "IReadOnlyList") {
+                if matches!(
+                    canon_type.as_str(),
+                    "IEnumerable"
+                        | "ICollection"
+                        | "IList"
+                        | "IReadOnlyCollection"
+                        | "IReadOnlyList"
+                ) {
                     if let ExprKind::Ident(name) = &inner.kind {
                         if self.lookup_var_type_hint(name).is_some_and(|hint| {
                             let bare = hint.split('<').next().unwrap_or(hint).trim();
-                            matches!(Self::normalize_type_hint(bare).as_str(), "list" | "arraylist" | "queue" | "stack" | "hashset" | "dictionary")
+                            matches!(
+                                Self::normalize_type_hint(bare).as_str(),
+                                "list" | "arraylist" | "queue" | "stack" | "hashset" | "dictionary"
+                            )
                         }) {
                             self.emit(Op::TRUE);
                             return Ok(());
@@ -3439,16 +3781,19 @@ impl Compiler {
                 }
 
                 let line = self.line;
-                let type_idx = self.chunk().add_constant(
-                    vybe_bytecode::Value::String(std::sync::Arc::from(canon_type.as_str())),
-                );
+                let type_idx =
+                    self.chunk()
+                        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+                            canon_type.as_str(),
+                        )));
                 let matched_slot = self.define_local("__type_test_matched");
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
-                self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, type_idx, line);
+                self.chunk()
+                    .emit_op_u16(vybe_bytecode::Op::REF_TEST, type_idx, line);
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
@@ -3460,7 +3805,10 @@ impl Compiler {
                 let type_key = self.str_const("__type");
                 self.emit_u16(Op::STRUCT_GET, type_key);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
-                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                };
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
@@ -3478,11 +3826,12 @@ impl Compiler {
                     .cloned()
                     .collect();
                 for candidate in &reflection_matches {
-                    let candidate_idx = self.chunk().add_constant(
-                        vybe_bytecode::Value::String(std::sync::Arc::from(candidate.as_str())),
-                    );
+                    let candidate_idx = self.chunk().add_constant(vybe_bytecode::Value::String(
+                        std::sync::Arc::from(candidate.as_str()),
+                    ));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, candidate_idx, line);
+                    self.chunk()
+                        .emit_op_u16(vybe_bytecode::Op::REF_TEST, candidate_idx, line);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -3494,7 +3843,10 @@ impl Compiler {
                     let type_key = self.str_const("__type");
                     self.emit_u16(Op::STRUCT_GET, type_key);
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
-                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    };
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -3503,7 +3855,14 @@ impl Compiler {
                     self.chunk().emit_end(line);
                 }
 
-                if matches!(canon_type.as_str(), "IEnumerable" | "ICollection" | "IList" | "IReadOnlyCollection" | "IReadOnlyList") {
+                if matches!(
+                    canon_type.as_str(),
+                    "IEnumerable"
+                        | "ICollection"
+                        | "IList"
+                        | "IReadOnlyCollection"
+                        | "IReadOnlyList"
+                ) {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit(Op::REF_IS_ARRAY);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -3513,11 +3872,12 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.chunk().emit_end(line);
 
-                    let list_idx = self.chunk().add_constant(
-                        vybe_bytecode::Value::String(std::sync::Arc::from("list")),
-                    );
+                    let list_idx = self
+                        .chunk()
+                        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("list")));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, list_idx, line);
+                    self.chunk()
+                        .emit_op_u16(vybe_bytecode::Op::REF_TEST, list_idx, line);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -3583,7 +3943,13 @@ impl Compiler {
                 self.chunk().emit_else(line);
                 self.emit(Op::DROP);
                 self.chunk().emit_end(line);
+                // matched_slot holds I32(0) or I32(1); convert to Bool for Go type assertions.
                 self.emit_u16(Op::LOCAL_GET, matched_slot);
+                self.chunk().emit_if_value(line);
+                self.emit(Op::TRUE);
+                self.chunk().emit_else(line);
+                self.emit(Op::FALSE);
+                self.chunk().emit_end(line);
             }
 
             ExprKind::Cast { expr: inner, .. } => {
@@ -3615,12 +3981,13 @@ impl Compiler {
 
                     if self.profile.name == "csharp" {
                         match canon_type.as_str() {
-                            "int" | "long" | "short" | "byte"
-                            | "uint" | "ulong" | "ushort" | "sbyte" => {
-                                let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
-                                    || self
-                                        .infer_expr_type_hint(inner)
-                                        .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
+                            "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort"
+                            | "sbyte" => {
+                                let is_char_like =
+                                    matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
+                                        || self.infer_expr_type_hint(inner).is_some_and(|hint| {
+                                            Self::normalize_type_hint(&hint) == "char"
+                                        });
                                 if is_char_like {
                                     self.compile_expr(inner)?;
                                     self.emit(Op::I32_CONST_0);
@@ -3653,7 +4020,11 @@ impl Compiler {
                         if let Some((cast_kind, target_type)) = type_name.split_once(':') {
                             if cast_kind.eq_ignore_ascii_case("TryCast") {
                                 let resolved_target = self.resolve_source_type_alias(target_type);
-                                let trimmed_target = resolved_target.trim().trim_end_matches('?').trim().to_string();
+                                let trimmed_target = resolved_target
+                                    .trim()
+                                    .trim_end_matches('?')
+                                    .trim()
+                                    .to_string();
                                 if self.vb_is_reference_type_hint(&trimmed_target) {
                                     let line = self.line;
                                     self.compile_expr(inner)?;
@@ -3716,16 +4087,32 @@ impl Compiler {
                                         self.chunk().emit_end(line);
                                     } else {
                                         let mut expected_names = vec![trimmed_target.clone()];
-                                        if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&trimmed_target) {
-                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(&class_name)) {
+                                        if let Some(class_name) = self
+                                            .resolve_pending_class_name_for_type_hint(
+                                                &trimmed_target,
+                                            )
+                                        {
+                                            if !expected_names.iter().any(|candidate| {
+                                                candidate.eq_ignore_ascii_case(&class_name)
+                                            }) {
                                                 expected_names.push(class_name.clone());
                                             }
-                                            let short_name = class_name.rsplit('.').next().unwrap_or(class_name.as_str()).to_string();
-                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(&short_name)) {
+                                            let short_name = class_name
+                                                .rsplit('.')
+                                                .next()
+                                                .unwrap_or(class_name.as_str())
+                                                .to_string();
+                                            if !expected_names.iter().any(|candidate| {
+                                                candidate.eq_ignore_ascii_case(&short_name)
+                                            }) {
                                                 expected_names.push(short_name);
                                             }
-                                        } else if let Some(short_name) = trimmed_target.rsplit('.').next() {
-                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(short_name)) {
+                                        } else if let Some(short_name) =
+                                            trimmed_target.rsplit('.').next()
+                                        {
+                                            if !expected_names.iter().any(|candidate| {
+                                                candidate.eq_ignore_ascii_case(short_name)
+                                            }) {
                                                 expected_names.push(short_name.to_string());
                                             }
                                         }
@@ -3742,9 +4129,20 @@ impl Compiler {
                                             self.emit_u16(Op::LOCAL_GET, value_slot);
                                             let type_key = self.str_const("__type");
                                             self.emit_u16(Op::STRUCT_GET, type_key);
-                                            self.emit_const(Value::String(Arc::from(expected.as_str())));
-                                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), object_line);
+                                            self.emit_const(Value::String(Arc::from(
+                                                expected.as_str(),
+                                            )));
+                                            {
+                                                let line = self.line;
+                                                crate::emitter::ops::emit_dyn_eq(
+                                                    self.chunk(),
+                                                    line,
+                                                );
+                                            };
+                                            crate::emitter::ops::emit_dyn_to_bool(
+                                                self.chunk(),
+                                                object_line,
+                                            );
                                             self.chunk().emit_if(object_line);
                                             self.emit_const(Value::I32(1));
                                             self.emit_u16(Op::LOCAL_SET, match_slot);
@@ -3759,13 +4157,23 @@ impl Compiler {
                                             self.emit(Op::REF_IS_NULL);
                                             self.emit(Op::I32_EQZ);
                                             self.chunk().emit_if(object_line);
-                                            let types_slot = self.define_local("__vb_trycast_types");
+                                            let types_slot =
+                                                self.define_local("__vb_trycast_types");
                                             self.emit_u16(Op::LOCAL_SET, types_slot);
                                             self.emit(Op::DROP);
                                             self.emit_u16(Op::LOCAL_GET, types_slot);
-                                            self.emit_const(Value::String(Arc::from(expected.as_str())));
-                                            common::collections::emit_contains(&mut self.chunks, self.current, line);
-                                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), object_line);
+                                            self.emit_const(Value::String(Arc::from(
+                                                expected.as_str(),
+                                            )));
+                                            common::collections::emit_contains(
+                                                &mut self.chunks,
+                                                self.current,
+                                                line,
+                                            );
+                                            crate::emitter::ops::emit_dyn_to_bool(
+                                                self.chunk(),
+                                                object_line,
+                                            );
                                             self.chunk().emit_if(object_line);
                                             self.emit_const(Value::I32(1));
                                             self.emit_u16(Op::LOCAL_SET, match_slot);
@@ -3815,7 +4223,11 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, value_slot);
                             self.emit(Op::DROP);
 
-                            if let Some(fields) = self.pending_classes.get(&user_type).map(|pending| pending.fields.clone()) {
+                            if let Some(fields) = self
+                                .pending_classes
+                                .get(&user_type)
+                                .map(|pending| pending.fields.clone())
+                            {
                                 for field_name in fields {
                                     let member_slot = self.define_local("__cast_struct_member");
                                     let field_idx = self.str_const(&field_name);
@@ -3844,7 +4256,10 @@ impl Compiler {
 
                     let shadows_cast = self.defined_functions.contains(&canon_type)
                         || (!self.case_sensitive
-                            && self.defined_functions.iter().any(|name| name.eq_ignore_ascii_case(type_name)));
+                            && self
+                                .defined_functions
+                                .iter()
+                                .any(|name| name.eq_ignore_ascii_case(type_name)));
                     if shadows_cast {
                         self.emit_var_get(type_name);
                         self.compile_expr(inner)?;
@@ -3860,8 +4275,8 @@ impl Compiler {
             ExprKind::DefaultOf(type_name) => {
                 let normalized = Self::normalize_type_hint(type_name);
                 match normalized.as_str() {
-                    "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort"
-                    | "sbyte" | "double" | "float" | "decimal" => {
+                    "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort" | "sbyte"
+                    | "double" | "float" | "decimal" => {
                         self.emit_const(Value::I32(0));
                     }
                     "bool" => {
@@ -3916,7 +4331,8 @@ impl Compiler {
                 // can't do — route them through the
                 // `__stdlib_drain_generator` bytecode helper.
                 let inner_slot = self.define_local("__spread_iter");
-                self.emit_u16(Op::LOCAL_SET, inner_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, inner_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, inner_slot);
                 let is_gen_idx = self.import("ecma:value", "isGenerator");
                 self.emit_host_call(is_gen_idx, 1);
@@ -3941,7 +4357,8 @@ impl Compiler {
                 // PROMISE_SUSPEND unwraps fulfilled, throws rejected, suspends
                 // fiber on pending, and passes non-promise values through unchanged.
                 self.compile_expr(inner)?;
-                self.emit(Op::PROMISE_SUSPEND);
+                let line = self.line;
+                crate::emitter::functions::emit_await(self.chunk(), line);
             }
 
             // ── Yield ───────────────────────────────────────────────────
@@ -3950,15 +4367,18 @@ impl Compiler {
                     if let Some((key_expr, value_expr)) = self.generator_keyed_yield_parts(v) {
                         self.compile_expr(key_expr)?;
                         let key_slot = self.define_local("__yield_key");
-                        self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, key_slot);
+                        self.emit(Op::DROP);
 
                         self.compile_expr(value_expr)?;
                         let payload_value_slot = self.define_local("__yield_payload_value");
-                        self.emit_u16(Op::LOCAL_SET, payload_value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, payload_value_slot);
+                        self.emit(Op::DROP);
 
                         self.emit_next_generator_payload_id();
                         let payload_id_slot = self.define_local("__yield_payload_id");
-                        self.emit_u16(Op::LOCAL_SET, payload_id_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, payload_id_slot);
+                        self.emit(Op::DROP);
 
                         self.emit_generator_payload_store();
                         self.emit_u16(Op::LOCAL_GET, payload_id_slot);
@@ -3989,7 +4409,8 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
-                self.emit_u16(Op::SUSPEND, 0);
+                let line = self.line;
+                crate::emitter::generators::emit_suspend(self.chunk(), line);
                 self.emit_generator_resume_value()?;
             }
 
@@ -4004,7 +4425,8 @@ impl Compiler {
                 let val_slot = self.define_local("__yield_star_val");
                 let has_more_slot = self.define_local("__yield_star_has_more");
                 let result_slot = self.define_local("__yield_star_result");
-                self.emit_u16(Op::LOCAL_SET, gen_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, gen_slot);
+                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
                 let is_gen_idx = self.import("ecma:value", "isGenerator");
@@ -4016,16 +4438,23 @@ impl Compiler {
                 let gen_block = self.chunk().emit_block(line);
                 let (gen_loop, _) = self.chunk().emit_loop_s(line);
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
-                self.emit(Op::GEN_NEXT);
+                let line = self.line;
+                crate::emitter::generators::emit_next(self.chunk(), line);
                 // After GEN_NEXT: stack top is has_more (i32), under it value.
-                self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, val_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, has_more_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, val_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
                 self.emit(Op::I32_EQZ);
                 self.chunk().emit_br_if(1, line);
                 self.emit_u16(Op::LOCAL_GET, val_slot);
-                self.emit_u16(Op::SUSPEND, 0);
+                let line = self.line;
+                crate::emitter::generators::emit_suspend(self.chunk(), line);
                 self.emit(Op::DROP);
                 self.chunk().emit_br(0, line);
                 self.chunk().emit_end(line);
@@ -4045,31 +4474,42 @@ impl Compiler {
                 let iter_slot = self.define_local("__yield_star_iter");
                 let idx_slot = self.define_local("__yield_star_idx");
                 let len_slot = self.define_local("__yield_star_len");
-                self.emit_u16(Op::LOCAL_SET, iter_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, iter_slot);
+                self.emit(Op::DROP);
 
                 self.emit_const(Value::F64(0.0));
-                self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, iter_slot);
                 let line = self.line;
                 common::collections::emit_array_length(self.chunk(), line);
-                self.emit_u16(Op::LOCAL_SET, len_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, len_slot);
+                self.emit(Op::DROP);
 
                 let iter_block = self.chunk().emit_block(line);
                 let (iter_loop, _) = self.chunk().emit_loop_s(line);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
                 self.chunk().emit_br_if(1, line);
                 self.emit_u16(Op::LOCAL_GET, iter_slot);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit(Op::ARRAY_GET);
-                self.emit_u16(Op::SUSPEND, 0);
+                let line = self.line;
+                crate::emitter::generators::emit_suspend(self.chunk(), line);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_const(Value::F64(1.0));
                 self.emit(Op::F64_ADD);
-                self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
                 self.chunk().emit_br(0, line);
                 self.chunk().emit_end(line);
                 self.chunk().patch_loop(iter_loop);
@@ -4091,13 +4531,16 @@ impl Compiler {
                 }
 
                 let self_kw = self.profile.self_keyword.clone();
-                let is_self_qualified = parts.first().map(|part| {
-                    if self.case_sensitive {
-                        *part == self_kw || *part == "Me"
-                    } else {
-                        part.eq_ignore_ascii_case(&self_kw) || part.eq_ignore_ascii_case("Me")
-                    }
-                }).unwrap_or(false);
+                let is_self_qualified = parts
+                    .first()
+                    .map(|part| {
+                        if self.case_sensitive {
+                            *part == self_kw || *part == "Me"
+                        } else {
+                            part.eq_ignore_ascii_case(&self_kw) || part.eq_ignore_ascii_case("Me")
+                        }
+                    })
+                    .unwrap_or(false);
 
                 let bound_parts: Option<&[&str]> = if self.current_class.is_some() {
                     if is_self_qualified && parts.len() > 1 {
@@ -4134,22 +4577,34 @@ impl Compiler {
             ExprKind::SuperCall { method, args } => {
                 let self_kw = self.profile.self_keyword.clone();
                 let ctor_name = self.profile.constructor_name.clone();
-                let is_ctor_call = method.is_none() || method.as_ref().map_or(false, |m| {
-                    if self.case_sensitive {
-                        m == &ctor_name || m == "new" || m == "__init__"
-                    } else {
-                        m.eq_ignore_ascii_case(&ctor_name) || m.eq_ignore_ascii_case("new") || m.eq_ignore_ascii_case("__init__")
-                    }
-                });
+                let is_ctor_call = method.is_none()
+                    || method.as_ref().map_or(false, |m| {
+                        if self.case_sensitive {
+                            m == &ctor_name || m == "new" || m == "__init__"
+                        } else {
+                            m.eq_ignore_ascii_case(&ctor_name)
+                                || m.eq_ignore_ascii_case("new")
+                                || m.eq_ignore_ascii_case("__init__")
+                        }
+                    });
 
                 if is_ctor_call {
                     // super() / MyBase.New(args) → call parent constructor
                     if let Some(ref class_name) = self.current_class.clone() {
-                        if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone()) {
+                        if let Some(parent_name) = self
+                            .pending_classes
+                            .get(class_name.as_str())
+                            .and_then(|c| c.parent.clone())
+                        {
                             if common::errors::is_exception_type(&parent_name) {
-                                let arg_exprs: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
+                                let arg_exprs: Vec<&Expression> =
+                                    args.iter().map(|arg| &arg.value).collect();
                                 self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
-                                if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                                if let Some(slot) = self
+                                    .scope()
+                                    .resolve(&self_kw)
+                                    .or_else(|| self.scope().resolve_ci(&self_kw))
+                                {
                                     self.emit(Op::DUP);
                                     self.emit_u16(Op::LOCAL_SET, slot);
                                     self.emit(Op::DROP);
@@ -4157,9 +4612,15 @@ impl Compiler {
                                 return Ok(());
                             }
                             self.emit_var_get(&parent_name);
-                            for a in args { self.compile_expr(&a.value)?; }
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
-                            if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                            if let Some(slot) = self
+                                .scope()
+                                .resolve(&self_kw)
+                                .or_else(|| self.scope().resolve_ci(&self_kw))
+                            {
                                 self.emit(Op::DUP);
                                 self.emit_u16(Op::LOCAL_SET, slot);
                                 self.emit(Op::DROP);
@@ -4171,7 +4632,9 @@ impl Compiler {
                         self.emit(Op::NULL);
                     }
                 } else if let Some(mname) = method {
-                    let parent_name = self.current_class.as_ref()
+                    let parent_name = self
+                        .current_class
+                        .as_ref()
                         .and_then(|class_name| self.pending_classes.get(class_name.as_str()))
                         .and_then(|pc| pc.parent.clone());
                     if let Some(parent_name) = parent_name {
@@ -4183,23 +4646,35 @@ impl Compiler {
 
                         if self.is_js_profile() {
                             let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
-                            if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                            if let Some(self_slot) = self
+                                .scope()
+                                .resolve(&self_kw)
+                                .or_else(|| self.scope().resolve_ci(&self_kw))
+                            {
                                 self.emit_u16(Op::LOCAL_GET, self_slot);
                             } else {
                                 let js_this = self.str_const("__js_this");
                                 self.emit_u16(Op::GLOBAL_GET, js_this);
                             }
                             self.set_js_this_from_stack();
-                            for a in args { self.compile_expr(&a.value)?; }
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             let result_slot = self.define_local("__js_super_expr_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.emit(Op::DROP);
                             self.restore_js_this(saved_js_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
-                        } else if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                        } else if let Some(self_slot) = self
+                            .scope()
+                            .resolve(&self_kw)
+                            .or_else(|| self.scope().resolve_ci(&self_kw))
+                        {
                             self.emit_u16(Op::LOCAL_GET, self_slot);
-                            for a in args { self.compile_expr(&a.value)?; }
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                             self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
                         } else {
                             self.emit(Op::NULL);
@@ -4213,11 +4688,15 @@ impl Compiler {
             }
 
             // ── Comprehension (Python) ──────────────────────────────────
-            ExprKind::Comprehension { kind, element, generators } => {
+            ExprKind::Comprehension {
+                kind,
+                element,
+                generators,
+            } => {
                 use crate::ast::ComprehensionKind;
                 let line = self.line;
                 let is_dict = *kind == ComprehensionKind::Dict;
-                let is_set  = *kind == ComprehensionKind::Set;
+                let is_set = *kind == ComprehensionKind::Set;
 
                 // Build the accumulator: dict → Object, set/list/gen → Array
                 if is_dict {
@@ -4226,7 +4705,8 @@ impl Compiler {
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 }
                 let result_slot = self.define_local("__comp_result");
-                self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+                self.emit(Op::DROP);
 
                 use crate::emitter::loops::LoopState;
                 // Compile each generator (nested for-clauses)
@@ -4235,21 +4715,30 @@ impl Compiler {
                 for generator in generators.iter() {
                     self.compile_expr(&generator.iter)?;
                     let arr_slot = self.define_local("__comp_iter");
-                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, arr_slot);
+                    self.emit(Op::DROP);
                     let idx_slot = self.define_local("__comp_idx");
                     let lp = common::loops::emit_for_in_start(
-                        &mut self.chunks, self.current, arr_slot, idx_slot, line,
+                        &mut self.chunks,
+                        self.current,
+                        arr_slot,
+                        idx_slot,
+                        line,
                     );
                     let var_name = match &generator.target.kind {
                         ExprKind::Ident(n) => n.clone(),
                         _ => "__comp_var".to_string(),
                     };
                     let var_slot = self.define_local(&var_name);
-                    self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, var_slot);
+                    self.emit(Op::DROP);
 
                     for cond_expr in &generator.conditions {
                         self.compile_expr(cond_expr)?;
-                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
                         self.chunk().emit_if(line);
                         cond_blocks += 1;
                     }
@@ -4266,7 +4755,8 @@ impl Compiler {
                             // Compile key and save a copy for __keys tracking
                             self.compile_expr(key_expr)?;
                             let key_slot = self.define_local("__comp_key");
-                            self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, key_slot);
+                            self.emit(Op::DROP);
                             // [dict, key, val] → ARRAY_SET → drops from stack
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -4298,7 +4788,11 @@ impl Compiler {
                 // Close loops in reverse order
                 for (idx_slot, lp) in loop_info.into_iter().rev() {
                     common::loops::emit_for_in_end(
-                        &mut self.chunks, self.current, idx_slot, lp, line,
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        lp,
+                        line,
                     );
                 }
 
@@ -4333,17 +4827,37 @@ impl Compiler {
                         common::collections::emit_len(&mut self.chunks, self.current, line);
                     }
                     common::collections::emit_stdlib_call(
-                        &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                        &mut self.chunks,
+                        self.current,
+                        "__vybe_slice",
+                        3,
+                        line,
                     );
                 } else {
                     // Emit slice parts → [obj, lower, upper, step] then call the
                     // bundled `__vybe_slicestep` polyfill directly (skips the
                     // legacy `vybe:array` host-import indirection).
-                    if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
-                    if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
-                    if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                    if let Some(l) = lower {
+                        self.compile_expr(l)?;
+                    } else {
+                        self.emit(Op::NULL);
+                    }
+                    if let Some(u) = upper {
+                        self.compile_expr(u)?;
+                    } else {
+                        self.emit(Op::NULL);
+                    }
+                    if let Some(s) = step {
+                        self.compile_expr(s)?;
+                    } else {
+                        self.emit(Op::NULL);
+                    }
                     common::collections::emit_stdlib_call(
-                        &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                        &mut self.chunks,
+                        self.current,
+                        "__vybe_slicestep",
+                        4,
+                        line,
                     );
                 }
             }
@@ -4393,16 +4907,25 @@ impl Compiler {
             ExprKind::Sequence(exprs) => {
                 for (i, e) in exprs.iter().enumerate() {
                     self.compile_expr(e)?;
-                    if i < exprs.len() - 1 { self.emit(Op::DROP); }
+                    if i < exprs.len() - 1 {
+                        self.emit(Op::DROP);
+                    }
                 }
             }
 
             // ── ClassExpr (JS) ──────────────────────────────────────────
-            ExprKind::ClassExpr { name, parent, members } => {
-                let class_name = name.clone().unwrap_or_else(|| format!("__anonymous_class_{}", self.chunks.len()));
+            ExprKind::ClassExpr {
+                name,
+                parent,
+                members,
+            } => {
+                let class_name = name
+                    .clone()
+                    .unwrap_or_else(|| format!("__anonymous_class_{}", self.chunks.len()));
                 let class_name = self.canon(&class_name);
                 let parent_name: Option<String> = if let Some(p) = parent {
-                    let synth_parent = self.canon(&format!("__extends_{}_{}", class_name, self.chunks.len()));
+                    let synth_parent =
+                        self.canon(&format!("__extends_{}_{}", class_name, self.chunks.len()));
                     self.defined_globals.insert(synth_parent.clone());
                     self.compile_expr(p)?;
                     let parent_idx = self.global_name_const_idx(&synth_parent);
@@ -4429,13 +4952,33 @@ impl Compiler {
 
             // ── FunctionExpr (JS) ───────────────────────────────────────
             ExprKind::FunctionExpr(stmt) => {
-                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, is_generator, handles, is_async, .. } = &stmt.kind {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    is_sub,
+                    is_generator,
+                    handles,
+                    is_async,
+                    ..
+                } = &stmt.kind
+                {
                     let fn_name = if name.is_empty() {
                         format!("__anon_fn_{}", self.chunks.len())
                     } else {
                         name.clone()
                     };
-                    self.compile_function_decl(&fn_name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
+                    self.compile_function_decl(
+                        &fn_name,
+                        params,
+                        return_type,
+                        body,
+                        *is_sub,
+                        *is_generator,
+                        handles,
+                        *is_async,
+                    )?;
                     self.emit_var_get(&fn_name);
                 } else {
                     self.emit(Op::NULL);
@@ -4443,7 +4986,11 @@ impl Compiler {
             }
 
             // ── Range ───────────────────────────────────────────────────
-            ExprKind::Range { start, end, inclusive: _ } => {
+            ExprKind::Range {
+                start,
+                end,
+                inclusive: _,
+            } => {
                 self.compile_expr(start)?;
                 self.compile_expr(end)?;
                 let line = self.line;
@@ -4452,7 +4999,9 @@ impl Compiler {
 
             // ── StaticAccess (PHP) ──────────────────────────────────────
             ExprKind::StaticAccess { class, member } => {
-                if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) = (&class.kind, &member.kind) {
+                if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) =
+                    (&class.kind, &member.kind)
+                {
                     if self.js_private_member_access_forbidden(member_name) {
                         self.emit_js_private_access_denied(member_name)?;
                         return Ok(());
@@ -4466,7 +5015,9 @@ impl Compiler {
                     if let Some(cv) = self.profile.lookup_constant(&compound) {
                         match cv {
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
-                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                            ConstantValue::Str(s) => {
+                                self.emit_const(Value::String(Arc::from(s.as_str())))
+                            }
                         }
                         return Ok(());
                     }
@@ -4476,14 +5027,19 @@ impl Compiler {
                 self.compile_expr(class)?;
                 if let ExprKind::Ident(name) = &member.kind {
                     let field_name = match &class.kind {
-                        ExprKind::Ident(class_name) => self.js_member_storage_name_for_class(class_name, name),
+                        ExprKind::Ident(class_name) => {
+                            self.js_member_storage_name_for_class(class_name, name)
+                        }
                         _ => self.canon(name),
                     };
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_GET, idx);
                 } else {
                     self.compile_expr(member)?;
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
                 }
             }
 
@@ -4491,7 +5047,8 @@ impl Compiler {
             ExprKind::Match { subject, arms } => {
                 self.compile_expr(subject)?;
                 let subject_slot = self.define_local("__match_subj");
-                self.emit_u16(Op::LOCAL_SET, subject_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, subject_slot);
+                self.emit(Op::DROP);
                 let result_slot = self.define_local("__match_result");
                 let matched_slot = self.define_local("__match_matched");
                 self.emit(Op::NULL);
@@ -4514,7 +5071,10 @@ impl Compiler {
                         for c in conditions {
                             self.emit_u16(Op::LOCAL_GET, subject_slot);
                             self.compile_expr(c)?;
-                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
+                            {
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            };
                             let cond_line = self.line;
                             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), cond_line);
                             self.chunk().emit_if(cond_line);
@@ -4599,7 +5159,10 @@ impl Compiler {
         ];
         self.compile_call(&callee, &args)?;
         if *op == BinOp::NotEq {
-            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            };
         }
         Ok(true)
     }
@@ -4630,8 +5193,10 @@ impl Compiler {
         self.compile_expr(right)?;
         let rhs_slot = self.define_local("__py_set_rhs");
         let lhs_slot = self.define_local("__py_set_lhs");
-        self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, rhs_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, lhs_slot);
+        self.emit(Op::DROP);
 
         let size_key = self.str_const("size");
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
@@ -4686,19 +5251,28 @@ impl Compiler {
         let (method_name, negate_result) = match op {
             BinOp::Add => ("op_Addition", false),
             BinOp::Eq => ("op_Equality", false),
-            BinOp::NotEq if self.pending_class_has_method_name_for_type(&left_type, "op_Inequality") => {
+            BinOp::NotEq
+                if self.pending_class_has_method_name_for_type(&left_type, "op_Inequality") =>
+            {
                 ("op_Inequality", false)
             }
-            BinOp::NotEq if self.pending_class_has_method_name_for_type(&left_type, "op_Equality") => {
+            BinOp::NotEq
+                if self.pending_class_has_method_name_for_type(&left_type, "op_Equality") =>
+            {
                 ("op_Equality", true)
             }
             _ => return Ok(false),
         };
 
-        if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&left_type, method_name, &arg_exprs) {
+        if let Some(chunk_idx) =
+            self.resolve_static_method_overload_chunk_for_type(&left_type, method_name, &arg_exprs)
+        {
             self.emit_direct_static_method_call(chunk_idx, &arg_exprs)?;
             if negate_result {
-                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                };
             }
             return Ok(true);
         }
@@ -4718,7 +5292,10 @@ impl Compiler {
         ];
         self.compile_call(&callee, &args)?;
         if negate_result {
-            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
+            {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            };
         }
         Ok(true)
     }
@@ -4738,24 +5315,30 @@ impl Compiler {
             return Ok(false);
         };
 
-        let callee = if let Some(module_name) = self.enum_members.get(&self.canon(&target_name)).cloned() {
-            let target_canon = self.canon(&target_name);
-            let prefers_direct_module_global = self
-                .pending_classes
-                .get(&module_name)
-                .is_some_and(|pending| pending.static_method_names.iter().any(|member| member == &target_canon));
-            if prefers_direct_module_global {
-                Expression::ident(&target_name)
+        let callee =
+            if let Some(module_name) = self.enum_members.get(&self.canon(&target_name)).cloned() {
+                let target_canon = self.canon(&target_name);
+                let prefers_direct_module_global = self
+                    .pending_classes
+                    .get(&module_name)
+                    .is_some_and(|pending| {
+                        pending
+                            .static_method_names
+                            .iter()
+                            .any(|member| member == &target_canon)
+                    });
+                if prefers_direct_module_global {
+                    Expression::ident(&target_name)
+                } else {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&module_name)),
+                        field: target_name.clone(),
+                        null_safe: false,
+                    })
+                }
             } else {
-                Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident(&module_name)),
-                    field: target_name.clone(),
-                    null_safe: false,
-                })
-            }
-        } else {
-            Expression::ident(&target_name)
-        };
+                Expression::ident(&target_name)
+            };
         let args = vec![
             Argument::positional(left.clone()),
             Argument::positional(right.clone()),
@@ -4776,12 +5359,19 @@ impl Compiler {
             return None;
         }
 
-        let bare_type = left_type.split('<').next().unwrap_or(left_type.as_str()).trim();
+        let bare_type = left_type
+            .split('<')
+            .next()
+            .unwrap_or(left_type.as_str())
+            .trim();
         let canon_type = self.canon(bare_type);
         if !self.defined_globals.contains(&canon_type) {
             return None;
         }
-        if !self.defined_class_methods.contains(&self.canon(method_name)) {
+        if !self
+            .defined_class_methods
+            .contains(&self.canon(method_name))
+        {
             return None;
         }
         Some(bare_type.to_string())
@@ -4805,8 +5395,12 @@ impl Compiler {
             ExprKind::Call { callee, .. } => match &callee.kind {
                 ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Parse") => {
                     match &object.kind {
-                        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Version") => Some("Version".into()),
-                        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Version") => Some("Version".into()),
+                        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Version") => {
+                            Some("Version".into())
+                        }
+                        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Version") => {
+                            Some("Version".into())
+                        }
                         _ => None,
                     }
                 }
@@ -4818,7 +5412,10 @@ impl Compiler {
 
     fn is_dotnet_type_name(type_name: &str, expected: &str) -> bool {
         type_name.eq_ignore_ascii_case(expected)
-            || type_name.rsplit('.').next().is_some_and(|short| short.eq_ignore_ascii_case(expected))
+            || type_name
+                .rsplit('.')
+                .next()
+                .is_some_and(|short| short.eq_ignore_ascii_case(expected))
     }
 
     fn try_compile_dotnet_datetime_timespan_binary_operator(
@@ -4841,28 +5438,52 @@ impl Compiler {
         let emit = match op {
             BinOp::Add
                 if Self::is_dotnet_type_name(&left_type, "TimeSpan")
-                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.timespan_add"),
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") =>
+            {
+                Some("dotnet.timespan_add")
+            }
             BinOp::Sub
                 if Self::is_dotnet_type_name(&left_type, "TimeSpan")
-                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.timespan_sub"),
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") =>
+            {
+                Some("dotnet.timespan_sub")
+            }
             BinOp::Add
                 if Self::is_dotnet_type_name(&left_type, "DateTime")
-                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.datetime_add_timespan"),
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") =>
+            {
+                Some("dotnet.datetime_add_timespan")
+            }
             BinOp::Sub
                 if Self::is_dotnet_type_name(&left_type, "DateTime")
-                    && Self::is_dotnet_type_name(&right_type, "DateTime") => Some("dotnet.datetime_subtract_datetime"),
+                    && Self::is_dotnet_type_name(&right_type, "DateTime") =>
+            {
+                Some("dotnet.datetime_subtract_datetime")
+            }
             BinOp::Lt
                 if Self::is_dotnet_type_name(&left_type, "Version")
-                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_lt"),
+                    && Self::is_dotnet_type_name(&right_type, "Version") =>
+            {
+                Some("dotnet.version_lt")
+            }
             BinOp::Gt
                 if Self::is_dotnet_type_name(&left_type, "Version")
-                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_gt"),
+                    && Self::is_dotnet_type_name(&right_type, "Version") =>
+            {
+                Some("dotnet.version_gt")
+            }
             BinOp::Eq
                 if Self::is_dotnet_type_name(&left_type, "Version")
-                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_eq"),
+                    && Self::is_dotnet_type_name(&right_type, "Version") =>
+            {
+                Some("dotnet.version_eq")
+            }
             BinOp::NotEq
                 if Self::is_dotnet_type_name(&left_type, "Version")
-                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_ne"),
+                    && Self::is_dotnet_type_name(&right_type, "Version") =>
+            {
+                Some("dotnet.version_ne")
+            }
             _ => None,
         };
 
@@ -4880,7 +5501,13 @@ impl Compiler {
     pub(super) fn pascal_helper_function_name(&self, type_name: &str, method_name: &str) -> String {
         let sanitize = |text: &str| {
             text.chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>()
         };
         format!(
@@ -4889,5 +5516,4 @@ impl Compiler {
             sanitize(method_name),
         )
     }
-
 }

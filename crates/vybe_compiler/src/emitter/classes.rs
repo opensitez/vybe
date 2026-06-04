@@ -19,9 +19,9 @@
 //! and leaves `[val]` — callers must `drop` if they don't need the result.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::chunk::TypeEntry;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 // ── Object creation ─────────────────────────────────────────────────────
 
@@ -56,9 +56,8 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 
     // Stamp __control_name = lowercased class name (canonical control identity).
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let cname_str = chunk.add_constant(
-        Value::String(Arc::from(class_name.to_lowercase().as_str()))
-    );
+    let cname_str =
+        chunk.add_constant(Value::String(Arc::from(class_name.to_lowercase().as_str())));
     let cname_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
     chunk.emit_op_u16(Op::CONST, cname_str, line);
     chunk.emit_op_u16(Op::STRUCT_SET, cname_key, line);
@@ -69,14 +68,13 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     // sensitivity, and `register_type` stored the type under that
     // same name — VM `load_type_table` populates `__tid_<canon>`,
     // which we look up verbatim here.
-    let tid_name = chunk.add_constant(
-        Value::String(Arc::from(format!("__tid_{}", class_name).as_str()))
-    );
+    let tid_name = chunk.add_constant(Value::String(Arc::from(
+        format!("__tid_{}", class_name).as_str(),
+    )));
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
     chunk.emit_op(Op::SET_TYPE_ID, line);
     chunk.emit_op(Op::DROP, line);
-
 }
 
 /// Stamp `class_name` into `this.__types` array for cross-language instanceof.
@@ -101,34 +99,40 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// ```
 ///
 /// Stack: unchanged
-pub fn emit_instanceof_chain(chunks: &mut [Chunk], current: usize, this_slot: u16, class_name: &str, line: u32) {
+pub fn emit_instanceof_chain(
+    chunks: &mut [Chunk],
+    current: usize,
+    this_slot: u16,
+    class_name: &str,
+    line: u32,
+) {
     let types_key = chunks[current].add_constant(Value::String(Arc::from("__types")));
 
     // Stack: []
-    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);  // [this]
-    chunks[current].emit_op(Op::DUP, line);                        // [this, this]
-    chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line);  // [this, types_or_null]
-    chunks[current].emit_op(Op::DUP, line);                        // [this, tn, tn]
-    chunks[current].emit_op(Op::REF_IS_NULL, line);                // [this, tn, bool]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
+    chunks[current].emit_op(Op::DUP, line); // [this, this]
+    chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line); // [this, types_or_null]
+    chunks[current].emit_op(Op::DUP, line); // [this, tn, tn]
+    chunks[current].emit_op(Op::REF_IS_NULL, line); // [this, tn, bool]
     let init_block = chunks[current].emit_block(line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(0, line);
-    chunks[current].emit_op(Op::DROP, line);                       // [this] (drop the null)
-    crate::emitter::collections::emit_array_new(chunks, current, 0, line);  // [this, []]
+    chunks[current].emit_op(Op::DROP, line); // [this] (drop the null)
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line); // [this, []]
     chunks[current].emit_end(line);
-    chunks[current].patch_block(init_block);                       // skip lands here; [this, array]
+    chunks[current].patch_block(init_block); // skip lands here; [this, array]
 
     // Push class_name onto array while preserving array on stack.
     // ecma:array.push is [arr, val] → [new_length], so DUP the array
     // first: [this, array] → [this, array, array] → push → [this, array, len] → drop.
-    chunks[current].emit_op(Op::DUP, line);                        // [this, array, array]
+    chunks[current].emit_op(Op::DUP, line); // [this, array, array]
     let name_const = chunks[current].add_constant(Value::String(Arc::from(class_name)));
-    chunks[current].emit_op_u16(Op::CONST, name_const, line);      // [this, array, array, name]
-    crate::emitter::collections::emit_push(chunks, current, line);          // [this, array, len]
-    chunks[current].emit_op(Op::DROP, line);                       // [this, array]
+    chunks[current].emit_op_u16(Op::CONST, name_const, line); // [this, array, array, name]
+    crate::emitter::collections::emit_push(chunks, current, line); // [this, array, len]
+    chunks[current].emit_op(Op::DROP, line); // [this, array]
     // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
-    chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line);  // [array]
-    chunks[current].emit_op(Op::DROP, line);                       // []
+    chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line); // [array]
+    chunks[current].emit_op(Op::DROP, line); // []
 }
 
 // ── Method binding ──────────────────────────────────────────────────────
@@ -136,7 +140,13 @@ pub fn emit_instanceof_chain(chunks: &mut [Chunk], current: usize, this_slot: u1
 /// Bind an instance method on the object: this.<method_name> = ref_func(chunk_idx).
 /// Emits: local_get this → ref_func ci → struct_set key → drop
 /// Stack: unchanged
-pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+pub fn emit_bind_method(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    line: u32,
+) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
@@ -203,7 +213,14 @@ pub fn emit_bind_method_with_aliases(
         chunk.emit_op(Op::DROP, line);
     }
     // Bind under all cross-language aliases
-    emit_cross_language_aliases(chunk, this_slot, method_name, method_chunk_idx, rest_fixed_count, line);
+    emit_cross_language_aliases(
+        chunk,
+        this_slot,
+        method_name,
+        method_chunk_idx,
+        rest_fixed_count,
+        line,
+    );
 }
 
 pub fn emit_bind_bound_method_with_aliases(
@@ -214,12 +231,26 @@ pub fn emit_bind_bound_method_with_aliases(
     rest_fixed_count: Option<u8>,
     line: u32,
 ) {
-    emit_bind_bound_method(chunk, this_slot, method_name, method_chunk_idx, rest_fixed_count, line);
+    emit_bind_bound_method(
+        chunk,
+        this_slot,
+        method_name,
+        method_chunk_idx,
+        rest_fixed_count,
+        line,
+    );
     for &alias in cross_language_aliases(method_name) {
         if alias == method_name {
             continue;
         }
-        emit_bind_bound_method(chunk, this_slot, alias, method_chunk_idx, rest_fixed_count, line);
+        emit_bind_bound_method(
+            chunk,
+            this_slot,
+            alias,
+            method_chunk_idx,
+            rest_fixed_count,
+            line,
+        );
     }
 }
 
@@ -234,42 +265,44 @@ pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
         // Note: __get_tostring removed — ToString is a method, not a property.
         // C#/VB walkers preserve source-case `ToString` as the bound name; include
         // the PascalCase + Ruby spellings so cross-language invocation finds it.
-        "__str__" | "tostring" | "toString" | "ToString" | "to_s" | "__toString" =>
-            &["__str__", "toString", "tostring", "ToString", "to_s", "__toString"],
+        "__str__" | "tostring" | "toString" | "ToString" | "to_s" | "__toString" => &[
+            "__str__",
+            "toString",
+            "tostring",
+            "ToString",
+            "to_s",
+            "__toString",
+        ],
 
         // Debug representation: Python __repr__
-        "__repr__" | "todebugstring" | "toDebugString" =>
-            &["__repr__", "toDebugString", "todebugstring"],
+        "__repr__" | "todebugstring" | "toDebugString" => {
+            &["__repr__", "toDebugString", "todebugstring"]
+        }
 
         // Length/Count: Python __len__ ↔ JS .length ↔ VB/C# .Count
-        "__len__" | "__get_length" | "__get_count" =>
-            &["__len__", "__get_length", "__get_count"],
+        "__len__" | "__get_length" | "__get_count" => &["__len__", "__get_length", "__get_count"],
 
         // Truthiness: Python __bool__ ↔ JS valueOf
-        "__bool__" | "valueof" | "valueOf" =>
-            &["__bool__", "valueOf", "valueof"],
+        "__bool__" | "valueof" | "valueOf" => &["__bool__", "valueOf", "valueof"],
 
         // Membership test: Python __contains__ ↔ JS includes() ↔ VB/C# Contains()
-        "__contains__" | "contains" | "includes" =>
-            &["__contains__", "contains", "includes"],
+        "__contains__" | "contains" | "includes" => &["__contains__", "contains", "includes"],
 
         // Indexing: Python __getitem__/__setitem__ ↔ Dart operator[]/operator[]=
         "__getitem__" | "operator[]" => &["__getitem__", "operator[]"],
         "__setitem__" | "operator[]=" => &["__setitem__", "operator[]="],
 
         // Iteration: Python __iter__/__next__ ↔ Dart iterator/moveNext ↔ JS Symbol.iterator
-        "__iter__" | "iterator" | "getIterator" =>
-            &["__iter__", "iterator", "getIterator"],
-        "__next__" | "moveNext" =>
-            &["__next__", "moveNext"],
+        "__iter__" | "iterator" | "getIterator" => &["__iter__", "iterator", "getIterator"],
+        "__next__" | "moveNext" => &["__next__", "moveNext"],
 
         // Equality: Python __eq__ ↔ Dart operator== ↔ VB/C# Equals()
-        "__eq__" | "equals" | "operator==" =>
-            &["__eq__", "equals", "operator=="],
+        "__eq__" | "equals" | "operator==" => &["__eq__", "equals", "operator=="],
 
         // Hashing: Python __hash__ ↔ VB/C# GetHashCode() ↔ Dart hashCode
-        "__hash__" | "gethashcode" | "__get_hashcode" =>
-            &["__hash__", "gethashcode", "__get_hashcode"],
+        "__hash__" | "gethashcode" | "__get_hashcode" => {
+            &["__hash__", "gethashcode", "__get_hashcode"]
+        }
 
         // Comparison: Python __lt__/__gt__/etc ↔ Dart operator</>/ ↔ C# CompareTo
         "__lt__" | "operator<" => &["__lt__", "operator<"],
@@ -353,12 +386,12 @@ pub fn emit_super_call_store_result(
 /// Stack: unchanged
 pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     let base_name = format!("__base_{}", method_name);
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);  // obj for struct_set
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);  // obj for struct_get
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_set
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_get
     let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_GET, prop_idx, line);   // val = this.method (parent version)
+    chunk.emit_op_u16(Op::STRUCT_GET, prop_idx, line); // val = this.method (parent version)
     let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
-    chunk.emit_op_u16(Op::STRUCT_SET, base_idx, line);   // this.__base_method = val
+    chunk.emit_op_u16(Op::STRUCT_SET, base_idx, line); // this.__base_method = val
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -423,7 +456,13 @@ pub fn emit_attach_static_method(
 /// Bind a property getter as __get_<name> on the instance.
 /// The getter_chunk_idx should point to a compiled closure with arity=1 (self/this).
 /// Stack: unchanged
-pub fn emit_bind_getter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, getter_chunk_idx: usize, line: u32) {
+pub fn emit_bind_getter(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    prop_name: &str,
+    getter_chunk_idx: usize,
+    line: u32,
+) {
     let get_name = format!("__get_{}", prop_name);
     emit_bind_method(chunk, this_slot, &get_name, getter_chunk_idx, line);
 }
@@ -431,7 +470,13 @@ pub fn emit_bind_getter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, gett
 /// Bind a property setter as __set_<name> on the instance.
 /// The setter_chunk_idx should point to a compiled closure with arity=2 (self/this, value).
 /// Stack: unchanged
-pub fn emit_bind_setter(chunk: &mut Chunk, this_slot: u16, prop_name: &str, setter_chunk_idx: usize, line: u32) {
+pub fn emit_bind_setter(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    prop_name: &str,
+    setter_chunk_idx: usize,
+    line: u32,
+) {
     let set_name = format!("__set_{}", prop_name);
     emit_bind_method(chunk, this_slot, &set_name, setter_chunk_idx, line);
 }
@@ -449,8 +494,14 @@ pub fn emit_constructor_return(chunk: &mut Chunk, this_slot: u16, line: u32) {
 
 /// Store a constructor function as a local + global variable.
 /// Stack: unchanged
-pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_idx: usize, local_slot: u16, line: u32) {
-    emit_store_constructor_with_upvalues(chunk, class_name, ctor_chunk_idx, local_slot, &[], line);
+pub fn emit_store_constructor(
+    chunk: &mut Chunk,
+    class_name: &str,
+    ctor_chunk_idx: usize,
+    local_slot: u16,
+    line: u32,
+) {
+    emit_store_constructor_with_upvalues(chunk, class_name, ctor_chunk_idx, local_slot, &[], false, line);
 }
 
 /// Store a constructor function with upvalue capture. Used for closure-bound
@@ -460,6 +511,10 @@ pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_id
 /// Each upvalue entry is `(is_local, index)` — the same wire format the VM
 /// reads after `REF_FUNC`. Pass an empty slice for non-closure constructors.
 ///
+/// `case_sensitive`: when `true` (JS profile), the lowercase alias is NOT
+/// emitted — otherwise a `class Range` would overwrite a hoisted
+/// `function* range` at runtime, silently draining an empty continuation.
+///
 /// Stack: unchanged
 pub fn emit_store_constructor_with_upvalues(
     chunk: &mut Chunk,
@@ -467,6 +522,7 @@ pub fn emit_store_constructor_with_upvalues(
     ctor_chunk_idx: usize,
     local_slot: u16,
     upvalues: &[(bool, u8)],
+    case_sensitive: bool,
     line: u32,
 ) {
     chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
@@ -480,13 +536,17 @@ pub fn emit_store_constructor_with_upvalues(
     let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));
     chunk.emit_op_u16(Op::GLOBAL_SET, global_name, line);
     chunk.emit_op(Op::DROP, line);
-    // Also store under lowercase alias for cross-language lookup (VB is case-insensitive)
-    let lower = class_name.to_lowercase();
-    if lower != class_name {
-        chunk.emit_op_u16(Op::LOCAL_GET, local_slot, line);
-        let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
-        chunk.emit_op(Op::DROP, line);
+    // Also store under lowercase alias for cross-language lookup (VB is case-insensitive).
+    // Skip in case-sensitive profiles (JS): a `class Range` must NOT overwrite a hoisted
+    // `function* range` — the two names are distinct in a case-sensitive language.
+    if !case_sensitive {
+        let lower = class_name.to_lowercase();
+        if lower != class_name {
+            chunk.emit_op_u16(Op::LOCAL_GET, local_slot, line);
+            let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
+            chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
+            chunk.emit_op(Op::DROP, line);
+        }
     }
 }
 
@@ -577,9 +637,7 @@ pub fn register_interface(
     parent_interfaces: Vec<String>,
 ) {
     // Names arrive pre-canonicalised by the walker — see [`register_type`].
-    let method_entries: Vec<(String, usize)> = methods.into_iter()
-        .map(|m| (m, 0usize))
-        .collect();
+    let method_entries: Vec<(String, usize)> = methods.into_iter().map(|m| (m, 0usize)).collect();
     chunks[0].types.push(TypeEntry {
         name: name.to_string(),
         parent: String::new(),
@@ -603,7 +661,16 @@ pub fn register_class_with_interfaces(
     implements: Vec<String>,
     constructor_chunk: Option<usize>,
 ) {
-    register_type(chunks, name, parent, fields, methods, false, implements, constructor_chunk);
+    register_type(
+        chunks,
+        name,
+        parent,
+        fields,
+        methods,
+        false,
+        implements,
+        constructor_chunk,
+    );
 }
 
 // ── Super call (cross-language) ────────────────────────────────────────
@@ -630,12 +697,12 @@ pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// method listed in the profile's `auto_init_methods`.  The method name is
 /// lowercased for the struct_get lookup (all method keys are stored lowercase).
 pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);   // [this]
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
-    chunk.emit_op_u16(Op::STRUCT_GET, name_idx, line);    // [method_ref]
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);    // [method_ref, this]
-    chunk.emit_op_u8(Op::CALL, 1, line);                  // call(1) → [result]
-    chunk.emit_op(Op::DROP, line);                        // []
+    chunk.emit_op_u16(Op::STRUCT_GET, name_idx, line); // [method_ref]
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
+    chunk.emit_op_u8(Op::CALL, 1, line); // call(1) → [result]
+    chunk.emit_op(Op::DROP, line); // []
 }
 
 // NOTE: needs_auto_init_component() has moved to type_registry.rs where it

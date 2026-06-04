@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 pub fn emit_cell_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);

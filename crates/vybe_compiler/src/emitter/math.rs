@@ -4,13 +4,15 @@
 //! WASM does NOT have: pow, log, sin, cos, tan, atan2, exp, random
 //! Those use host imports (standard across all languages).
 
+use crate::emitter::Target;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use crate::emitter::Target;
 
 // ── Direct WASM opcodes (no host call) ──────────────────────
 
-pub fn emit_abs(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_ABS, line); }
+pub fn emit_abs(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_ABS, line);
+}
 
 /// Python floor modulo: `a - b * floor(a / b)`. Stack: [a, b] → [result].
 /// Differs from C fmod (which truncates toward zero).
@@ -22,29 +24,45 @@ pub fn emit_python_floor_mod(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);  // a
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);  // a
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);  // b
-    chunk.emit_op(Op::F64_DIV, line);                // a/b
-    chunk.emit_op(Op::F64_FLOOR, line);              // floor(a/b)
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);  // b
-    chunk.emit_op(Op::F64_MUL, line);               // b * floor(a/b)
-    chunk.emit_op(Op::F64_SUB, line);               // a - b*floor(a/b)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
+    chunk.emit_op(Op::F64_DIV, line); // a/b
+    chunk.emit_op(Op::F64_FLOOR, line); // floor(a/b)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
+    chunk.emit_op(Op::F64_MUL, line); // b * floor(a/b)
+    chunk.emit_op(Op::F64_SUB, line); // a - b*floor(a/b)
 }
-pub fn emit_floor(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_FLOOR, line); }
-pub fn emit_ceil(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_CEIL, line); }
-pub fn emit_trunc(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_TRUNC, line); }
-pub fn emit_round(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEAREST, line); }
-pub fn emit_sqrt(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_SQRT, line); }
-pub fn emit_min(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MIN, line); }
-pub fn emit_max(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MAX, line); }
+pub fn emit_floor(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+pub fn emit_ceil(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_CEIL, line);
+}
+pub fn emit_trunc(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_TRUNC, line);
+}
+pub fn emit_round(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_NEAREST, line);
+}
+pub fn emit_sqrt(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_SQRT, line);
+}
+pub fn emit_min(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_MIN, line);
+}
+pub fn emit_max(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_MAX, line);
+}
 
-pub fn emit_neg(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEG, line); }
+pub fn emit_neg(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_NEG, line);
+}
 
 // ── Host imports (standard math, same across all languages) ──
 
-use vybe_bytecode::Value;
 use std::sync::Arc;
+use vybe_bytecode::Value;
 
 /// Legacy: pow via host import. Stack: [base, exponent] → [result].
 /// Prefer `emit_pow_push_func` + args + `emit_pow_invoke` for the canonical

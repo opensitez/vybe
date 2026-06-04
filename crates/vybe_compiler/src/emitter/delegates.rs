@@ -4,8 +4,8 @@
 //! - combine: [current, handler] -> [delegate]
 //! - remove:  [current, handler] -> [delegate]
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::collections;
 
@@ -19,8 +19,10 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
     let handler_slot = cur_slot + 1;
     chunks[current].local_count = handler_slot + 1;
 
-    chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line); chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -75,8 +77,10 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let loop_counter = cur_slot + 5;
     chunks[current].local_count = loop_counter + 1;
 
-    chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line); chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -94,16 +98,19 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     // required beyond the existing array length/get/remove ops.
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     let minus_one_idx = chunks[current].add_constant(Value::F64(-1.0));
     chunks[current].emit_op_u16(Op::CONST, minus_one_idx, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_1, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
@@ -117,7 +124,8 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
@@ -125,14 +133,16 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     chunks[current].emit_op(Op::I32_CONST_1, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
     chunks[current].patch_loop(loop_patch);
@@ -154,7 +164,8 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     // Check final length and return appropriate delegate
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
