@@ -12,11 +12,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "Timer",
             parent: Some("Component"),
-            properties: &[
-                "Enabled",
-                "Interval",
-                "Tag",
-            ],
+            properties: &["Enabled", "Interval", "Tag"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_Timer"),
@@ -142,10 +138,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "HelpProvider",
             parent: Some("Component"),
-            properties: &[
-                "HelpNamespace",
-                "Tag",
-            ],
+            properties: &["HelpNamespace", "Tag"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_HelpProvider"),

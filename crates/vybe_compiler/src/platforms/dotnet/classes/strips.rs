@@ -44,11 +44,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "MenuStrip",
             parent: Some("ToolStrip"),
-            properties: &[
-                "MdiWindowListItem",
-                "ShowItemToolTips",
-                "Stretch",
-            ],
+            properties: &["MdiWindowListItem", "ShowItemToolTips", "Stretch"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_MenuStrip"),
@@ -57,12 +53,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "StatusStrip",
             parent: Some("ToolStrip"),
-            properties: &[
-                "LayoutStyle",
-                "ShowItemToolTips",
-                "SizingGrip",
-                "Stretch",
-            ],
+            properties: &["LayoutStyle", "ShowItemToolTips", "SizingGrip", "Stretch"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_StatusStrip"),

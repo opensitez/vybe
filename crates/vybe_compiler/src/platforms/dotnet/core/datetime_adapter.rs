@@ -13,9 +13,9 @@
 //! the .NET surface looks .NET-shaped while the bytecode is
 //! standardized.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use super::timespan_adapter;
 
@@ -33,7 +33,14 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, func: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    func: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module, func);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
@@ -61,16 +68,16 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
-      push_const(chunk, Value::I32(-1), line);
+    push_const(chunk, Value::I32(-1), line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-      crate::emitter::ops::emit_dyn_gt(chunk, line);
-      chunk.emit_if(line);
-        push_const(chunk, Value::I32(1), line);
-      chunk.emit_else(line);
-        push_const(chunk, Value::I32(0), line);
-      chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -88,8 +95,8 @@ fn emit_day_of_week_string(chunk: &mut Chunk, slot: u16, line: u32) {
         push_const(chunk, Value::I32(index), line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
-          push_const(chunk, Value::String(Arc::from(name)), line);
-          chunk.emit_br(1, line);
+        push_const(chunk, Value::String(Arc::from(name)), line);
+        chunk.emit_br(1, line);
         chunk.emit_end(line);
     }
     push_const(chunk, Value::String(Arc::from("Saturday")), line);
@@ -132,7 +139,12 @@ fn emit_utc_from_slots(
     call_import(chunks, current, "ecma:date", "UTC", 6, line);
 }
 
-fn emit_wrap_ms_internal(chunks: &mut [Chunk], current: usize, line: u32, include_composites: bool) {
+fn emit_wrap_ms_internal(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    include_composites: bool,
+) {
     let chunk = &mut chunks[current];
     let ms_slot = chunk.local_count;
     let year_slot = ms_slot + 1;
@@ -206,7 +218,9 @@ fn emit_wrap_ms_internal(chunks: &mut [Chunk], current: usize, line: u32, includ
 
     if include_composites {
         chunk.emit_op(Op::DUP, line);
-        emit_utc_from_slots(chunks, current, year_slot, month_slot, day_slot, None, None, None, line);
+        emit_utc_from_slots(
+            chunks, current, year_slot, month_slot, day_slot, None, None, None, line,
+        );
         emit_wrap_ms_internal(chunks, current, line, false);
         struct_set_named_field(&mut chunks[current], "Date", line);
 
@@ -277,7 +291,9 @@ pub fn emit_datetime_today(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_dt_getter(chunks, current, ms_slot, "getUTCDate", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, day_slot, line);
     chunks[current].emit_op(Op::DROP, line);
-    emit_utc_from_slots(chunks, current, year_slot, month_slot, day_slot, None, None, None, line);
+    emit_utc_from_slots(
+        chunks, current, year_slot, month_slot, day_slot, None, None, None, line,
+    );
     emit_wrap_ms(chunks, current, line);
 }
 

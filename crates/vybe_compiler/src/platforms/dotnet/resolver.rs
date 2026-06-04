@@ -41,15 +41,10 @@ pub enum DottedResolution {
 
     /// Resolved to a host import via interface_imports (compile-time resolved).
     /// The compiler should emit call_import(module, func) directly.
-    HostCall {
-        module: String,
-        func: String,
-    },
+    HostCall { module: String, func: String },
 
     /// Resolved to a shared compiler-side common emit.
-    CommonCall {
-        emit: String,
-    },
+    CommonCall { emit: String },
 
     /// Resolved to an existing global callable, typically a registered
     /// dotnet wrapper constructor such as `Form` or `TextBox`.
@@ -189,9 +184,7 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
             // bogus chain like system.windows.forms.window.forms.form.
             // HostCall / CommonCall from real static-method lookups are
             // still accepted — those are the only reason Step 4 exists.
-            if first_is_ns_root
-                && matches!(res, DottedResolution::NamespaceAccess { .. })
-            {
+            if first_is_ns_root && matches!(res, DottedResolution::NamespaceAccess { .. }) {
                 continue;
             }
             let import_parts = import_path.split('.').count();
@@ -199,7 +192,9 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
             if should_prefer_import_match(
                 kind_rank,
                 import_parts,
-                best_import_match.as_ref().map(|(_, rank, parts)| (*rank, *parts)),
+                best_import_match
+                    .as_ref()
+                    .map(|(_, rank, parts)| (*rank, *parts)),
             ) {
                 best_import_match = Some((res, kind_rank, import_parts));
             }
@@ -213,9 +208,7 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
     // Fall back to namespace object chain (global_get → struct_get chain).
     // This handles enum values, static properties on namespace objects, etc.
     if is_namespace_root(first) {
-        return DottedResolution::NamespaceAccess {
-            parts: lower_parts,
-        };
+        return DottedResolution::NamespaceAccess { parts: lower_parts };
     }
 
     // ── Step 6: Try expanding with imports for namespace access ───────────
@@ -225,17 +218,13 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
         expanded.extend(lower_parts.iter().cloned());
         let first_expanded = &expanded[0];
         if is_namespace_root(first_expanded) {
-            return DottedResolution::NamespaceAccess {
-                parts: expanded,
-            };
+            return DottedResolution::NamespaceAccess { parts: expanded };
         }
     }
 
     // ── Step 7: User-defined type static call ────────────────────────────
     if (ctx.is_user_type)(first) {
-        return DottedResolution::NamespaceAccess {
-            parts: lower_parts,
-        };
+        return DottedResolution::NamespaceAccess { parts: lower_parts };
     }
 
     DottedResolution::Unresolved
@@ -251,7 +240,10 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
 /// Returns `None` if no import prefix matches.
 ///
 /// Kept for backward compatibility. Callers should migrate to `resolve_dotted_name()`.
-pub fn resolve_interface_call(parts: &[&str], interface_imports: &[String]) -> Option<(String, String)> {
+pub fn resolve_interface_call(
+    parts: &[&str],
+    interface_imports: &[String],
+) -> Option<(String, String)> {
     let lower_parts: Vec<String> = parts.iter().map(|p| p.to_lowercase()).collect();
     let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
     match try_resolve_via_imports_refs(&refs, interface_imports) {
@@ -269,7 +261,10 @@ fn try_resolve_via_imports(lower_parts: &[String], imports: &[String]) -> Option
     try_resolve_via_imports_refs(&refs, imports)
 }
 
-fn try_resolve_via_imports_refs(lower_parts: &[&str], imports: &[String]) -> Option<DottedResolution> {
+fn try_resolve_via_imports_refs(
+    lower_parts: &[&str],
+    imports: &[String],
+) -> Option<DottedResolution> {
     if lower_parts.len() < 2 {
         return None;
     }
@@ -344,7 +339,9 @@ fn try_resolve_static_component_property_refs(lower_parts: &[&str]) -> Option<Do
     let property_name = lower_parts.last().copied()?;
     let prefix = lower_parts[..lower_parts.len() - 1].join(".");
     super::lookup_component_static_property(&prefix, property_name).map(|target| match target {
-        super::StaticPropertyTarget::Host { module, func } => DottedResolution::HostCall { module, func },
+        super::StaticPropertyTarget::Host { module, func } => {
+            DottedResolution::HostCall { module, func }
+        }
     })
 }
 
@@ -383,7 +380,9 @@ fn try_resolve_static_component_call_refs(lower_parts: &[&str]) -> Option<Dotted
     let method_name = lower_parts.last().copied()?;
     let prefix = lower_parts[..lower_parts.len() - 1].join(".");
     super::lookup_component_static_method(&prefix, &[method_name]).map(|target| match target {
-        super::StaticMethodTarget::Host { module, func } => DottedResolution::HostCall { module, func },
+        super::StaticMethodTarget::Host { module, func } => {
+            DottedResolution::HostCall { module, func }
+        }
         super::StaticMethodTarget::Common { emit } => DottedResolution::CommonCall { emit },
     })
 }

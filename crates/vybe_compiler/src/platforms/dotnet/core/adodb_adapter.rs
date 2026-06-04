@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::collections;
 
@@ -27,7 +27,14 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     slot
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[0].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
@@ -65,7 +72,13 @@ fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value:
     chunk.emit_op(Op::DROP, line);
 }
 
-fn get_prop_to_local(chunk: &mut Chunk, object_local: u16, key: &str, target_local: u16, line: u32) {
+fn get_prop_to_local(
+    chunk: &mut Chunk,
+    object_local: u16,
+    key: &str,
+    target_local: u16,
+    line: u32,
+) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
@@ -83,7 +96,12 @@ fn build_field_object(chunks: &mut [Chunk], current: usize, value_local: u16, li
 /// `recordcount`, then build a new ADODB Recordset struct and leave it on
 /// the stack.  Used by `emit_adodb_connection_execute` and
 /// `emit_adodb_command_execute`.
-fn emit_reader_to_adodb_recordset(chunks: &mut [Chunk], current: usize, reader_slot: u16, line: u32) {
+fn emit_reader_to_adodb_recordset(
+    chunks: &mut [Chunk],
+    current: usize,
+    reader_slot: u16,
+    line: u32,
+) {
     let (rows_slot, cols_slot) = {
         let chunk = &mut chunks[current];
         (reserve_slot(chunk), reserve_slot(chunk))
@@ -121,7 +139,14 @@ fn emit_reader_to_adodb_recordset(chunks: &mut [Chunk], current: usize, reader_s
 // ── ADODB.Connection ──────────────────────────────────────────────────────────
 
 pub fn emit_adodb_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:sql/types", "connection.new", argc, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "connection.new",
+        argc,
+        line,
+    );
 }
 
 /// `Connection.Execute(sql)` — creates a command, runs it, returns a Recordset.
@@ -141,7 +166,14 @@ pub fn emit_adodb_connection_execute(chunks: &mut [Chunk], current: usize, _argc
         chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
     }
     call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(chunks, current, "wasi:sql/types", "[method]command.execute-reader", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]command.execute-reader",
+        1,
+        line,
+    );
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -156,7 +188,14 @@ pub fn emit_adodb_connection_execute(chunks: &mut [Chunk], current: usize, _argc
 /// returned by the host is discarded (ADODB tracks state implicitly).
 pub fn emit_adodb_conn_begin_trans(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // Stack: [conn]
-    call_import(chunks, current, "wasi:sql/types", "[method]connection.begin-transaction", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]connection.begin-transaction",
+        1,
+        line,
+    );
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -172,7 +211,14 @@ pub fn emit_adodb_conn_commit_trans(chunks: &mut [Chunk], current: usize, _argc:
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
     drop(chunk);
     call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(chunks, current, "wasi:sql/types", "[method]command.execute-non-query", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]command.execute-non-query",
+        1,
+        line,
+    );
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -188,7 +234,14 @@ pub fn emit_adodb_conn_rollback_trans(chunks: &mut [Chunk], current: usize, _arg
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
     drop(chunk);
     call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(chunks, current, "wasi:sql/types", "[method]command.execute-non-query", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]command.execute-non-query",
+        1,
+        line,
+    );
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -205,7 +258,14 @@ pub fn emit_adodb_command_new(chunks: &mut [Chunk], current: usize, argc: u8, li
 /// calls execute-reader and wraps the result as an ADODB Recordset.
 pub fn emit_adodb_command_execute(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // Stack: [cmd]
-    call_import(chunks, current, "wasi:sql/types", "[method]command.execute-reader", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]command.execute-reader",
+        1,
+        line,
+    );
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -216,7 +276,12 @@ pub fn emit_adodb_command_execute(chunks: &mut [Chunk], current: usize, _argc: u
     emit_reader_to_adodb_recordset(chunks, current, reader_slot, line);
 }
 
-pub fn emit_adodb_command_create_parameter(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_adodb_command_create_parameter(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let value_slot = reserve_slot(chunk);
     let name_slot = reserve_slot(chunk);
@@ -290,7 +355,11 @@ pub fn emit_adodb_recordset_new(chunks: &mut [Chunk], current: usize, _argc: u8,
 pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let (conn_slot, sql_slot, rs_slot) = {
         let chunk = &mut chunks[current];
-        (reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk))
+        (
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+        )
     };
     {
         let chunk = &mut chunks[current];
@@ -312,7 +381,14 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         slot
     };
-    call_import(chunks, current, "wasi:sql/types", "[method]command.execute-reader", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:sql/types",
+        "[method]command.execute-reader",
+        1,
+        line,
+    );
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -322,7 +398,11 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
     };
     let (rows_slot, cols_slot, count_slot) = {
         let chunk = &mut chunks[current];
-        (reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk))
+        (
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+        )
     };
     {
         let chunk = &mut chunks[current];
@@ -357,7 +437,11 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
 pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line: u32) {
     let (rs_slot, pos_slot, rows_slot) = {
         let chunk = &mut chunks[current];
-        (reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk))
+        (
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+        )
     };
     {
         let chunk = &mut chunks[current];
@@ -430,7 +514,12 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
 pub fn emit_adodb_recordset_fields(chunks: &mut [Chunk], current: usize, line: u32) {
     let (key_slot, rs_slot, row_slot, value_slot) = {
         let chunk = &mut chunks[current];
-        (reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk))
+        (
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+        )
     };
     let (rows_key, pos_key) = {
         let chunk = &mut chunks[current];

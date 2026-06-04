@@ -43,7 +43,7 @@
 //! `Color.FromArgb` both produce the same shape, so the body sequences
 //! that read `pen.color.r` work uniformly.
 
-use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
+use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
 
 // ─── Body templates ────────────────────────────────────────────────────────
 //
@@ -67,7 +67,7 @@ use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
 const GRAPHICS_DRAW_LINE: &[MethodOp] = &[
     // Apply pen state.
     MethodOp::PushThis,
-    MethodOp::PushArgField(1, "color"),  // pen.color (object)
+    MethodOp::PushArgField(1, "color"), // pen.color (object)
     // We need r/g/b/a as separate args, not the color object. The
     // canvas host fn expects 5 args: (handle, r, g, b, a). So we
     // extract the four channels via separate field reads on `pen`.
@@ -87,32 +87,51 @@ const GRAPHICS_DRAW_LINE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasBeginPath", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasBeginPath",
+        argc: 1,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasMoveTo", argc: 3 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasMoveTo",
+        argc: 3,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasLineTo", argc: 3 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasLineTo",
+        argc: 3,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStroke", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStroke",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
@@ -123,20 +142,30 @@ const GRAPHICS_DRAW_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStrokeRect", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStrokeRect",
+        argc: 5,
+    },
     MethodOp::Return,
 ];
 
@@ -147,15 +176,22 @@ const GRAPHICS_FILL_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetFillColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetFillColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasFillRect", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasFillRect",
+        argc: 5,
+    },
     MethodOp::Return,
 ];
 
@@ -178,14 +214,20 @@ const GRAPHICS_DRAW_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     // Use `canvasEllipseFromBounds` — a host helper that does the
     // x+w/2, y+h/2, w/2, h/2 conversion + begin_path + ellipse +
     // stroke in one call. See `vybe_host::modules::canvas`.
@@ -194,7 +236,11 @@ const GRAPHICS_DRAW_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStrokeEllipseInRect", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStrokeEllipseInRect",
+        argc: 5,
+    },
     MethodOp::Return,
 ];
 
@@ -205,15 +251,22 @@ const GRAPHICS_FILL_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetFillColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetFillColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasFillEllipseInRect", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasFillEllipseInRect",
+        argc: 5,
+    },
     MethodOp::Return,
 ];
 
@@ -224,15 +277,16 @@ const GRAPHICS_CLEAR: &[MethodOp] = &[
     MethodOp::PushArgField(1, "g"),
     MethodOp::PushArgField(1, "b"),
     MethodOp::PushArgField(1, "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasClearAll", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasClearAll",
+        argc: 5,
+    },
     MethodOp::Return,
 ];
 
 /// `Graphics.Dispose()` — no-op (no GDI handle to free).
-const GRAPHICS_DISPOSE: &[MethodOp] = &[
-    MethodOp::PushConstNull,
-    MethodOp::Return,
-];
+const GRAPHICS_DISPOSE: &[MethodOp] = &[MethodOp::PushConstNull, MethodOp::Return];
 
 /// `Graphics.DrawArc(pen, x, y, w, h, startAngle, sweepAngle)`
 const GRAPHICS_DRAW_ARC: &[MethodOp] = &[
@@ -241,14 +295,20 @@ const GRAPHICS_DRAW_ARC: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2), // x
     MethodOp::PushArg(3), // y
@@ -256,7 +316,11 @@ const GRAPHICS_DRAW_ARC: &[MethodOp] = &[
     MethodOp::PushArg(5), // h
     MethodOp::PushArg(6), // startAngle (deg)
     MethodOp::PushArg(7), // sweepAngle (deg)
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStrokeArcInRect", argc: 7 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStrokeArcInRect",
+        argc: 7,
+    },
     MethodOp::Return,
 ];
 
@@ -267,14 +331,20 @@ const GRAPHICS_DRAW_PIE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
@@ -282,7 +352,11 @@ const GRAPHICS_DRAW_PIE: &[MethodOp] = &[
     MethodOp::PushArg(5),
     MethodOp::PushArg(6),
     MethodOp::PushArg(7),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStrokePieInRect", argc: 7 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStrokePieInRect",
+        argc: 7,
+    },
     MethodOp::Return,
 ];
 
@@ -293,9 +367,12 @@ const GRAPHICS_FILL_PIE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetFillColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetFillColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
@@ -303,7 +380,11 @@ const GRAPHICS_FILL_PIE: &[MethodOp] = &[
     MethodOp::PushArg(5),
     MethodOp::PushArg(6),
     MethodOp::PushArg(7),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasFillPieInRect", argc: 7 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasFillPieInRect",
+        argc: 7,
+    },
     MethodOp::Return,
 ];
 
@@ -314,36 +395,55 @@ const GRAPHICS_DRAW_BEZIER: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "g"),
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetStrokeColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetStrokeColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetLineWidth", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetLineWidth",
+        argc: 2,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasBeginPath", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasBeginPath",
+        argc: 1,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::PushArg(2),  // x1
-    MethodOp::PushArg(3),  // y1
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasMoveTo", argc: 3 },
+    MethodOp::PushArg(2), // x1
+    MethodOp::PushArg(3), // y1
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasMoveTo",
+        argc: 3,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::PushArg(4),  // cx1
-    MethodOp::PushArg(5),  // cy1
-    MethodOp::PushArg(6),  // cx2
-    MethodOp::PushArg(7),  // cy2
-    MethodOp::PushArg(8),  // x4
-    MethodOp::PushArg(9),  // y4
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasBezierTo", argc: 7 },
+    MethodOp::PushArg(4), // cx1
+    MethodOp::PushArg(5), // cy1
+    MethodOp::PushArg(6), // cx2
+    MethodOp::PushArg(7), // cy2
+    MethodOp::PushArg(8), // x4
+    MethodOp::PushArg(9), // y4
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasBezierTo",
+        argc: 7,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasStroke", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasStroke",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
@@ -355,24 +455,34 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
     MethodOp::PushArgFieldField(3, "color", "g"),
     MethodOp::PushArgFieldField(3, "color", "b"),
     MethodOp::PushArgFieldField(3, "color", "a"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetFillColor", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetFillColor",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     // Font from arg 2 (Font object with name/size/bold/italic).
     MethodOp::PushThis,
     MethodOp::PushArgField(2, "name"),
     MethodOp::PushArgField(2, "size"),
     MethodOp::PushArgField(2, "bold"),
     MethodOp::PushArgField(2, "italic"),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSetFont", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSetFont",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     // FillText(text, x, y).
     MethodOp::PushThis,
     MethodOp::PushArg(1), // text
     MethodOp::PushArg(4), // x
     MethodOp::PushArg(5), // y
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasFillText", argc: 4 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasFillText",
+        argc: 4,
+    },
     MethodOp::Return,
 ];
 
@@ -380,7 +490,11 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
 /// return null (the canvas save/restore stack is implicit).
 const GRAPHICS_SAVE: &[MethodOp] = &[
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasSave", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasSave",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
@@ -388,7 +502,11 @@ const GRAPHICS_SAVE: &[MethodOp] = &[
 /// canvas has a single implicit stack).
 const GRAPHICS_RESTORE: &[MethodOp] = &[
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasRestore", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasRestore",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
@@ -397,7 +515,11 @@ const GRAPHICS_TRANSLATE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArg(1),
     MethodOp::PushArg(2),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasTranslate", argc: 3 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasTranslate",
+        argc: 3,
+    },
     MethodOp::Return,
 ];
 
@@ -405,7 +527,11 @@ const GRAPHICS_TRANSLATE_TRANSFORM: &[MethodOp] = &[
 const GRAPHICS_ROTATE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArg(1),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasRotateDegrees", argc: 2 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasRotateDegrees",
+        argc: 2,
+    },
     MethodOp::Return,
 ];
 
@@ -414,73 +540,179 @@ const GRAPHICS_SCALE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArg(1),
     MethodOp::PushArg(2),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasScale", argc: 3 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasScale",
+        argc: 3,
+    },
     MethodOp::Return,
 ];
 
 /// `Graphics.ResetTransform()`
 const GRAPHICS_RESET_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasResetTransform", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasResetTransform",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
 /// `Graphics.SetClip(x, y, w, h)` — rect form (the most common overload).
 const GRAPHICS_SET_CLIP: &[MethodOp] = &[
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasBeginPath", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasBeginPath",
+        argc: 1,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
     MethodOp::PushArg(1),
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasRect", argc: 5 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasRect",
+        argc: 5,
+    },
     MethodOp::Drop,
-
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasClip", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasClip",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
 /// `Graphics.ResetClip()`
 const GRAPHICS_RESET_CLIP: &[MethodOp] = &[
     MethodOp::PushThis,
-    MethodOp::CallHost { module: "vybe:gui", fn_name: "canvasResetClip", argc: 1 },
+    MethodOp::CallHost {
+        module: "vybe:gui",
+        fn_name: "canvasResetClip",
+        argc: 1,
+    },
     MethodOp::Return,
 ];
 
 const GRAPHICS_METHODS: &[DotnetMethod] = &[
-    DotnetMethod { name: "DrawLine",          arity: 6, target: MethodTarget::body(GRAPHICS_DRAW_LINE) },
-    DotnetMethod { name: "DrawRectangle",     arity: 6, target: MethodTarget::body(GRAPHICS_DRAW_RECTANGLE) },
-    DotnetMethod { name: "DrawEllipse",       arity: 6, target: MethodTarget::body(GRAPHICS_DRAW_ELLIPSE) },
-    DotnetMethod { name: "DrawArc",           arity: 8, target: MethodTarget::body(GRAPHICS_DRAW_ARC) },
-    DotnetMethod { name: "DrawPie",           arity: 8, target: MethodTarget::body(GRAPHICS_DRAW_PIE) },
-    DotnetMethod { name: "FillPie",           arity: 8, target: MethodTarget::body(GRAPHICS_FILL_PIE) },
-    DotnetMethod { name: "DrawBezier",        arity: 10, target: MethodTarget::body(GRAPHICS_DRAW_BEZIER) },
-    DotnetMethod { name: "DrawString",        arity: 6, target: MethodTarget::body(GRAPHICS_DRAW_STRING) },
-    DotnetMethod { name: "FillRectangle",     arity: 6, target: MethodTarget::body(GRAPHICS_FILL_RECTANGLE) },
-    DotnetMethod { name: "FillEllipse",       arity: 6, target: MethodTarget::body(GRAPHICS_FILL_ELLIPSE) },
-    DotnetMethod { name: "Clear",             arity: 2, target: MethodTarget::body(GRAPHICS_CLEAR) },
-    DotnetMethod { name: "Save",              arity: 1, target: MethodTarget::body(GRAPHICS_SAVE) },
-    DotnetMethod { name: "Restore",           arity: 2, target: MethodTarget::body(GRAPHICS_RESTORE) },
-    DotnetMethod { name: "TranslateTransform",arity: 3, target: MethodTarget::body(GRAPHICS_TRANSLATE_TRANSFORM) },
-    DotnetMethod { name: "RotateTransform",   arity: 2, target: MethodTarget::body(GRAPHICS_ROTATE_TRANSFORM) },
-    DotnetMethod { name: "ScaleTransform",    arity: 3, target: MethodTarget::body(GRAPHICS_SCALE_TRANSFORM) },
-    DotnetMethod { name: "ResetTransform",    arity: 1, target: MethodTarget::body(GRAPHICS_RESET_TRANSFORM) },
-    DotnetMethod { name: "SetClip",           arity: 5, target: MethodTarget::body(GRAPHICS_SET_CLIP) },
-    DotnetMethod { name: "ResetClip",         arity: 1, target: MethodTarget::body(GRAPHICS_RESET_CLIP) },
-    DotnetMethod { name: "Dispose",           arity: 1, target: MethodTarget::body(GRAPHICS_DISPOSE) },
+    DotnetMethod {
+        name: "DrawLine",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_DRAW_LINE),
+    },
+    DotnetMethod {
+        name: "DrawRectangle",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_DRAW_RECTANGLE),
+    },
+    DotnetMethod {
+        name: "DrawEllipse",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_DRAW_ELLIPSE),
+    },
+    DotnetMethod {
+        name: "DrawArc",
+        arity: 8,
+        target: MethodTarget::body(GRAPHICS_DRAW_ARC),
+    },
+    DotnetMethod {
+        name: "DrawPie",
+        arity: 8,
+        target: MethodTarget::body(GRAPHICS_DRAW_PIE),
+    },
+    DotnetMethod {
+        name: "FillPie",
+        arity: 8,
+        target: MethodTarget::body(GRAPHICS_FILL_PIE),
+    },
+    DotnetMethod {
+        name: "DrawBezier",
+        arity: 10,
+        target: MethodTarget::body(GRAPHICS_DRAW_BEZIER),
+    },
+    DotnetMethod {
+        name: "DrawString",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_DRAW_STRING),
+    },
+    DotnetMethod {
+        name: "FillRectangle",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_FILL_RECTANGLE),
+    },
+    DotnetMethod {
+        name: "FillEllipse",
+        arity: 6,
+        target: MethodTarget::body(GRAPHICS_FILL_ELLIPSE),
+    },
+    DotnetMethod {
+        name: "Clear",
+        arity: 2,
+        target: MethodTarget::body(GRAPHICS_CLEAR),
+    },
+    DotnetMethod {
+        name: "Save",
+        arity: 1,
+        target: MethodTarget::body(GRAPHICS_SAVE),
+    },
+    DotnetMethod {
+        name: "Restore",
+        arity: 2,
+        target: MethodTarget::body(GRAPHICS_RESTORE),
+    },
+    DotnetMethod {
+        name: "TranslateTransform",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_TRANSLATE_TRANSFORM),
+    },
+    DotnetMethod {
+        name: "RotateTransform",
+        arity: 2,
+        target: MethodTarget::body(GRAPHICS_ROTATE_TRANSFORM),
+    },
+    DotnetMethod {
+        name: "ScaleTransform",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_SCALE_TRANSFORM),
+    },
+    DotnetMethod {
+        name: "ResetTransform",
+        arity: 1,
+        target: MethodTarget::body(GRAPHICS_RESET_TRANSFORM),
+    },
+    DotnetMethod {
+        name: "SetClip",
+        arity: 5,
+        target: MethodTarget::body(GRAPHICS_SET_CLIP),
+    },
+    DotnetMethod {
+        name: "ResetClip",
+        arity: 1,
+        target: MethodTarget::body(GRAPHICS_RESET_CLIP),
+    },
+    DotnetMethod {
+        name: "Dispose",
+        arity: 1,
+        target: MethodTarget::body(GRAPHICS_DISPOSE),
+    },
 ];
 
 /// `Pen.Dispose()` and `Brush.Dispose()` — no-op for now.
-const PEN_METHODS: &[DotnetMethod] = &[
-    DotnetMethod { name: "Dispose", arity: 1, target: MethodTarget::body(GRAPHICS_DISPOSE) },
-];
-const BRUSH_METHODS: &[DotnetMethod] = &[
-    DotnetMethod { name: "Dispose", arity: 1, target: MethodTarget::body(GRAPHICS_DISPOSE) },
-];
+const PEN_METHODS: &[DotnetMethod] = &[DotnetMethod {
+    name: "Dispose",
+    arity: 1,
+    target: MethodTarget::body(GRAPHICS_DISPOSE),
+}];
+const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
+    name: "Dispose",
+    arity: 1,
+    target: MethodTarget::body(GRAPHICS_DISPOSE),
+}];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -488,15 +720,23 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "Graphics",
             parent: Some("MarshalByRefObject"),
             properties: &[
-                "Clip", "ClipBounds",
-                "CompositingMode", "CompositingQuality",
-                "DpiX", "DpiY",
-                "InterpolationMode", "IsClipEmpty",
-                "PageScale", "PageUnit",
-                "PixelOffsetMode", "RenderingOrigin",
+                "Clip",
+                "ClipBounds",
+                "CompositingMode",
+                "CompositingQuality",
+                "DpiX",
+                "DpiY",
+                "InterpolationMode",
+                "IsClipEmpty",
+                "PageScale",
+                "PageUnit",
+                "PixelOffsetMode",
+                "RenderingOrigin",
                 "SmoothingMode",
-                "TextContrast", "TextRenderingHint",
-                "Transform", "VisibleClipBounds",
+                "TextContrast",
+                "TextRenderingHint",
+                "Transform",
+                "VisibleClipBounds",
             ],
             methods: GRAPHICS_METHODS,
             ctor_arity: 0,
@@ -514,11 +754,23 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "Pen",
             parent: Some("MarshalByRefObject"),
             properties: &[
-                "Alignment", "Brush", "Color",
-                "CompoundArray", "CustomEndCap", "CustomStartCap",
-                "DashCap", "DashOffset", "DashPattern", "DashStyle",
-                "EndCap", "LineJoin", "MiterLimit",
-                "PenType", "StartCap", "Transform", "Width",
+                "Alignment",
+                "Brush",
+                "Color",
+                "CompoundArray",
+                "CustomEndCap",
+                "CustomStartCap",
+                "DashCap",
+                "DashOffset",
+                "DashPattern",
+                "DashStyle",
+                "EndCap",
+                "LineJoin",
+                "MiterLimit",
+                "PenType",
+                "StartCap",
+                "Transform",
+                "Width",
             ],
             methods: PEN_METHODS,
             ctor_arity: 2,
@@ -556,8 +808,13 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "LinearGradientBrush",
             parent: Some("Brush"),
             properties: &[
-                "Blend", "GammaCorrection", "InterpolationColors",
-                "LinearColors", "Rectangle", "Transform", "WrapMode",
+                "Blend",
+                "GammaCorrection",
+                "InterpolationColors",
+                "LinearColors",
+                "Rectangle",
+                "Transform",
+                "WrapMode",
             ],
             methods: &[],
             ctor_arity: 4,

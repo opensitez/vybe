@@ -13,9 +13,9 @@
 //! seconds }` matching the existing `vybe:types/timeSpan*` host
 //! impls so callers continue to work.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::math;
 
@@ -238,16 +238,16 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
-      push_const(chunk, Value::I32(-1), line);
+    push_const(chunk, Value::I32(-1), line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-      crate::emitter::ops::emit_dyn_gt(chunk, line);
-      chunk.emit_if(line);
-        push_const(chunk, Value::I32(1), line);
-      chunk.emit_else(line);
-        push_const(chunk, Value::I32(0), line);
-      chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 

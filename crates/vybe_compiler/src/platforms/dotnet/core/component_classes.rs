@@ -3,10 +3,10 @@ use std::sync::LazyLock;
 use super::super::class_exports::DotnetClassExport;
 use vybe_bytecode::component_model::ClassType;
 
-#[path = "component_classes_common.rs"]
-mod component_classes_common;
 #[path = "component_classes_collections.rs"]
 mod component_classes_collections;
+#[path = "component_classes_common.rs"]
+mod component_classes_common;
 #[path = "component_classes_data_drawing.rs"]
 mod component_classes_data_drawing;
 #[path = "component_classes_diagnostics_process.rs"]

@@ -7,11 +7,11 @@
 //! No `vybe:types` involvement — pure compile-time adapter, runtime
 //! work happens in `node:child_process.spawnSync` etc.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
-use std::sync::Arc;
 use crate::emitter::classes::emit_bind_method;
 use crate::emitter::functions::create_function_chunk;
+use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const FILENAME_KEY: &str = "filename";
 const ARGUMENTS_KEY: &str = "arguments";
@@ -36,7 +36,13 @@ fn bind_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, this_slot
     method.local_count = 1;
     chunks.push(method);
     let method_idx = chunks.len() - 1;
-    emit_bind_method(&mut chunks[current], this_slot, "waitforexit", method_idx, line);
+    emit_bind_method(
+        &mut chunks[current],
+        this_slot,
+        "waitforexit",
+        method_idx,
+        line,
+    );
 }
 
 /// `new ProcessStartInfo()` / `new ProcessStartInfo(cmd)` /
@@ -60,21 +66,29 @@ pub fn emit_process_start_info_new(chunks: &mut [Chunk], current: usize, argc: u
     match argc {
         0 => {
             push_const(chunk, Value::String(Arc::from("")), line);
-            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line); chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line);
+            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::String(Arc::from("")), line);
-            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line); chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
+            chunk.emit_op(Op::DROP, line);
         }
         1 => {
             // Stack: [cmd]
-            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line); chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line);
+            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::String(Arc::from("")), line);
-            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line); chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
+            chunk.emit_op(Op::DROP, line);
         }
         _ => {
             // Stack: [cmd, args, ...] — defensive drop of any extras.
-            for _ in 2..argc { chunk.emit_op(Op::DROP, line); }
-            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line); chunk.emit_op(Op::DROP, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line); chunk.emit_op(Op::DROP, line);
+            for _ in 2..argc {
+                chunk.emit_op(Op::DROP, line);
+            }
+            chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
+            chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, cmd_slot, line);
+            chunk.emit_op(Op::DROP, line);
         }
     }
 
@@ -129,7 +143,8 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let process_slot = reserve_slot(chunk);
 
     // Stash the arg
-    chunk.emit_op_u16(Op::LOCAL_SET, arg_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arg_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Resolve filename: arg.filename if Object; else arg itself.
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
@@ -170,12 +185,12 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     push_const(chunk, Value::I32(0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunks[current].emit_if(line);
-      chunks[current].emit_op(Op::DROP, line);
-      crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
     let chunk = &mut chunks[current];
-      push_const(chunk, Value::String(Arc::from(" ")), line);
-      chunk.emit_op(Op::STR_SPLIT, line);
+    push_const(chunk, Value::String(Arc::from(" ")), line);
+    chunk.emit_op(Op::STR_SPLIT, line);
     chunk.emit_end(line);
     // Stack: [filename_str, argv_array]
 
@@ -186,13 +201,14 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
     // Stash the raw result
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Build a .NET-shaped Process struct.
     // Fields: __type="Process", HasExited=true, ExitCode=raw.status (or 0).
-    let type_key   = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let he_key     = chunk.add_constant(Value::String(Arc::from("hasexited")));
-    let ec_key     = chunk.add_constant(Value::String(Arc::from("exitcode")));
+    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let he_key = chunk.add_constant(Value::String(Arc::from("hasexited")));
+    let ec_key = chunk.add_constant(Value::String(Arc::from("exitcode")));
     let status_key = chunk.add_constant(Value::String(Arc::from("status")));
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);

@@ -11,9 +11,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "CommonDialog",
             parent: Some("Component"),
-            properties: &[
-                "Tag",
-            ],
+            properties: &["Tag"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: None,
@@ -64,10 +62,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "SaveFileDialog",
             parent: Some("FileDialog"),
-            properties: &[
-                "CreatePrompt",
-                "OverwritePrompt",
-            ],
+            properties: &["CreatePrompt", "OverwritePrompt"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_SaveFileDialog"),

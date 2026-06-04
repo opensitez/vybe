@@ -5,17 +5,19 @@
 //! shared .NET dispatch layer can preserve value-type semantics without host
 //! changes.
 
-use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use crate::emitter::classes::emit_bind_method_with_aliases;
 use crate::emitter::functions::create_function_chunk;
+use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const VALUE_KEY: &str = "__value";
 const EMPTY_GUID: &str = "00000000-0000-0000-0000-000000000000";
-const GUID_PATTERN: &str = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
-const FORMAT_EXCEPTION_MSG: &str = "Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).";
+const GUID_PATTERN: &str =
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+const FORMAT_EXCEPTION_MSG: &str =
+    "Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     let idx = chunk.add_constant(val);
@@ -44,7 +46,14 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
     method.local_count = 1;
     chunks.push(method);
     let method_idx = chunks.len() - 1;
-    emit_bind_method_with_aliases(&mut chunks[current], this_slot, "tostring", method_idx, None, line);
+    emit_bind_method_with_aliases(
+        &mut chunks[current],
+        this_slot,
+        "tostring",
+        method_idx,
+        None,
+        line,
+    );
 }
 
 fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
@@ -186,14 +195,14 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit(2, line);
         chunk.emit_if(line);
 
-          chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-          chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-          chunk.emit(1, line);
-          chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-          chunk.emit_op(Op::DROP, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
+        chunk.emit(1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+        chunk.emit_op(Op::DROP, line);
     }
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
     chunks[current].emit_else(line);
-      chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_end(line);
 }

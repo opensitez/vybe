@@ -27,11 +27,11 @@
 //! resolves `call_import` indices through the script chunk's import table.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
+use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
 use crate::emitter::functions::create_function_chunk;
-use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
 
 // ─── Setter chunk ───────────────────────────────────────────────────────────
 
@@ -183,7 +183,9 @@ pub fn build_method_thunk_chunk(
             // fn returns `Value::Null`, which is fine.
             chunk.emit_op(Op::RETURN, line);
         }
-        MethodTarget::DotnetCtor { class: target_class } => {
+        MethodTarget::DotnetCtor {
+            class: target_class,
+        } => {
             // Discard `this` (slot 0) — factory-style methods don't pass
             // it to the target ctor. Push the target class global, then
             // the user args (slots 1..=arity-1), then call.
@@ -216,13 +218,7 @@ pub fn build_method_thunk_chunk(
 /// Slot layout (matches the rest of the builder):
 /// - slot 0 = `this`
 /// - slots 1..=arity-1 = user args
-fn compile_body(
-    chunk: &mut Chunk,
-    ops: &[MethodOp],
-    body_imports: &[u16],
-    arity: u8,
-    line: u32,
-) {
+fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity: u8, line: u32) {
     let mut import_cursor = 0usize;
     let mut returned = false;
 
@@ -232,9 +228,13 @@ fn compile_body(
                 chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
             }
             MethodOp::PushArg(n) => {
-                debug_assert!(n >= 1 && n <= arity - 1,
+                debug_assert!(
+                    n >= 1 && n <= arity - 1,
                     "PushArg({}) out of range for method arity {} (this + {} args)",
-                    n, arity, arity - 1);
+                    n,
+                    arity,
+                    arity - 1
+                );
                 // arg N (1-indexed after `this`) lives in slot N.
                 chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
             }
@@ -244,17 +244,23 @@ fn compile_body(
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
             MethodOp::PushArgField(n, field) => {
-                debug_assert!(n >= 1 && n <= arity - 1,
+                debug_assert!(
+                    n >= 1 && n <= arity - 1,
                     "PushArgField({}, _) out of range for method arity {}",
-                    n, arity);
+                    n,
+                    arity
+                );
                 chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
             MethodOp::PushArgFieldField(n, f1, f2) => {
-                debug_assert!(n >= 1 && n <= arity - 1,
+                debug_assert!(
+                    n >= 1 && n <= arity - 1,
                     "PushArgFieldField({}, _, _) out of range for method arity {}",
-                    n, arity);
+                    n,
+                    arity
+                );
                 chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
                 chunk.emit_op_u16(Op::STRUCT_GET, k1, line);
@@ -274,15 +280,20 @@ fn compile_body(
                 chunk.emit_op_u16(Op::CONST, c, line);
             }
             MethodOp::PushConstBool(b) => {
-                if b { chunk.emit_op(Op::TRUE, line); }
-                else { chunk.emit_op(Op::FALSE, line); }
+                if b {
+                    chunk.emit_op(Op::TRUE, line);
+                } else {
+                    chunk.emit_op(Op::FALSE, line);
+                }
             }
             MethodOp::PushConstNull => {
                 chunk.emit_op(Op::NULL, line);
             }
             MethodOp::CallHost { argc, .. } => {
-                debug_assert!(import_cursor < body_imports.len(),
-                    "compile_body: ran out of pre-resolved import indices");
+                debug_assert!(
+                    import_cursor < body_imports.len(),
+                    "compile_body: ran out of pre-resolved import indices"
+                );
                 let idx = body_imports[import_cursor];
                 import_cursor += 1;
                 chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
@@ -342,9 +353,11 @@ fn compile_body(
                 // and any other "factory of arity 0") work fine. When
                 // we need arity-N factory methods we'll add a `Call`
                 // op or restructure.
-                debug_assert_eq!(argc, 0,
+                debug_assert_eq!(
+                    argc, 0,
                     "MethodOp::NewDotnet currently only supports argc=0; \
-                     for arity-N factories, switch to a Host target or extend the DSL");
+                     for arity-N factories, switch to a Host target or extend the DSL"
+                );
                 chunk.emit_op_u8(Op::CALL, 0, line);
             }
             MethodOp::SetField(field) => {
@@ -379,7 +392,10 @@ fn compile_body(
 pub fn collect_body_call_targets(ops: &[MethodOp]) -> Vec<(&'static str, &'static str)> {
     let mut targets = Vec::new();
     for op in ops {
-        if let MethodOp::CallHost { module, fn_name, .. } = op {
+        if let MethodOp::CallHost {
+            module, fn_name, ..
+        } = op
+        {
             targets.push((*module, *fn_name));
         }
     }

@@ -18,12 +18,9 @@
 //! `__set_text`. The two casings are kept consistent by
 //! [`super::builder::build_setter_chunk`].
 
-use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
+use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
 
-const CONTROL_NOOP: &[MethodOp] = &[
-    MethodOp::PushConstNull,
-    MethodOp::Return,
-];
+const CONTROL_NOOP: &[MethodOp] = &[MethodOp::PushConstNull, MethodOp::Return];
 
 /// `Control.CreateGraphics()` body.
 ///
@@ -100,7 +97,10 @@ const CONTROL_NOOP: &[MethodOp] = &[
 /// This works.
 const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
     // graphics = New Graphics()
-    MethodOp::NewDotnet { class: "Graphics", argc: 0 },
+    MethodOp::NewDotnet {
+        class: "Graphics",
+        argc: 0,
+    },
     // Stamp graphics.__control_name = this.__control_name so subsequent
     // canvas calls route to this control's RecordingCanvas.
     MethodOp::Dup,
@@ -126,20 +126,76 @@ const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
 /// `CenterToScreen`) live on the `Form` class so subclasses inherit them
 /// only when inheriting from `Form`.
 const CONTROL_METHODS: &[DotnetMethod] = &[
-    DotnetMethod { name: "Show",           arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_show") },
-    DotnetMethod { name: "Hide",           arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_hide") },
-    DotnetMethod { name: "Focus",          arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
-    DotnetMethod { name: "Refresh",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_refresh") },
-    DotnetMethod { name: "Invalidate",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_invalidate") },
-    DotnetMethod { name: "Update",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_update") },
-    DotnetMethod { name: "BringToFront",   arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front") },
-    DotnetMethod { name: "SendToBack",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back") },
-    DotnetMethod { name: "Select",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
-    DotnetMethod { name: "Dispose",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_dispose") },
-    DotnetMethod { name: "SuspendLayout",  arity: 1, target: MethodTarget::body(CONTROL_NOOP) },
-    DotnetMethod { name: "ResumeLayout",   arity: 2, target: MethodTarget::body(CONTROL_NOOP) },
-    DotnetMethod { name: "PerformLayout",  arity: 1, target: MethodTarget::body(CONTROL_NOOP) },
-    DotnetMethod { name: "CreateGraphics", arity: 1, target: MethodTarget::body(CONTROL_CREATE_GRAPHICS) },
+    DotnetMethod {
+        name: "Show",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_show"),
+    },
+    DotnetMethod {
+        name: "Hide",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_hide"),
+    },
+    DotnetMethod {
+        name: "Focus",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
+    },
+    DotnetMethod {
+        name: "Refresh",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_refresh"),
+    },
+    DotnetMethod {
+        name: "Invalidate",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_invalidate"),
+    },
+    DotnetMethod {
+        name: "Update",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_update"),
+    },
+    DotnetMethod {
+        name: "BringToFront",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front"),
+    },
+    DotnetMethod {
+        name: "SendToBack",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back"),
+    },
+    DotnetMethod {
+        name: "Select",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
+    },
+    DotnetMethod {
+        name: "Dispose",
+        arity: 1,
+        target: MethodTarget::host("vybe:gui", "__ctrl_dispose"),
+    },
+    DotnetMethod {
+        name: "SuspendLayout",
+        arity: 1,
+        target: MethodTarget::body(CONTROL_NOOP),
+    },
+    DotnetMethod {
+        name: "ResumeLayout",
+        arity: 2,
+        target: MethodTarget::body(CONTROL_NOOP),
+    },
+    DotnetMethod {
+        name: "PerformLayout",
+        arity: 1,
+        target: MethodTarget::body(CONTROL_NOOP),
+    },
+    DotnetMethod {
+        name: "CreateGraphics",
+        arity: 1,
+        target: MethodTarget::body(CONTROL_CREATE_GRAPHICS),
+    },
 ];
 
 pub fn classes() -> &'static [DotnetClass] {
@@ -223,11 +279,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "ContainerControl",
             parent: Some("ScrollableControl"),
-            properties: &[
-                "ActiveControl",
-                "ParentForm",
-                "AutoValidate",
-            ],
+            properties: &["ActiveControl", "ParentForm", "AutoValidate"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: None,

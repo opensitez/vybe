@@ -39,10 +39,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "Button",
             parent: Some("ButtonBase"),
-            properties: &[
-                "DialogResult",
-                "AutoSizeMode",
-            ],
+            properties: &["DialogResult", "AutoSizeMode"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_Button"),
@@ -67,12 +64,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "RadioButton",
             parent: Some("ButtonBase"),
-            properties: &[
-                "Appearance",
-                "AutoCheck",
-                "CheckAlign",
-                "Checked",
-            ],
+            properties: &["Appearance", "AutoCheck", "CheckAlign", "Checked"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_RadioButton"),

@@ -1,136 +1,528 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::constructor_class;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
-        constructor_class("dotnet.System.Data", "DataTable", "vybe:data", "dataTableNew"),
+        constructor_class(
+            "dotnet.System.Data",
+            "DataTable",
+            "vybe:data",
+            "dataTableNew",
+        ),
         constructor_class("dotnet.System.Data", "DataSet", "vybe:data", "dataSetNew"),
         constructor_class("dotnet.System.Drawing", "Point", "vybe:drawing", "pointNew"),
         constructor_class("dotnet.System.Drawing", "Size", "vybe:drawing", "sizeNew"),
         constructor_class("dotnet.System.Drawing", "SizeF", "vybe:drawing", "sizeNew"),
         constructor_class("dotnet.System.Drawing", "Font", "vybe:drawing", "fontNew"),
         constructor_class("dotnet.System.Drawing", "Pen", "vybe:drawing", "penNew"),
-        constructor_class("dotnet.System.Drawing", "SolidBrush", "vybe:drawing", "solidBrushNew"),
-        constructor_class("dotnet.System.Drawing", "Color", "vybe:drawing", "colorFromName"),
-        constructor_class("dotnet.System.Drawing", "Graphics", "vybe:drawing", "graphicsNew"),
+        constructor_class(
+            "dotnet.System.Drawing",
+            "SolidBrush",
+            "vybe:drawing",
+            "solidBrushNew",
+        ),
+        constructor_class(
+            "dotnet.System.Drawing",
+            "Color",
+            "vybe:drawing",
+            "colorFromName",
+        ),
+        constructor_class(
+            "dotnet.System.Drawing",
+            "Graphics",
+            "vybe:drawing",
+            "graphicsNew",
+        ),
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlConnection")
-                .with_constructor(ConstructorDef::new(1).with_backing(HostTarget::new("wasi:sql/types", "connection.new")))
-                .with_method(MethodDef::new("Open", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.open"))))
-                .with_method(MethodDef::new("Close", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.close"))))
-                .with_method(MethodDef::new("CreateCommand", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.create-command"))))
-                .with_method(MethodDef::new("BeginTransaction", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.begin-transaction"))))
-                .with_method(MethodDef::new("GetSchema", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.get-schema")))),
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_backing(HostTarget::new("wasi:sql/types", "connection.new")),
+                )
+                .with_method(MethodDef::new(
+                    "Open",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.open",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.close",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateCommand",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.create-command",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "BeginTransaction",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.begin-transaction",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetSchema",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.get-schema",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlCommand")
-                .with_constructor(ConstructorDef::new(2).with_backing(HostTarget::new("wasi:sql/types", "command.new")))
-                .with_method(MethodDef::new("ExecuteNonQuery", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-non-query"))))
-                .with_method(MethodDef::new("ExecuteScalar", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-scalar"))))
-                .with_method(MethodDef::new("ExecuteReader", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-reader"))))
-                .with_method(MethodDef::new("ExecuteNonQueryAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-non-query"))))
-                .with_method(MethodDef::new("ExecuteScalarAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-scalar"))))
-                .with_method(MethodDef::new("ExecuteReaderAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-reader"))))
-                .with_method(MethodDef::new("CreateParameter", 5, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.create-parameter")))),
+                .with_constructor(
+                    ConstructorDef::new(2)
+                        .with_backing(HostTarget::new("wasi:sql/types", "command.new")),
+                )
+                .with_method(MethodDef::new(
+                    "ExecuteNonQuery",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-non-query",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteScalar",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-scalar",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteReader",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-reader",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteNonQueryAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-non-query",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteScalarAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-scalar",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteReaderAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-reader",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateParameter",
+                    5,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.create-parameter",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlDataAdapter")
-                .with_constructor(ConstructorDef::new(2).with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")))
-                .with_method(MethodDef::new("Fill", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")))),
+                .with_constructor(
+                    ConstructorDef::new(2)
+                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                )
+                .with_method(MethodDef::new(
+                    "Fill",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlDataReader")
-                .with_method(MethodDef::new("Read", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read"))))
-                .with_method(MethodDef::new("GetString", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-string"))))
-                .with_method(MethodDef::new("GetValue", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-value"))))
-                .with_method(MethodDef::new("GetName", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-name"))))
-                .with_method(MethodDef::new("IsDBNull", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.is-dbnull"))))
-                .with_method(MethodDef::new("Close", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close"))))
-                .with_method(MethodDef::new("GetSchemaTable", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-schema-table")))),
+                .with_method(MethodDef::new(
+                    "Read",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetString",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-string",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetValue",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-value",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetName",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-name",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "IsDBNull",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.is-dbnull",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetSchemaTable",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-schema-table",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlTransaction")
-                .with_method(MethodDef::new("Commit", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]transaction.commit"))))
-                .with_method(MethodDef::new("Rollback", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]transaction.rollback")))),
+                .with_method(MethodDef::new(
+                    "Commit",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]transaction.commit",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Rollback",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]transaction.rollback",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbConnection")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.oledb_connection_new"))
-                .with_method(MethodDef::new("Open", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.open"))))
-                .with_method(MethodDef::new("Close", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.close"))))
-                .with_method(MethodDef::new("CreateCommand", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.create-command"))))
-                .with_method(MethodDef::new("BeginTransaction", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.begin-transaction"))))
-                .with_method(MethodDef::new("GetSchema", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.get-schema")))),
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.oledb_connection_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Open",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.open",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.close",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateCommand",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.create-command",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "BeginTransaction",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.begin-transaction",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetSchema",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.get-schema",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbCommand")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.oledb_command_new"))
-                .with_method(MethodDef::new("ExecuteNonQuery", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-non-query"))))
-                .with_method(MethodDef::new("ExecuteScalar", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-scalar"))))
-                .with_method(MethodDef::new("ExecuteReader", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-reader"))))
-                .with_method(MethodDef::new("ExecuteNonQueryAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-non-query"))))
-                .with_method(MethodDef::new("ExecuteScalarAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-scalar"))))
-                .with_method(MethodDef::new("ExecuteReaderAsync", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.execute-reader"))))
-                .with_method(MethodDef::new("CreateParameter", 5, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]command.create-parameter")))),
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.oledb_command_new"),
+                )
+                .with_method(MethodDef::new(
+                    "ExecuteNonQuery",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-non-query",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteScalar",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-scalar",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteReader",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-reader",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteNonQueryAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-non-query",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteScalarAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-scalar",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "ExecuteReaderAsync",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.execute-reader",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateParameter",
+                    5,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]command.create-parameter",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbDataReader")
-                .with_method(MethodDef::new("Read", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read"))))
-                .with_method(MethodDef::new("GetString", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-string"))))
-                .with_method(MethodDef::new("GetValue", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-value"))))
-                .with_method(MethodDef::new("GetName", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-name"))))
-                .with_method(MethodDef::new("IsDBNull", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.is-dbnull"))))
-                .with_method(MethodDef::new("Close", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close"))))
-                .with_method(MethodDef::new("GetSchemaTable", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.get-schema-table")))),
+                .with_method(MethodDef::new(
+                    "Read",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetString",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-string",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetValue",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-value",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "GetName",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-name",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "IsDBNull",
+                    1,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.is-dbnull",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetSchemaTable",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]reader.get-schema-table",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbDataAdapter")
-                .with_constructor(ConstructorDef::new(2).with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")))
-                .with_method(MethodDef::new("Fill", 1, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")))),
+                .with_constructor(
+                    ConstructorDef::new(2)
+                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                )
+                .with_method(MethodDef::new(
+                    "Fill",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbTransaction")
-                .with_method(MethodDef::new("Commit", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]transaction.commit"))))
-                .with_method(MethodDef::new("Rollback", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]transaction.rollback")))),
+                .with_method(MethodDef::new(
+                    "Commit",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]transaction.commit",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Rollback",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]transaction.rollback",
+                    )),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.ADODB",
             ClassType::new("Connection")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.adodb_connection_new"))
-                .with_method(MethodDef::new("Open", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.open"))))
-                .with_method(MethodDef::new("Close", 0, MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]connection.close"))))
-                .with_method(MethodDef::new("Execute", 1, MethodBody::Common("dotnet.adodb_connection_execute".into())))
-                .with_method(MethodDef::new("BeginTrans", 0, MethodBody::Common("dotnet.adodb_conn_begin_trans".into())))
-                .with_method(MethodDef::new("CommitTrans", 0, MethodBody::Common("dotnet.adodb_conn_commit_trans".into())))
-                .with_method(MethodDef::new("RollbackTrans", 0, MethodBody::Common("dotnet.adodb_conn_rollback_trans".into()))),
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.adodb_connection_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Open",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.open",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]connection.close",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Execute",
+                    1,
+                    MethodBody::Common("dotnet.adodb_connection_execute".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "BeginTrans",
+                    0,
+                    MethodBody::Common("dotnet.adodb_conn_begin_trans".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CommitTrans",
+                    0,
+                    MethodBody::Common("dotnet.adodb_conn_commit_trans".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "RollbackTrans",
+                    0,
+                    MethodBody::Common("dotnet.adodb_conn_rollback_trans".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.ADODB",
             ClassType::new("Command")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.adodb_command_new"))
-                .with_method(MethodDef::new("Execute", 0, MethodBody::Common("dotnet.adodb_command_execute".into())))
-                .with_method(MethodDef::new("CreateParameter", 5, MethodBody::Common("dotnet.adodb_command_create_parameter".into()))),
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.adodb_command_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Execute",
+                    0,
+                    MethodBody::Common("dotnet.adodb_command_execute".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateParameter",
+                    5,
+                    MethodBody::Common("dotnet.adodb_command_create_parameter".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.ADODB",
             ClassType::new("Recordset")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.adodb_recordset_new"))
-                .with_method(MethodDef::new("Open", 2, MethodBody::Common("dotnet.adodb_recordset_open".into())))
-                .with_method(MethodDef::new("MoveNext", 0, MethodBody::Common("dotnet.adodb_recordset_move_next".into())))
-                .with_method(MethodDef::new("MoveFirst", 0, MethodBody::Common("dotnet.adodb_recordset_move_first".into())))
-                .with_method(MethodDef::new("Fields", 1, MethodBody::Common("dotnet.adodb_recordset_fields".into())))
-                .with_method(MethodDef::new("Close", 0, MethodBody::Common("dotnet.adodb_recordset_close".into()))),
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.adodb_recordset_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Open",
+                    2,
+                    MethodBody::Common("dotnet.adodb_recordset_open".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MoveNext",
+                    0,
+                    MethodBody::Common("dotnet.adodb_recordset_move_next".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MoveFirst",
+                    0,
+                    MethodBody::Common("dotnet.adodb_recordset_move_first".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Fields",
+                    1,
+                    MethodBody::Common("dotnet.adodb_recordset_fields".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::Common("dotnet.adodb_recordset_close".into()),
+                )),
         ),
     ]
 }

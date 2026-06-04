@@ -32,7 +32,10 @@ pub(crate) fn build_dotnet_component_descriptor(
     descriptor
 }
 
-pub(crate) fn merge_component_descriptor(into: &mut ComponentDescriptor, other: ComponentDescriptor) {
+pub(crate) fn merge_component_descriptor(
+    into: &mut ComponentDescriptor,
+    other: ComponentDescriptor,
+) {
     into.imports.extend(other.imports);
     into.exports.extend(other.exports);
     into.classes.extend(other.classes);

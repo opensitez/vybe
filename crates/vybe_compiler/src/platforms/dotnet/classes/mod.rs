@@ -65,22 +65,22 @@
 //! `DotnetClass` definitions; `dotnet_classes()` collects them all.
 
 pub mod builder;
-pub mod object;
-pub mod control;
-pub mod form;
 pub mod buttons;
-pub mod text;
-pub mod labels;
-pub mod lists;
 pub mod containers;
-pub mod progress;
+pub mod control;
 pub mod dates;
-pub mod media;
-pub mod grids;
-pub mod strips;
-pub mod nonvisual;
 pub mod dialogs;
 pub mod drawing;
+pub mod form;
+pub mod grids;
+pub mod labels;
+pub mod lists;
+pub mod media;
+pub mod nonvisual;
+pub mod object;
+pub mod progress;
+pub mod strips;
+pub mod text;
 
 /// Metadata for a single .NET BCL class wrapper.
 ///
@@ -171,9 +171,7 @@ impl DotnetClass {
     /// the GUI dispatch reads, so introducing an intermediate `this`
     /// object strips those fields and leaves controls stacked at (0,0).
     pub fn is_value_type(&self) -> bool {
-        self.widget_host_fn.is_some()
-            && self.parent.is_none()
-            && self.methods.is_empty()
+        self.widget_host_fn.is_some() && self.parent.is_none() && self.methods.is_empty()
     }
 }
 
@@ -315,10 +313,7 @@ pub enum MethodOp {
     /// popped from the stack (no implicit `this`). The class's
     /// constructor global must already be installed by an earlier
     /// `register_dotnet_classes` iteration. Result is left on the stack.
-    NewDotnet {
-        class: &'static str,
-        argc: u8,
-    },
+    NewDotnet { class: &'static str, argc: u8 },
     /// `struct_set` — pops `[obj, val]`, stores `val` into `obj.<field>`,
     /// leaves the stored value on the stack. (Mirrors the existing
     /// VM `struct_set` semantics.)

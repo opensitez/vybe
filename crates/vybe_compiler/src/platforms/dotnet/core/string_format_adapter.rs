@@ -18,9 +18,9 @@
 //! packs `arg0..` into an array local, then walks the format string emitting
 //! literal chars or `String(args[idx])` substitutions.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     let idx = chunk.add_constant(val);
@@ -142,10 +142,21 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // skip past open-brace handler if not '{'
 
-    emit_handle_open_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, args_slot, open_brace, close_brace, line);
+    emit_handle_open_brace(
+        chunk,
+        fmt_slot,
+        i_slot,
+        len_slot,
+        out_slot,
+        args_slot,
+        open_brace,
+        close_brace,
+        line,
+    );
     // br(1) = continue loop (depth 0 = open_block, 1 = loop, 2 = outer)
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(open_block);
+    chunk.emit_end(line);
+    chunk.patch_block(open_block);
 
     // -- '}' branch (escape `}}` → `}`) --
     let close_block = chunk.emit_block(line);
@@ -156,15 +167,24 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_br_if(0, line);
 
     // peek next char; if also '}' append literal '}' and skip 2, else skip 1.
-    emit_handle_close_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, close_brace, line);
+    emit_handle_close_brace(
+        chunk,
+        fmt_slot,
+        i_slot,
+        len_slot,
+        out_slot,
+        close_brace,
+        line,
+    );
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(close_block);
+    chunk.emit_end(line);
+    chunk.patch_block(close_block);
 
     // -- literal char path: out += fmt.substring(i, i+1) --
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);     // start
-    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);     // end (about to add 1)
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line); // start
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line); // end (about to add 1)
     chunk.emit_op(Op::I32_CONST_1, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op(Op::STR_SUBSTRING, line);
@@ -180,8 +200,10 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_br(0, line);
-    chunk.emit_end(line); chunk.patch_loop(loop_p);
-    chunk.emit_end(line); chunk.patch_block(outer_block);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_p);
+    chunk.emit_end(line);
+    chunk.patch_block(outer_block);
 
     // Push result
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
@@ -238,7 +260,8 @@ fn emit_handle_open_brace(
     // br depth 2 = continue outer loop. Depths from inside escape_block:
     // 0=escape_block, 1=open_block, 2=loop, 3=outer_block.
     chunk.emit_br(2, line);
-    chunk.emit_end(line); chunk.patch_block(escape_block);
+    chunk.emit_end(line);
+    chunk.patch_block(escape_block);
 
     // Not an escape: parse `{N[,W][:fmt]}` placeholder.
     // Find closing '}' starting from i+1.
@@ -273,8 +296,10 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(0, line);
-    chunk.emit_end(line); chunk.patch_loop(scan_loop);
-    chunk.emit_end(line); chunk.patch_block(scan_block);
+    chunk.emit_end(line);
+    chunk.patch_loop(scan_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(scan_block);
 
     // inner = fmt.substring(i+1, end) — the placeholder body, e.g. "0" or "0,5" or "0:N2"
     let inner_slot = chunk.local_count;
@@ -447,7 +472,8 @@ fn emit_handle_close_brace(
     // br depth 2 = continue outer loop. Depths inside escape_block:
     // 0=escape_block, 1=close_block, 2=loop, 3=outer_block.
     chunk.emit_br(2, line);
-    chunk.emit_end(line); chunk.patch_block(escape_block);
+    chunk.emit_end(line);
+    chunk.patch_block(escape_block);
 
     // Stray `}` — just skip it.
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);

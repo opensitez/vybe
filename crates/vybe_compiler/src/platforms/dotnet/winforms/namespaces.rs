@@ -10,11 +10,21 @@ pub fn is_namespace_root(name: &str) -> bool {
 pub fn namespace_roots() -> HashSet<String> {
     let mut roots = HashSet::new();
     for name in &[
-        "application", "window", "messagebox",
-        "borderstyle", "formborderstyle", "contentalignment",
-        "autoscalemode", "autosizemode",
-        "dialogresult", "messageboxbuttons", "messageboxicon",
-        "keys", "dockstyle", "anchorstyles", "formstartposition",
+        "application",
+        "window",
+        "messagebox",
+        "borderstyle",
+        "formborderstyle",
+        "contentalignment",
+        "autoscalemode",
+        "autosizemode",
+        "dialogresult",
+        "messageboxbuttons",
+        "messageboxicon",
+        "keys",
+        "dockstyle",
+        "anchorstyles",
+        "formstartposition",
         "formwindowstate",
     ] {
         roots.insert(name.to_string());

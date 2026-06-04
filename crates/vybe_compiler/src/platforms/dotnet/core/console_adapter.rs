@@ -13,8 +13,8 @@
 //! and `is_constant_pattern` etc. fail their .NET-shaped assertions.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// `Console.WriteLine(v)` / `Console.Write(v)` — emit the bool/null
 /// fixup then dispatch to `wasi:cli.log`. Stack: [v] → [null].
@@ -58,14 +58,15 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-      chunk.emit_op_u16(Op::CONST, true_str, line);
+    chunk.emit_op_u16(Op::CONST, true_str, line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::CONST, false_str, line);
+    chunk.emit_op_u16(Op::CONST, false_str, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line); // exit
-    chunk.emit_end(line); chunk.patch_block(not_bool);
+    chunk.emit_end(line);
+    chunk.patch_block(not_bool);
 
     // Null branch — `Console.WriteLine((string)null)` prints "".
     let not_null = chunk.emit_block(line);
@@ -77,7 +78,8 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
-    chunk.emit_end(line); chunk.patch_block(not_null);
+    chunk.emit_end(line);
+    chunk.patch_block(not_null);
 
     // Default: __vybe_tostring(v) — handles primitive coercion and
     // canonical runtime-shape stringification (Date, Map, Set, …).
@@ -94,7 +96,8 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_end(line); chunk.patch_block(exit_block);
+    chunk.emit_end(line);
+    chunk.patch_block(exit_block);
 
     // Single log call with the staged string. Push null after so the
     // call site (which DROPs print results uniformly) sees a value.

@@ -2,10 +2,22 @@ use super::super::types::{KnownTypeMapping, KnownTypeTarget};
 use vybe_bytecode::component_model::ConstructorTarget;
 
 const NOOP_METHODS: &[&str] = &[
-    "suspendlayout", "resumelayout", "performlayout",
-    "refresh", "invalidate", "update", "begininit", "endinit",
-    "dispose", "select", "focus", "bringtofront", "sendtoback",
-    "createcontrol", "show", "hide",
+    "suspendlayout",
+    "resumelayout",
+    "performlayout",
+    "refresh",
+    "invalidate",
+    "update",
+    "begininit",
+    "endinit",
+    "dispose",
+    "select",
+    "focus",
+    "bringtofront",
+    "sendtoback",
+    "createcontrol",
+    "show",
+    "hide",
 ];
 
 const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
@@ -103,6 +115,10 @@ mod tests {
 
     #[test]
     fn test_known_type_mappings_include_form() {
-        assert!(known_type_mappings().iter().any(|mapping| mapping.name == "form"));
+        assert!(
+            known_type_mappings()
+                .iter()
+                .any(|mapping| mapping.name == "form")
+        );
     }
 }

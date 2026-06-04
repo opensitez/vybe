@@ -14,9 +14,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "Panel",
             parent: Some("ScrollableControl"),
-            properties: &[
-                "BorderStyle",
-            ],
+            properties: &["BorderStyle"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_Panel"),
@@ -25,10 +23,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "GroupBox",
             parent: Some("Control"),
-            properties: &[
-                "FlatStyle",
-                "UseCompatibleTextRendering",
-            ],
+            properties: &["FlatStyle", "UseCompatibleTextRendering"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_GroupBox"),
@@ -100,10 +95,7 @@ pub fn classes() -> &'static [DotnetClass] {
         DotnetClass {
             name: "FlowLayoutPanel",
             parent: Some("Panel"),
-            properties: &[
-                "FlowDirection",
-                "WrapContents",
-            ],
+            properties: &["FlowDirection", "WrapContents"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_FlowLayoutPanel"),

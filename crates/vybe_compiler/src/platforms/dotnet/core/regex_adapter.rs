@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const PATTERN_KEY: &str = "__pattern";
 const VALUE_KEY: &str = "value";
@@ -137,11 +137,11 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
-      push_const(chunk, Value::String(Arc::from("")), line);
+    push_const(chunk, Value::String(Arc::from("")), line);
     chunk.emit_else(line);
-      chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
-      push_const(chunk, Value::F64(0.0), line);
-      chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
     chunk.emit_op(Op::DROP, line);

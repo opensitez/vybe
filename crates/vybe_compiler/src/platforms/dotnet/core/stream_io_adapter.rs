@@ -23,9 +23,9 @@
 //!   * Receiver-shape is a plain `Object` with `__type` stamped to
 //!     `"StreamReader"` or `"StreamWriter"` plus the per-class fields.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const CONTENT_KEY: &str = "__content";
@@ -171,8 +171,10 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(0, line);
-    chunk.emit_end(line); chunk.patch_loop(scan_loop);
-    chunk.emit_end(line); chunk.patch_block(scan_block);
+    chunk.emit_end(line);
+    chunk.patch_loop(scan_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(scan_block);
 
     // result = content.substring(pos, end)
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -190,7 +192,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_end(line); chunk.patch_block(done_block);
+    chunk.emit_end(line);
+    chunk.patch_block(done_block);
 
     // Push result.
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);

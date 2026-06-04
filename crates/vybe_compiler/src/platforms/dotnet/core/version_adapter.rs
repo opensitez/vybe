@@ -1,8 +1,8 @@
 //! .NET `System.Version` adapter — bytecode-only.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const MAJOR_KEY: &str = "Major";
@@ -222,7 +222,14 @@ pub fn emit_version_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         }
     }
 
-    emit_build_version_from_slots(chunk, major_slot, minor_slot, build_slot, revision_slot, line);
+    emit_build_version_from_slots(
+        chunk,
+        major_slot,
+        minor_slot,
+        build_slot,
+        revision_slot,
+        line,
+    );
 }
 
 pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -246,13 +253,34 @@ pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    emit_store_optional_array_part_as_number(chunks, current, parts_slot, 0.0, major_slot, 0.0, line);
-    emit_store_optional_array_part_as_number(chunks, current, parts_slot, 1.0, minor_slot, 0.0, line);
-    emit_store_optional_array_part_as_number(chunks, current, parts_slot, 2.0, build_slot, -1.0, line);
-    emit_store_optional_array_part_as_number(chunks, current, parts_slot, 3.0, revision_slot, -1.0, line);
+    emit_store_optional_array_part_as_number(
+        chunks, current, parts_slot, 0.0, major_slot, 0.0, line,
+    );
+    emit_store_optional_array_part_as_number(
+        chunks, current, parts_slot, 1.0, minor_slot, 0.0, line,
+    );
+    emit_store_optional_array_part_as_number(
+        chunks, current, parts_slot, 2.0, build_slot, -1.0, line,
+    );
+    emit_store_optional_array_part_as_number(
+        chunks,
+        current,
+        parts_slot,
+        3.0,
+        revision_slot,
+        -1.0,
+        line,
+    );
 
     let chunk = &mut chunks[current];
-    emit_build_version_from_slots(chunk, major_slot, minor_slot, build_slot, revision_slot, line);
+    emit_build_version_from_slots(
+        chunk,
+        major_slot,
+        minor_slot,
+        build_slot,
+        revision_slot,
+        line,
+    );
 }
 
 pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -1,5 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn constructor_class(
     interface: &'static str,
@@ -21,8 +23,7 @@ pub(super) fn common_constructor_class(
 ) -> DotnetClassExport {
     DotnetClassExport::new(
         interface,
-        ClassType::new(name)
-            .with_constructor(ConstructorDef::new(0).with_common_backing(emit)),
+        ClassType::new(name).with_constructor(ConstructorDef::new(0).with_common_backing(emit)),
     )
 }
 
@@ -34,7 +35,8 @@ pub(super) fn constructor_and_static_class(
 ) -> DotnetClassExport {
     let mut class = ClassType::new(name);
     if let Some((module, ctor)) = constructor {
-        class = class.with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new(module, ctor)));
+        class = class
+            .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new(module, ctor)));
     }
     for (method, arity, module, func) in methods {
         class = class.with_method(MethodDef::static_method(

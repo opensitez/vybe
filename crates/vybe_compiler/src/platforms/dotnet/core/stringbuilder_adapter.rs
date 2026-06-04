@@ -14,9 +14,9 @@
 //! handles both shapes — the .NET wrapper exposes one `ConstructorDef`
 //! and the emit decides at compile time which body to lay out.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 const BUFFER_KEY: &str = "__buffer";
 
@@ -163,13 +163,16 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     let buf_slot = reserve_slot(chunk);
 
     // Stash text and idx args.
-    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);  chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Read sb.__buffer once and stash.
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);  chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
+    chunk.emit_op(Op::DROP, line);
     // Stack now: [sb]
 
     // before = buf.substring(0, idx)
@@ -256,8 +259,10 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, line: u32) {
     let old_slot = reserve_slot(chunk);
 
     // Stash old, new
-    chunk.emit_op_u16(Op::LOCAL_SET, new_slot, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, old_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, new_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, old_slot, line);
+    chunk.emit_op(Op::DROP, line);
     // Stack: [sb]
 
     // [sb, sb, buf, old, new] — buffer + replace args

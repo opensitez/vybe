@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 pub fn emit_stopwatch_start_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let new_idx = chunks[0].add_import("wasi:clocks", "stopwatchNew");

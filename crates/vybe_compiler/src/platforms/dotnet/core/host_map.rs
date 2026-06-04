@@ -60,7 +60,9 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // `node:fs.{read,write}FileSync`). The mapping returns None so
         // FQN resolution falls through to the explicit class entries in
         // `component_classes.rs`.
-        "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => Some("wasi:filesystem"),
+        "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => {
+            Some("wasi:filesystem")
+        }
         "system.threading.thread" => Some("wasi:clocks"),
         // System.Threading / Tasks: spawn+join compile to Op::THREAD_SPAWN /
         // Op::THREAD_JOIN; sleep uses wasi:clocks; Task/Thread class types
@@ -69,7 +71,9 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // rather than pointing at a dead `vybe:threading` module.
         "system.diagnostics.process" => Some("vybe:types"),
         "system.diagnostics.stopwatch" => Some("wasi:clocks"),
-        "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => Some("wasi:cli"),
+        "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => {
+            Some("wasi:cli")
+        }
         "system.net" => Some("wasi:http"),
         // Networking no longer falls through to a monolithic `.NET`
         // host namespace. `System.Net.Http` maps directly to
@@ -110,8 +114,16 @@ mod tests {
 
     #[test]
     fn test_static_method_mappings_exclude_winforms_application() {
-        assert!(static_method_mappings().iter().any(|mapping| mapping.type_name == "Console"));
-        assert!(!static_method_mappings().iter().any(|mapping| mapping.type_name == "Application"));
+        assert!(
+            static_method_mappings()
+                .iter()
+                .any(|mapping| mapping.type_name == "Console")
+        );
+        assert!(
+            !static_method_mappings()
+                .iter()
+                .any(|mapping| mapping.type_name == "Application")
+        );
     }
 
     #[test]

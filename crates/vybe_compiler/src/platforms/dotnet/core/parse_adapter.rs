@@ -9,8 +9,8 @@
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;

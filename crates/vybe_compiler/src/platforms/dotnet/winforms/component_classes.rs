@@ -1,7 +1,9 @@
 use std::sync::LazyLock;
 
 use super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef};
+use vybe_bytecode::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
+};
 
 use super::classes::{self, DotnetClass, MethodTarget};
 
@@ -17,12 +19,18 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                 .with_method(MethodDef::static_method(
                     "Run",
                     1,
-                    MethodBody::HostCall(HostTarget::new("vybe:gui", crate::emitter::gui::HOST_FN_RUN_APPLICATION)),
+                    MethodBody::HostCall(HostTarget::new(
+                        "vybe:gui",
+                        crate::emitter::gui::HOST_FN_RUN_APPLICATION,
+                    )),
                 ))
                 .with_method(MethodDef::static_method(
                     "Exit",
                     0,
-                    MethodBody::HostCall(HostTarget::new("vybe:gui", crate::emitter::gui::HOST_FN_APP_EXIT)),
+                    MethodBody::HostCall(HostTarget::new(
+                        "vybe:gui",
+                        crate::emitter::gui::HOST_FN_APP_EXIT,
+                    )),
                 )),
         ));
         exports
@@ -63,15 +71,19 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
     };
 
     for prop in class.properties {
-        out = out.with_property(
-            PropertyDef::new(*prop)
-                .with_setter(HostTarget::new("vybe:gui", crate::emitter::gui::HOST_FN_SET_PROPERTY)),
-        );
+        out = out.with_property(PropertyDef::new(*prop).with_setter(HostTarget::new(
+            "vybe:gui",
+            crate::emitter::gui::HOST_FN_SET_PROPERTY,
+        )));
     }
 
     for method in class.methods {
         if let MethodTarget::Host { module, fn_name } = method.target {
-            let param_count = if method.arity > 0 { method.arity - 1 } else { 0 };
+            let param_count = if method.arity > 0 {
+                method.arity - 1
+            } else {
+                0
+            };
             out = out.with_method(MethodDef::new(
                 method.name,
                 param_count,
@@ -82,7 +94,8 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
 
     if let Some(host_fn) = class.widget_host_fn {
         out = out.with_constructor(
-            ConstructorDef::new(class.ctor_arity).with_backing(HostTarget::new(class.widget_host_module, host_fn)),
+            ConstructorDef::new(class.ctor_arity)
+                .with_backing(HostTarget::new(class.widget_host_module, host_fn)),
         );
     }
 

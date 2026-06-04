@@ -22,9 +22,9 @@
 //! Stack on entry: `[value, picture]` (argc=2) or `[value]` (argc=1,
 //! picture defaults to `""` → toString). Stack on exit: `[string]`.
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     let idx = chunk.add_constant(val);

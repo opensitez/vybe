@@ -17,9 +17,9 @@
 //! in source order (per the `MethodBody::Common` calling convention
 //! shared with the rest of `compiler_common::dispatch`).
 
-use vybe_bytecode::{Chunk, Value};
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// Emit `CONST <idx>` for a literal value — `Chunk` doesn't expose
 /// this directly the way the compiler's `emit_const` helper does,
@@ -98,8 +98,10 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let port_slot = host_slot + 1;
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line); chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // 1. Create socket
     let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
@@ -112,7 +114,8 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let sock_slot = chunks[current].local_count;
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // 2. Push args for start-connect: (socket, network=null, "host:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
@@ -123,7 +126,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let connect_idx = chunks[0].add_import("wasi:sockets/tcp", "start-connect");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, connect_idx, line);
     chunks[current].emit(3, line);
-    chunks[current].emit_op(Op::DROP, line);  // discard connect result
+    chunks[current].emit_op(Op::DROP, line); // discard connect result
 
     // 3. Re-push socket as the value of `New TcpClient`. The runtime
     //    `__stamp_type` stamp added by the dotnet ctor flow tags it
@@ -173,7 +176,8 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     let port_slot = chunks[current].local_count;
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
@@ -183,7 +187,8 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     let sock_slot = chunks[current].local_count;
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
@@ -282,7 +287,8 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let port_slot = chunks[current].local_count;
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     let create_idx = chunks[0].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
@@ -292,7 +298,8 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let sock_slot = chunks[current].local_count;
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);

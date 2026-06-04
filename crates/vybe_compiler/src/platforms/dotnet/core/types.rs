@@ -4,9 +4,18 @@ use super::super::types::{KnownTypeMapping, KnownTypeTarget};
 use vybe_bytecode::component_model::ConstructorTarget;
 
 const KNOWN_CONSTANTS: &[&str] = &[
-    "pi", "e", "maxvalue", "minvalue",
-    "positiveinfinity", "negativeinfinity", "nan", "epsilon",
-    "empty", "newline", "true", "false",
+    "pi",
+    "e",
+    "maxvalue",
+    "minvalue",
+    "positiveinfinity",
+    "negativeinfinity",
+    "nan",
+    "epsilon",
+    "empty",
+    "newline",
+    "true",
+    "false",
     "completedtask",
 ];
 
@@ -65,7 +74,15 @@ mod tests {
 
     #[test]
     fn test_known_type_mappings_exclude_winforms_entries() {
-        assert!(known_type_mappings().iter().any(|mapping| mapping.name == "stringbuilder"));
-        assert!(!known_type_mappings().iter().any(|mapping| mapping.name == "form"));
+        assert!(
+            known_type_mappings()
+                .iter()
+                .any(|mapping| mapping.name == "stringbuilder")
+        );
+        assert!(
+            !known_type_mappings()
+                .iter()
+                .any(|mapping| mapping.name == "form")
+        );
     }
 }
