@@ -2,25 +2,41 @@ use super::helpers::{compile_ok, run_prints};
 
 // ── do-while ─────────────────────────────────────────────────
 
-#[test] fn do_while_basic() { compile_ok("void main() { var i = 0; do { i++; } while (i < 5); }"); }
-#[test] fn do_while_result() {
+#[test]
+fn do_while_basic() {
+    compile_ok("void main() { var i = 0; do { i++; } while (i < 5); }");
+}
+#[test]
+fn do_while_result() {
     let out = run_prints("void main() { var i = 0; do { i++; } while (i < 3); print(i); }");
     assert_eq!(out, ["3"]);
 }
 
-#[test] fn do_while_at_least_once() {
+#[test]
+fn do_while_at_least_once() {
     let out = run_prints("void main() { var i = 10; do { print(i); i++; } while (i < 5); }");
     assert_eq!(out, ["10"]);
 }
 
 // ── break ────────────────────────────────────────────────────
 
-#[test] fn break_in_for() { compile_ok("void main() { for (var i = 0; i < 10; i++) { if (i == 5) break; } }"); }
-#[test] fn break_in_while() { compile_ok("void main() { var i = 0; while (true) { if (i >= 5) break; i++; } }"); }
-#[test] fn break_in_for_in() { compile_ok("void main() { for (var x in [1,2,3,4,5]) { if (x == 3) break; } }"); }
+#[test]
+fn break_in_for() {
+    compile_ok("void main() { for (var i = 0; i < 10; i++) { if (i == 5) break; } }");
+}
+#[test]
+fn break_in_while() {
+    compile_ok("void main() { var i = 0; while (true) { if (i >= 5) break; i++; } }");
+}
+#[test]
+fn break_in_for_in() {
+    compile_ok("void main() { for (var x in [1,2,3,4,5]) { if (x == 3) break; } }");
+}
 
-#[test] fn break_result() {
-    let out = run_prints(r#"
+#[test]
+fn break_result() {
+    let out = run_prints(
+        r#"
 void main() {
   var sum = 0;
   for (var i = 1; i <= 10; i++) {
@@ -29,17 +45,30 @@ void main() {
   }
   print(sum);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["15"]);
 }
 
 // ── continue ─────────────────────────────────────────────────
 
-#[test] fn continue_in_for() { compile_ok("void main() { for (var i = 0; i < 10; i++) { if (i % 2 == 0) continue; print(i); } }"); }
-#[test] fn continue_in_while() { compile_ok("void main() { var i = 0; while (i < 10) { i++; if (i % 2 == 0) continue; print(i); } }"); }
+#[test]
+fn continue_in_for() {
+    compile_ok(
+        "void main() { for (var i = 0; i < 10; i++) { if (i % 2 == 0) continue; print(i); } }",
+    );
+}
+#[test]
+fn continue_in_while() {
+    compile_ok(
+        "void main() { var i = 0; while (i < 10) { i++; if (i % 2 == 0) continue; print(i); } }",
+    );
+}
 
-#[test] fn continue_result() {
-    let out = run_prints(r#"
+#[test]
+fn continue_result() {
+    let out = run_prints(
+        r#"
 void main() {
   var odds = <int>[];
   for (var i = 1; i <= 6; i++) {
@@ -48,18 +77,24 @@ void main() {
   }
   print(odds.length);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["3"]);
 }
 
 // ── Nested loops ─────────────────────────────────────────────
 
-#[test] fn nested_for() {
-    compile_ok("void main() { for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { print('$i,$j'); } } }");
+#[test]
+fn nested_for() {
+    compile_ok(
+        "void main() { for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { print('$i,$j'); } } }",
+    );
 }
 
-#[test] fn nested_result() {
-    let out = run_prints(r#"
+#[test]
+fn nested_result() {
+    let out = run_prints(
+        r#"
 void main() {
   var count = 0;
   for (var i = 0; i < 3; i++) {
@@ -69,12 +104,15 @@ void main() {
   }
   print(count);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["9"]);
 }
 
-#[test] fn break_inner_loop() {
-    let out = run_prints(r#"
+#[test]
+fn break_inner_loop() {
+    let out = run_prints(
+        r#"
 void main() {
   var count = 0;
   for (var i = 0; i < 3; i++) {
@@ -85,14 +123,17 @@ void main() {
   }
   print(count);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["3"]);
 }
 
 // ── switch with complex cases ────────────────────────────────
 
-#[test] fn switch_multiple_values() {
-    compile_ok(r#"
+#[test]
+fn switch_multiple_values() {
+    compile_ok(
+        r#"
 void main() {
   var x = 'b';
   switch (x) {
@@ -104,11 +145,14 @@ void main() {
       print('other');
   }
 }
-"#);
+"#,
+    );
 }
 
-#[test] fn switch_string() {
-    let out = run_prints(r#"
+#[test]
+fn switch_string() {
+    let out = run_prints(
+        r#"
 void main() {
   var day = 'Mon';
   switch (day) {
@@ -117,12 +161,15 @@ void main() {
     default: print('Other');
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["Monday"]);
 }
 
-#[test] fn switch_int() {
-    let out = run_prints(r#"
+#[test]
+fn switch_int() {
+    let out = run_prints(
+        r#"
 void main() {
   var n = 2;
   switch (n) {
@@ -132,23 +179,29 @@ void main() {
     default: print('many');
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["two"]);
 }
 
-#[test] fn switch_default_only() {
-    let out = run_prints(r#"
+#[test]
+fn switch_default_only() {
+    let out = run_prints(
+        r#"
 void main() {
   switch (99) {
     default: print('caught');
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["caught"]);
 }
 
-#[test] fn switch_no_match() {
-    let out = run_prints(r#"
+#[test]
+fn switch_no_match() {
+    let out = run_prints(
+        r#"
 void main() {
   var x = 5;
   switch (x) {
@@ -157,14 +210,17 @@ void main() {
     default: print('other');
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["other"]);
 }
 
 // ── if / else-if chains ──────────────────────────────────────
 
-#[test] fn else_if_chain() {
-    let out = run_prints(r#"
+#[test]
+fn else_if_chain() {
+    let out = run_prints(
+        r#"
 void main() {
   var score = 75;
   if (score >= 90) {
@@ -177,12 +233,15 @@ void main() {
     print('F');
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["C"]);
 }
 
-#[test] fn nested_if() {
-    let out = run_prints(r#"
+#[test]
+fn nested_if() {
+    let out = run_prints(
+        r#"
 void main() {
   var x = 5;
   var y = 10;
@@ -192,14 +251,17 @@ void main() {
     }
   }
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["both positive"]);
 }
 
 // ── while loop variants ──────────────────────────────────────
 
-#[test] fn while_accumulate() {
-    let out = run_prints(r#"
+#[test]
+fn while_accumulate() {
+    let out = run_prints(
+        r#"
 void main() {
   var i = 1;
   var product = 1;
@@ -209,12 +271,15 @@ void main() {
   }
   print(product);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["120"]);
 }
 
-#[test] fn while_string_build() {
-    let out = run_prints(r#"
+#[test]
+fn while_string_build() {
+    let out = run_prints(
+        r#"
 void main() {
   var s = '';
   var i = 0;
@@ -224,22 +289,27 @@ void main() {
   }
   print(s);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["aaa"]);
 }
 
 // ── for-in variants ──────────────────────────────────────────
 
-#[test] fn for_in_map_keys() {
+#[test]
+fn for_in_map_keys() {
     compile_ok("void main() { var m = {'a': 1, 'b': 2}; for (var k in m.keys) { print(k); } }");
 }
 
-#[test] fn for_in_set() {
+#[test]
+fn for_in_set() {
     compile_ok("void main() { var s = {1, 2, 3}; for (var x in s) { print(x); } }");
 }
 
-#[test] fn for_in_collect() {
-    let out = run_prints(r#"
+#[test]
+fn for_in_collect() {
+    let out = run_prints(
+        r#"
 void main() {
   var sum = 0;
   for (var x in [1, 2, 3, 4, 5]) {
@@ -247,47 +317,57 @@ void main() {
   }
   print(sum);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["15"]);
 }
 
 // ── Chained conditions ───────────────────────────────────────
 
-#[test] fn and_condition() {
+#[test]
+fn and_condition() {
     let out = run_prints("void main() { var a = 5; var b = 10; print(a > 0 && b > 0); }");
     assert_eq!(out, ["true"]);
 }
 
-#[test] fn or_condition() {
+#[test]
+fn or_condition() {
     let out = run_prints("void main() { var a = -1; var b = 10; print(a > 0 || b > 0); }");
     assert_eq!(out, ["true"]);
 }
 
-#[test] fn not_condition() {
+#[test]
+fn not_condition() {
     let out = run_prints("void main() { var flag = false; if (!flag) { print('yes'); } }");
     assert_eq!(out, ["yes"]);
 }
 
 // ── Ranges and counting ──────────────────────────────────────
 
-#[test] fn count_up() {
-    let out = run_prints(r#"
+#[test]
+fn count_up() {
+    let out = run_prints(
+        r#"
 void main() {
   var result = <int>[];
   for (var i = 1; i <= 5; i++) { result.add(i); }
   print(result.length);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["5"]);
 }
 
-#[test] fn count_down() {
-    let out = run_prints(r#"
+#[test]
+fn count_down() {
+    let out = run_prints(
+        r#"
 void main() {
   var result = <int>[];
   for (var i = 5; i >= 1; i--) { result.add(i); }
   print(result.first);
 }
-"#);
+"#,
+    );
     assert_eq!(out, ["5"]);
 }
