@@ -549,6 +549,18 @@ fn register_construction(vm: &mut VM) {
     vm.register_host_fn("ecma:object", "fromEntries",
         Box::new(|_ctx, args| {
             let mut obj = Object::new();
+            // ECMA-262 §7.3.22: the resulting object's property order is the
+            // entries' insertion order. `Object::properties` is an unordered
+            // HashMap, so record order in the `__keys` tracker that
+            // `ordinary_ordered_keys` reads (the same mechanism object literals
+            // use; `__`-prefixed keys are excluded from enumeration).
+            let mut order: Vec<Value> = Vec::new();
+            let mut put = |obj: &mut Object, order: &mut Vec<Value>, key: String, val: Value| {
+                if !obj.properties.contains_key(&key) {
+                    order.push(Value::String(Arc::from(key.as_str())));
+                }
+                obj.properties.insert(key, val);
+            };
             if let Some(Value::Object(src)) = args.first() {
                 let s = src.lock().unwrap();
                 match s.kind {
@@ -558,7 +570,7 @@ fn register_construction(vm: &mut VM) {
                                 let pl = p.lock().unwrap();
                                 if let ObjectKind::Array(ref kv) = pl.kind {
                                     if kv.len() >= 2 {
-                                        obj.properties.insert(key_string(&kv[0]), kv[1].clone());
+                                        put(&mut obj, &mut order, key_string(&kv[0]), kv[1].clone());
                                     }
                                 }
                             }
@@ -567,11 +579,17 @@ fn register_construction(vm: &mut VM) {
                     // Map iterates as `[key, value]` pairs (§24.1.3.5).
                     ObjectKind::Map(ref m) => {
                         for (k, v) in m.iter() {
-                            obj.properties.insert(key_string(k), v.clone());
+                            put(&mut obj, &mut order, key_string(k), v.clone());
                         }
                     }
                     _ => {}
                 }
+            }
+            if !order.is_empty() {
+                obj.properties.insert(
+                    "__keys".to_string(),
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(order)))),
+                );
             }
             Value::Object(Arc::new(Mutex::new(obj)))
         }));

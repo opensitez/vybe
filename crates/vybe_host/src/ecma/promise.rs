@@ -48,18 +48,22 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:promise", "new", Box::new(move |ctx: &mut HostContext, args: &[Value]| {
         let executor = args.first().cloned().unwrap_or(Value::Undefined);
         let promise = make_promise("pending", Value::Undefined);
+        let id = ctx.next_promise_id();
+        if let Value::Object(ref obj) = promise {
+            obj.lock().unwrap().properties.insert("__id".into(), Value::F64(id as f64));
+        }
         if !matches!(executor, Value::Null | Value::Undefined) {
             // Magic executor: {__executor_resolve: val} or {__executor_reject: reason}
             if let Value::Object(exec_obj) = &executor {
                 let o = exec_obj.lock().unwrap();
                 if let Some(val) = o.properties.get("__executor_resolve").cloned() {
                     drop(o);
-                    mutate_promise_state(&promise, "fulfilled", val);
+                    mutate_promise_state(ctx, &promise, "fulfilled", val);
                     return promise;
                 }
                 if let Some(val) = o.properties.get("__executor_reject").cloned() {
                     drop(o);
-                    mutate_promise_state(&promise, "rejected", val);
+                    mutate_promise_state(ctx, &promise, "rejected", val);
                     return promise;
                 }
             }
@@ -76,11 +80,15 @@ pub fn register(vm: &mut VM) {
         // Thenable assimilation per §27.2.1.3.2 PromiseResolve.
         if let Some(then_fn) = get_then_method(&val) {
             let promise = make_promise("pending", Value::Undefined);
+            let id = ctx.next_promise_id();
+            if let Value::Object(ref obj) = promise {
+                obj.lock().unwrap().properties.insert("__id".into(), Value::F64(id as f64));
+            }
             let resolve_fn = bound_settler(resolve_idx, promise.clone());
             let reject_fn  = bound_settler(reject_idx,  promise.clone());
             match ctx.try_invoke(&then_fn, &[resolve_fn, reject_fn.clone()]) {
                 Ok(_) => {}
-                Err(exc) => { mutate_promise_state(&promise, "rejected", exc); }
+                Err(exc) => { mutate_promise_state(ctx, &promise, "rejected", exc); }
             }
             return promise;
         }
@@ -114,17 +122,41 @@ pub fn register(vm: &mut VM) {
         make_promise("fulfilled", Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))))
     }));
 
-    vm.register_host_fn("ecma:promise", "race", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("ecma:promise", "race", Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+        let race_promise = make_promise("pending", Value::Undefined);
+        let id = ctx.next_promise_id();
+        if let Value::Object(ref obj) = race_promise {
+            obj.lock().unwrap().properties.insert("__id".into(), Value::F64(id as f64));
+        }
+
+        let resolve_fn = bound_settler(resolve_idx, race_promise.clone());
+        let reject_fn  = bound_settler(reject_idx,  race_promise.clone());
+
         if let Some(Value::Object(arr)) = args.first() {
             let o = arr.lock().unwrap();
             if let ObjectKind::Array(ref elems) = o.kind {
-                if let Some(first) = elems.first() {
-                    if is_promise(first) { return first.clone(); }
-                    return make_promise("fulfilled", first.clone());
+                for p in elems {
+                    if is_promise(p) {
+                        let (state, value) = read_promise_state(p);
+                        if state == "fulfilled" {
+                            mutate_promise_state(ctx, &race_promise, "fulfilled", value);
+                            return race_promise;
+                        } else if state == "rejected" {
+                            mutate_promise_state(ctx, &race_promise, "rejected", value);
+                            return race_promise;
+                        } else {
+                            // pending promise: attach reactions
+                            then_impl(ctx, p.clone(), resolve_fn.clone(), reject_fn.clone());
+                        }
+                    } else {
+                        // immediate value
+                        mutate_promise_state(ctx, &race_promise, "fulfilled", p.clone());
+                        return race_promise;
+                    }
                 }
             }
         }
-        make_promise("pending", Value::Undefined)
+        race_promise
     }));
 
     vm.register_host_fn("ecma:promise", "allSettled", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -207,8 +239,12 @@ pub fn register(vm: &mut VM) {
 
     // Promise.withResolvers() — ES2024. Returns { promise, resolve, reject }
     // where resolve/reject are bound thunks that settle the promise.
-    vm.register_host_fn("ecma:promise", "withResolvers", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("ecma:promise", "withResolvers", Box::new(move |ctx: &mut HostContext, _args: &[Value]| {
         let promise = make_promise("pending", Value::Undefined);
+        let id = ctx.next_promise_id();
+        if let Value::Object(ref obj) = promise {
+            obj.lock().unwrap().properties.insert("__id".into(), Value::F64(id as f64));
+        }
         let resolve_fn = bound_settler(resolve_idx, promise.clone());
         let reject_fn  = bound_settler(reject_idx,  promise.clone());
         let mut obj = Object::new();
@@ -302,6 +338,10 @@ fn then_impl(ctx: &mut HostContext, p: Value, on_fulfilled: Value, on_rejected: 
         // Pending: register a reaction to fire when the promise settles.
         _ => {
             let result_promise = make_promise("pending", Value::Undefined);
+            let id = ctx.next_promise_id();
+            if let Value::Object(ref obj) = result_promise {
+                obj.lock().unwrap().properties.insert("__id".into(), Value::F64(id as f64));
+            }
             add_reaction(&p, on_fulfilled, on_rejected, result_promise.clone());
             result_promise
         }
@@ -384,6 +424,12 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
     let promise = match args.first() { Some(p) => p.clone(), None => return };
     let value   = args.get(1).cloned().unwrap_or(Value::Undefined);
 
+    let promise_id = if let Value::Object(ref obj) = promise {
+        obj.lock().unwrap().properties.get("__id").map(|v| v.as_f64() as u64)
+    } else {
+        None
+    };
+
     // Settle the promise (no-op if already settled).
     let reactions: Vec<Value> = {
         let Value::Object(obj) = &promise else { return };
@@ -402,6 +448,10 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
             } else { vec![] }
         } else { vec![] }
     };
+
+    if let Some(id) = promise_id {
+        ctx.resolve_promise(id, value.clone());
+    }
 
     // Fire each reaction synchronously (the executor already ran synchronously).
     for reaction in &reactions {
@@ -432,18 +482,30 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
         };
 
         // Mutate the result promise to reflect the outcome.
-        mutate_promise_state(&result_promise, &settled_state, settled_value);
+        mutate_promise_state(ctx, &result_promise, &settled_state, settled_value);
     }
 }
 
-/// Overwrite a promise's state/value in-place.
-fn mutate_promise_state(promise: &Value, state: &str, value: Value) {
-    if let Value::Object(obj) = promise {
+/// Overwrite a promise's state/value in-place and wake up any suspended fiber.
+fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, value: Value) {
+    let promise_id = if let Value::Object(obj) = promise {
         let mut o = obj.lock().unwrap();
         if o.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("Promise") {
+            let already = o.properties.get("__state")
+                .map(|v| format!("{}", v) != "pending")
+                .unwrap_or(false);
+            if already { return; }
             o.properties.insert("__state".into(), Value::String(Arc::from(state)));
-            o.properties.insert("__value".into(), value);
+            o.properties.insert("__value".into(), value.clone());
+            o.properties.get("__id").map(|v| v.as_f64() as u64)
+        } else {
+            None
         }
+    } else {
+        None
+    };
+    if let Some(id) = promise_id {
+        ctx.resolve_promise(id, value);
     }
 }
 

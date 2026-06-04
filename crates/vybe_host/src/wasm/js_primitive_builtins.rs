@@ -132,15 +132,21 @@ fn register_boolean(vm: &mut VM) {
         Value::I32(if matches!(args.first(), Some(Value::Bool(_))) { 1 } else { 0 })
     }));
 
-    // cast(externref) -> i32 — extract as 0/1; trap if not boolean
-    vm.register_host_fn("wasm:js-boolean", "cast", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        match args.first() {
-            Some(Value::Bool(b)) => Value::I32(if *b { 1 } else { 0 }),
-            _ => {
-                ctx.throw_value(Value::String(Arc::from("TypeError: wasm:js-boolean.cast — not a boolean")));
-                Value::Null
-            }
-        }
+    // cast(externref) -> i32 — extract as 0/1
+    // Spec traps on non-boolean, but Vybe's internal Bool/I32 duality means
+    // CALL_IMPORT cast may receive I32(0/1) from WASM comparison ops.
+    // Follow Op::BOOL_CAST semantics: Bool extracts value, I32 passes through,
+    // other falsy values (null, undefined, 0, "", NaN) return 0, truthy return 1.
+    vm.register_host_fn("wasm:js-boolean", "cast", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let bit = match args.first() {
+            Some(Value::Bool(b)) => if *b { 1 } else { 0 },
+            Some(Value::I32(n)) => if *n != 0 { 1 } else { 0 },
+            Some(Value::F64(n)) => if *n != 0.0 && !n.is_nan() { 1 } else { 0 },
+            Some(Value::String(s)) => if !s.is_empty() { 1 } else { 0 },
+            Some(Value::Null) | Some(Value::Undefined) | None => 0,
+            _ => 1, // objects, symbols, etc. are truthy
+        };
+        Value::I32(bit)
     }));
 }
 
