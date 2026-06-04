@@ -70,6 +70,8 @@ uses_normalize_class = false
 "atoi"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
 "atol"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
 "atof"     = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
+"parseInt" = { emit = "host:ecma:number:parseInt",   min_args = 1, max_args = 2 }
+"parseFloat" = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
 "strtol"   = { emit = "host:ecma:number:parseInt",   min_args = 1, max_args = 3 }
 "strtof"   = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }
 "strtod"   = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }

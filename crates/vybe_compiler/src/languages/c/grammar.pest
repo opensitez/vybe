@@ -352,7 +352,7 @@ string_literal = @{ ("\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
 
 // ── Identifiers & keywords ─────────────────────────────────────────────────
 
-ident_name = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+ident_name = @{ !keyword ~ !type_keyword_word ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 type_keyword_word = _{
     ("void" | "char" | "short" | "int" | "long" | "float" | "double"
