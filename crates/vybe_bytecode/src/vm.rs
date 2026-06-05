@@ -46,6 +46,9 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM globals for host-managed JS receiver binding.
     /// Null when no VM is attached (HostContext::empty()).
     globals_slot: *mut HashMap<String, Value>,
+    /// Raw pointer to VM.stack for closing escaped upvalues in timer callbacks.
+    /// Null when no VM is attached (HostContext::empty()).
+    stack_slot: *const Vec<Value>,
 }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
@@ -164,6 +167,16 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Queue a rejected-promise fiber resumption — the fiber will throw the reason.
+    pub fn reject_promise(&mut self, promise_id: u64, reason: Value) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.reject_promise(promise_id, reason) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -172,6 +185,7 @@ impl<'a> HostContext<'a> {
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
+            stack_slot: std::ptr::null(),
         }
     }
 }
@@ -772,6 +786,28 @@ impl VM {
             event_loop: Some(el),
             last_exception_slot: exc_ptr,
             globals_slot: globals_ptr,
+            stack_slot: &self.stack as *const Vec<Value>,
+        }
+    }
+
+    /// Close open upvalues in a lambda value that escapes the current stack frame.
+    /// When a closure is stored in a macrotask queue (setTimeout), it will run in
+    /// a fresh execution context. Any `Open(slot)` upvalue referencing the current
+    /// stack must be converted to `Closed(value)` so the slot index remains valid.
+    pub(crate) fn close_escaped_upvalues(&self, val: &Value) {
+        use crate::value::ObjectKind;
+        use crate::value::UpvalueLocation;
+        if let Value::Object(obj) = val {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Function(ref func) = o.kind {
+                for uv in &func.upvalues {
+                    let mut u = uv.lock().unwrap();
+                    if let UpvalueLocation::Open(slot) = u.location {
+                        let captured = self.stack.get(slot).cloned().unwrap_or(Value::Null);
+                        u.location = UpvalueLocation::Closed(captured);
+                    }
+                }
+            }
         }
     }
 

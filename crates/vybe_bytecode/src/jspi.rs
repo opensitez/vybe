@@ -110,8 +110,17 @@ impl VM {
         self.label_stack = fiber.label_stack;
         self.active_continuations = fiber.active_continuations;
 
-        // Push the resolved value onto the stack (this is what `await` returns)
-        if let Some(val) = fiber.resume_value {
+        // Rejected promise: throw the reason into the resuming fiber so that
+        // enclosing try/catch blocks fire correctly. This is the JSPI-compliant
+        // behavior — rejected promise resumption is equivalent to a THROW at
+        // the suspension point.
+        if let Some(exc) = fiber.resume_exception {
+            self.raise_exception_value(exc)?;
+            // raise_exception_value either jumps to a handler or returns Err.
+            // If it jumped (returned Ok implicitly via continue), fall through
+            // to execute_with_async so the handler body runs.
+        } else if let Some(val) = fiber.resume_value {
+            // Push the fulfilled value (this is what `await` returns)
             self.push(val)?;
         }
 
@@ -145,6 +154,35 @@ impl VM {
 
     /// Save the current execution state to a Fiber.
     pub fn save_fiber(&mut self) -> Fiber {
+        // Close open upvalues for all lambdas stored in the macrotask queue.
+        // These callbacks escape the current stack frame — they will run in a
+        // fresh execution context after this fiber suspends. Any Open(slot)
+        // upvalue would then index an invalid stack. We resolve them now using
+        // the current (about to be saved) stack.
+        {
+            let stack = &self.stack;
+            use crate::value::{ObjectKind, UpvalueLocation};
+            let el_ref = self.event_loop.borrow();
+            for task in el_ref.macrotasks.iter() {
+                let callback = match task {
+                    crate::event_loop::Task::Timer { callback, .. } => callback,
+                    _ => continue,
+                };
+                if let Value::Object(obj) = callback {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::Function(func) = &o.kind {
+                        for uv in &func.upvalues {
+                            let mut u = uv.lock().unwrap();
+                            if let UpvalueLocation::Open(slot) = u.location {
+                                let val = stack.get(slot).cloned().unwrap_or(Value::Null);
+                                u.location = UpvalueLocation::Closed(val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let frames = self
             .frames
             .drain(..)

@@ -12,6 +12,26 @@ use crate::fiber::Fiber;
 use crate::value::Value;
 use std::collections::VecDeque;
 
+/// Close all open upvalues captured in a lambda Value.
+/// Timer callbacks escape their creating stack frame and run in a fresh
+/// execution context, so any Open(slot) upvalue would index an invalid stack.
+/// This converts them to Closed(value) using the current stack snapshot.
+fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
+    use crate::value::{ObjectKind, UpvalueLocation};
+    if let Value::Object(obj) = val {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Function(ref func) = o.kind {
+            for uv in &func.upvalues {
+                let mut u = uv.lock().unwrap();
+                if let UpvalueLocation::Open(slot) = u.location {
+                    let captured = stack.get(slot).cloned().unwrap_or(Value::Null);
+                    u.location = UpvalueLocation::Closed(captured);
+                }
+            }
+        }
+    }
+}
+
 /// A task in the event loop.
 #[derive(Debug)]
 pub enum Task {
@@ -112,7 +132,7 @@ impl EventLoop {
         self.waiting_fibers.push((promise_id, fiber));
     }
 
-    /// Resolve a promise — wake the fiber waiting for it.
+    /// Resolve a promise — wake the fiber waiting for it (fulfillment).
     pub fn resolve_promise(&mut self, promise_id: u64, value: Value) -> Option<Fiber> {
         if let Some(pos) = self
             .waiting_fibers
@@ -121,6 +141,22 @@ impl EventLoop {
         {
             let (_, mut fiber) = self.waiting_fibers.remove(pos);
             fiber.resume_value = Some(value);
+            Some(fiber)
+        } else {
+            None
+        }
+    }
+
+    /// Reject a promise — wake the fiber waiting for it (rejection).
+    /// The fiber will throw the value instead of returning it.
+    pub fn reject_promise(&mut self, promise_id: u64, reason: Value) -> Option<Fiber> {
+        if let Some(pos) = self
+            .waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == promise_id)
+        {
+            let (_, mut fiber) = self.waiting_fibers.remove(pos);
+            fiber.resume_exception = Some(reason);
             Some(fiber)
         } else {
             None

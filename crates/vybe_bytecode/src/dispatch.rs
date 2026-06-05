@@ -1498,33 +1498,6 @@ impl VM {
                                 continue;
                             }
 
-                            // JSPI: transparent async suspension
-                            if let Value::Object(ref obj) = result {
-                                let o = obj.lock().unwrap();
-                                let is_pending = o
-                                    .properties
-                                    .get("__type")
-                                    .map(|v| format!("{}", v) == "Promise")
-                                    .unwrap_or(false)
-                                    && o.properties
-                                        .get("__state")
-                                        .map(|v| format!("{}", v) == "pending")
-                                        .unwrap_or(false);
-                                if is_pending {
-                                    let promise_id = o
-                                        .properties
-                                        .get("__id")
-                                        .map(|v| v.as_f64() as u64)
-                                        .unwrap_or(0);
-                                    drop(o);
-                                    let fiber = self.save_fiber();
-                                    self.event_loop
-                                        .borrow_mut()
-                                        .suspend_fiber(promise_id, fiber);
-                                    return Err(VMError::new(format!("__jspi__:{}", promise_id)));
-                                }
-                            }
-
                             self.push(result)?;
                         }
                         ImportTarget::ChunkFn { chunk_index, arity } => {
@@ -2695,8 +2668,11 @@ impl VM {
                         });
                     // WASM `if` consumes an i32 condition (spec §4.4.1).
                     // The compiler must lower dynamic truthiness to i32 before this opcode.
+                    // We also accept Bool (from VM-internal ops like REF_IS_*, emit_dyn_eq etc.)
+                    // to be ECMA-runtime compliant without requiring a separate coercion step.
                     let cond = match self.pop() {
                         crate::value::Value::I32(n) => n,
+                        crate::value::Value::Bool(b) => b as i32,
                         other => {
                             return Err(VMError::new(format!(
                                 "type mismatch: if expected i32 condition, got {}",

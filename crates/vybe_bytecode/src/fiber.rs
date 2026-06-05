@@ -27,6 +27,10 @@ pub struct Fiber {
     pub active_continuations: Vec<crate::vm::ActiveContinuation>,
     /// The value to push onto the stack when resuming (the await result).
     pub resume_value: Option<Value>,
+    /// If set, resume by throwing this value instead of pushing resume_value.
+    /// Used when a rejected promise resumes a suspended fiber — the rejection
+    /// reason must be thrown (not returned) so enclosing try/catch blocks fire.
+    pub resume_exception: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +55,7 @@ impl Fiber {
             label_stack: Vec::new(),
             active_continuations: Vec::new(),
             resume_value: None,
+            resume_exception: None,
         }
     }
     pub fn with_labels(mut self, labels: Vec<crate::vm::LabelEntry>) -> Self {
