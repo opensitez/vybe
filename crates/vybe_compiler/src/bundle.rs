@@ -232,8 +232,10 @@ impl Bundle {
         add_shared_gui_namespace(&mut profile);
 
         let module_exports = flatten_module_exports(modules);
+        let value_exports = flatten_module_value_exports(modules);
         let compile_result = crate::compiler::Compiler::with_profile(profile)
             .with_module_exports(module_exports)
+            .with_module_value_exports(value_exports)
             .compile_with_imports(&module)?;
         let mut chunks = compile_result.chunks;
         let host_imports = compile_result.host_imports;
@@ -3594,6 +3596,54 @@ pub fn flatten_module_exports(
         }
         if !resolved.is_empty() {
             out.insert(specifier.clone(), resolved);
+        }
+    }
+    out
+}
+
+/// Extract host constant values from module records.
+///
+/// Returns `module → (export_name → Value)` for all `ExportEntry::Value`
+/// entries, following Indirect chains. Used by the compiler to distinguish
+/// constant-valued imports (e.g. `ecma:math::PI`) from callable function
+/// imports at compile time, so constants can be inlined rather than routed
+/// through `CALL_IMPORT`.
+pub fn flatten_module_value_exports(
+    modules: &HashMap<String, ModuleRecord>,
+) -> HashMap<String, HashMap<String, vybe_bytecode::Value>> {
+    let mut out: HashMap<String, HashMap<String, vybe_bytecode::Value>> = HashMap::new();
+    for (specifier, record) in modules {
+        for (name, entry) in &record.exports {
+            // Follow Indirect chains
+            let terminal = {
+                let mut visited: Vec<(String, String)> = Vec::new();
+                let mut cur_mod = specifier.as_str();
+                let mut cur_name = name.as_str();
+                let mut result = None;
+                loop {
+                    if visited.contains(&(cur_mod.to_string(), cur_name.to_string())) {
+                        break;
+                    }
+                    visited.push((cur_mod.to_string(), cur_name.to_string()));
+                    match modules.get(cur_mod).and_then(|r| r.exports.get(cur_name)) {
+                        Some(ExportEntry::Value(v)) => {
+                            result = Some((cur_mod.to_string(), cur_name.to_string(), v.clone()));
+                            break;
+                        }
+                        Some(ExportEntry::Indirect { from, name: target }) => {
+                            cur_mod = from;
+                            cur_name = target;
+                        }
+                        _ => break,
+                    }
+                }
+                result
+            };
+            if let Some((_final_mod, _final_name, value)) = terminal {
+                out.entry(specifier.clone())
+                    .or_default()
+                    .insert(name.clone(), value);
+            }
         }
     }
     out

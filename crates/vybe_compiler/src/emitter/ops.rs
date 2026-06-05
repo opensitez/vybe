@@ -39,6 +39,16 @@ fn i32_to_bool(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Convert an `i32` (0 or 1) on the stack to a JS `Value::Bool`.
+///
+/// Used wherever a WASM-level comparison opcode (`REF_IS_*`, `emit_dyn_eq`,
+/// etc.) produces `i32` but the ECMA-262 runtime expects `boolean`.
+/// Branch conditions (`if`/`br_if`/`emit_loop_cond`) accept both `i32` and
+/// `Bool`, so this wrapper is only needed in *value* positions.
+pub fn emit_i32_to_bool(chunk: &mut Chunk, line: u32) {
+    i32_to_bool(chunk, line);
+}
+
 fn save(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
     chunk.emit_op(Op::DROP, line);

@@ -2610,6 +2610,62 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
+// ── AST-level normalization helpers ────────────────────────────────────────
+
+/// Normalize `typeof x === "typename"` (and the commuted form) to
+/// `ExprKind::IsType { expr: x, type_name: "typename" }`.
+///
+/// This is the ECMA-262 `typeof` type-guard pattern. Normalizing it at the
+/// AST level means the IsType compiler arm handles it exactly the same way
+/// as Python's `isinstance(x, str)` or VB's `TypeOf x Is String` — all of
+/// which map to the same cross-language `IsType` node and produce
+/// `Value::Bool` from the compiler (not raw `i32`).
+///
+/// Only normalizes the primitive types where the VM's `REF_IS_*` opcodes are
+/// authoritative: "string", "number", "boolean", "undefined".
+/// "function" is left as-is because `REF_IS_FUNC` misses `HostFunction`
+/// objects — those are resolved correctly by `ecma:value.typeof` at runtime.
+/// "object" is also left as-is because `typeof null === "object"` requires
+/// the spec-precise host fn.
+fn normalize_typeof_strict_eq(expr: Expression) -> Expression {
+    if let ExprKind::Binary {
+        op: BinOp::StrictEq,
+        ref left,
+        ref right,
+    } = expr.kind
+    {
+        // typeof x === "typename"
+        if let ExprKind::TypeOf(inner) = &left.kind {
+            if let ExprKind::Lit(crate::ast::Literal::Str(typename)) = &right.kind {
+                if matches!(
+                    typename.as_str(),
+                    "string" | "number" | "boolean" | "undefined" | "bigint" | "symbol"
+                ) {
+                    return Expression::new(ExprKind::IsType {
+                        expr: inner.clone(),
+                        type_name: typename.clone(),
+                    });
+                }
+            }
+        }
+        // "typename" === typeof x  (commuted)
+        if let ExprKind::Lit(crate::ast::Literal::Str(typename)) = &left.kind {
+            if let ExprKind::TypeOf(inner) = &right.kind {
+                if matches!(
+                    typename.as_str(),
+                    "string" | "number" | "boolean" | "undefined" | "bigint" | "symbol"
+                ) {
+                    return Expression::new(ExprKind::IsType {
+                        expr: inner.clone(),
+                        type_name: typename.clone(),
+                    });
+                }
+            }
+        }
+    }
+    expr
+}
+
 // ── Binary chain walker ─────────────────────────────────────────────────────
 
 fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -2681,6 +2737,15 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             left: Box::new(left),
             right: Box::new(right),
         });
+
+        // Normalize: `typeof x === "typename"` / `"typename" === typeof x`
+        // → `IsType { expr: x, type_name: "typename" }`.
+        // This is cross-language normalization: the ECMA typeof-guard pattern
+        // maps to the same `IsType` AST node as Python's `isinstance` or
+        // VB's `TypeOf x Is T`. The IsType compiler arm then produces
+        // `Value::Bool` (not raw i32) for correct ECMA display semantics.
+        left = normalize_typeof_strict_eq(left);
+
         i += 2;
     }
 
@@ -2892,6 +2957,33 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // The stdlib concat function is binary (receiver + 1 arg). For variadic calls,
     // desugar into a chain of binary concat calls. Works for both strings and arrays.
     expr = desugar_variadic_concat(expr);
+
+    // Normalize `Array.isArray(x)` → `IsType { expr: x, type_name: "array" }`.
+    // Keeps ECMA type-guard patterns at the AST level so the IsType compiler
+    // arm can produce `Value::Bool` (not raw `i32` from `opcode:ref_is_array`).
+    if let ExprKind::Call {
+        ref callee,
+        ref args,
+        optional: false,
+    } = expr.kind
+    {
+        if let ExprKind::Member {
+            ref object,
+            ref field,
+            null_safe: false,
+        } = callee.kind
+        {
+            if let ExprKind::Ident(ref name) = object.kind {
+                if name == "Array" && field == "isArray" && args.len() == 1 {
+                    let arg = args[0].value.clone();
+                    return Ok(ExprKind::IsType {
+                        expr: Box::new(arg),
+                        type_name: "array".to_string(),
+                    });
+                }
+            }
+        }
+    }
 
     Ok(expr.kind)
 }

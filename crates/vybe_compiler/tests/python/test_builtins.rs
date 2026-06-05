@@ -59,7 +59,7 @@ fn builtin_all() {
     compile_ok("x = all([True, True, True])\n");
 }
 
-// ── Runtime tests for Python any/all (stdlib:pyany / stdlib:pyall polyfills) ──
+// ── Runtime tests for Python any/all runtime helpers ──
 #[test]
 fn builtin_any_runtime_true() {
     assert_eq!(run_python_one("print(any([False, True, False]))\n"), "true");

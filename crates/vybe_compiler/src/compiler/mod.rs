@@ -339,6 +339,12 @@ pub struct Compiler {
     /// function exports stay callable while value exports preserve
     /// normal JS non-callable semantics.
     host_import_bindings: HashMap<String, (String, String)>,
+    /// ESM named imports that resolve to `ExportEntry::Value` — constant
+    /// values provided by the host at registration time (e.g. `ecma:math::PI`).
+    /// canon(local_name) → Value. These are inlined as constants at the
+    /// use-site rather than routed through `CALL_IMPORT`, which only handles
+    /// callable function exports.
+    host_const_bindings: HashMap<String, vybe_bytecode::Value>,
     /// ESM wildcard namespace aliases: canon(alias) → module specifier.
     /// `import * as cli from "wasi:cli"` records `cli` → `"wasi:cli"`.
     /// Bare-value access and calls both route through the runtime Module
@@ -375,6 +381,11 @@ pub struct Compiler {
     /// name). Empty map when the caller didn't supply one (Bundle's
     /// legacy compile path, tests that don't use adapters).
     module_exports: HashMap<String, HashMap<String, (String, String)>>,
+    /// Constant-value snapshot of host module exports — `ExportEntry::Value`
+    /// entries from `flatten_module_value_exports`. Populated at compile time
+    /// and used during `collect_host_imports` to route value exports into
+    /// `host_const_bindings` instead of `host_import_bindings`.
+    module_value_exports: HashMap<String, HashMap<String, vybe_bytecode::Value>>,
     /// Active finally blocks for the current control-flow path.
     ///
     /// Used to make early returns execute structured `finally` bodies
@@ -804,11 +815,13 @@ impl Compiler {
             generator_functions: HashSet::new(),
             generator_param_counts: HashMap::new(),
             host_import_bindings: HashMap::new(),
+            host_const_bindings: HashMap::new(),
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
             source_type_aliases: HashMap::new(),
             current_module_imports: Vec::new(),
             module_exports: HashMap::new(),
+            module_value_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
             catch_depth: 0,
             active_async_try_depth: 0,
@@ -1316,6 +1329,21 @@ impl Compiler {
         module_exports: HashMap<String, HashMap<String, (String, String)>>,
     ) -> Self {
         self.module_exports = module_exports;
+        self
+    }
+
+    /// Pre-populate the host constant-value snapshot. Called alongside
+    /// `with_module_exports` so that `ExportEntry::Value` exports (e.g.
+    /// `ecma:math::PI`) are inlined as compile-time constants rather than
+    /// routed through `CALL_IMPORT` (which only resolves callable exports).
+    ///
+    /// The map has the same shape as `flatten_module_exports` but only
+    /// includes Value exports: `module → (export_name → Value)`.
+    pub fn with_module_value_exports(
+        mut self,
+        value_exports: HashMap<String, HashMap<String, vybe_bytecode::Value>>,
+    ) -> Self {
+        self.module_value_exports = value_exports;
         self
     }
 
@@ -1845,8 +1873,19 @@ impl Compiler {
                         for n in names {
                             let raw_local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             let key = self.canon(&raw_local);
-                            self.host_import_bindings
-                                .insert(key, (path.clone(), n.name.clone()));
+                            // Check if this export is a constant Value (not callable).
+                            // Value exports are inlined at use-site; Function exports
+                            // route through CALL_IMPORT.
+                            if let Some(val) = self.module_value_exports
+                                .get(&path)
+                                .and_then(|m| m.get(&n.name))
+                                .cloned()
+                            {
+                                self.host_const_bindings.insert(key, val);
+                            } else {
+                                self.host_import_bindings
+                                    .insert(key, (path.clone(), n.name.clone()));
+                            }
                         }
                     } else if let Some(adapter_exports) = self.module_exports.get(&path).cloned() {
                         // Adapter module: each name is a pre-resolved
@@ -3266,6 +3305,7 @@ impl Compiler {
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.chunk().emit_end(line);
+        let line = self.line;
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.chunk().emit_end(line);
@@ -12014,12 +12054,15 @@ impl Compiler {
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
-                // Types match → dyn_eq
+                // Types match → value equality; wrap i32 → Bool for ECMA semantics
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    // emit_dyn_eq produces i32; convert to Bool so both branches
+                    // of this if_value are the same ECMA type (Value::Bool).
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_else(line);
                 // Types differ → false
@@ -12045,15 +12088,18 @@ impl Compiler {
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
-                // Types match → dyn_ne
+                // Types match → value inequality; wrap i32 → Bool for ECMA semantics
                 self.emit_u16(Op::LOCAL_GET, a_slot);
                 self.emit_u16(Op::LOCAL_GET, b_slot);
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                    // emit_dyn_ne produces i32; convert to Bool so both branches
+                    // of this if_value are the same ECMA type (Value::Bool).
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_else(line);
-                // Types differ → true
+                // Types differ → true (they're definitely not equal)
                 self.emit_const(Value::Bool(true));
                 self.chunk().emit_end(line);
             }
@@ -12075,6 +12121,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        if self.is_js_profile() {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
@@ -12112,6 +12161,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                        if self.is_js_profile() {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
@@ -12149,6 +12201,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                        if self.is_js_profile() {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
@@ -12186,6 +12241,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                        if self.is_js_profile() {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");

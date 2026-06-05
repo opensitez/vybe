@@ -41,9 +41,10 @@ pub fn register(vm: &mut VM) {
     }));
     vm.register_host_fn("ecma:math", "ln",   Box::new(|_ctx, a| Value::F64(f(a, 0).ln())));
 
-    // Constants as both register_host_value AND 0-arg host fns (so CALL_IMPORT works).
-    vm.register_host_value("ecma:math", "PI", Value::F64(std::f64::consts::PI));
-    vm.register_host_value("ecma:math", "E", Value::F64(std::f64::consts::E));
+    // Math constants: register as 0-arg host fns first (so CALL_IMPORT via the
+    // function index works at runtime), then register_host_value to overwrite
+    // the module record ExportEntry with Value — so flatten_module_value_exports
+    // sees them as constants and the compiler can inline them directly.
     vm.register_host_fn("ecma:math", "PI",     Box::new(|_ctx, _| Value::F64(std::f64::consts::PI)));
     vm.register_host_fn("ecma:math", "E",      Box::new(|_ctx, _| Value::F64(std::f64::consts::E)));
     vm.register_host_fn("ecma:math", "LN2",    Box::new(|_ctx, _| Value::F64(std::f64::consts::LN_2)));
@@ -52,6 +53,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:math", "LOG10E", Box::new(|_ctx, _| Value::F64(std::f64::consts::LOG10_E)));
     vm.register_host_fn("ecma:math", "SQRT2",  Box::new(|_ctx, _| Value::F64(std::f64::consts::SQRT_2)));
     vm.register_host_fn("ecma:math", "SQRT1_2",Box::new(|_ctx, _| Value::F64(std::f64::consts::FRAC_1_SQRT_2)));
+    // Value registration after fn registration: overwrites ExportEntry::Function
+    // with ExportEntry::Value so the compiler inlines these as constants.
+    vm.register_host_value("ecma:math", "PI", Value::F64(std::f64::consts::PI));
+    vm.register_host_value("ecma:math", "E", Value::F64(std::f64::consts::E));
 
     vm.register_host_fn("ecma:math", "sign",  Box::new(|_ctx, a| {
         let n = f(a, 0);

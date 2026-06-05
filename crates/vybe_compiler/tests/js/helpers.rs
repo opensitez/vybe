@@ -89,8 +89,10 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
     vybex::adapters::register_all(&mut vm).expect("adapter registration failed");
 
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
+    let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
     let result = vybe_compiler::compiler::Compiler::with_profile(profile)
         .with_module_exports(module_exports)
+        .with_module_value_exports(value_exports)
         .compile_with_imports(&module)
         .expect("JS compile failed");
 

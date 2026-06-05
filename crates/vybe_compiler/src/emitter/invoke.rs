@@ -115,7 +115,7 @@ pub fn emit_invoke_method(
         c.emit_op_u16(Op::LOCAL_GET, slot, line);
     }
 
-    let idx = chunks[0].add_import("ecma:value", "invokeMethod");
+    let idx = chunks[current].add_import("ecma:value", "invokeMethod");
     let c = &mut chunks[current];
     c.emit_op_u16(Op::CALL_IMPORT, idx, line);
     c.emit(argc + 2, line);

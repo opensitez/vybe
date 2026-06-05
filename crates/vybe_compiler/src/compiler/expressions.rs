@@ -586,6 +586,19 @@ impl Compiler {
                     return Ok(());
                 }
 
+                // ESM named import of a constant Value (e.g. `ecma:math::PI`).
+                // These are NOT callable — they're inlined as compile-time
+                // constants from `host_const_bindings` populated during
+                // `collect_host_imports`. Function imports stay in
+                // `host_import_bindings` and route through CALL_IMPORT.
+                if !is_local {
+                    let cname = self.canon(name);
+                    if let Some(val) = self.host_const_bindings.get(&cname).cloned() {
+                        self.emit_const(val);
+                        return Ok(());
+                    }
+                }
+
                 self.emit_var_get(name);
             }
 
@@ -3736,78 +3749,80 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, obj_slot);
                 self.emit(Op::DROP);
 
-                if self.profile.name == "vb" {
+                // `IsType` always produces `Value::Bool` — the WASM `REF_IS_*`
+                // opcodes return `i32`, so wrap with `emit_i32_to_bool` here.
+                // This is language-agnostic: JS normalizes `typeof x === "string"`
+                // and `Array.isArray(x)` to `IsType` in the walker; Python uses
+                // `isinstance`; VB uses `TypeOf x Is T`. All share the same
+                // ECMA-compatible Bool output.
+                {
+                    let line = self.line;
                     match canon_type.as_str() {
                         "string" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::REF_IS_STRING);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "number" | "float" | "double" | "int" | "integer" | "long" | "single"
+                        | "decimal" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_NUMBER);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "boolean" | "bool" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::REF_IS_BOOL);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
-                        "integer" | "int" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::REF_IS_NUMBER);
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if_value(line);
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::DUP);
-                            self.emit(Op::F64_TRUNC);
-                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                            self.chunk().emit_else(line);
-                            self.emit(Op::FALSE);
-                            self.chunk().emit_end(line);
-                            return Ok(());
-                        }
-                        "double" | "single" | "decimal" | "float" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::REF_IS_NUMBER);
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if_value(line);
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::DUP);
-                            self.emit(Op::F64_TRUNC);
-                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.emit(Op::I32_EQZ);
-                            self.chunk().emit_if_value(line);
-                            self.emit(Op::TRUE);
-                            self.chunk().emit_else(line);
-                            self.emit(Op::FALSE);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_else(line);
-                            self.emit(Op::FALSE);
-                            self.chunk().emit_end(line);
-                            return Ok(());
-                        }
-                        "object" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::REF_IS_STRING);
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if_value(line);
-                            self.emit(Op::TRUE);
-                            self.chunk().emit_else(line);
+                        "array" | "list" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::REF_IS_ARRAY);
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if_value(line);
-                            self.emit(Op::TRUE);
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit(Op::REF_IS_OBJECT);
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
-                        _ => {}
+                        "function" | "callable" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_FUNC);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "undefined" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_UNDEFINED);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "object" | "dict" | "map" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_OBJECT);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
+                        _ => {} // fall through to the general reflection path
                     }
+                }
+
+                // VB "integer"/"int" check: IsNumber AND value is integral
+                if self.profile.name == "vb"
+                    && matches!(canon_type.as_str(), "integer" | "int")
+                {
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit(Op::REF_IS_NUMBER);
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if_value(line);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit(Op::DUP);
+                    self.emit(Op::F64_TRUNC);
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    self.chunk().emit_else(line);
+                    self.emit(Op::FALSE);
+                    self.chunk().emit_end(line);
+                    return Ok(());
                 }
 
                 let line = self.line;

@@ -450,7 +450,12 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
     };
 
     if let Some(id) = promise_id {
-        ctx.resolve_promise(id, value.clone());
+        // Fulfillment resumes the fiber with the value; rejection throws it.
+        if state == "rejected" {
+            ctx.reject_promise(id, value.clone());
+        } else {
+            ctx.resolve_promise(id, value.clone());
+        }
     }
 
     // Fire each reaction synchronously (the executor already ran synchronously).
@@ -505,7 +510,11 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
         None
     };
     if let Some(id) = promise_id {
-        ctx.resolve_promise(id, value);
+        if state == "rejected" {
+            ctx.reject_promise(id, value);
+        } else {
+            ctx.resolve_promise(id, value);
+        }
     }
 }
 
