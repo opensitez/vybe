@@ -3806,9 +3806,7 @@ impl Compiler {
                 }
 
                 // VB "integer"/"int" check: IsNumber AND value is integral
-                if self.profile.name == "vb"
-                    && matches!(canon_type.as_str(), "integer" | "int")
-                {
+                if self.profile.name == "vb" && matches!(canon_type.as_str(), "integer" | "int") {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit(Op::REF_IS_NUMBER);
                     let line = self.line;

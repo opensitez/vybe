@@ -1876,7 +1876,8 @@ impl Compiler {
                             // Check if this export is a constant Value (not callable).
                             // Value exports are inlined at use-site; Function exports
                             // route through CALL_IMPORT.
-                            if let Some(val) = self.module_value_exports
+                            if let Some(val) = self
+                                .module_value_exports
                                 .get(&path)
                                 .and_then(|m| m.get(&n.name))
                                 .cloned()
@@ -12031,77 +12032,27 @@ impl Compiler {
                 }
             }
             BinOp::StrictEq => {
-                // JS ===: no type coercion. Emit ref_typeof compare first,
-                // then dyn_eq only if types match.
-                // Stack: [a, b] → check types, then value equality.
-                // Simplest: dup both, compare typeof, if different → false,
-                // else dyn_eq. Using temp locals to avoid deep stack ops.
-                let a_slot = self.define_local("__seq_a");
-                let b_slot = self.define_local("__seq_b");
-                self.emit_u16(Op::LOCAL_SET, b_slot);
-                self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, a_slot);
-                self.emit(Op::DROP);
-                // Compare types
-                self.emit_u16(Op::LOCAL_GET, a_slot);
-                self.emit(Op::REF_TYPEOF);
-                self.emit_u16(Op::LOCAL_GET, b_slot);
-                self.emit(Op::REF_TYPEOF);
+                // JS ===: SameValueZero (ECMA-262 §7.2.16).
+                // emit_dyn_eq already implements: null≡null, numbers by f64.eq,
+                // strings by str_eq, bigints by i64.eq, objects by REF_EQ.
+                // Wrap with emit_i32_to_bool so the result is Value::Bool.
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                };
-                let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                // Types match → value equality; wrap i32 → Bool for ECMA semantics
-                self.emit_u16(Op::LOCAL_GET, a_slot);
-                self.emit_u16(Op::LOCAL_GET, b_slot);
-                {
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                    // emit_dyn_eq produces i32; convert to Bool so both branches
-                    // of this if_value are the same ECMA type (Value::Bool).
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                };
-                self.chunk().emit_else(line);
-                // Types differ → false
-                self.emit_const(Value::Bool(false));
-                self.chunk().emit_end(line);
+                    if self.is_js_profile() {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
+                }
             }
             BinOp::StrictNotEq => {
-                // JS !==: same as !(===)
-                let a_slot = self.define_local("__sne_a");
-                let b_slot = self.define_local("__sne_b");
-                self.emit_u16(Op::LOCAL_SET, b_slot);
-                self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_SET, a_slot);
-                self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_GET, a_slot);
-                self.emit(Op::REF_TYPEOF);
-                self.emit_u16(Op::LOCAL_GET, b_slot);
-                self.emit(Op::REF_TYPEOF);
-                {
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                };
-                let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                // Types match → value inequality; wrap i32 → Bool for ECMA semantics
-                self.emit_u16(Op::LOCAL_GET, a_slot);
-                self.emit_u16(Op::LOCAL_GET, b_slot);
+                // JS !==: negate of ===.
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
-                    // emit_dyn_ne produces i32; convert to Bool so both branches
-                    // of this if_value are the same ECMA type (Value::Bool).
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                };
-                self.chunk().emit_else(line);
-                // Types differ → true (they're definitely not equal)
-                self.emit_const(Value::Bool(true));
-                self.chunk().emit_end(line);
+                    if self.is_js_profile() {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
+                }
             }
             BinOp::Lt => {
                 if self.is_js_profile() {
@@ -12472,6 +12423,7 @@ impl Compiler {
                 let idx = self.import("ecma:object", import);
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
+                // hasIn/hasOwn return Value::Bool — already correct for ECMA display.
             }
             BinOp::NotIn => {
                 if self.is_python_profile() {
@@ -12565,7 +12517,10 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, 1);
                     {
                         let line = self.line;
+                        // Convert dynamic result to Bool (consistent with
+                        // instanceOf host fn which also returns Bool).
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                     };
                     let result_slot = self.define_local("__has_inst_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot);

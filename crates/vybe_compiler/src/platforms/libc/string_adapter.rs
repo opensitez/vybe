@@ -64,7 +64,7 @@ pub fn strchr(s: Expression, c_code: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(s, "slice"), vec![idx2])),
-        else_: Box::new(lit_null()),
+        else_: Box::new(lit_int(0)),
     })
 }
 
@@ -81,7 +81,7 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(s, "slice"), vec![idx2])),
-        else_: Box::new(lit_null()),
+        else_: Box::new(lit_int(0)),
     })
 }
 
@@ -97,7 +97,7 @@ pub fn strstr(haystack: Expression, needle: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(call(member(haystack, "slice"), vec![idx2])),
-        else_: Box::new(lit_null()),
+        else_: Box::new(lit_int(0)),
     })
 }
 

@@ -5611,7 +5611,10 @@ impl Compiler {
                         };
                         {
                             let line = self.line;
+                            // emit_dyn_not: has_more → i32 (1 if done, 0 if not done)
+                            // emit_i32_to_bool: convert to Bool for ECMA `done` property
                             crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                         };
                         self.emit_u16(Op::LOCAL_SET, done_slot);
                         self.emit(Op::DROP);

@@ -175,18 +175,31 @@ pub fn is_carray_ptr_kind(ptr: Expression) -> Expression {
 /// `String.fromCharCode`.  Emitted as a call to a runtime helper expression.
 /// The walker should emit this wrapping puts()/log() arguments that are char*.
 pub fn carray_chars_to_string(ptr: Expression) -> Expression {
-    // String.fromCharCode(...ptr.__base.slice(ptr.__idx))
-    // stopping at 0 — the helper below slices from idx, then splits at null.
-    // Simplified (correct for typical usage): use Array.from + filter + fromCharCode.
-    // Emitted as: (function(p){
-    //   var s = '', b = p.__base, i = p.__idx;
-    //   while (b[i]) { s += String.fromCharCode(b[i]); i++; }
-    //   return s;
-    // })(ptr)
-    //
-    // For now, emitted as a call to a named helper that the C stdlib adapter
-    // registers. The actual bytecode is produced by stdio_adapter.
-    call(ident("__libc_cstr_to_js"), vec![ptr])
+    let base = member(ptr.clone(), CARRAY_BASE_KEY);
+    let idx = member(ptr, CARRAY_IDX_KEY);
+    let slice = call(member(base, "slice"), vec![idx]);
+    let string = e(ExprKind::Call {
+        callee: Box::new(e(ExprKind::Member {
+            object: Box::new(ident("String")),
+            field: "fromCharCode".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument {
+            value: slice,
+            name: None,
+            by_ref: false,
+            spread: true,
+        }],
+        optional: false,
+    });
+    e(ExprKind::Index {
+        object: Box::new(call(
+            member(string, "split"),
+            vec![e(ExprKind::Lit(Literal::Str("\0".to_string())))],
+        )),
+        index: Box::new(lit_int(0)),
+        null_safe: false,
+    })
 }
 
 /// True if the raw initializer text indicates a scalar address-of (`&x`).

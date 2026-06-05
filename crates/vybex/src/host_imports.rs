@@ -88,11 +88,6 @@ fn resolve_export_value(
 /// in the VM's property-set path (Phase 5b; today the object is
 /// constructed once and never handed to mutable code paths).
 fn build_namespace(vm: &VM, module: &str) -> Value {
-    // Collect + sort exports so ECMA-262 §10.4.6 [[OwnPropertyKeys]]
-    // returns them in a deterministic, spec-aligned order. Consumers
-    // that care about iteration order (`Object.keys(ns)`,
-    // `Reflect.ownKeys(ns)`, `for ... in ns`) see the same order every
-    // time.
     let mut exports: Vec<(String, Value)> = vm.modules.get(module)
         .into_iter()
         .flat_map(|record| record.exports.keys())

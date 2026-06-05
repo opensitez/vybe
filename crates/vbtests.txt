@@ -1,0 +1,444 @@
+    Blocking waiting for file lock on artifact directory
+warning: variable does not need to be mutable
+   --> crates/vybe_bytecode/src/dispatch.rs:630:33
+    |
+630 | ...                   let mut ob = o.lock().unwrap();
+    |                           ----^^
+    |                           |
+    |                           help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `stack_slot` is never read
+  --> crates/vybe_bytecode/src/vm.rs:51:5
+   |
+34 | pub struct HostContext<'a> {
+   |            ----------- field in this struct
+...
+51 |     stack_slot: *const Vec<Value>,
+   |     ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `close_escaped_upvalues` is never used
+   --> crates/vybe_bytecode/src/vm.rs:797:19
+    |
+394 | impl VM {
+    | ------- method in this implementation
+...
+797 |     pub(crate) fn close_escaped_upvalues(&self, val: &Value) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `try_dunder_binary` is never used
+   --> crates/vybe_bytecode/src/calls.rs:135:19
+    |
+ 89 | impl VM {
+    | ------- method in this implementation
+...
+135 |     pub(crate) fn try_dunder_binary(
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: function `close_upvalues_in_value` is never used
+  --> crates/vybe_bytecode/src/event_loop.rs:19:4
+   |
+19 | fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `emit_dyn_binary_numeric` is never used
+    --> crates/vybe_bytecode/src/wasm/code.rs:1305:4
+     |
+1305 | fn emit_dyn_binary_numeric(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `emit_dyn_binary_cmp` is never used
+    --> crates/vybe_bytecode/src/wasm/code.rs:1325:4
+     |
+1325 | fn emit_dyn_binary_cmp(
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: `vybe_bytecode` (lib) generated 7 warnings (run `cargo fix --lib -p vybe_bytecode` to apply 1 suggestion)
+warning: unused import: `ObjectKind`
+ --> crates/vybe_host/src/ecma/proxy.rs:3:36
+  |
+3 | use vybe_bytecode::value::{Object, ObjectKind};
+  |                                    ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ObjectKind`
+ --> crates/vybe_host/src/node/http/client.rs:7:36
+  |
+7 | use vybe_bytecode::value::{Object, ObjectKind, Value};
+  |                                    ^^^^^^^^^^
+
+warning: unused import: `std::fmt::Write as FmtWrite`
+   --> crates/vybe_host/src/node/string_decoder.rs:119:17
+    |
+119 |             use std::fmt::Write as FmtWrite;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary parentheses around index expression
+   --> crates/vybe_host/src/node/string_decoder.rs:126:32
+    |
+126 |                 out.push(TABLE[(b0 >> 2)] as char);
+    |                                ^       ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+126 -                 out.push(TABLE[(b0 >> 2)] as char);
+126 +                 out.push(TABLE[b0 >> 2] as char);
+    |
+
+warning: unused import: `Object`
+  --> crates/vybe_host/src/wasm/js_string_builtins.rs:14:28
+   |
+14 | use vybe_bytecode::value::{Object, ObjectKind};
+   |                            ^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/vybe_host/src/ecma/object.rs:558:17
+    |
+558 | ...   let mut put = |obj: &mut Object, order: &mut Vec<Value>, key: Str...
+    |           ----^^^
+    |           |
+    |           help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ctx`
+   --> crates/vybe_host/src/ecma/regexp.rs:655:28
+    |
+655 | fn regexp_string_match_all(ctx: &mut HostContext, args: &[Value]) -> Va...
+    |                            ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `args`
+   --> crates/vybe_host/src/ecma/weakref.rs:273:71
+    |
+273 | ...<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+    |                             ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
+
+warning: variable does not need to be mutable
+   --> crates/vybe_host/src/node/child_process.rs:299:13
+    |
+299 |         let mut cp = make_child_process(std::process::id() + 1);
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+
+warning: function `string_value` is never used
+ --> crates/vybe_host/src/modules/data.rs:7:4
+  |
+7 | fn string_value(value: &str) -> Value {
+  |    ^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `mark_array_hole` is never used
+   --> crates/vybe_host/src/ecma/array.rs:187:4
+    |
+187 | fn mark_array_hole(object: &mut Object, index: usize) {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `regex_like_arg` is never used
+   --> crates/vybe_host/src/ecma/regexp.rs:783:4
+    |
+783 | fn regex_like_arg(arg: Option<&Value>) -> bool {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `sha1_hex` is never used
+  --> crates/vybe_host/src/node/crypto.rs:61:4
+   |
+61 | fn sha1_hex(data: &[u8]) -> String {
+   |    ^^^^^^^^
+
+warning: function `sha512_hex` is never used
+  --> crates/vybe_host/src/node/crypto.rs:67:4
+   |
+67 | fn sha512_hex(data: &[u8]) -> String {
+   |    ^^^^^^^^^^
+
+warning: function `digest_hex` is never used
+  --> crates/vybe_host/src/node/crypto.rs:73:4
+   |
+73 | fn digest_hex(algo: &str, data: &[u8]) -> String {
+   |    ^^^^^^^^^^
+
+warning: function `make_crypto_fn_ref` is never used
+   --> crates/vybe_host/src/node/crypto.rs:191:4
+    |
+191 | fn make_crypto_fn_ref(vm: &VM, name: &str) -> Value {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `get_obj_bytes` is never used
+   --> crates/vybe_host/src/node/crypto.rs:202:4
+    |
+202 | fn get_obj_bytes(args: &[Value], key: &str) -> Vec<u8> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `bool_prop` is never used
+   --> crates/vybe_host/src/wasi/sql.rs:126:4
+    |
+126 | fn bool_prop(obj: &Arc<Mutex<Object>>, key: &str) -> bool {
+    |    ^^^^^^^^^
+
+warning: method `url` is never used
+  --> crates/vybe_host/src/wasi/sql/driver.rs:12:8
+   |
+ 8 | pub(super) trait SqlDriver: Send + Sync {
+   |                  --------- method in this trait
+...
+12 |     fn url(&self) -> &str;
+   |        ^^^
+
+warning: field `url` is never read
+ --> crates/vybe_host/src/wasi/sql/sqlite.rs:8:5
+  |
+6 | pub(super) struct SqliteDriver {
+  |                   ------------ field in this struct
+7 |     conn: Mutex<rusqlite::Connection>,
+8 |     url: String,
+  |     ^^^
+
+warning: field `url` is never read
+ --> crates/vybe_host/src/wasi/sql/postgres.rs:8:5
+  |
+6 | pub(super) struct PostgresDriver {
+  |                   -------------- field in this struct
+7 |     client: Mutex<postgres::Client>,
+8 |     url: String,
+  |     ^^^
+
+warning: field `url` is never read
+ --> crates/vybe_host/src/wasi/sql/mysql.rs:8:5
+  |
+6 | pub(super) struct MySqlDriver {
+  |                   ----------- field in this struct
+7 |     conn: Mutex<mysql::Conn>,
+8 |     url: String,
+  |     ^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> crates/vybe_host/src/node/events.rs:45:23
+   |
+45 | fn get_emitter_mut(v: &Value) -> Option<std::sync::MutexGuard<Object>> {
+   |                       ^^^^^^            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |                       |
+   |                       the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+45 | fn get_emitter_mut(v: &Value) -> Option<std::sync::MutexGuard<'_, Object>> {
+   |                                                               +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates/vybe_host/src/node/url.rs:187:21
+    |
+187 | fn get_sp_object(v: &Value) -> Option<std::sync::MutexGuard<Object>> {
+    |                     ^^^^^^            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+187 | fn get_sp_object(v: &Value) -> Option<std::sync::MutexGuard<'_, Object>> {
+    |                                                             +++
+
+warning: `vybe_host` (lib) generated 24 warnings (run `cargo fix --lib -p vybe_host` to apply 11 suggestions)
+warning: unused import: `ArrayElement`
+     --> crates/vybe_compiler/src/compiler/mod.rs:16752:38
+      |
+16752 |                     use crate::ast::{ArrayElement, ExprKind, Literal};
+      |                                      ^^^^^^^^^^^^
+      |
+      = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `ArrayElement`, `BindingPattern`, `Statement`, `StmtKind`, `VarDeclKind`, and `VarDeclarator`
+  --> crates/vybe_compiler/src/platforms/libc/pointers.rs:28:15
+   |
+28 |     Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Expression, Literal, ObjectProperty,
+   |               ^^^^^^^^^^^^         ^^^^^^^^^^^^^^
+29 |     Statement, StmtKind, VarDeclKind, VarDeclarator,
+   |     ^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused variable: `entry`
+    --> crates/vybe_compiler/src/bundle.rs:3616:20
+     |
+3616 |         for (name, entry) in &record.exports {
+     |                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_entry`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `line`
+    --> crates/vybe_compiler/src/compiler/calls.rs:8019:21
+     |
+8019 |                 let line = self.line;
+     |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_line`
+
+warning: unused variable: `backing_type`
+    --> crates/vybe_compiler/src/compiler/mod.rs:8218:17
+     |
+8218 |                 backing_type,
+     |                 ^^^^^^^^^^^^ help: try ignoring the field: `backing_type: _`
+
+warning: unused variable: `test_num`
+   --> crates/vybe_compiler/src/emitter/ops.rs:394:9
+    |
+394 |     let test_num = chunk.add_import("wasm:js-number", "test");
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_test_num`
+
+warning: unused variable: `test_num`
+   --> crates/vybe_compiler/src/emitter/ops.rs:747:9
+    |
+747 |     let test_num = imports.add_import("wasm:js-number", "test");
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_test_num`
+
+warning: variable does not need to be mutable
+    --> crates/vybe_compiler/src/languages/c/walker.rs:1497:13
+     |
+1497 |         let mut flush = |conds: &mut Vec<CaseCondition>,
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/vybe_compiler/src/languages/wast/walker.rs:795:5
+    |
+795 |     mut args: Vec<Expression>,
+    |     ----^^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: function `push_str` is never used
+  --> crates/vybe_compiler/src/emitter/collections.rs:74:4
+   |
+74 | fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
+   |    ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `push_f64` is never used
+  --> crates/vybe_compiler/src/emitter/collections.rs:79:4
+   |
+79 | fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
+   |    ^^^^^^^^
+
+warning: function `build_polyfill` is never used
+   --> crates/vybe_compiler/src/emitter/runtime_helpers.rs:142:15
+    |
+142 | pub(crate) fn build_polyfill(
+    |               ^^^^^^^^^^^^^^
+
+warning: function `emit_object_from_keys` is never used
+   --> crates/vybe_compiler/src/languages/php/emitter/array_adapter.rs:351:4
+    |
+351 | fn emit_object_from_keys(
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `lit_null` is never used
+  --> crates/vybe_compiler/src/platforms/libc/string_adapter.rs:16:4
+   |
+16 | fn lit_null() -> Expression {
+   |    ^^^^^^^^
+
+warning: calls to `std::mem::drop` with a reference instead of an owned value does nothing
+   --> crates/vybe_compiler/src/platforms/dotnet/core/adodb_adapter.rs:212:5
+    |
+212 |     drop(chunk);
+    |     ^^^^^-----^
+    |          |
+    |          argument has type `&mut Chunk`
+    |
+    = note: `#[warn(dropping_references)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+    |
+212 -     drop(chunk);
+212 +     let _ = chunk;
+    |
+
+warning: calls to `std::mem::drop` with a reference instead of an owned value does nothing
+   --> crates/vybe_compiler/src/platforms/dotnet/core/adodb_adapter.rs:235:5
+    |
+235 |     drop(chunk);
+    |     ^^^^^-----^
+    |          |
+    |          argument has type `&mut Chunk`
+    |
+help: use `let _ = ...` to ignore the expression or result
+    |
+235 -     drop(chunk);
+235 +     let _ = chunk;
+    |
+
+warning: `vybe_compiler` (lib) generated 16 warnings (run `cargo fix --lib -p vybe_compiler` to apply 9 suggestions)
+   Compiling vybe_compiler v0.6.0 (/Users/youness/www/html/vybe/crates/vybe_compiler)
+warning: unused imports: `Arc` and `Mutex`
+  --> crates/vybe_compiler/tests/vb/vb_forms_advanced_test.rs:19:17
+   |
+19 | use std::sync::{Arc, Mutex};
+   |                 ^^^  ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `vybe_host::gui_state::GuiState`
+  --> crates/vybe_compiler/tests/vb/vb_forms_advanced_test.rs:20:5
+   |
+20 | use vybe_host::gui_state::GuiState;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Arc` and `Mutex`
+  --> crates/vybe_compiler/tests/vb/vb_forms_test.rs:14:17
+   |
+14 | use std::sync::{Arc, Mutex};
+   |                 ^^^  ^^^^^
+
+warning: unused import: `vybe_host::gui_state::GuiState`
+  --> crates/vybe_compiler/tests/vb/vb_forms_test.rs:15:5
+   |
+15 | use vybe_host::gui_state::GuiState;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Mutex`
+  --> crates/vybe_compiler/tests/vb/vb_interop_test.rs:14:22
+   |
+14 | use std::sync::{Arc, Mutex};
+   |                      ^^^^^
+
+warning: unused import: `VM`
+  --> crates/vybe_compiler/tests/vb/vb_interop_test.rs:15:21
+   |
+15 | use vybe_bytecode::{VM, Value};
+   |                     ^^
+
+warning: unused import: `vybe_host::gui_state::GuiState`
+  --> crates/vybe_compiler/tests/vb/vb_interop_test.rs:16:5
+   |
+16 | use vybe_host::gui_state::GuiState;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing fields `buffered_iterator_methods`, `string_aware_relational` and `supports_autoload` in initializer of `vybe_compiler::profile::LanguageProfile`
+   --> crates/vybe_compiler/tests/vb/vb_cross_language_test.rs:188:5
+    |
+188 |     LanguageProfile {
+    |     ^^^^^^^^^^^^^^^ missing `buffered_iterator_methods`, `string_aware_relational` and `supports_autoload`
+
+warning: variable does not need to be mutable
+   --> crates/vybe_compiler/tests/vb/vb_canvas_test.rs:261:9
+    |
+261 |     let mut g = gui.lock().unwrap();
+    |         ----^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0063`.
+warning: `vybe_compiler` (test "vb") generated 8 warnings
+error: could not compile `vybe_compiler` (test "vb") due to 1 previous error; 8 warnings emitted
