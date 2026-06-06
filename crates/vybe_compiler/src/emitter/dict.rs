@@ -186,6 +186,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 
     chunks[current].emit_else(line);
 
@@ -206,6 +207,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

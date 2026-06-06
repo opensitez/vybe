@@ -1072,6 +1072,9 @@ impl Compiler {
                             UnaryOp::Not => {
                                 let line = self.line;
                                 crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                if self.is_js_profile() {
+                                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                                }
                             }
                             UnaryOp::BitNot => {
                                 let l = self.line;
@@ -1546,8 +1549,8 @@ impl Compiler {
                             self.emit_host_call(constructor_of, 1);
                         } else if field == "length" {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            let line = self.line;
-                            common::collections::emit_array_length(self.chunk(), line);
+                            let prop = self.str_const("length");
+                            self.emit_u16(Op::STRUCT_GET, prop);
                         } else {
                             let field_name =
                                 self.js_member_storage_name_for_receiver(object, field);
@@ -1618,15 +1621,10 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             return Ok(());
                         }
-                        // `.length` on any value — strings, arrays, typed arrays.
-                        // Op::ARRAY_LENGTH handles both ObjectKind::Array and Value::String
-                        // directly (WASM GC array.len opcode in the wasm tier; inline
-                        // len check in the interpreter). No host call, no branch — pure
-                        // WASM opcode, same as the for-in loop emitters use.
                         if field == "length" {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            let line = self.line;
-                            common::collections::emit_array_length(self.chunk(), line);
+                            let prop = self.str_const("length");
+                            self.emit_u16(Op::STRUCT_GET, prop);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.emit(Op::DROP);
                             self.restore_js_this(saved_this);
@@ -2696,6 +2694,41 @@ impl Compiler {
                 // the dispatcher.
                 if self.is_js_profile() {
                     if let ExprKind::Ident(name) = &class.kind {
+                        if name == "Set" && args.len() <= 1 {
+                            if let Some(arg) = args.first() {
+                                self.compile_expr(&arg.value)?;
+                                let v_slot = self.define_local("__js_set_iterable");
+                                self.emit_u16(Op::LOCAL_SET, v_slot);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                let is_gen_idx = self.import("ecma:value", "isGenerator");
+                                self.emit_host_call(is_gen_idx, 1);
+                                let line = self.line;
+                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                                self.chunk().emit_if_value(line);
+                                let drain_key = self.str_const("__vybe_drain_generator");
+                                self.emit_u16(Op::GLOBAL_GET, drain_key);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.emit_u8(Op::CALL_REF, 1);
+                                self.chunk().emit_else(line);
+                                let iter_drain_key = self.str_const("__vybe_iter_drain");
+                                self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.emit_u8(Op::CALL_REF, 1);
+                                self.chunk().emit_end(line);
+                            } else {
+                                common::collections::emit_array_new(
+                                    &mut self.chunks,
+                                    self.current,
+                                    0,
+                                    self.line,
+                                );
+                            }
+                            let idx = self.import("ecma:set", "fromIterable");
+                            self.emit_host_call(idx, 1);
+                            return Ok(());
+                        }
+
                         if name == "Function" {
                             for arg in args {
                                 self.compile_expr(&arg.value)?;
@@ -4552,7 +4585,14 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
-                common::collections::emit_iter_values(&mut self.chunks, self.current, self.line);
+                if self.is_js_profile() {
+                    let iter_drain_key = self.str_const("__vybe_iter_drain");
+                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
+                    self.emit_u16(Op::LOCAL_GET, gen_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                } else {
+                    common::collections::emit_iter_values(&mut self.chunks, self.current, self.line);
+                }
                 let iter_slot = self.define_local("__yield_star_iter");
                 let idx_slot = self.define_local("__yield_star_idx");
                 let len_slot = self.define_local("__yield_star_len");

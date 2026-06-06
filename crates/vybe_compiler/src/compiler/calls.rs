@@ -5478,6 +5478,24 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, js_handled_slot);
                 self.emit(Op::DROP);
 
+                // JS generator objects are both iterators and iterables:
+                // `g[Symbol.iterator]()` must return `g` itself.
+                if !*null_safe && method_name == "iterator" && arg_exprs.is_empty() {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                    self.emit_host_call(is_gen_idx, 1);
+                    let gen_if_line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    self.chunk().emit_if(gen_if_line);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                    self.emit(Op::DROP);
+                    self.emit_const(Value::I32(1));
+                    self.emit_u16(Op::LOCAL_SET, js_handled_slot);
+                    self.emit(Op::DROP);
+                    self.chunk().emit_end(gen_if_line);
+                }
+
                 // Generator `.return(v)`: drive the shared generator
                 // return-control packet through RESUME so suspended
                 // `finally` blocks execute before the completion record

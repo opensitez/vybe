@@ -1587,12 +1587,18 @@ impl Compiler {
                         .collect()
                 })
                 .unwrap_or_default();
-            for (i, p) in user_params.iter().enumerate() {
+            for p in &user_params {
                 self.define_local(p);
+            }
+            for (i, p) in user_params.iter().enumerate() {
                 if let Some(Some(default)) = ctor_param_defaults.get(i) {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
-                    self.emit(Op::REF_IS_NULL);
+                    if self.is_js_profile() {
+                        self.emit(Op::REF_IS_UNDEFINED);
+                    } else {
+                        self.emit(Op::REF_IS_NULL);
+                    }
                     let branch_line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                     self.chunks[self.current].emit_if(branch_line);

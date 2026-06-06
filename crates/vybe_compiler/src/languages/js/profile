@@ -138,6 +138,7 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 
 "Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
 "Array.from"        = { emit = "host:ecma:array:from",            min_args = 1, max_args = 3 }
+"Array.fromAsync"   = { emit = "host:ecma:array:fromAsync",       min_args = 1, max_args = 2 }
 "Array.of"          = { emit = "host:ecma:array:of",              min_args = 0, max_args = 255 }
 
 # ── ArrayBuffer static methods ───────────────────────────────────────────────

@@ -1283,6 +1283,30 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(arr_step);
 
+    // Primitive strings are iterable by Unicode scalar value for JS
+    // for-of/spread/yield*. They do not have object properties for
+    // getMethodForCall to find here, so materialize through the shared
+    // ECMA for-of adapter before the object-method protocol path.
+    let string_step = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // not string → continue past this block
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::emitter::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:object",
+        "iterForOf",
+        1,
+        0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(string_step);
+
     // method = getMethodForCall(v, "iterator")
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::CONST, iter_key, 0);
@@ -1362,6 +1386,30 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(it_ok);
+
+    // If iterator() returned a generator continuation, drain it with the
+    // shared WASM stack-switching generator path. Generator continuations do
+    // not expose a normal object-shaped own `next` method, so the generic
+    // protocol loop below would otherwise collect nothing.
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    crate::emitter::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:value",
+        "isGenerator",
+        1,
+        0,
+    );
+    crate::emitter::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op_u16(Op::LOCAL_SET, v, 0);
+    c.emit_op(Op::DROP, 0);
+    crate::emitter::generators::emit_drain_into_array_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
 
     // method = getMethodForCall(it, "next")
     c.emit_op_u16(Op::LOCAL_GET, it, 0);

@@ -260,6 +260,103 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     // Result is i32 (0 or 1) — WASM-compliant for IF conditions
 }
 
+fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
+    load(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    load(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+}
+
+pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
+    let slots = alloc_locals(chunk, 2);
+    let b_slot = slots;
+    let a_slot = slots + 1;
+
+    let test_num = chunk.add_import("wasm:js-number", "test");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let str_eq = chunk.add_import("wasm:js-string", "equals");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+
+    save(chunk, b_slot, line);
+    save(chunk, a_slot, line);
+
+    load(chunk, a_slot, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    chunk.emit_if(line);
+    load(chunk, b_slot, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    chunk.emit_else(line);
+
+    emit_slot_is_null_only(chunk, a_slot, line);
+    chunk.emit_if(line);
+    emit_slot_is_null_only(chunk, b_slot, line);
+    chunk.emit_else(line);
+
+    load(chunk, a_slot, line);
+    call1(chunk, test_num, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_num, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_slot, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_else(line);
+
+    load(chunk, a_slot, line);
+    call1(chunk, test_str, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_str, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    load(chunk, b_slot, line);
+    call2(chunk, str_eq, line);
+    chunk.emit_else(line);
+
+    load(chunk, a_slot, line);
+    call1(chunk, test_bool, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_bool, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    call1(chunk, cast_bool, line);
+    load(chunk, b_slot, line);
+    call1(chunk, cast_bool, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_else(line);
+
+    load(chunk, a_slot, line);
+    call1(chunk, test_bigint, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_bigint, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    load(chunk, b_slot, line);
+    chunk.emit_op(Op::I64_EQ, line);
+    chunk.emit_else(line);
+
+    load(chunk, a_slot, line);
+    load(chunk, b_slot, line);
+    chunk.emit_op(Op::REF_EQ, line);
+
+    chunk.emit_end(line); // bigint
+    chunk.emit_end(line); // boolean
+    chunk.emit_end(line); // string
+    chunk.emit_end(line); // number
+    chunk.emit_end(line); // null
+    chunk.emit_end(line); // undefined
+}
+
 pub fn emit_dyn_ne(chunk: &mut Chunk, line: u32) {
     emit_dyn_eq(chunk, line); // i32
     chunk.emit_op(Op::I32_EQZ, line); // negate: 1 if not-equal

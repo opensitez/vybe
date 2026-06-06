@@ -44,6 +44,9 @@ struct LoopCtx {
     /// decide whether the Python/Ruby `else` clause runs.
     /// `None` for loops without an `else` clause — no slot allocated.
     did_break_slot: Option<u16>,
+    /// JS iterator object to close with `return()` when a `break` exits
+    /// a lazy custom for-of loop early.
+    iterator_close_slot: Option<u16>,
     /// True for actual loops (while/for/for-in); false for switch blocks
     /// and labeled non-loop blocks. `continue` skips non-continuable contexts.
     is_continuable: bool,
@@ -2839,6 +2842,7 @@ impl Compiler {
             break_label_depth: break_depth,
             continue_label_depth: continue_depth,
             did_break_slot: Some(did_break_slot),
+            iterator_close_slot: Some(it_slot),
             is_continuable: true,
         });
         for s in body {
@@ -2988,6 +2992,7 @@ impl Compiler {
             break_label_depth: break_depth,
             continue_label_depth: continue_depth,
             did_break_slot: Some(did_break_slot),
+            iterator_close_slot: None,
             is_continuable: true,
         });
         for s in body {
@@ -3585,6 +3590,62 @@ impl Compiler {
             self.loops.last()?
         };
         Some((self.label_depth - ctx.break_label_depth) as u8)
+    }
+
+    fn iterator_close_slot_for_break(&self, label: Option<&str>) -> Option<u16> {
+        let ctx = if let Some(lbl) = label {
+            self.loops
+                .iter()
+                .rev()
+                .find(|c| c.label.as_deref() == Some(lbl))?
+        } else {
+            self.loops.last()?
+        };
+        ctx.iterator_close_slot
+    }
+
+    fn emit_js_iterator_close(&mut self, iterator_slot: u16) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let line = self.line;
+        let return_key = self.str_const("return");
+        let function_str = self.str_const("function");
+        let js_this = self.str_const("__js_this");
+        let return_fn_slot = self.define_local("__iterator_close_return");
+
+        self.emit_u16(Op::LOCAL_GET, iterator_slot);
+        self.emit_u16(Op::STRUCT_GET, return_key);
+        self.emit_u16(Op::LOCAL_SET, return_fn_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, return_fn_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_u16(Op::CONST, function_str);
+        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, iterator_slot);
+        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, return_fn_slot);
+        self.emit_u8(Op::CALL_REF, 0);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+    }
+
+    fn emit_active_js_iterator_closes(&mut self) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let slots: Vec<u16> = self
+            .loops
+            .iter()
+            .rev()
+            .filter_map(|ctx| ctx.iterator_close_slot)
+            .collect();
+        for slot in slots {
+            self.emit_js_iterator_close(slot);
+        }
     }
 
     /// Compute WASM `br` depth for `continue`.
@@ -7046,6 +7107,7 @@ impl Compiler {
                     break_label_depth: break_depth,
                     continue_label_depth: continue_depth,
                     did_break_slot: None,
+                    iterator_close_slot: None,
                     is_continuable: true,
                 });
                 self.compile_expr(cond)?;
@@ -7124,6 +7186,7 @@ impl Compiler {
                     break_label_depth: break_depth,
                     continue_label_depth: continue_depth,
                     did_break_slot: None,
+                    iterator_close_slot: None,
                     is_continuable: true,
                 });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
@@ -7427,6 +7490,7 @@ impl Compiler {
                         break_label_depth: break_depth,
                         continue_label_depth: continue_depth,
                         did_break_slot,
+                        iterator_close_slot: None,
                         is_continuable: true,
                     });
                     for s in body {
@@ -7484,6 +7548,7 @@ impl Compiler {
                     break_label_depth: break_depth,
                     continue_label_depth: continue_depth,
                     did_break_slot: None,
+                    iterator_close_slot: None,
                     is_continuable: true,
                 });
                 for s in body {
@@ -7525,6 +7590,7 @@ impl Compiler {
                     break_label_depth: self.label_depth,
                     continue_label_depth: self.label_depth,
                     did_break_slot: None,
+                    iterator_close_slot: None,
                     is_continuable: false,
                 });
 
@@ -7729,10 +7795,12 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     };
                     self.chunk().emit_if(line);
+                    self.label_depth += 1;
                     for s in &case.body {
                         self.compile_stmt(s)?;
                     }
                     self.chunk().emit_end(line);
+                    self.label_depth -= 1;
                 }
                 self.loops.pop();
                 let switch_lp = self.loop_states.pop().unwrap();
@@ -8076,6 +8144,9 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         }
+                        if let Some(iterator_slot) = self.iterator_close_slot_for_break(None) {
+                            self.emit_js_iterator_close(iterator_slot);
+                        }
                         if let Some(depth) = self.break_depth(None) {
                             self.chunk().emit_br(depth.into(), line);
                         }
@@ -8091,6 +8162,11 @@ impl Compiler {
                             self.emit(Op::TRUE);
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
+                        }
+                        if let Some(iterator_slot) =
+                            self.iterator_close_slot_for_break(Some(label))
+                        {
+                            self.emit_js_iterator_close(iterator_slot);
                         }
                         if let Some(depth) = self.break_depth(Some(label)) {
                             self.chunk().emit_br(depth.into(), line);
@@ -8129,6 +8205,7 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
+                self.emit_active_js_iterator_closes();
                 // Inside a catch arm, the VM exception handler is no longer active for
                 // this try block, so we must inline the finally block before throwing.
                 // In the try body, the VM routes exceptions to the catch handler first.
@@ -9540,6 +9617,7 @@ impl Compiler {
                         break_label_depth: self.label_depth,
                         continue_label_depth: self.label_depth,
                         did_break_slot: None,
+                        iterator_close_slot: None,
                         is_continuable: false,
                     });
                     Some(bp)
@@ -10363,6 +10441,14 @@ impl Compiler {
                     let idx = self.str_const(&cn);
                     self.emit_u16(Op::GLOBAL_SET, idx);
                     self.emit(Op::DROP);
+                    if self.is_js_profile() && *kind == VarDeclKind::Var && is_toplevel {
+                        let global_this_key = self.str_const("globalThis");
+                        let field_key = self.str_const(&cn);
+                        self.emit_u16(Op::GLOBAL_GET, global_this_key);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_u16(Op::STRUCT_SET, field_key);
+                        self.emit(Op::DROP);
+                    }
                     if let Some(type_hint) = inferred_type_hint.as_deref() {
                         self.global_type_hints
                             .insert(cn.clone(), Self::normalize_type_hint(type_hint));
@@ -12032,23 +12118,26 @@ impl Compiler {
                 }
             }
             BinOp::StrictEq => {
-                // JS ===: SameValueZero (ECMA-262 §7.2.16).
-                // emit_dyn_eq already implements: null≡null, numbers by f64.eq,
-                // strings by str_eq, bigints by i64.eq, objects by REF_EQ.
-                // Wrap with emit_i32_to_bool so the result is Value::Bool.
-                {
-                    let line = self.line;
+                let line = self.line;
+                if self.is_js_profile() {
+                    crate::emitter::ops::emit_js_strict_eq(self.chunk(), line);
+                } else {
                     crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                    if self.is_js_profile() {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                    }
+                }
+                if self.is_js_profile() {
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                 }
             }
             BinOp::StrictNotEq => {
                 // JS !==: negate of ===.
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                    if self.is_js_profile() {
+                        crate::emitter::ops::emit_js_strict_eq(self.chunk(), line);
+                        self.emit(Op::I32_EQZ);
+                    } else {
+                        crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                    }
                     if self.is_js_profile() {
                         crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                     }
@@ -13308,6 +13397,14 @@ impl Compiler {
         // The compiler doesn't know about language-specific names — it just looks up
         // the canonical name in compiler_common's registry.
         if let Some(canonical_op) = common::canonical::CanonicalOp::from_name(name) {
+            if self.is_js_profile() && matches!(canonical_op, common::canonical::CanonicalOp::Len) {
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let length_key = self.str_const("length");
+                    self.emit_u16(Op::STRUCT_GET, length_key);
+                    return Ok(true);
+                }
+            }
             // Special case: __str__ uses stdlib via global, not host import
             if matches!(canonical_op, common::canonical::CanonicalOp::Str) {
                 if let Some(arg) = args.first() {
@@ -13427,8 +13524,8 @@ impl Compiler {
                     // drain — a host fn can't drive coroutine resume,
                     // so we drain via the `__stdlib_drain_generator`
                     // bytecode helper before the host call.
-                    let drain_first_arg =
-                        self.is_js_profile() && (module == "ecma:array" && func == "from");
+                    let drain_first_arg = self.is_js_profile()
+                        && (module == "ecma:array" && (func == "from" || func == "fromAsync"));
                     if drain_first_arg && !args.is_empty() {
                         self.compile_expr(args[0])?;
                         let v_slot = self.define_local("__hc_iter_v");
@@ -13445,7 +13542,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         self.emit_u8(Op::CALL_REF, 1);
                         self.chunk().emit_else(line);
+                        let iter_drain_key = self.str_const("__vybe_iter_drain");
+                        self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
                         self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
                         self.chunk().emit_end(line);
                         for a in args.iter().skip(1) {
                             self.compile_expr(a)?;
