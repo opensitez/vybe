@@ -29,6 +29,14 @@ pub enum ValType {
     Bool,
     List(Box<ValType>),
     Record(Vec<(String, ValType)>),
+    /// CM3 / WASI 0.3 future<T>
+    Future(Box<ValType>),
+    /// CM3 / WASI 0.3 stream<T>
+    Stream(Box<ValType>),
+    /// option<T> — used in stream read results and nullable returns
+    Option(Box<ValType>),
+    /// result<T, E>
+    Result(Box<ValType>, Box<ValType>),
     /// Any — for dynamic languages that don't specify types
     Any,
 }

@@ -174,6 +174,17 @@ impl Op {
     /// VM-only; not emitted to the WASM binary (the for-in expansion
     /// uses core ops only on the wire).
     pub const GEN_NEXT: Op = Op::new(0xFF, 0x87);
+    // CM3 / WASI 0.3 async (Track B — high-level objects, not CM3 binary ABI)
+    /// Await a future: pops a Future object, suspends if pending, pushes resolved value.
+    /// Mirrors PROMISE_SUSPEND but operates on ObjectKind::Future via the EventLoop registry.
+    pub const FUTURE_AWAIT: Op = Op::new(0xFF, 0x88);
+    /// Read one item from a stream: pops a Stream object, pops item or suspends if empty+open,
+    /// pushes Value::Null on EOF (closed+empty).
+    pub const STREAM_READ: Op = Op::new(0xFF, 0x89);
+    /// Write one item to a stream: pops stream, pops item, pushes to buffer, wakes reader.
+    pub const STREAM_WRITE: Op = Op::new(0xFF, 0x8A);
+    /// Cancel a stream: pops Stream object, marks closed, wakes any waiting reader with EOF.
+    pub const STREAM_CANCEL: Op = Op::new(0xFF, 0x8B);
 }
 
 opcode_category! {
@@ -192,6 +203,11 @@ opcode_category! {
     [0x85] cont_bind => U8, "cont.bind";
     [0x86] resume_throw => U16, "resume_throw";
     [0x87] gen_next => None, "gen.next";
+    // CM3 / WASI 0.3 async
+    [0x88] future_await => None, "future.await";
+    [0x89] stream_read => None, "stream.read";
+    [0x8A] stream_write => None, "stream.write";
+    [0x8B] stream_cancel => None, "stream.cancel";
     // Immediate values
     [0x09] r#true => None, "true";
     [0x0A] r#false => None, "false";

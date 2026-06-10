@@ -177,6 +177,84 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    // ── CM3 / WASI 0.3 async ────────────────────────────────────────────────
+
+    /// Create a future. Returns the future Value (for guest code) and its ID (for host resolve).
+    pub fn create_future(&mut self) -> (Value, u64) {
+        use crate::value::{Object, ObjectKind};
+        if let Some(ref el) = self.event_loop {
+            let id = el.borrow_mut().create_future();
+            let obj = Object {
+                properties: std::collections::HashMap::new(),
+                kind: ObjectKind::Future { id },
+                type_id: 0,
+                fields: Vec::new(),
+            };
+            let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
+            (val, id)
+        } else {
+            (Value::Null, 0)
+        }
+    }
+
+    /// Resolve a future — wakes the suspended fiber (if any) with the value.
+    pub fn resolve_future(&mut self, future_id: u64, value: Value) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.resolve_future(future_id, value) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
+    /// Reject a future — wakes the suspended fiber (if any) with an exception.
+    pub fn reject_future(&mut self, future_id: u64, reason: Value) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.reject_future(future_id, reason) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
+    /// Create a stream. Returns the stream Value (for guest code) and its ID (for host push/close).
+    pub fn create_stream(&mut self) -> (Value, u64) {
+        use crate::value::{Object, ObjectKind};
+        if let Some(ref el) = self.event_loop {
+            let id = el.borrow_mut().create_stream();
+            let obj = Object {
+                properties: std::collections::HashMap::new(),
+                kind: ObjectKind::Stream { id },
+                type_id: 0,
+                fields: Vec::new(),
+            };
+            let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
+            (val, id)
+        } else {
+            (Value::Null, 0)
+        }
+    }
+
+    /// Push one item to a stream. Wakes a waiting reader fiber if present.
+    pub fn stream_push(&mut self, stream_id: u64, item: Value) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.stream_push(stream_id, item) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
+    /// Close a stream (signal EOF). Wakes a waiting reader fiber if present.
+    pub fn stream_close(&mut self, stream_id: u64) {
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(fiber) = el_mut.stream_close(stream_id) {
+                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            }
+        }
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -1480,6 +1558,14 @@ impl VM {
             }
             Err(e) if e.message.starts_with("__jspi__:") => {
                 let id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
+                Ok(ExecResult::Suspended(id))
+            }
+            Err(e) if e.message.starts_with("__future__:") => {
+                let id: u64 = e.message["__future__:".len()..].parse().unwrap_or(0);
+                Ok(ExecResult::Suspended(id))
+            }
+            Err(e) if e.message.starts_with("__stream_read__:") => {
+                let id: u64 = e.message["__stream_read__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended(id))
             }
             Err(e) => Err(e),

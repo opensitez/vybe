@@ -201,6 +201,8 @@ impl Value {
                     ObjectKind::HostFunction(_) => "function",
                     ObjectKind::ModuleNamespace => "object",
                     ObjectKind::Continuation(_) => "continuation",
+                    ObjectKind::Future { .. } => "future",
+                    ObjectKind::Stream { .. } => "stream",
                 }
             }
             Value::V128(_) => "v128",
@@ -506,6 +508,8 @@ impl fmt::Display for Value {
                     // returns `"[object Module]"`.
                     ObjectKind::ModuleNamespace => write!(f, "[object Module]"),
                     ObjectKind::Continuation(_) => write!(f, "[continuation]"),
+                    ObjectKind::Future { id } => write!(f, "[future {}]", id),
+                    ObjectKind::Stream { id } => write!(f, "[stream {}]", id),
                     ObjectKind::Ordinary => write!(f, "[object]"),
                 }
             }
@@ -686,6 +690,14 @@ pub enum ObjectKind {
     /// `saved`; each resume either calls `entry` (fresh) or restores
     /// `saved` (paused).
     Continuation(ContinuationState),
+    /// CM3 / WASI 0.3 future<T> — single-value async result.
+    /// `id` indexes into the EventLoop's future registry.
+    /// Awaited via FUTURE_AWAIT opcode; resolved/rejected by host via HostContext.
+    Future { id: u64 },
+    /// CM3 / WASI 0.3 stream<T> — async sequence of values.
+    /// `id` indexes into the EventLoop's stream registry.
+    /// Read via STREAM_READ opcode; pushed/closed by host via HostContext.
+    Stream { id: u64 },
 }
 
 /// Runtime state for an `ObjectKind::Continuation`. Tracks the entry

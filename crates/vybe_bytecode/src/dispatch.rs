@@ -6418,6 +6418,112 @@ impl VM {
                     }
                 }
 
+                // -- CM3 / WASI 0.3 async (Track B) --
+
+                _ if op == Op::FUTURE_AWAIT => {
+                    use crate::value::ObjectKind;
+                    use crate::event_loop::FuturePhase;
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Future { id } = o.kind {
+                            let future_id = id;
+                            drop(o);
+                            let (phase, fval) = {
+                                let el = self.event_loop.borrow();
+                                if let Some(rec) = el.future_states.get(&future_id) {
+                                    (rec.phase, rec.value.clone())
+                                } else {
+                                    (FuturePhase::Resolved, None)
+                                }
+                            };
+                            match phase {
+                                FuturePhase::Pending => {
+                                    let fiber = self.save_fiber();
+                                    self.event_loop.borrow_mut().suspend_future(future_id, fiber);
+                                    return Err(VMError::new(format!("__future__:{}", future_id)));
+                                }
+                                FuturePhase::Resolved => {
+                                    self.push(fval.unwrap_or(Value::Null))?;
+                                }
+                                FuturePhase::Rejected => {
+                                    let reason = fval.unwrap_or(Value::Null);
+                                    self.raise_exception_value(reason)?;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            drop(o);
+                            self.push(val)?;
+                        }
+                    } else {
+                        self.push(val)?;
+                    }
+                }
+
+                _ if op == Op::STREAM_READ => {
+                    use crate::value::ObjectKind;
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Stream { id } = o.kind {
+                            let stream_id = id;
+                            drop(o);
+                            let has_item = self.event_loop.borrow().stream_has_item(stream_id);
+                            let is_eof = self.event_loop.borrow().stream_is_eof(stream_id);
+                            if has_item {
+                                let item = self.event_loop.borrow_mut().stream_pop(stream_id)
+                                    .unwrap_or(Value::Null);
+                                self.push(item)?;
+                            } else if is_eof {
+                                self.push(Value::Null)?;
+                            } else {
+                                let fiber = self.save_fiber();
+                                self.event_loop.borrow_mut().suspend_stream_reader(stream_id, fiber);
+                                return Err(VMError::new(format!("__stream_read__:{}", stream_id)));
+                            }
+                        } else {
+                            drop(o);
+                            self.push(Value::Null)?;
+                        }
+                    } else {
+                        self.push(Value::Null)?;
+                    }
+                }
+
+                _ if op == Op::STREAM_WRITE => {
+                    use crate::value::ObjectKind;
+                    let item = self.pop();
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Stream { id } = o.kind {
+                            let stream_id = id;
+                            drop(o);
+                            let mut el = self.event_loop.borrow_mut();
+                            if let Some(fiber) = el.stream_push(stream_id, item) {
+                                el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                            }
+                        }
+                    }
+                }
+
+                _ if op == Op::STREAM_CANCEL => {
+                    use crate::value::ObjectKind;
+                    let val = self.pop();
+                    if let Value::Object(ref obj) = val {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Stream { id } = o.kind {
+                            let stream_id = id;
+                            drop(o);
+                            let mut el = self.event_loop.borrow_mut();
+                            if let Some(fiber) = el.stream_close(stream_id) {
+                                el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                            }
+                        }
+                    }
+                }
+
                 // -- WASM GC Type System --
                 _ if op == Op::SET_TYPE_ID => {
                     // Stack: [obj, type_id_i32] → [obj]
