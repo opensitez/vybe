@@ -7441,6 +7441,51 @@ fn walk_number(pair: &Pair<Rule>) -> Expression {
 
 fn walk_string(pair: &Pair<Rule>) -> Expression {
     let raw = pair.as_str();
+
+    // Heredoc / nowdoc: `<<<TAG\n...content...\nTAG`
+    // Nowdoc uses `<<<'TAG'` — no interpolation.
+    if raw.starts_with("<<<") {
+        let rest = &raw[3..];
+        let is_nowdoc = rest.starts_with('\'');
+        // Skip optional quote around tag name
+        let tag_start = if is_nowdoc || rest.starts_with('"') { &rest[1..] } else { rest };
+        let tag_end = tag_start.find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(tag_start.len());
+        let tag = &tag_start[..tag_end];
+        // Content starts after the first newline following the tag line
+        let header_end = raw.find('\n').map(|i| i + 1).unwrap_or(raw.len());
+        let content_raw = &raw[header_end..];
+        // Find the closing tag line. It appears at the start of a line,
+        // optionally preceded by whitespace (flexible heredoc PHP 7.3+).
+        // Strip the closing tag line — content is everything before the last line
+        let content = if let Some(pos) = content_raw.rfind('\n') {
+            &content_raw[..pos]
+        } else {
+            ""
+        };
+        let content = content.to_string();
+
+        if is_nowdoc {
+            return Expression::new(ExprKind::Lit(Literal::Str(unmask_php_literal_tags(&content))));
+        }
+        // Heredoc: interpolate like double-quoted string
+        if !content.contains('$') {
+            return Expression::new(ExprKind::Lit(Literal::Str(unmask_php_literal_tags(
+                &decode_php_double_quoted_literal(&content),
+            ))));
+        }
+        let parts = parse_php_interpolation(&content);
+        if parts.len() == 1 {
+            if let InterpolPart::Text(s) = &parts[0] {
+                return Expression::new(ExprKind::Lit(Literal::Str(s.clone())));
+            }
+        }
+        if parts.is_empty() {
+            return Expression::new(ExprKind::Lit(Literal::Str(String::new())));
+        }
+        return Expression::new(ExprKind::Interpolation(parts));
+    }
+
     let body = &raw[1..raw.len() - 1];
 
     if raw.starts_with('\'') {
@@ -7482,6 +7527,26 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         return Expression::new(ExprKind::Lit(Literal::Str(String::new())));
     }
     Expression::new(ExprKind::Interpolation(parts))
+}
+
+/// Strip common leading indentation from flexible heredoc content (PHP 7.3+).
+/// The closing tag's indentation determines how much to strip from every line.
+fn strip_heredoc_indentation(content: &str) -> String {
+    // Find the minimum indentation (spaces/tabs) across non-empty lines.
+    let min_indent = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches(|c| c == ' ' || c == '\t').len())
+        .min()
+        .unwrap_or(0);
+    if min_indent == 0 {
+        return content.to_string();
+    }
+    content
+        .lines()
+        .map(|l| if l.len() >= min_indent { &l[min_indent..] } else { l })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn decode_php_double_quoted_literal(body: &str) -> String {

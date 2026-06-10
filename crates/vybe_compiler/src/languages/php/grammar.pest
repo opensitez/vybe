@@ -217,10 +217,11 @@ dq_string = @{ "\"" ~ ("\\\"" | "\\\\" | "\\$" | "\\" ~ ANY | (!"\"" ~ ANY))* ~ 
 // shape, the only difference is that nowdoc doesn't interpolate (we
 // don't interpolate either form yet). PUSH/POP threads the closing tag
 // through the parser stack so we can match it on the closing line.
+// Content body is optional (zero or more lines) to support empty heredocs.
 heredoc_str = ${
     "<<<" ~ ("\""? ~ "'"?) ~ PUSH(heredoc_tag) ~ ("\""? ~ "'"?) ~ ("\r"? ~ "\n")
-    ~ (!( ("\r"? ~ "\n") ~ (" " | "\t")* ~ PEEK ~ (";" | "," | ")" | "\r" | "\n")) ~ ANY)*
-    ~ ("\r"? ~ "\n") ~ (" " | "\t")* ~ POP
+    ~ (!( ("\r"? ~ "\n")? ~ (" " | "\t")* ~ PEEK ~ (";" | "," | ")" | "\r" | "\n")) ~ ANY)*
+    ~ ("\r"? ~ "\n")? ~ (" " | "\t")* ~ POP
 }
 heredoc_tag = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
 
