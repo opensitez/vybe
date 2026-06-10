@@ -528,8 +528,8 @@ object_property = {
     "..." ~ assignment_expression                                     // spread
     | computed_property_name ~ ":" ~ assignment_expression             // computed key
     | async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
-    | "get" ~ property_name ~ "(" ~ ")" ~ function_body               // getter
-    | "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body       // setter
+    | "get" ~ (property_name | computed_property_name) ~ "(" ~ ")" ~ function_body               // getter
+    | "set" ~ (property_name | computed_property_name) ~ "(" ~ param ~ ")" ~ function_body       // setter
     | property_name ~ ":" ~ assignment_expression                      // key: value
     | ident_name                                                       // shorthand { x }
 }

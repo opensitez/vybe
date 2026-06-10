@@ -108,6 +108,9 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.sinh"         = { emit = "host:ecma:math:sinh",              min_args = 1, max_args = 1 }
 "Math.cosh"         = { emit = "host:ecma:math:cosh",              min_args = 1, max_args = 1 }
 "Math.tanh"         = { emit = "host:ecma:math:tanh",              min_args = 1, max_args = 1 }
+"Math.asinh"        = { emit = "host:ecma:math:asinh",             min_args = 1, max_args = 1 }
+"Math.acosh"        = { emit = "host:ecma:math:acosh",             min_args = 1, max_args = 1 }
+"Math.atanh"        = { emit = "host:ecma:math:atanh",             min_args = 1, max_args = 1 }
 
 # ── Number static methods ────────────────────────────────────────────────────
 

@@ -2520,8 +2520,8 @@ impl Compiler {
             pc.statics = all_statics;
         }
 
-        // Attach instance methods to the class object so static
-        // `super.method()` dispatch can reach them. ECMA-262
+        // Attach instance methods/accessors to the class object so static
+        // `super.method()` and `super.prop` dispatch can reach them. ECMA-262
         // §13.3.7.4 / §10.2.4 / §10.2.10.2: `super` resolves via
         // [[HomeObject]].[[Prototype]] (the parent class's prototype),
         // NOT the instance prototype chain. Multi-level inheritance
@@ -2532,10 +2532,6 @@ impl Compiler {
         // class-level method ref. Instance bindings are unchanged
         // (still per-instance for `this.method()` and override).
         for (mname, mci, _, _) in &instance_methods {
-            // Skip getter/setter wrappers — they're bound differently.
-            if mname.starts_with("__get_") || mname.starts_with("__set_") {
-                continue;
-            }
             common::classes::emit_attach_static_method(
                 self.chunk(),
                 ctor_local,

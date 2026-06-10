@@ -1451,6 +1451,44 @@ impl Compiler {
         self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
     }
 
+    fn emit_js_invoke_method_from_args_array(
+        &mut self,
+        obj_slot: u16,
+        method_name: &str,
+        args_slot: u16,
+        known_len: Option<usize>,
+    ) {
+        let line = self.line;
+        let invoke = self.import("ecma:value", "invokeMethod");
+        match known_len {
+            Some(known_len) => {
+                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                self.emit_const(Value::String(Arc::from(method_name)));
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.emit(Op::SPREAD);
+                self.emit_host_call(invoke, (known_len + 2) as u8);
+            }
+            None => {
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.emit_const(Value::I32(16));
+                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                common::collections::emit_concat(&mut self.chunks, self.current, line);
+                self.emit_const(Value::F64(0.0));
+                self.emit_const(Value::F64(16.0));
+                common::collections::emit_slice(&mut self.chunks, self.current, line);
+                let padded_slot = self.define_local("__js_invoke_spread_args16");
+                self.emit_u16(Op::LOCAL_SET, padded_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                self.emit_const(Value::String(Arc::from(method_name)));
+                self.emit_u16(Op::LOCAL_GET, padded_slot);
+                self.emit(Op::SPREAD);
+                self.emit_host_call(invoke, 18);
+            }
+        }
+    }
+
     fn emit_dispatch_and_store_from_args_array(
         &mut self,
         callee_slot: u16,
@@ -1577,6 +1615,46 @@ impl Compiler {
             );
         }
         self.emit_u16(Op::LOCAL_GET, result_slot);
+    }
+
+    fn compile_call_args_array(
+        &mut self,
+        args: &[Argument],
+        local_prefix: &str,
+    ) -> Result<(u16, Option<usize>), String> {
+        let line = self.line;
+        let args_slot = self.define_local(&format!("__{}_args", local_prefix));
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        self.emit_u16(Op::LOCAL_SET, args_slot);
+        self.emit(Op::DROP);
+
+        let mut known_len: Option<usize> = Some(0);
+        for arg in args {
+            if arg.spread {
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.compile_expr(&arg.value)?;
+                common::collections::emit_concat(&mut self.chunks, self.current, line);
+                self.emit_u16(Op::LOCAL_SET, args_slot);
+                self.emit(Op::DROP);
+                if let ExprKind::Array(elements) = &arg.value.kind {
+                    if let Some(len) = known_len.as_mut() {
+                        *len += elements.len();
+                    }
+                } else {
+                    known_len = None;
+                }
+            } else {
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.compile_expr(&arg.value)?;
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+                if let Some(len) = known_len.as_mut() {
+                    *len += 1;
+                }
+            }
+        }
+
+        Ok((args_slot, known_len))
     }
 
     fn expr_is_known_js_promise_like(&self, expr: &Expression) -> bool {
@@ -2172,10 +2250,14 @@ impl Compiler {
                         .cloned()
                         .unwrap_or(path);
                     if !super::is_host_specifier(&normalized_module) {
-                        return Err(format!(
-                            "Dynamic import for '{}' is not supported yet",
+                        self.emit_const(Value::String(Arc::from(format!(
+                            "Cannot find module '{}'",
                             normalized_module
-                        ));
+                        ))));
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        let reject_idx = self.import("ecma:promise", "reject");
+                        self.emit_host_call(reject_idx, 1);
+                        return Ok(());
                     }
 
                     let alias = js_dynamic_import_alias(&normalized_module);
@@ -4468,6 +4550,64 @@ impl Compiler {
                 // registry for shared .NET collection methods instead of
                 // intercepting them via language profile value-method tables.
             } else if let Some(def) = matched_value_method {
+                if self.is_js_profile() && field == "push" && args.iter().any(|arg| arg.spread) {
+                    let line = self.line;
+                    self.compile_expr(object)?;
+                    let obj_slot = self.define_local("__js_value_push_spread_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
+                    let (args_slot, _) =
+                        self.compile_call_args_array(args, "js_value_push_spread_values")?;
+                    let len_slot = self.define_local("__js_value_push_spread_len");
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    common::collections::emit_len(&mut self.chunks, self.current, line);
+                    self.emit_u16(Op::LOCAL_SET, len_slot);
+                    self.emit(Op::DROP);
+
+                    let idx_slot = self.define_local("__js_value_push_spread_idx");
+                    self.emit_const(Value::I32(0));
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+
+                    let loop_block = self.chunk().emit_block(line);
+                    let (loop_patch, _) = self.chunk().emit_loop_s(line);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    self.chunk().emit_br_if(1, line);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                    common::collections::emit_push(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_const(Value::I32(1));
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    };
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+                    self.chunk().emit_br(0, line);
+                    self.chunk().emit_end(line);
+                    self.chunk().patch_loop(loop_patch);
+                    self.chunk().emit_end(line);
+                    self.chunk().patch_block(loop_block);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    common::collections::emit_len(&mut self.chunks, self.current, line);
+                    return Ok(());
+                }
                 // Object is first arg, then explicit args
                 self.compile_expr(object)?;
                 for a in &arg_exprs {
@@ -5892,12 +6032,23 @@ impl Compiler {
                     self.chunk().emit_if(line);
                     self.chunk().emit_else(line);
 
-                    self.emit_u16(Op::LOCAL_GET, fn_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
+                    if args.iter().any(|arg| arg.spread) {
+                        let (args_slot, known_len) =
+                            self.compile_call_args_array(args, "js_typed_method_spread")?;
+                        self.emit_call_ref_with_args_array(
+                            fn_slot,
+                            Some(obj_tmp),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        for a in &arg_exprs {
+                            self.compile_expr(a)?;
+                        }
+                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                     }
-                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
@@ -5919,25 +6070,42 @@ impl Compiler {
                 let lookup_slot = self.define_local("__js_lookup_fn");
                 self.emit_u16(Op::LOCAL_SET, lookup_slot);
                 self.emit(Op::DROP);
+                let spread_args = args.iter().any(|arg| arg.spread);
+                let spread_call_args = if spread_args {
+                    Some(self.compile_call_args_array(args, "js_dispatch_lookup_spread")?)
+                } else {
+                    None
+                };
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                for (index, arg) in arg_exprs.iter().enumerate() {
-                    self.compile_expr(arg)?;
-                    let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
-                    self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
-                    arg_slots.push(arg_slot);
+                if !spread_args {
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
                 }
                 self.emit_u16(Op::LOCAL_GET, lookup_slot);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
                 self.chunk().emit_if(line);
-                let invoke = self.import("ecma:value", "invokeMethod");
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                for slot in &arg_slots {
-                    self.emit_u16(Op::LOCAL_GET, *slot);
+                if let Some((args_slot, known_len)) = spread_call_args {
+                    self.emit_js_invoke_method_from_args_array(
+                        obj_tmp,
+                        method_name.as_str(),
+                        args_slot,
+                        known_len,
+                    );
+                } else {
+                    let invoke = self.import("ecma:value", "invokeMethod");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 }
-                self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 self.emit(Op::DROP);
                 self.chunk().emit_else(line);
@@ -5945,16 +6113,39 @@ impl Compiler {
                 self.emit(Op::REF_IS_UNDEFINED);
                 let line = self.line;
                 self.chunk().emit_if(line);
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                for slot in &arg_slots {
-                    self.emit_u16(Op::LOCAL_GET, *slot);
+                if let Some((args_slot, known_len)) = spread_call_args {
+                    self.emit_js_invoke_method_from_args_array(
+                        obj_tmp,
+                        method_name.as_str(),
+                        args_slot,
+                        known_len,
+                    );
+                } else {
+                    let invoke = self.import("ecma:value", "invokeMethod");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 }
-                self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 self.emit(Op::DROP);
                 self.chunk().emit_else(line);
-                self.emit_call_ref_with_bound_js_this_arg_slots(lookup_slot, obj_tmp, &arg_slots);
+                if let Some((args_slot, known_len)) = spread_call_args {
+                    self.emit_call_ref_with_args_array(
+                        lookup_slot,
+                        Some(obj_tmp),
+                        args_slot,
+                        known_len,
+                    );
+                } else {
+                    self.emit_call_ref_with_bound_js_this_arg_slots(
+                        lookup_slot,
+                        obj_tmp,
+                        &arg_slots,
+                    );
+                }
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 self.emit(Op::DROP);
                 self.chunk().emit_end(line);
@@ -6981,18 +7172,29 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
 
-                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                        for (index, arg) in arg_exprs.iter().enumerate() {
-                            self.compile_expr(arg)?;
-                            let arg_slot =
-                                self.define_local(&format!("__js_member_call_arg_{}", index));
-                            self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
-                            arg_slots.push(arg_slot);
+                        if args.iter().any(|arg| arg.spread) {
+                            let (args_slot, known_len) =
+                                self.compile_call_args_array(args, "js_member_call_spread")?;
+                            self.emit_call_ref_with_args_array(
+                                fn_tmp,
+                                Some(obj_tmp),
+                                args_slot,
+                                known_len,
+                            );
+                        } else {
+                            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                            for (index, arg) in arg_exprs.iter().enumerate() {
+                                self.compile_expr(arg)?;
+                                let arg_slot =
+                                    self.define_local(&format!("__js_member_call_arg_{}", index));
+                                self.emit_u16(Op::LOCAL_SET, arg_slot);
+                                self.emit(Op::DROP);
+                                arg_slots.push(arg_slot);
+                            }
+                            self.emit_call_ref_with_bound_js_this_arg_slots(
+                                fn_tmp, obj_tmp, &arg_slots,
+                            );
                         }
-                        self.emit_call_ref_with_bound_js_this_arg_slots(
-                            fn_tmp, obj_tmp, &arg_slots,
-                        );
                         self.emit_u16(Op::LOCAL_SET, js_result_slot);
                         self.emit(Op::DROP);
                         self.emit_const(Value::I32(1));
@@ -7014,27 +7216,44 @@ impl Compiler {
                     let lookup_slot = self.define_local("__js_member_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot);
                     self.emit(Op::DROP);
+                    let spread_args = args.iter().any(|arg| arg.spread);
+                    let spread_call_args = if spread_args {
+                        Some(self.compile_call_args_array(args, "js_member_lookup_spread")?)
+                    } else {
+                        None
+                    };
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                    for (index, arg) in arg_exprs.iter().enumerate() {
-                        self.compile_expr(arg)?;
-                        let arg_slot =
-                            self.define_local(&format!("__js_member_lookup_arg_{}", index));
-                        self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
-                        arg_slots.push(arg_slot);
+                    if !spread_args {
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot =
+                                self.define_local(&format!("__js_member_lookup_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            self.emit(Op::DROP);
+                            arg_slots.push(arg_slot);
+                        }
                     }
 
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
                     self.chunk().emit_if(line);
-                    let invoke = self.import("ecma:value", "invokeMethod");
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for slot in &arg_slots {
-                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_js_invoke_method_from_args_array(
+                            obj_tmp,
+                            method_name.as_str(),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        let invoke = self.import("ecma:value", "invokeMethod");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
+                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     }
-                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit(Op::DROP);
                     self.chunk().emit_else(line);
@@ -7042,20 +7261,39 @@ impl Compiler {
                     self.emit(Op::REF_IS_UNDEFINED);
                     let line = self.line;
                     self.chunk().emit_if(line);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for slot in &arg_slots {
-                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_js_invoke_method_from_args_array(
+                            obj_tmp,
+                            method_name.as_str(),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        let invoke = self.import("ecma:value", "invokeMethod");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
+                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     }
-                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit(Op::DROP);
                     self.chunk().emit_else(line);
-                    self.emit_call_ref_with_bound_js_this_arg_slots(
-                        lookup_slot,
-                        obj_tmp,
-                        &arg_slots,
-                    );
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_call_ref_with_args_array(
+                            lookup_slot,
+                            Some(obj_tmp),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        self.emit_call_ref_with_bound_js_this_arg_slots(
+                            lookup_slot,
+                            obj_tmp,
+                            &arg_slots,
+                        );
+                    }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit(Op::DROP);
                     self.chunk().emit_end(line);

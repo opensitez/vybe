@@ -279,6 +279,17 @@ fn rewrite_expression_keys(
                 match prop {
                     ObjectProperty::KeyValue { key, value } => {
                         rewrite_expression_keys(key, consts);
+                        if let ExprKind::Lit(Literal::Str(s)) = &mut key.kind {
+                            if let Some(name) = s.strip_prefix("__get_") {
+                                if let Some(resolved) = consts.get(name) {
+                                    *s = format!("__get_{}", resolved);
+                                }
+                            } else if let Some(name) = s.strip_prefix("__set_") {
+                                if let Some(resolved) = consts.get(name) {
+                                    *s = format!("__set_{}", resolved);
+                                }
+                            }
+                        }
                         rewrite_expression_keys(value, consts);
                     }
                     ObjectProperty::Spread(expr) => rewrite_expression_keys(expr, consts),
@@ -3516,7 +3527,32 @@ fn walk_object_accessor(
     mut inner: Vec<Pair<Rule>>,
     is_getter: bool,
 ) -> Result<ObjectProperty, String> {
-    let prop_name = inner.remove(0).as_str().to_string();
+    let prop_pair = inner.remove(0);
+    let prop_name = if prop_pair.as_rule() == Rule::computed_property_name {
+        prop_pair
+            .into_inner()
+            .next()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default()
+    } else if prop_pair.as_rule() == Rule::property_name {
+        let raw = prop_pair.as_str().to_string();
+        let mut inner_pairs = prop_pair.into_inner();
+        if let Some(inner) = inner_pairs.next() {
+            if inner.as_rule() == Rule::computed_property_name {
+                inner
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or(raw)
+            } else {
+                raw
+            }
+        } else {
+            raw
+        }
+    } else {
+        prop_pair.as_str().to_string()
+    };
     let mut params = Vec::new();
     let mut body = Vec::new();
     for p in inner {

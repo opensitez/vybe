@@ -49,6 +49,33 @@ impl Compiler {
         }
     }
 
+    fn emit_js_member_fallback_get(&mut self, obj_slot: u16, field_name: &str) {
+        let lookup = self.str_const("__vybe_js_get_method");
+        let getter_slot = self.define_local("__js_member_getter");
+        let accessor_name = format!("__get_{}", field_name);
+
+        self.emit_u16(Op::GLOBAL_GET, lookup);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(accessor_name.as_str())));
+        self.emit_u8(Op::CALL_REF, 2);
+        self.emit_u16(Op::LOCAL_SET, getter_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, getter_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::GLOBAL_GET, lookup);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(field_name)));
+        self.emit_u8(Op::CALL_REF, 2);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, getter_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        self.chunk().emit_end(line);
+    }
+
     fn emit_js_import_meta_object(&mut self) {
         let global_name = "__js_import_meta";
         let global_idx = self.str_const(global_name);
@@ -1043,6 +1070,50 @@ impl Compiler {
                         self.compile_deref_expr(inner)?;
                     }
                     _ => {
+                        if self.is_js_profile() && matches!(op, UnaryOp::Typeof) {
+                            if let ExprKind::Ident(name) = &inner.kind {
+                                let is_callable_global = matches!(
+                                    name.as_str(),
+                                    "eval"
+                                        | "parseInt"
+                                        | "parseFloat"
+                                        | "Function"
+                                        | "Object"
+                                        | "Boolean"
+                                        | "Number"
+                                        | "String"
+                                        | "Array"
+                                        | "Symbol"
+                                        | "BigInt"
+                                        | "Date"
+                                        | "RegExp"
+                                        | "Promise"
+                                        | "Proxy"
+                                        | "Map"
+                                        | "Set"
+                                        | "WeakMap"
+                                        | "WeakSet"
+                                        | "ArrayBuffer"
+                                        | "SharedArrayBuffer"
+                                        | "DataView"
+                                        | "Int8Array"
+                                        | "Uint8Array"
+                                        | "Uint8ClampedArray"
+                                        | "Int16Array"
+                                        | "Uint16Array"
+                                        | "Int32Array"
+                                        | "Uint32Array"
+                                        | "Float32Array"
+                                        | "Float64Array"
+                                        | "BigInt64Array"
+                                        | "BigUint64Array"
+                                ) || self.profile.lookup_builtin(name).is_some();
+                                if is_callable_global {
+                                    self.emit_const(Value::String(Arc::from("function")));
+                                    return Ok(());
+                                }
+                            }
+                        }
                         self.compile_expr(inner)?;
                         match op {
                             UnaryOp::Neg => {
@@ -1513,6 +1584,61 @@ impl Compiler {
                     }
                 }
 
+                if self.is_js_profile() && matches!(&object.kind, ExprKind::Super) && !*null_safe {
+                    if let Some(parent) = self
+                        .current_class
+                        .as_ref()
+                        .and_then(|cn| self.pending_classes.get(cn.as_str()))
+                        .and_then(|pc| pc.parent.clone())
+                    {
+                        let result_slot = self.define_local("__js_super_prop_result");
+                        let saved_this = self.save_js_this("__js_prev_this_super_prop");
+                        let self_kw = self.profile.self_keyword.clone();
+                        if let Some(slot) = self
+                            .scope()
+                            .resolve(&self_kw)
+                            .or_else(|| self.scope().resolve_ci(&self_kw))
+                        {
+                            self.emit_u16(Op::LOCAL_GET, slot);
+                        } else {
+                            let js_this = self.str_const("__js_this");
+                            self.emit_u16(Op::GLOBAL_GET, js_this);
+                        }
+                        self.set_js_this_from_stack();
+
+                        let getter_key = self.str_const(&format!("__get_{}", field));
+                        self.emit_var_get(&parent);
+                        self.emit_u16(Op::STRUCT_GET, getter_key);
+                        let getter_slot = self.define_local("__js_super_prop_getter");
+                        self.emit_u16(Op::LOCAL_SET, getter_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, getter_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let line = self.line;
+                        self.chunk().emit_if_value(line);
+                        common::expressions::emit_undefined(self.chunk(), line);
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, getter_slot);
+                        if let Some(slot) = self
+                            .scope()
+                            .resolve(&self_kw)
+                            .or_else(|| self.scope().resolve_ci(&self_kw))
+                        {
+                            self.emit_u16(Op::LOCAL_GET, slot);
+                        } else {
+                            let js_this = self.str_const("__js_this");
+                            self.emit_u16(Op::GLOBAL_GET, js_this);
+                        }
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.chunk().emit_end(line);
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit(Op::DROP);
+                        self.restore_js_this(saved_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        return Ok(());
+                    }
+                }
+
                 // Proxy get-trap dispatch (JS profile, only when the
                 // module references `Proxy` somewhere). Routes member
                 // reads through the inline dispatcher in
@@ -1560,16 +1686,11 @@ impl Compiler {
                             let val_slot = self.define_local("__js_member_val");
                             self.emit_u16(Op::LOCAL_SET, val_slot);
                             self.emit(Op::DROP);
-                            let lookup = self.str_const("__vybe_js_get_method");
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.emit(Op::REF_IS_UNDEFINED);
                             let lookup_line = self.line;
                             self.chunk().emit_if_value(lookup_line);
-                            self.emit_u16(Op::GLOBAL_GET, lookup);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit_const(Value::String(Arc::from(field_name.as_str())));
-                            self.emit_u8(Op::CALL_REF, 2);
+                            self.emit_js_member_fallback_get(obj_slot, &field_name);
                             self.chunk().emit_else(lookup_line);
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.chunk().emit_end(lookup_line);
@@ -1661,15 +1782,11 @@ impl Compiler {
                         let val_slot = self.define_local("__js_member_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
-                        let lookup = self.str_const("__vybe_js_get_method");
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_UNDEFINED);
                         let lookup_line = self.line;
                         self.chunk().emit_if_value(lookup_line);
-                        self.emit_u16(Op::GLOBAL_GET, lookup);
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_js_member_fallback_get(obj_slot, &field_name);
                         self.chunk().emit_else(lookup_line);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.chunk().emit_end(lookup_line);
@@ -4407,6 +4524,51 @@ impl Compiler {
             }
 
             ExprKind::TypeOf(inner) => {
+                if self.is_js_profile() {
+                    if let ExprKind::Ident(name) = &inner.kind {
+                        let is_callable_global = !self.has_accessible_local_binding(name)
+                            && (matches!(
+                                name.as_str(),
+                                "eval"
+                                    | "parseInt"
+                                    | "parseFloat"
+                                    | "Function"
+                                    | "Object"
+                                    | "Boolean"
+                                    | "Number"
+                                    | "String"
+                                    | "Array"
+                                    | "Symbol"
+                                    | "BigInt"
+                                    | "Date"
+                                    | "RegExp"
+                                    | "Promise"
+                                    | "Proxy"
+                                    | "Map"
+                                    | "Set"
+                                    | "WeakMap"
+                                    | "WeakSet"
+                                    | "ArrayBuffer"
+                                    | "SharedArrayBuffer"
+                                    | "DataView"
+                                    | "Int8Array"
+                                    | "Uint8Array"
+                                    | "Uint8ClampedArray"
+                                    | "Int16Array"
+                                    | "Uint16Array"
+                                    | "Int32Array"
+                                    | "Uint32Array"
+                                    | "Float32Array"
+                                    | "Float64Array"
+                                    | "BigInt64Array"
+                                    | "BigUint64Array"
+                            ) || self.profile.lookup_builtin(name).is_some());
+                        if is_callable_global {
+                            self.emit_const(Value::String(Arc::from("function")));
+                            return Ok(());
+                        }
+                    }
+                }
                 self.compile_expr(inner)?;
                 if self.is_js_profile() {
                     // ECMA-262 §13.5.3 Table 41: arrays are "object",
