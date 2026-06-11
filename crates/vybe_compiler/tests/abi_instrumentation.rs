@@ -49,7 +49,7 @@ fn run_with_recorder(chunks: Vec<vybe_bytecode::Chunk>) -> (Vec<String>, String)
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

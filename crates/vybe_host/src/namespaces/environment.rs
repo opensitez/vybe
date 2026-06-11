@@ -1,13 +1,11 @@
 use super::*;
 
 pub fn register(vm: &mut VM) {
-    // JS `env.*` ambient compatibility namespace.
+    // JS `env.*` ambient compatibility namespace — backed by wasi:cli/environment.
     let js_env = ensure_namespace(vm, &["env"]);
-    set_prop(&js_env, "args", host_fn_ref(vm, "wasi:cli", "args"));
-    set_prop(&js_env, "cwd", host_fn_ref(vm, "wasi:cli", "cwd"));
-    set_prop(&js_env, "platform", host_fn_ref(vm, "wasi:cli", "platform"));
-    set_prop(&js_env, "arch", host_fn_ref(vm, "wasi:cli", "arch"));
-    set_prop(&js_env, "getEnv", host_fn_ref(vm, "wasi:cli", "getEnv"));
+    set_prop(&js_env, "args", host_fn_ref(vm, "wasi:cli/environment", "get-arguments"));
+    set_prop(&js_env, "cwd", host_fn_ref(vm, "wasi:cli/environment", "initial-cwd"));
+    set_prop(&js_env, "getEnv", host_fn_ref(vm, "wasi:cli/environment", "get-environment"));
 
     // JS `random.*` ambient compatibility namespace.
     let random = ensure_namespace(vm, &["random"]);
@@ -16,13 +14,6 @@ pub fn register(vm: &mut VM) {
     set_prop(&random, "random", host_fn_ref(vm, "wasi:random/random", "random"));
     set_prop(&random, "randomInt", host_fn_ref(vm, "wasi:random/random", "randomInt"));
     set_prop(&random, "uuid", host_fn_ref(vm, "wasi:random/random", "uuid"));
-
-    // JS `clock.*` ambient namespace.
-    let clock = ensure_namespace(vm, &["clock"]);
-    set_prop(&clock, "now", host_fn_ref(vm, "wasi:clocks", "now"));
-    set_prop(&clock, "hrtime", host_fn_ref(vm, "wasi:clocks", "hrtime"));
-    set_prop(&clock, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
-    set_prop(&clock, "toISOString", host_fn_ref(vm, "wasi:clocks", "toISOString"));
 
     // JS `http.*` ambient namespace (wasi:http shim).
     let http = ensure_namespace(vm, &["http"]);

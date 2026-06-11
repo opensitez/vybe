@@ -7,17 +7,20 @@ pub mod vm;
 // its own `impl VM { ... }` block operating on the same struct defined in
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.
 pub(crate) mod calls;
+pub mod cm_task;
 pub mod debug;
 pub(crate) mod dispatch;
 pub mod error;
 pub mod event_loop;
 pub mod fiber;
+pub mod handle_table;
 pub(crate) mod jspi;
 pub mod module_record;
 pub mod shared_memory;
 pub(crate) mod simd;
 pub mod typedef;
 pub(crate) mod upvalues;
+pub mod waitable;
 
 pub use chunk::{Chunk, Import};
 pub use error::VMError;

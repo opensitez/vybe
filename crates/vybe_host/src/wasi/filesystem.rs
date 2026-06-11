@@ -30,13 +30,13 @@
 //! object-with-error-field is the carrier.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions, ReadDir};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::{File, FileTimes, OpenOptions, ReadDir};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use vybe_bytecode::value::Object;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{HostContext, VM, Value};
 
 // ── Resource registry ─────────────────────────────────────────────
 //
@@ -45,20 +45,28 @@ use vybe_bytecode::{VM, Value};
 // carrying ids that index into this registry.
 
 #[derive(Debug)]
-enum DescriptorKind {
+pub(super) enum DescriptorKind {
     File(PathBuf),       // path retained for stat-at / open-at(child)
     Directory(PathBuf),
 }
 
 #[derive(Debug)]
-enum InputStreamKind {
+pub(super) enum InputStreamKind {
     File { file: File, position: u64 },
+    Buffer { data: Vec<u8>, position: usize },
 }
 
-struct Registry {
-    descriptors: HashMap<u32, DescriptorKind>,
-    dir_streams: HashMap<u32, ReadDir>,
-    input_streams: HashMap<u32, InputStreamKind>,
+#[derive(Debug)]
+pub(super) enum OutputStreamKind {
+    File { file: File },
+    Append(PathBuf),
+}
+
+pub(super) struct Registry {
+    pub(super) descriptors: HashMap<u32, DescriptorKind>,
+    pub(super) dir_streams: HashMap<u32, ReadDir>,
+    pub(super) input_streams: HashMap<u32, InputStreamKind>,
+    pub(super) output_streams: HashMap<u32, OutputStreamKind>,
     next_id: u32,
 }
 
@@ -68,6 +76,7 @@ impl Registry {
             descriptors: HashMap::new(),
             dir_streams: HashMap::new(),
             input_streams: HashMap::new(),
+            output_streams: HashMap::new(),
             next_id: 1,
         }
     }
@@ -78,16 +87,28 @@ impl Registry {
     }
 }
 
-fn registry() -> &'static Mutex<Registry> {
+pub(super) fn registry() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(Registry::new()))
+}
+
+/// Register an in-memory byte buffer as a readable `input-stream` resource.
+/// Returns the stream id; callers should wrap it as `make_resource(KIND_INPUT_STREAM, id)`.
+/// Used by `wasi:http/types.[method]incoming-body.stream` to expose response body bytes
+/// through the standard `[method]input-stream.blocking-read` interface.
+pub fn register_buffer_stream(data: Vec<u8>) -> u32 {
+    let mut reg = registry().lock().unwrap();
+    let id = reg.alloc_id();
+    reg.input_streams.insert(id, InputStreamKind::Buffer { data, position: 0 });
+    id
 }
 
 // ── Resource <-> Value marshalling ────────────────────────────────
 
 const KIND_DESCRIPTOR: &str = "descriptor";
 const KIND_DIR_STREAM: &str = "directory-entry-stream";
-const KIND_INPUT_STREAM: &str = "input-stream";
+pub(super) const KIND_INPUT_STREAM: &str = "input-stream";
+pub(super) const KIND_OUTPUT_STREAM: &str = "output-stream";
 
 fn make_resource(kind: &str, id: u32) -> Value {
     let mut o = Object::new();
@@ -96,7 +117,7 @@ fn make_resource(kind: &str, id: u32) -> Value {
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
-fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
+pub(super) fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
     if let Value::Object(object) = value {
         let object = object.lock().unwrap();
         let kind_ok = matches!(
@@ -115,13 +136,13 @@ fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
 
 // ── Error encoding ────────────────────────────────────────────────
 
-fn err(code: &str) -> Value {
+pub(super) fn err(code: &str) -> Value {
     let mut o = Object::new();
     o.properties.insert("__wasi_error".into(), Value::String(Arc::from(code)));
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
-fn map_io_error(e: &std::io::Error) -> &'static str {
+pub(super) fn map_io_error(e: &std::io::Error) -> &'static str {
     use std::io::ErrorKind::*;
     match e.kind() {
         NotFound => "no-entry",
@@ -233,6 +254,21 @@ fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
         Some(Value::I32(n)) => *n,
         Some(Value::F64(n)) => *n as i32,
         _ => default,
+    }
+}
+
+// Decode a WASI `new-timestamp` variant into an optional SystemTime.
+// Null → no-change (None); Object{seconds,nanoseconds} → that instant; fallback → now.
+fn new_timestamp(v: Option<&Value>) -> Option<SystemTime> {
+    match v {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(obj)) => {
+            let inner = obj.lock().unwrap();
+            let secs = inner.properties.get("seconds").map(|v| v.as_f64() as u64).unwrap_or(0);
+            let ns = inner.properties.get("nanoseconds").map(|v| v.as_f64() as u32).unwrap_or(0);
+            Some(SystemTime::UNIX_EPOCH + Duration::new(secs, ns))
+        }
+        _ => Some(SystemTime::now()),
     }
 }
 
@@ -536,6 +572,333 @@ fn register_types(vm: &mut VM) {
         };
         make_resource(KIND_INPUT_STREAM, stream_id)
     }));
+
+    // write-via-stream(offset) → output-stream
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.write-via-stream", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let offset = u64_arg(args, 1, 0);
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return err("is-directory"),
+                None => return err("bad-descriptor"),
+            }
+        };
+        let mut file = match OpenOptions::new().write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) => return err(map_io_error(&e)),
+        };
+        if offset > 0 {
+            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
+                return err(map_io_error(&e));
+            }
+        }
+        let stream_id = {
+            let mut reg = registry().lock().unwrap();
+            let sid = reg.alloc_id();
+            reg.output_streams.insert(sid, OutputStreamKind::File { file });
+            sid
+        };
+        make_resource(KIND_OUTPUT_STREAM, stream_id)
+    }));
+
+    // append-via-stream() → output-stream
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.append-via-stream", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return err("is-directory"),
+                None => return err("bad-descriptor"),
+            }
+        };
+        let stream_id = {
+            let mut reg = registry().lock().unwrap();
+            let sid = reg.alloc_id();
+            reg.output_streams.insert(sid, OutputStreamKind::Append(path));
+            sid
+        };
+        make_resource(KIND_OUTPUT_STREAM, stream_id)
+    }));
+
+    // advise(offset, length, advice) → result — advisory access hint, best-effort stub
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.advise", Box::new(|_ctx, args| {
+        if resource_id(&args[0].clone(), KIND_DESCRIPTOR).is_none() {
+            return err("bad-descriptor");
+        }
+        Value::Null
+    }));
+
+    // sync-data() → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.sync-data", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return Value::Null,
+                None => return err("bad-descriptor"),
+            }
+        };
+        match File::open(&path).and_then(|f| f.sync_data()) {
+            Ok(_) => Value::Null,
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // get-flags() → result<descriptor-flags, error-code>
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.get-flags", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let is_dir = {
+            let reg = registry().lock().unwrap();
+            matches!(reg.descriptors.get(&id), Some(DescriptorKind::Directory(_)))
+        };
+        let mut flags = Object::new();
+        flags.properties.insert("read".into(), Value::Bool(true));
+        flags.properties.insert("write".into(), Value::Bool(!is_dir));
+        flags.properties.insert("file-integrity-sync".into(), Value::Bool(false));
+        flags.properties.insert("data-integrity-sync".into(), Value::Bool(false));
+        flags.properties.insert("requested-write-sync".into(), Value::Bool(false));
+        flags.properties.insert("mutate-directory".into(), Value::Bool(false));
+        Value::Object(Arc::new(Mutex::new(flags)))
+    }));
+
+    // set-size(size) → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.set-size", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let size = u64_arg(args, 1, 0);
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return err("is-directory"),
+                None => return err("bad-descriptor"),
+            }
+        };
+        match OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(size)) {
+            Ok(_) => Value::Null,
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // set-times(data-access-timestamp, data-modification-timestamp) → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.set-times", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let atime = new_timestamp(args.get(1));
+        let mtime = new_timestamp(args.get(2));
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return Value::Null, // dirs: no-op
+                None => return err("bad-descriptor"),
+            }
+        };
+        match OpenOptions::new().write(true).open(&path) {
+            Ok(file) => {
+                let mut times = FileTimes::new();
+                if let Some(t) = atime { times = times.set_accessed(t); }
+                if let Some(t) = mtime { times = times.set_modified(t); }
+                match file.set_times(times) { Ok(_) => Value::Null, Err(e) => err(map_io_error(&e)) }
+            }
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // read(length, offset) → result<tuple<list<u8>, bool>, error-code>  (pread)
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.read", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let length = u64_arg(args, 1, 0);
+        let offset = u64_arg(args, 2, 0);
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return err("is-directory"),
+                None => return err("bad-descriptor"),
+            }
+        };
+        let mut file = match File::open(&path) { Ok(f) => f, Err(e) => return err(map_io_error(&e)) };
+        if let Err(e) = file.seek(SeekFrom::Start(offset)) { return err(map_io_error(&e)); }
+        let cap = length.min(64 * 1024) as usize;
+        let mut buf = vec![0u8; cap];
+        match file.read(&mut buf) {
+            Ok(n) => {
+                buf.truncate(n);
+                let eof = n == 0 || n < cap;
+                let bytes: Vec<Value> = buf.into_iter().map(|b| Value::I32(b as i32)).collect();
+                let bytes_val = Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))));
+                let tuple = Object::new_array(vec![bytes_val, Value::Bool(eof)]);
+                Value::Object(Arc::new(Mutex::new(tuple)))
+            }
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // write(bytes, offset) → result<u64, error-code>  (pwrite)
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.write", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
+        let offset = u64_arg(args, 2, 0);
+        let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
+            let inner = arr.lock().unwrap();
+            if let vybe_bytecode::value::ObjectKind::Array(ref elems) = inner.kind {
+                elems.iter().map(|v| v.as_f64() as u8).collect()
+            } else { return err("invalid"); }
+        } else {
+            return err("invalid");
+        };
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return err("is-directory"),
+                None => return err("bad-descriptor"),
+            }
+        };
+        let mut file = match OpenOptions::new().write(true).open(&path) { Ok(f) => f, Err(e) => return err(map_io_error(&e)) };
+        if let Err(e) = file.seek(SeekFrom::Start(offset)) { return err(map_io_error(&e)); }
+        match file.write_all(&bytes) {
+            Ok(_) => Value::F64(bytes.len() as f64),
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // sync() → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.sync", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) => p.clone(),
+                Some(DescriptorKind::Directory(_)) => return Value::Null,
+                None => return err("bad-descriptor"),
+            }
+        };
+        match File::open(&path).and_then(|f| f.sync_all()) {
+            Ok(_) => Value::Null,
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // set-times-at(path-flags, path, atime, mtime) → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.set-times-at", Box::new(|_ctx, args| {
+        let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(child) = s_arg(args, 2) else { return err("invalid"); };
+        let atime = new_timestamp(args.get(3));
+        let mtime = new_timestamp(args.get(4));
+        let resolved = match resolve_child_path(parent_id, &child) { Ok(p) => p, Err(c) => return err(c) };
+        match OpenOptions::new().write(true).open(&resolved) {
+            Ok(file) => {
+                let mut times = FileTimes::new();
+                if let Some(t) = atime { times = times.set_accessed(t); }
+                if let Some(t) = mtime { times = times.set_modified(t); }
+                match file.set_times(times) { Ok(_) => Value::Null, Err(e) => err(map_io_error(&e)) }
+            }
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // link-at(old-path-flags, old-path, new-descriptor, new-path) → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.link-at", Box::new(|_ctx, args| {
+        let Some(old_parent) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(old_child) = s_arg(args, 2) else { return err("invalid"); };
+        let Some(new_parent) = resource_id(&args[3].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(new_child) = s_arg(args, 4) else { return err("invalid"); };
+        let old_path = match resolve_child_path(old_parent, &old_child) { Ok(p) => p, Err(c) => return err(c) };
+        let new_path = match resolve_child_path(new_parent, &new_child) { Ok(p) => p, Err(c) => return err(c) };
+        #[cfg(unix)]
+        {
+            match std::fs::hard_link(&old_path, &new_path) {
+                Ok(_) => Value::Null,
+                Err(e) => err(map_io_error(&e)),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::hard_link(&old_path, &new_path) {
+                Ok(_) => Value::Null,
+                Err(e) => err(map_io_error(&e)),
+            }
+        }
+    }));
+
+    // symlink-at(old-path, new-descriptor, new-path) → result
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.symlink-at", Box::new(|_ctx, args| {
+        let Some(parent) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(old_path_str) = s_arg(args, 1) else { return err("invalid"); };
+        let Some(new_parent) = resource_id(&args[2].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(new_child) = s_arg(args, 3) else { return err("invalid"); };
+        let _old_path = match resolve_child_path(parent, &old_path_str) { Ok(p) => p, Err(c) => return err(c) };
+        let new_path = match resolve_child_path(new_parent, &new_child) { Ok(p) => p, Err(c) => return err(c) };
+        #[cfg(unix)]
+        {
+            match std::os::unix::fs::symlink(&old_path_str, &new_path) {
+                Ok(_) => Value::Null,
+                Err(e) => err(map_io_error(&e)),
+            }
+        }
+        #[cfg(windows)]
+        {
+            // On Windows we'd need to know if target is file or dir; stub as error.
+            err("unsupported")
+        }
+        #[cfg(not(any(unix, windows)))]
+        { err("unsupported") }
+    }));
+
+    // metadata-hash() → result<metadata-hash-value, error-code>
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.metadata-hash", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let path = {
+            let reg = registry().lock().unwrap();
+            match reg.descriptors.get(&id) {
+                Some(DescriptorKind::File(p)) | Some(DescriptorKind::Directory(p)) => p.clone(),
+                None => return err("bad-descriptor"),
+            }
+        };
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                let hash = meta.len().wrapping_mul(0x9e37_79b9) ^ ms_since_epoch(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)) as u64;
+                let mut o = Object::new();
+                o.properties.insert("lower".into(), Value::F64((hash & 0xffff_ffff) as f64));
+                o.properties.insert("upper".into(), Value::F64((hash >> 32) as f64));
+                Value::Object(Arc::new(Mutex::new(o)))
+            }
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // metadata-hash-at(path-flags, path) → result<metadata-hash-value, error-code>
+    vm.register_host_fn("wasi:filesystem/types", "[method]descriptor.metadata-hash-at", Box::new(|_ctx, args| {
+        let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else { return err("bad-descriptor"); };
+        let Some(child) = s_arg(args, 2) else { return err("invalid"); };
+        let resolved = match resolve_child_path(parent_id, &child) { Ok(p) => p, Err(c) => return err(c) };
+        match std::fs::metadata(&resolved) {
+            Ok(meta) => {
+                let hash = meta.len().wrapping_mul(0x9e37_79b9) ^ ms_since_epoch(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)) as u64;
+                let mut o = Object::new();
+                o.properties.insert("lower".into(), Value::F64((hash & 0xffff_ffff) as f64));
+                o.properties.insert("upper".into(), Value::F64((hash >> 32) as f64));
+                Value::Object(Arc::new(Mutex::new(o)))
+            }
+            Err(e) => err(map_io_error(&e)),
+        }
+    }));
+
+    // filesystem-error-code(err) → option<error-code>
+    // Converts a wasi:io/error into a filesystem error-code if it came from this module.
+    vm.register_host_fn("wasi:filesystem/types", "filesystem-error-code", Box::new(|_ctx, args| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let inner = obj.lock().unwrap();
+            if let Some(code) = inner.properties.get("__wasi_error") {
+                return code.clone();
+            }
+        }
+        Value::Null
+    }));
 }
 
 fn path_of(kind: &DescriptorKind) -> PathBuf {
@@ -574,12 +937,18 @@ fn register_io_streams(vm: &mut VM) {
                     Err(e) => err(map_io_error(&e)),
                 }
             }
+            InputStreamKind::Buffer { data, position } => {
+                let remaining = data.len().saturating_sub(*position);
+                let cap = (max as usize).min(remaining).min(64 * 1024);
+                let slice = &data[*position..*position + cap];
+                let elements: Vec<Value> = slice.iter().map(|b| Value::I32(*b as i32)).collect();
+                *position += cap;
+                Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+            }
         }
     }));
 
     vm.register_host_fn("wasi:io/streams", "[method]input-stream.read", Box::new(|_ctx, args| {
-        // Non-blocking read maps to the same impl in our synchronous VM —
-        // no actual blocking happens because std::fs::File::read is sync.
         let Some(id) = resource_id(&args[0].clone(), KIND_INPUT_STREAM) else { return err("bad-descriptor"); };
         let max = u64_arg(args, 1, u64::MAX);
         let mut reg = registry().lock().unwrap();
@@ -598,7 +967,103 @@ fn register_io_streams(vm: &mut VM) {
                     Err(e) => err(map_io_error(&e)),
                 }
             }
+            InputStreamKind::Buffer { data, position } => {
+                let remaining = data.len().saturating_sub(*position);
+                let cap = (max as usize).min(remaining).min(64 * 1024);
+                let slice = &data[*position..*position + cap];
+                let elements: Vec<Value> = slice.iter().map(|b| Value::I32(*b as i32)).collect();
+                *position += cap;
+                Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+            }
         }
+    }));
+
+    // output-stream write/flush/check-write/subscribe
+    vm.register_host_fn("wasi:io/streams", "[method]output-stream.write", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else { return err("bad-descriptor"); };
+        let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
+        let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
+            let inner = arr.lock().unwrap();
+            if let vybe_bytecode::value::ObjectKind::Array(ref elems) = inner.kind {
+                elems.iter().map(|v| v.as_f64() as u8).collect()
+            } else { return err("invalid"); }
+        } else {
+            return err("invalid");
+        };
+        let mut reg = registry().lock().unwrap();
+        match reg.output_streams.get_mut(&id) {
+            Some(OutputStreamKind::File { file }) => {
+                match file.write_all(&bytes) {
+                    Ok(_) => Value::F64(bytes.len() as f64),
+                    Err(e) => err(map_io_error(&e)),
+                }
+            }
+            Some(OutputStreamKind::Append(path)) => {
+                let path = path.clone();
+                match OpenOptions::new().append(true).open(&path).and_then(|mut f| f.write_all(&bytes)) {
+                    Ok(_) => Value::F64(bytes.len() as f64),
+                    Err(e) => err(map_io_error(&e)),
+                }
+            }
+            None => err("bad-descriptor"),
+        }
+    }));
+
+    vm.register_host_fn("wasi:io/streams", "[method]output-stream.blocking-write-and-flush", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else { return err("bad-descriptor"); };
+        let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
+        let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
+            let inner = arr.lock().unwrap();
+            if let vybe_bytecode::value::ObjectKind::Array(ref elems) = inner.kind {
+                elems.iter().map(|v| v.as_f64() as u8).collect()
+            } else { return err("invalid"); }
+        } else {
+            return err("invalid");
+        };
+        let mut reg = registry().lock().unwrap();
+        match reg.output_streams.get_mut(&id) {
+            Some(OutputStreamKind::File { file }) => {
+                if file.write_all(&bytes).is_err() || file.flush().is_err() {
+                    return err("io");
+                }
+                Value::Null
+            }
+            Some(OutputStreamKind::Append(path)) => {
+                let path = path.clone();
+                match OpenOptions::new().append(true).open(&path).and_then(|mut f| { f.write_all(&bytes)?; f.flush() }) {
+                    Ok(_) => Value::Null,
+                    Err(e) => err(map_io_error(&e)),
+                }
+            }
+            None => err("bad-descriptor"),
+        }
+    }));
+
+    vm.register_host_fn("wasi:io/streams", "[method]output-stream.check-write", Box::new(|_ctx, args| {
+        if resource_id(&args[0].clone(), KIND_OUTPUT_STREAM).is_none() { return err("bad-descriptor"); }
+        Value::F64(65536.0) // always-ready: 64 KiB budget
+    }));
+
+    vm.register_host_fn("wasi:io/streams", "[method]output-stream.flush", Box::new(|_ctx, args| {
+        let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else { return err("bad-descriptor"); };
+        let mut reg = registry().lock().unwrap();
+        match reg.output_streams.get_mut(&id) {
+            Some(OutputStreamKind::File { file }) => {
+                let _ = file.flush();
+                Value::Null
+            }
+            Some(OutputStreamKind::Append(_)) => Value::Null,
+            None => err("bad-descriptor"),
+        }
+    }));
+
+    vm.register_host_fn("wasi:io/streams", "[method]output-stream.subscribe", Box::new(|_ctx, args| {
+        if resource_id(&args[0].clone(), KIND_OUTPUT_STREAM).is_none() { return err("bad-descriptor"); }
+        // Output streams are always ready in our sync model — return a pre-resolved pollable.
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Pollable")));
+        obj.properties.insert("__ready".into(), Value::Bool(true));
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 }
 
@@ -625,8 +1090,6 @@ fn register_test_helpers(vm: &mut VM) {
     }));
 }
 
-// Suppress unused-constant warnings for the descriptor-flag bits
-// (`open-flags` are read above; descriptor-flags will be once
-// write-via-stream/append-via-stream land).
+// Suppress unused-constant warnings for the descriptor-flag bits.
 #[allow(dead_code)]
 const _: i32 = DESC_READ + DESC_WRITE;

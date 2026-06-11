@@ -42,7 +42,7 @@ console.log(value);
 crate::js_import_cases! {
     dynamic_import_returns_namespace_object => {
         r#"
-const ns = await import("wasi:cli");
+const ns = await import("wasi:logging/logging");
 console.log(typeof ns);
 console.log(typeof ns.log);
 "#,
@@ -51,7 +51,7 @@ console.log(typeof ns.log);
 
     dynamic_import_exposes_namespace_keys => {
         r#"
-const ns = await import("wasi:cli");
+const ns = await import("wasi:logging/logging");
 console.log(Object.keys(ns).includes("log"));
 "#,
         ["true"]
@@ -59,7 +59,7 @@ console.log(Object.keys(ns).includes("log"));
 
     dynamic_import_omits_default_for_host_namespace => {
         r#"
-const ns = await import("wasi:cli");
+const ns = await import("wasi:logging/logging");
 console.log("default" in ns);
 "#,
         ["false"]

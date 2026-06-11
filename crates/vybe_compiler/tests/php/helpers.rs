@@ -91,7 +91,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             capture_log_lines(&out, args);
@@ -109,7 +109,7 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             capture_log_lines(&out, args);

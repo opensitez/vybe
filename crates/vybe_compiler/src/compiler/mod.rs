@@ -3696,7 +3696,7 @@ impl Compiler {
     /// Mapping:
     /// - `[Vybe, Http, Request, method]` → `("vybe:http/request", "method")`
     /// - `[Vybe, Math, cos]`             → `("ecma:math", "cos")`
-    /// - `[Wasi, Cli, log]`              → `("wasi:cli", "log")`
+    /// - `[Wasi, Cli, log]`              → `("wasi:logging/logging", "log")`
     ///
     /// First join is `:` (package → interface), further joins use `/`,
     /// last segment is the function name. Everything is lowercased.
@@ -9639,7 +9639,7 @@ impl Compiler {
             // ── Echo (PHP/debug print) ──────────────────────────────────
             StmtKind::Echo(exprs) => {
                 let line = self.line;
-                let log_idx = self.import("wasi:cli", "log");
+                let log_idx = self.import("wasi:logging/logging", "log");
                 let php_echo = self.profile.name == "php";
                 if self.profile.name == "cobol" {
                     if exprs.is_empty() {
@@ -13170,7 +13170,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, message_slot);
-                let idx = self.import("wasi:cli", "log");
+                let idx = self.import("wasi:logging/logging", "log");
                 common::io::emit_print_with_import(self.chunk(), idx, 1, line);
 
                 self.compile_expr(&Expression::string(""))?;
@@ -13506,7 +13506,7 @@ impl Compiler {
                     for slot in &arg_slots {
                         self.emit_u16(Op::LOCAL_GET, *slot);
                     }
-                    let idx = self.import("wasi:cli", "log");
+                    let idx = self.import("wasi:logging/logging", "log");
                     common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
                 }
                 BuiltinEmit::StrLength => {
@@ -14763,6 +14763,10 @@ impl Compiler {
                 let l = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, l);
             }
+            "readline" => {
+                // wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read
+                crate::emitter::io::emit_input(self.chunk(), line);
+            }
             "asc" => {
                 self.compile_expr(args[0])?;
                 self.emit(Op::I32_CONST_0);
@@ -14845,7 +14849,7 @@ impl Compiler {
                 }
             }
             "command" => {
-                let args_idx = self.import("wasi:cli", "args");
+                let args_idx = self.import("wasi:cli/environment", "get-arguments");
                 self.emit_host_call(args_idx, 0);
                 self.emit_const(Value::String(Arc::from(" ")));
                 common::collections::emit_join(&mut self.chunks, self.current, line);
@@ -14853,41 +14857,38 @@ impl Compiler {
             "environ" => {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
-                    let env_idx = self.import("wasi:cli", "getEnv");
+                    let env_idx = self.import("wasi:cli/environment", "get-environment");
                     self.emit_host_call(env_idx, 1);
                 } else {
                     self.emit_const(Value::String(Arc::from("")));
                 }
             }
             "timer" => {
-                let timer_idx = self.import("wasi:clocks", "vbTimer");
-                self.emit_host_call(timer_idx, 0);
-                let value_slot = self.define_local("__vb_timer_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot);
+                // Timer = seconds since midnight.
+                // ecma:date.now() → ms, then extract UTC H/M/S → h*3600+m*60+s
+                let now_idx = self.import("ecma:date", "now");
+                let get_h_idx = self.import("ecma:date", "getUTCHours");
+                let get_m_idx = self.import("ecma:date", "getUTCMinutes");
+                let get_s_idx = self.import("ecma:date", "getUTCSeconds");
+                self.emit_host_call(now_idx, 0);
+                let ms_slot = self.define_local("__vb_timer_ms");
+                self.emit_u16(Op::LOCAL_SET, ms_slot);
                 self.emit(Op::DROP);
-
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.emit(Op::REF_IS_NUMBER);
-                let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.emit_const(Value::I32(0));
-                {
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
-                };
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                self.emit_const(Value::I32(0));
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.chunk().emit_end(line);
-
-                self.chunk().emit_else(line);
-                self.emit_const(Value::I32(0));
-                self.chunk().emit_end(line);
+                // hours
+                self.emit_u16(Op::LOCAL_GET, ms_slot);
+                self.emit_host_call(get_h_idx, 1);
+                self.emit_const(Value::F64(3600.0));
+                self.emit(Op::F64_MUL);
+                // + minutes * 60
+                self.emit_u16(Op::LOCAL_GET, ms_slot);
+                self.emit_host_call(get_m_idx, 1);
+                self.emit_const(Value::F64(60.0));
+                self.emit(Op::F64_MUL);
+                self.emit(Op::F64_ADD);
+                // + seconds
+                self.emit_u16(Op::LOCAL_GET, ms_slot);
+                self.emit_host_call(get_s_idx, 1);
+                self.emit(Op::F64_ADD);
             }
             "switch" => {
                 if args.len() < 2 {
@@ -15321,7 +15322,7 @@ impl Compiler {
                     self.emit_const(Value::I32(0));
                 } else {
                     let result_slot = self.define_local("__php_printf_result");
-                    let log_idx = self.import("wasi:cli", "log");
+                    let log_idx = self.import("wasi:logging/logging", "log");
 
                     for arg in args {
                         self.compile_expr(arg)?;
@@ -15343,7 +15344,7 @@ impl Compiler {
                     self.emit_const(Value::I32(0));
                 } else {
                     let result_slot = self.define_local("__php_vprintf_result");
-                    let log_idx = self.import("wasi:cli", "log");
+                    let log_idx = self.import("wasi:logging/logging", "log");
 
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
@@ -15823,7 +15824,7 @@ impl Compiler {
             }
             "php_print_expr" => {
                 if let Some(arg) = args.first() {
-                    let log_idx = self.import("wasi:cli", "log");
+                    let log_idx = self.import("wasi:logging/logging", "log");
                     self.compile_expr(arg)?;
                     self.emit_common("php.echo_stringify", 1, line);
                     common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);

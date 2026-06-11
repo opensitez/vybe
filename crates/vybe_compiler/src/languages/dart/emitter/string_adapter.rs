@@ -31,7 +31,7 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     let to_str = chunks[0].add_import("ecma:string", "String");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
     chunks[current].emit(1, line);
-    let log_idx = chunks[0].add_import("wasi:cli", "log");
+    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, log_idx, line);
     chunks[current].emit(1, line);
 }

@@ -1,35 +1,50 @@
 //! I/O compilation — WASI-compatible print, input, file operations.
 //!
-//! Print uses `wasi:cli/log` (standard WASI import).
+//! Print uses `wasi:logging/logging.log` (WASI logging proposal).
+//! Input uses `wasi:cli/stdin.get-stdin` + `[method]input-stream.blocking-read`.
 //! File I/O uses `wasi:filesystem/*` imports.
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-// Target-aware variants can be added here when needed.
-// use crate::emitter::Target;
+use vybe_bytecode::Value;
 
-/// Emit print/log. Adds import to the given chunk.
-/// Use `emit_print_with_import` if your compiler requires imports in chunk 0.
-/// Stack: [arg1, arg2, ..., argN] → []
+/// Emit print/log. Stack: [arg1, ..., argN] → []
+/// Routes to wasi:logging/logging.log. Flexible arity:
+///   1 arg → host treats as (info, "", message)
+///   N args → host joins them (info, "", joined)
 pub fn emit_print(chunk: &mut Chunk, arg_count: u8, line: u32) {
-    let idx = chunk.add_import("wasi:cli", "log");
+    let idx = chunk.add_import("wasi:logging/logging", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(arg_count, line);
 }
 
 /// Emit print using a pre-resolved import index.
-/// Use this when your compiler routes imports to chunk 0 separately.
-/// Stack: [arg1, arg2, ..., argN] → []
 pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8, line: u32) {
     chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
     chunk.emit(arg_count, line);
 }
 
-/// Emit readline (input). Adds import to the given chunk.
-pub fn emit_input(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("wasi:cli", "readLine");
+/// Emit print to stderr (warn/error level). Stack: [message] → []
+pub fn emit_print_error(chunk: &mut Chunk, line: u32) {
+    let level_idx = chunk.add_constant(Value::String(std::sync::Arc::from("error")));
+    chunk.emit_op_u16(Op::CONST, level_idx, line);
+    let idx = chunk.add_import("wasi:logging/logging", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(2, line); // (level, message)
+}
+
+/// Emit readline. Stack: [] → [string]
+/// Calls wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read(stream, 65536).
+/// Host returns a string for fd=0 (stdin line input).
+pub fn emit_input(chunk: &mut Chunk, line: u32) {
+    let stdin_idx = chunk.add_import("wasi:cli/stdin", "get-stdin");
+    chunk.emit_op_u16(Op::CALL_IMPORT, stdin_idx, line);
     chunk.emit(0, line);
+    let max_idx = chunk.add_constant(Value::I32(65536));
+    chunk.emit_op_u16(Op::CONST, max_idx, line);
+    let read_idx = chunk.add_import("wasi:io/streams", "[method]input-stream.blocking-read");
+    chunk.emit_op_u16(Op::CALL_IMPORT, read_idx, line);
+    chunk.emit(2, line);
 }
 
 /// Emit readline using a pre-resolved import index.
@@ -53,7 +68,6 @@ pub fn emit_read_file(chunk: &mut Chunk, line: u32) {
 }
 
 /// Write to file. Stack: [target, data...] → [null]
-/// For whole-file: argc=2 (filename, contents). For handle: argc=N (handle, items...).
 pub fn emit_write_file(chunk: &mut Chunk, argc: u8, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "writeFile");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);

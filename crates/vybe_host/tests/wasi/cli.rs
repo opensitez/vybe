@@ -66,6 +66,8 @@ fn array_strings(value: &Value) -> Vec<String> {
         .collect()
 }
 
+// ── wasi:cli/environment ─────────────────────────────────────────────────────
+
 #[test]
 fn get_environment_returns_array_of_string_pairs() {
     let result = invoke("wasi:cli/environment", "get-environment", vec![]);
@@ -88,6 +90,20 @@ fn get_environment_returns_array_of_string_pairs() {
 }
 
 #[test]
+fn get_environment_with_key_returns_value() {
+    let key = if std::env::var("HOME").is_ok() { "HOME" } else { "USERPROFILE" };
+    let expected = std::env::var(key).unwrap_or_else(|_| String::from("."));
+    let result = invoke("wasi:cli/environment", "get-environment", vec![s(key)]);
+    assert_eq!(result, s(&expected));
+}
+
+#[test]
+fn get_environment_with_missing_key_returns_null() {
+    let result = invoke("wasi:cli/environment", "get-environment", vec![s("VYBE_TEST_ENV_SHOULD_NOT_EXIST")]);
+    assert!(matches!(result, Value::Null));
+}
+
+#[test]
 fn get_arguments_returns_string_array() {
     let result = invoke("wasi:cli/environment", "get-arguments", vec![]);
     assert!(array_len(&result) > 0);
@@ -98,13 +114,6 @@ fn get_arguments_matches_process_argument_vector_exactly() {
     let result = invoke("wasi:cli/environment", "get-arguments", vec![]);
     let expected: Vec<String> = std::env::args().collect();
     assert_eq!(array_strings(&result), expected);
-}
-
-#[test]
-fn get_arguments_matches_legacy_args_surface() {
-    let proposal = invoke("wasi:cli/environment", "get-arguments", vec![]);
-    let legacy = invoke("wasi:cli", "args", vec![]);
-    assert_eq!(array_strings(&proposal), array_strings(&legacy));
 }
 
 #[test]
@@ -149,180 +158,78 @@ fn get_environment_contains_home_or_userprofile_when_present() {
     assert!(found, "expected get-environment to include {key}");
 }
 
-#[test]
-fn cli_args_returns_string_array() {
-    let result = invoke("wasi:cli", "args", vec![]);
-    assert!(array_len(&result) > 0);
-}
+// ── wasi:logging/logging ─────────────────────────────────────────────────────
 
 #[test]
-fn cli_args_match_process_argument_vector_exactly() {
-    let result = invoke("wasi:cli", "args", vec![]);
-    let expected: Vec<String> = std::env::args().collect();
-    assert_eq!(array_strings(&result), expected);
-}
-
-#[test]
-fn cli_get_env_returns_null_for_missing_key() {
-    let result = invoke("wasi:cli", "getEnv", vec![s("VYBE_TEST_ENV_SHOULD_NOT_EXIST")]);
+fn logging_log_1_arg_returns_null() {
+    let result = invoke("wasi:logging/logging", "log", vec![s("hello world")]);
     assert!(matches!(result, Value::Null));
 }
 
 #[test]
-fn cli_get_env_returns_home_when_present() {
-    let key = if std::env::var("HOME").is_ok() { "HOME" } else { "USERPROFILE" };
-    let expected = std::env::var(key).unwrap_or_else(|_| String::from("."));
-    let result = invoke("wasi:cli", "getEnv", vec![s(key)]);
-    assert_eq!(result, s(&expected));
-}
-
-#[test]
-fn cli_cwd_matches_current_dir() {
-    let result = invoke("wasi:cli", "cwd", vec![]);
-    assert_eq!(result, s(std::env::current_dir().unwrap().to_string_lossy().as_ref()));
-}
-
-#[test]
-fn cli_cwd_matches_proposal_initial_cwd_surfaces() {
-    let cwd = invoke("wasi:cli", "cwd", vec![]);
-    let initial = invoke("wasi:cli/environment", "initial-cwd", vec![]);
-    let renamed = invoke("wasi:cli/environment", "get-initial-cwd", vec![]);
-    assert_eq!(cwd, initial);
-    assert_eq!(cwd, renamed);
-}
-
-#[test]
-fn cli_platform_matches_std_env() {
-    let result = invoke("wasi:cli", "platform", vec![]);
-    assert_eq!(result, s(std::env::consts::OS));
-}
-
-#[test]
-fn cli_arch_matches_std_env() {
-    let result = invoke("wasi:cli", "arch", vec![]);
-    assert_eq!(result, s(std::env::consts::ARCH));
-}
-
-#[test]
-fn cli_machine_name_returns_string() {
-    let result = invoke("wasi:cli", "machineName", vec![]);
-    assert!(matches!(result, Value::String(_)));
-}
-
-#[test]
-fn cli_machine_name_matches_environment_fallback_chain() {
-    let expected = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| String::from("unknown"));
-    let result = invoke("wasi:cli", "machineName", vec![]);
-    assert_eq!(result, s(&expected));
-}
-
-#[test]
-fn cli_user_name_returns_string() {
-    let result = invoke("wasi:cli", "userName", vec![]);
-    assert!(matches!(result, Value::String(_)));
-}
-
-#[test]
-fn cli_user_name_matches_environment_fallback_chain() {
-    let expected = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| String::from("unknown"));
-    let result = invoke("wasi:cli", "userName", vec![]);
-    assert_eq!(result, s(&expected));
-}
-
-#[test]
-fn cli_new_line_returns_line_feed() {
-    let result = invoke("wasi:cli", "newLine", vec![]);
-    assert_eq!(result, s("\n"));
-}
-
-#[test]
-fn cli_tick_count_is_non_negative() {
-    let result = invoke("wasi:cli", "tickCount", vec![]);
-    let Value::F64(number) = result else {
-        panic!("tickCount should return f64");
-    };
-    assert!(number >= 0.0);
-}
-
-#[test]
-fn cli_tick_count_is_non_decreasing() {
-    let first = invoke("wasi:cli", "tickCount", vec![]).as_f64();
-    let second = invoke("wasi:cli", "tickCount", vec![]).as_f64();
-    assert!(second >= first);
-}
-
-#[test]
-fn cli_get_folder_path_returns_string() {
-    let result = invoke("wasi:cli", "getFolderPath", vec![]);
-    assert!(matches!(result, Value::String(_)));
-}
-
-#[test]
-fn cli_get_folder_path_uses_home_directory_fallback() {
-    let expected = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| String::from("."));
-    let result = invoke("wasi:cli", "getFolderPath", vec![]);
-    assert_eq!(result, s(&expected));
-}
-
-#[test]
-fn cli_log_returns_null() {
-    let result = invoke("wasi:cli", "log", vec![s("hello"), s("world")]);
+fn logging_log_2_args_level_and_message_returns_null() {
+    let result = invoke("wasi:logging/logging", "log", vec![s("error"), s("something failed")]);
     assert!(matches!(result, Value::Null));
 }
 
 #[test]
-fn cli_warn_returns_null() {
-    let result = invoke("wasi:cli", "warn", vec![s("warning")]);
+fn logging_log_3_args_level_context_message_returns_null() {
+    let result = invoke("wasi:logging/logging", "log", vec![s("warn"), s("mymodule"), s("low disk")]);
     assert!(matches!(result, Value::Null));
 }
 
 #[test]
-fn cli_error_returns_null() {
-    let result = invoke("wasi:cli", "error", vec![s("error")]);
+fn logging_log_0_args_returns_null() {
+    let result = invoke("wasi:logging/logging", "log", vec![]);
     assert!(matches!(result, Value::Null));
 }
 
 #[test]
-fn cli_time_and_time_end_return_null() {
-    let start = invoke("wasi:cli", "time", vec![s("wasi-cli-test")]);
-    let end = invoke("wasi:cli", "timeEnd", vec![s("wasi-cli-test")]);
-    assert!(matches!(start, Value::Null));
-    assert!(matches!(end, Value::Null));
-}
-
-#[test]
-fn cli_time_and_time_end_support_default_label() {
-    let start = invoke("wasi:cli", "time", vec![]);
-    let end = invoke("wasi:cli", "timeEnd", vec![]);
-    assert!(matches!(start, Value::Null));
-    assert!(matches!(end, Value::Null));
-}
-
-#[test]
-fn cli_time_end_without_prior_time_is_still_null() {
-    let result = invoke("wasi:cli", "timeEnd", vec![s("never-started")]);
+fn logging_log_variadic_returns_null() {
+    let result = invoke("wasi:logging/logging", "log", vec![s("a"), s("b"), s("c"), s("d")]);
     assert!(matches!(result, Value::Null));
 }
 
-#[test]
-fn cli_log_warn_and_error_accept_empty_argument_lists() {
-    assert!(matches!(invoke("wasi:cli", "log", vec![]), Value::Null));
-    assert!(matches!(invoke("wasi:cli", "warn", vec![]), Value::Null));
-    assert!(matches!(invoke("wasi:cli", "error", vec![]), Value::Null));
-}
+// ── wasi:cli/exit ────────────────────────────────────────────────────────────
 
 #[test]
-fn proposal_cli_stdin_read_via_stream_import_resolves() {
+fn proposal_cli_exit_import_is_registered() {
     assert!(
-        invoke_result("wasi:cli/stdin", "read-via-stream", vec![]).is_ok(),
-        "wasi:cli/stdin.read-via-stream should be covered by the CLI category"
+        has_import("wasi:cli/exit", "exit"),
+        "wasi:cli/exit.exit should be covered by the CLI category"
     );
+}
+
+// ── wasi:cli/stdout|stderr|stdin ─────────────────────────────────────────────
+
+#[test]
+fn proposal_cli_stdout_get_stdout_returns_stream_handle() {
+    let result = invoke("wasi:cli/stdout", "get-stdout", vec![]);
+    let Value::Object(obj) = result else {
+        panic!("get-stdout should return a stream handle object");
+    };
+    let obj = obj.lock().unwrap();
+    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(1)));
+}
+
+#[test]
+fn proposal_cli_stderr_get_stderr_returns_stream_handle() {
+    let result = invoke("wasi:cli/stderr", "get-stderr", vec![]);
+    let Value::Object(obj) = result else {
+        panic!("get-stderr should return a stream handle object");
+    };
+    let obj = obj.lock().unwrap();
+    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(2)));
+}
+
+#[test]
+fn proposal_cli_stdin_get_stdin_returns_stream_handle() {
+    let result = invoke("wasi:cli/stdin", "get-stdin", vec![]);
+    let Value::Object(obj) = result else {
+        panic!("get-stdin should return a stream handle object");
+    };
+    let obj = obj.lock().unwrap();
+    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(0)));
 }
 
 #[test]
@@ -338,37 +245,5 @@ fn proposal_cli_stderr_write_via_stream_import_resolves() {
     assert!(
         invoke_result("wasi:cli/stderr", "write-via-stream", vec![Value::Null]).is_ok(),
         "wasi:cli/stderr.write-via-stream should be covered by the CLI category"
-    );
-}
-
-#[test]
-fn proposal_cli_exit_import_is_registered() {
-    assert!(
-        has_import("wasi:cli/exit", "exit"),
-        "wasi:cli/exit.exit should be covered by the CLI category"
-    );
-}
-
-#[test]
-fn proposal_cli_terminal_stdin_import_resolves() {
-    assert!(
-        invoke_result("wasi:cli/terminal-stdin", "get-terminal-stdin", vec![]).is_ok(),
-        "wasi:cli/terminal-stdin.get-terminal-stdin should be covered by the CLI category"
-    );
-}
-
-#[test]
-fn proposal_cli_terminal_stdout_import_resolves() {
-    assert!(
-        invoke_result("wasi:cli/terminal-stdout", "get-terminal-stdout", vec![]).is_ok(),
-        "wasi:cli/terminal-stdout.get-terminal-stdout should be covered by the CLI category"
-    );
-}
-
-#[test]
-fn proposal_cli_terminal_stderr_import_resolves() {
-    assert!(
-        invoke_result("wasi:cli/terminal-stderr", "get-terminal-stderr", vec![]).is_ok(),
-        "wasi:cli/terminal-stderr.get-terminal-stderr should be covered by the CLI category"
     );
 }

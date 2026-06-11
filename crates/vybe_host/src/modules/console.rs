@@ -1,76 +1,87 @@
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
-use std::collections::HashMap;
-
-thread_local! {
-    static TIMERS: std::cell::RefCell<HashMap<String, f64>> = std::cell::RefCell::new(HashMap::new());
-}
+use vybe_bytecode::value::Object;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        println!("{}", parts.join(" "));
-        Value::Null
-    }));
-
-    vm.register_host_fn("wasi:cli", "error", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        eprintln!("{}", parts.join(" "));
-        Value::Null
-    }));
-
-    vm.register_host_fn("wasi:cli", "warn", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-        eprintln!("[warn] {}", parts.join(" "));
-        Value::Null
-    }));
-
-    // stdin — read a line from standard input (blocking)
-    vm.register_host_fn("wasi:cli", "readLine", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        // Optional prompt
-        if let Some(prompt) = args.first() {
-            let p = format!("{}", prompt);
-            if !p.is_empty() {
-                use std::io::Write;
-                print!("{}", p);
-                let _ = std::io::stdout().flush();
+    // wasi:logging/logging.log — WASI logging proposal
+    // Signature: log(level: level, context: string, message: string)
+    // Flexible arity: 1 arg = (info, "", msg); 2 args = (level, msg);
+    // 3 args = (level, context, msg); N>3 args = (info, "", joined).
+    // info/debug/trace → stdout; warn/error/critical → stderr.
+    vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let (level, message) = match args.len() {
+            0 => ("info".to_string(), String::new()),
+            1 => ("info".to_string(), format!("{}", args[0])),
+            2 => (format!("{}", args[0]), format!("{}", args[1])),
+            3 => (format!("{}", args[0]), format!("{}", args[2])),
+            _ => {
+                let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
+                ("info".to_string(), parts.join(" "))
             }
+        };
+        match level.as_str() {
+            "warn" | "error" | "critical" => eprintln!("{}", message),
+            _ => println!("{}", message),
         }
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(_) => Value::String(std::sync::Arc::from(line.trim_end_matches('\n').trim_end_matches('\r'))),
-            Err(_) => Value::Null,
-        }
-    }));
-
-    // console.time / console.timeEnd — simple profiling
-    vm.register_host_fn("wasi:cli", "time", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
-        // Store in a thread-local map
-        TIMERS.with(|t| t.borrow_mut().insert(label, now));
         Value::Null
     }));
 
-    vm.register_host_fn("wasi:cli", "timeEnd", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let label = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "default".into());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
-        TIMERS.with(|t| {
-            if let Some(start) = t.borrow_mut().remove(&label) {
-                println!("{}: {}ms", label, now - start);
-            }
-        });
-        Value::Null
-    }));
-
-    // exit — terminate with exit code
-    vm.register_host_fn("wasi:cli", "exit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    // wasi:cli/exit — WASI 0.2.12+ spec interface
+    vm.register_host_fn("wasi:cli/exit", "exit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let code = args.first().map(|v| v.as_f64() as i32).unwrap_or(0);
         std::process::exit(code);
+    }));
+
+    vm.register_host_fn("wasi:cli/exit", "exit-with-code", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let code = args.first().map(|v| v.as_f64() as i32).unwrap_or(0);
+        std::process::exit(code);
+    }));
+
+    // wasi:cli/stdout|stderr|stdin — return a stream handle with an fd tag.
+    // These are used by [method]output-stream.blocking-write-and-flush in wasi:io/streams.
+    vm.register_host_fn("wasi:cli/stdout", "get-stdout", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let mut h = Object::new();
+        h.properties.insert("fd".into(), Value::I32(1));
+        h.properties.insert("__type".into(), Value::String(Arc::from("output-stream")));
+        Value::Object(Arc::new(Mutex::new(h)))
+    }));
+
+    vm.register_host_fn("wasi:cli/stderr", "get-stderr", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let mut h = Object::new();
+        h.properties.insert("fd".into(), Value::I32(2));
+        h.properties.insert("__type".into(), Value::String(Arc::from("output-stream")));
+        Value::Object(Arc::new(Mutex::new(h)))
+    }));
+
+    vm.register_host_fn("wasi:cli/stdin", "get-stdin", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let mut h = Object::new();
+        h.properties.insert("fd".into(), Value::I32(0));
+        h.properties.insert("__type".into(), Value::String(Arc::from("input-stream")));
+        Value::Object(Arc::new(Mutex::new(h)))
+    }));
+
+    // wasi:cli/stdout|stderr — 0.3 write-via-stream
+    vm.register_host_fn("wasi:cli/stdout", "write-via-stream", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let stream_val = args.first().cloned().unwrap_or(Value::Null);
+        let bytes = ctx.stream_drain(&stream_val);
+        if !bytes.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&bytes);
+        }
+        let (fut, fut_id) = ctx.create_future();
+        ctx.resolve_future(fut_id, Value::Null);
+        fut
+    }));
+
+    vm.register_host_fn("wasi:cli/stderr", "write-via-stream", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let stream_val = args.first().cloned().unwrap_or(Value::Null);
+        let bytes = ctx.stream_drain(&stream_val);
+        if !bytes.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&bytes);
+        }
+        let (fut, fut_id) = ctx.create_future();
+        ctx.resolve_future(fut_id, Value::Null);
+        fut
     }));
 }

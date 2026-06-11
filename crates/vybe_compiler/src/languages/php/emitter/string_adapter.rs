@@ -4933,7 +4933,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lget(chunk, repr_slot, line);
     chunk.emit_else(line);
     lget(chunk, repr_slot, line);
-    let log_idx = chunks[0].add_import("wasi:cli".to_string(), "log".to_string());
+    let log_idx = chunks[0].add_import("wasi:logging/logging".to_string(), "log".to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
     chunk.emit(1u8, line);

@@ -262,18 +262,18 @@ erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────
 
-now          = { emit = "host:wasi:clocks:vbNow",    min_args = 0, max_args = 0 }
-date         = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 }
-today        = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 }
-time         = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
-timeofday    = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
-timer        = { emit = "intrinsic:timer",          min_args = 0, max_args = 0 }
-year         = { emit = "host:wasi:clocks:vbYear",   min_args = 1, max_args = 1 }
-month        = { emit = "host:wasi:clocks:vbMonth",  min_args = 1, max_args = 1 }
-day          = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 }
-hour         = { emit = "host:wasi:clocks:vbHour",   min_args = 1, max_args = 1 }
-minute       = { emit = "host:wasi:clocks:vbMinute", min_args = 1, max_args = 1 }
-second       = { emit = "host:wasi:clocks:vbSecond", min_args = 1, max_args = 1 }
+now          = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
+date         = { emit = "common:dotnet.datetime_today", min_args = 0, max_args = 0 }
+today        = { emit = "common:dotnet.datetime_today", min_args = 0, max_args = 0 }
+time         = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
+timeofday    = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
+timer        = { emit = "intrinsic:timer",               min_args = 0, max_args = 0 }
+year         = { emit = "common:vb.year",    min_args = 1, max_args = 1 }
+month        = { emit = "common:vb.month",   min_args = 1, max_args = 1 }
+day          = { emit = "common:vb.day",     min_args = 1, max_args = 1 }
+hour         = { emit = "common:vb.hour",    min_args = 1, max_args = 1 }
+minute       = { emit = "common:vb.minute",  min_args = 1, max_args = 1 }
+second       = { emit = "common:vb.second",  min_args = 1, max_args = 1 }
 # DateAdd / DateSerial / TimeSerial profile entries retired — they
 # pointed at `vybe:types/dateTime*` host fns that have been retired in
 # favour of compile-time lowering through
@@ -281,15 +281,15 @@ second       = { emit = "host:wasi:clocks:vbSecond", min_args = 1, max_args = 1 
 # exists for the free-function VB shapes (DateAdd takes a unit string
 # like "d"/"m"/"y" and DateSerial constructs from year/month/day) —
 # bring them back as dedicated adapters when a test demands them.
-datediff     = { emit = "host:wasi:clocks:vbDay",            min_args = 3, max_args = 3 }
-datepart     = { emit = "host:wasi:clocks:vbDay",            min_args = 2, max_args = 2 }
+datediff     = { emit = "noop", min_args = 3, max_args = 3 }
+datepart     = { emit = "noop", min_args = 2, max_args = 2 }
 datevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
 timevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
 # `timeserial` removed alongside `timeserial`/`dateserial` (see DateAdd
 # comment above).
 cdate        = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
 monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
-weekday      = { emit = "host:wasi:clocks:vbDay",             min_args = 1, max_args = 1 }
+weekday      = { emit = "common:vb.weekday",                  min_args = 1, max_args = 1 }
 weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 "datetime.now"    = { emit = "host:ecma:date:now",   min_args = 0, max_args = 0 }
 "datetime.utcnow" = { emit = "host:ecma:date:now", min_args = 0, max_args = 0 }
@@ -571,9 +571,9 @@ hide           = { emit = "host:vybe:gui:hideForm",        min_args = 0, max_arg
 "controls.add" = { emit = "host:vybe:gui:controlsAdd",    min_args = 1, max_args = 1 }
 
 # Stopwatch methods
-start          = { emit = "host:wasi:clocks:stopwatchStart", min_args = 0, max_args = 0 }
-stop           = { emit = "host:wasi:clocks:stopwatchStop",  min_args = 0, max_args = 0 }
-reset          = { emit = "host:wasi:clocks:stopwatchReset", min_args = 0, max_args = 0 }
+start          = { emit = "common:dotnet.stopwatch_start",   min_args = 0, max_args = 0 }
+stop           = { emit = "common:dotnet.stopwatch_stop",    min_args = 0, max_args = 0 }
+reset          = { emit = "common:dotnet.stopwatch_reset",   min_args = 0, max_args = 0 }
 
 # Regex instance methods — extract __pattern from self object
 ismatch        = { emit = "host:ecma:regexp:test",         min_args = 1, max_args = 1 }
@@ -696,7 +696,7 @@ extra_imports = [
 #   process, queue, stack, hashset — all dispatch through dotnet wrapper
 #   Common emit paths (`stringbuilder_adapter`, `stream_io_adapter`,
 #   `threading::emit_*`, `process_adapter`, `collections.new`).
-"stopwatch"      = ["wasi:clocks", "stopwatchNew"]
+"stopwatch"      = ["common", "dotnet.stopwatch_new"]
 "random"         = ["wasi:random/insecure", "get-insecure-random-u64"]
 "memorystream"   = ["common", "collections.new"]
 "filestream"     = ["wasi:filesystem", "readFile"]

@@ -37,7 +37,7 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
 
 pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
     match prefix {
-        "system.console" => Some("wasi:cli"),
+        "system.console" => Some("wasi:logging/logging"),
         "system.math" => Some("ecma:math"),
         "system.convert" => Some("vybe:convert"),
         // `system.string.<X>` falls back here when not matched by an
@@ -53,7 +53,7 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // ECMA-262 Array surface by default; .NET-only methods need
         // explicit adapter entries.
         "system.array" => Some("ecma:array"),
-        "system.environment" => Some("wasi:cli"),
+        "system.environment" => Some("wasi:cli/environment"),
         // StreamReader / StreamWriter — retired from `dotnet:io` host
         // namespace; lower at compile time through
         // `emitter::dotnet::core::stream_io_adapter` (composes
@@ -63,16 +63,16 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => {
             Some("wasi:filesystem")
         }
-        "system.threading.thread" => Some("wasi:clocks"),
+        "system.threading.thread" => Some("vybe:clocks"),
         // System.Threading / Tasks: spawn+join compile to Op::THREAD_SPAWN /
-        // Op::THREAD_JOIN; sleep uses wasi:clocks; Task/Thread class types
+        // Op::THREAD_JOIN; sleep uses vybe:clocks; Task/Thread class types
         // are registered in the TypeRegistry but carry no host-fn namespace.
         // Return None so the FQN resolver falls through to the type registry
         // rather than pointing at a dead `vybe:threading` module.
         "system.diagnostics.process" => Some("vybe:types"),
-        "system.diagnostics.stopwatch" => Some("wasi:clocks"),
+        "system.diagnostics.stopwatch" => Some("wasi:clocks/monotonic-clock"),
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => {
-            Some("wasi:cli")
+            Some("wasi:logging/logging")
         }
         "system.net" => Some("wasi:http"),
         // Networking no longer falls through to a monolithic `.NET`

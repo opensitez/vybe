@@ -4,7 +4,7 @@
 //! that maps language-specific function names to `(module, name)` host imports.
 //! Many of these mappings are identical across languages:
 //!
-//! - Python `print()`, Ruby `puts`, PHP `echo`, Dart `print()` all map to `("wasi:cli", "log")`
+//! - Python `print()`, Ruby `puts`, PHP `echo`, Dart `print()` all map to `("wasi:logging/logging", "log")`
 //! - Python `int()`, JS `parseInt()`, PHP `intval()`, Ruby `to_i` all map to `("ecma:number", "Number")`
 //!
 //! This module provides `resolve_common_import` as a single source of truth.
@@ -32,11 +32,12 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
     match name.to_lowercase().as_str() {
         // ── I/O ──────────────────────────────────────────────────────────
         "print" | "puts" | "echo" | "display" | "writeline" | "write" => {
-            Some(CommonImport::Host("wasi:cli", "log"))
+            Some(CommonImport::Host("wasi:logging/logging", "log"))
         }
 
         "readline" | "input" | "gets" | "prompt" => {
-            Some(CommonImport::Host("wasi:cli", "readLine"))
+            // 2-step: wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read
+            Some(CommonImport::Intrinsic("readline"))
         }
 
         // ── Type conversion ──────────────────────────────────────────────
@@ -94,7 +95,7 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "json_encode" => Some(CommonImport::Host("ecma:json", "stringify")),
 
         // ── Environment ──────────────────────────────────────────────────
-        "getenv" => Some(CommonImport::Host("wasi:cli", "getEnv")),
+        "getenv" => Some(CommonImport::Host("wasi:cli/environment", "get-environment")),
 
         _ => None,
     }
@@ -122,7 +123,19 @@ mod tests {
         for name in &["print", "puts", "echo", "DISPLAY", "WriteLine"] {
             assert_eq!(
                 host(resolve_common_import(name)),
-                Some(("wasi:cli", "log")),
+                Some(("wasi:logging/logging", "log")),
+                "failed for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn common_readline_uses_intrinsic() {
+        for name in &["readline", "input", "gets", "prompt"] {
+            assert_eq!(
+                intrinsic(resolve_common_import(name)),
+                Some("readline"),
                 "failed for {}",
                 name
             );

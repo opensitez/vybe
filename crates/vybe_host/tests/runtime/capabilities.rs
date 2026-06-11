@@ -299,7 +299,7 @@ fn sandbox_console_capture() {
 
     register_with_capabilities(&mut vm, &Capabilities::safe());
     // Override console.log to capture output
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+    vm.register_host_fn("wasi:logging/logging", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
         out.lock().unwrap().push(parts.join(" "));
         Value::Null
@@ -309,7 +309,7 @@ fn sandbox_console_capture() {
     let mut chunk = Chunk::new("<test>");
     let msg = chunk.add_constant(Value::String(std::sync::Arc::from("hello sandbox")));
     chunk.emit_op_u16(Op::CONST, msg, 0);
-    let log_idx = chunk.add_import("wasi:cli", "log");
+    let log_idx = chunk.add_import("wasi:logging/logging", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
     chunk.emit(1, 0); // argc = 1
     chunk.emit_op(Op::DROP, 0);

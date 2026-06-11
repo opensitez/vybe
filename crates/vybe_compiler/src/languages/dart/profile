@@ -203,7 +203,7 @@ module = "ecma:set"
 [[esm_default]]
 kind = "namespace"
 alias = "Stopwatch"
-module = "wasi:clocks"
+module = "wasi:clocks/monotonic-clock"
 
 [[esm_default]]
 kind = "namespace"
@@ -258,7 +258,7 @@ module = "web:encoding"
 # DateTime / StringBuffer retired — handled by the dotnet wrapper
 # Component Model at compile time (`datetime_adapter`, `stringbuilder_adapter`).
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
-Stopwatch       = ["wasi:clocks", "stopwatchNew"]
+Stopwatch       = ["common", "dotnet.stopwatch_new"]
 RegExp          = ["ecma:regexp", "new"]
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@
 pub mod crypto;
 pub mod filesystem;
 pub mod http;
+pub mod io;
 pub mod sql;
 
 use vybe_bytecode::VM;
@@ -22,4 +23,7 @@ use vybe_bytecode::VM;
 pub fn register(vm: &mut VM) {
     crypto::register(vm);
     filesystem::register(vm);
+    // io::register runs after filesystem so its [method] handlers take precedence,
+    // giving unified file+socket+fd dispatch for all wasi:io/streams resources.
+    io::register(vm);
 }

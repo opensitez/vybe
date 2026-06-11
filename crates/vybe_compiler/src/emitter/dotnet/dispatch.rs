@@ -181,6 +181,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── .NET Stopwatch adapter ──────────────────────────────────
+        "dotnet.stopwatch_new" => {
+            crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_new(
+                chunks, current, line,
+            )
+        }
+        "dotnet.stopwatch_start" => {
+            crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_start(
+                chunks, current, line,
+            )
+        }
+        "dotnet.stopwatch_stop" => {
+            crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_stop(
+                chunks, current, line,
+            )
+        }
+        "dotnet.stopwatch_reset" => {
+            crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_reset(
+                chunks, current, line,
+            )
+        }
         "dotnet.stopwatch_start_new" => {
             crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_start_new(
                 chunks, current, line,
@@ -561,6 +581,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.console_writeline" => {
             crate::emitter::dotnet::core::console_adapter::emit_console_writeline(
+                chunks, current, line,
+            )
+        }
+        "dotnet.console_readline" => {
+            crate::emitter::dotnet::core::console_adapter::emit_console_readline(
+                chunks, current, line,
+            )
+        }
+        "dotnet.console_error" => {
+            crate::emitter::dotnet::core::console_adapter::emit_console_error(
                 chunks, current, line,
             )
         }

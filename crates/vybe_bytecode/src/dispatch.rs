@@ -6524,6 +6524,216 @@ impl VM {
                     }
                 }
 
+                // ── CM3 Canonical ABI — Track A ─────────────────────────────────
+
+                _ if op == Op::TASK_RETURN => {
+                    // canon task.return — pop result, mark active task as Returned.
+                    // A second task.return on the same task is a trap per spec.
+                    let result = self.pop();
+                    if let Some(task) = self.cm_tasks.last_mut() {
+                        if !task.mark_returned() {
+                            return Err(VMError::new("task.return called twice on same task (trap)"));
+                        }
+                    }
+                    // Push the result back — the function body may continue running.
+                    self.push(result)?;
+                }
+
+                _ if op == Op::TASK_CANCEL => {
+                    // canon task.cancel — cancel the current task.
+                    if let Some(task) = self.cm_tasks.last_mut() {
+                        task.phase = crate::cm_task::TaskPhase::Returned;
+                    }
+                }
+
+                _ if op == Op::SUBTASK_CANCEL => {
+                    // canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
+                    let handle = self.pop().as_i32() as u32;
+                    let fid = if let Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) =
+                        self.handle_table.get(handle)
+                    {
+                        Some(*future_id)
+                    } else {
+                        None
+                    };
+                    if let Some(fid) = fid {
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.reject_future(fid, Value::String(Arc::from("cancelled"))) {
+                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        }
+                    }
+                }
+
+                _ if op == Op::SUBTASK_DROP => {
+                    // canon subtask.drop — pops subtask handle (i32), removes from handle table.
+                    let handle = self.pop().as_i32() as u32;
+                    self.handle_table.remove(handle);
+                }
+
+                _ if op == Op::WAITABLE_SET_NEW => {
+                    // canon waitable-set.new — create a new waitable set, push its handle (i32).
+                    let set_id = self.waitable_sets.create();
+                    self.push(Value::I32(set_id as i32))?;
+                }
+
+                _ if op == Op::WAITABLE_JOIN => {
+                    // canon waitable.join — pops [waitable_handle_i32, set_handle_i32];
+                    // looks up waitable in handle table, adds to set.
+                    let set_handle = self.pop().as_i32() as u32;
+                    let waitable_handle = self.pop().as_i32() as u32;
+                    let waitable = match self.handle_table.get(waitable_handle) {
+                        Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) => {
+                            Some(crate::waitable::Waitable::Stream(*sid))
+                        }
+                        Some(crate::handle_table::HandleEntry::ReadableFutureEnd(fid)) => {
+                            Some(crate::waitable::Waitable::Future(*fid))
+                        }
+                        Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
+                            Some(crate::waitable::Waitable::Subtask(*future_id))
+                        }
+                        _ => None,
+                    };
+                    if let Some(w) = waitable {
+                        if let Some(set) = self.waitable_sets.get_mut(set_handle) {
+                            set.join(w);
+                        }
+                    }
+                }
+
+                _ if op == Op::WAITABLE_SET_WAIT => {
+                    // canon waitable-set.wait — pops [set_handle_i32, memory_ptr_i32];
+                    // writes (event_code, handle_id, 0) to memory; pushes event_code (i32).
+                    // If nothing is ready, returns NONE immediately (MVP — true blocking TBD).
+                    let memory_ptr = self.pop().as_i32() as usize;
+                    let set_handle = self.pop().as_i32() as u32;
+                    let ready = {
+                        let el = self.event_loop.borrow();
+                        self.waitable_sets.get(set_handle)
+                            .and_then(|set| set.poll_ready(&el))
+                    };
+                    let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
+                    if memory_ptr + 12 <= self.memory.len() {
+                        self.memory.store_i32(memory_ptr, code as i32)?;
+                        self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
+                        self.memory.store_i32(memory_ptr + 8, 0)?;
+                    }
+                    self.push(Value::I32(code as i32))?;
+                }
+
+                _ if op == Op::WAITABLE_SET_POLL => {
+                    // canon waitable-set.poll — non-blocking version of WAITABLE_SET_WAIT.
+                    // Pushes EventCode::None (0) immediately if nothing is ready.
+                    let memory_ptr = self.pop().as_i32() as usize;
+                    let set_handle = self.pop().as_i32() as u32;
+                    let ready = {
+                        let el = self.event_loop.borrow();
+                        self.waitable_sets.get(set_handle)
+                            .and_then(|set| set.poll_ready(&el))
+                    };
+                    let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
+                    if memory_ptr + 12 <= self.memory.len() {
+                        self.memory.store_i32(memory_ptr, code as i32)?;
+                        self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
+                        self.memory.store_i32(memory_ptr + 8, 0)?;
+                    }
+                    self.push(Value::I32(code as i32))?;
+                }
+
+                _ if op == Op::STREAM_NEW => {
+                    // canon stream.new — create a stream; push readable_handle and writable_handle (i32).
+                    let stream_id = self.event_loop.borrow_mut().create_stream();
+                    let rd = self.handle_table.insert(
+                        crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id));
+                    let wr = self.handle_table.insert(
+                        crate::handle_table::HandleEntry::WritableStreamEnd(stream_id));
+                    self.push(Value::I32(rd as i32))?;
+                    self.push(Value::I32(wr as i32))?;
+                }
+
+                _ if op == Op::STREAM_DROP_RD => {
+                    // canon stream.drop-readable — pops readable stream handle (i32).
+                    let handle = self.pop().as_i32() as u32;
+                    if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) =
+                        self.handle_table.remove(handle)
+                    {
+                        // Close the stream so waiting writers don't block forever.
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.stream_close(sid) {
+                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        }
+                    }
+                }
+
+                _ if op == Op::STREAM_DROP_WR => {
+                    // canon stream.drop-writable — pops writable stream handle (i32).
+                    let handle = self.pop().as_i32() as u32;
+                    if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(sid)) =
+                        self.handle_table.remove(handle)
+                    {
+                        // Closing the write end signals EOF to the reader.
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.stream_close(sid) {
+                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        }
+                    }
+                }
+
+                _ if op == Op::FUTURE_NEW => {
+                    // canon future.new — create a future; push readable_handle and writable_handle (i32).
+                    let future_id = self.event_loop.borrow_mut().create_future();
+                    let rd = self.handle_table.insert(
+                        crate::handle_table::HandleEntry::ReadableFutureEnd(future_id));
+                    let wr = self.handle_table.insert(
+                        crate::handle_table::HandleEntry::WritableFutureEnd(future_id));
+                    self.push(Value::I32(rd as i32))?;
+                    self.push(Value::I32(wr as i32))?;
+                }
+
+                _ if op == Op::FUTURE_DROP_RD => {
+                    // canon future.drop-readable — pops readable future handle (i32).
+                    let handle = self.pop().as_i32() as u32;
+                    self.handle_table.remove(handle);
+                }
+
+                _ if op == Op::FUTURE_DROP_WR => {
+                    // canon future.drop-writable — pops writable future handle (i32).
+                    let handle = self.pop().as_i32() as u32;
+                    if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(fid)) =
+                        self.handle_table.remove(handle)
+                    {
+                        // Dropping the write end without resolving rejects the future.
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.reject_future(fid, Value::String(Arc::from("future dropped"))) {
+                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        }
+                    }
+                }
+
+                _ if op == Op::BACKPRESSURE_SET => {
+                    // canon backpressure.set — pops enabled_i32, sets/clears backpressure on active task.
+                    let enabled = self.pop().as_i32() != 0;
+                    if let Some(task) = self.cm_tasks.last_mut() {
+                        task.backpressure = enabled;
+                    }
+                }
+
+                _ if op == Op::CONTEXT_GET => {
+                    // canon context.get — pops index_i32, pushes context slot value.
+                    let index = self.pop().as_i32() as usize;
+                    let val = self.context_slots.get(index).cloned().unwrap_or(Value::Undefined);
+                    self.push(val)?;
+                }
+
+                _ if op == Op::CONTEXT_SET => {
+                    // canon context.set — pops [value, index_i32], sets context slot.
+                    let index = self.pop().as_i32() as usize;
+                    let val = self.pop();
+                    if index >= self.context_slots.len() {
+                        self.context_slots.resize(index + 1, Value::Undefined);
+                    }
+                    self.context_slots[index] = val;
+                }
+
                 // -- WASM GC Type System --
                 _ if op == Op::SET_TYPE_ID => {
                     // Stack: [obj, type_id_i32] → [obj]

@@ -189,8 +189,8 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 
 # ── time module ──────────────────────────────────────────────────────────────
 
-"time.time"      = { emit = "host:wasi:clocks:now",           min_args = 0, max_args = 0 }
-"time.sleep"     = { emit = "host:wasi:clocks:sleep",         min_args = 1, max_args = 1 }
+"time.time"      = { emit = "host:ecma:date:now",              min_args = 0, max_args = 0 }
+"time.sleep"     = { emit = "host:vybe:clocks:sleep",          min_args = 1, max_args = 1 }
 
 # ── subprocess module ────────────────────────────────────────────────────────
 
@@ -343,4 +343,4 @@ module = "ecma:math"
 [[esm_default]]
 kind = "namespace"
 alias = "time"
-module = "wasi:clocks"
+module = "wasi:clocks/wall-clock"

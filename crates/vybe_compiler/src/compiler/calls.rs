@@ -7505,7 +7505,7 @@ impl Compiler {
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
 
-                    let log_idx = self.import("wasi:cli", "log");
+                    let log_idx = self.import("wasi:logging/logging", "log");
                     let line = self.line;
                     self.emit_u16(Op::LOCAL_GET, arg_slot);
                     self.emit_common("php.echo_stringify", 1, line);

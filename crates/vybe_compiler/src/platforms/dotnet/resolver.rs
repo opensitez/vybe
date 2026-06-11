@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(
             res,
             DottedResolution::HostCall {
-                module: "wasi:cli".to_string(),
+                module: "wasi:logging/logging".to_string(),
                 func: "log".to_string(),
             }
         );

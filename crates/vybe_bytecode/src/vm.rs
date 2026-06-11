@@ -255,6 +255,42 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Synchronously drain all buffered items from a `stream<u8>` Value into bytes.
+    /// Used by host functions that receive a guest stream and need to read all buffered data.
+    /// Items are converted: I32 → single byte, String → UTF-8 bytes, Array<I32> → byte sequence.
+    /// Returns empty Vec if the value is not a Stream or the stream has no buffered data.
+    pub fn stream_drain(&mut self, stream_val: &Value) -> Vec<u8> {
+        use crate::value::ObjectKind;
+        let stream_id = if let Value::Object(obj) = stream_val {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Stream { id } = o.kind { id } else { return Vec::new(); }
+        } else {
+            return Vec::new();
+        };
+        let mut out: Vec<u8> = Vec::new();
+        if let Some(ref el) = self.event_loop {
+            let mut el_mut = el.borrow_mut();
+            if let Some(rec) = el_mut.stream_buffers.get_mut(&stream_id) {
+                while let Some(item) = rec.buffer.pop_front() {
+                    match &item {
+                        Value::I32(b) => out.push(*b as u8),
+                        Value::String(s) => out.extend_from_slice(s.as_bytes()),
+                        Value::Object(inner_obj) => {
+                            let o = inner_obj.lock().unwrap();
+                            if let ObjectKind::Array(arr) = &o.kind {
+                                for v in arr {
+                                    if let Value::I32(b) = v { out.push(*b as u8); }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -437,6 +473,17 @@ pub struct VM {
     /// Optional chunk-name filter for execution trace output.
     /// When set, only matching chunks emit trace lines.
     pub(crate) trace_chunk_filter: Option<String>,
+    // ── CM3 Canonical ABI (Track A) ─────────────────────────────────────────
+    /// Handle table — maps i32 indices to typed component resources.
+    pub handle_table: crate::handle_table::HandleTable,
+    /// Active CM3 tasks (keyed by task ID). Each async export invocation creates one.
+    pub cm_tasks: Vec<crate::cm_task::CMTask>,
+    /// Next CM3 task ID.
+    pub(crate) next_cm_task_id: u32,
+    /// Waitable set registry.
+    pub waitable_sets: crate::waitable::WaitableRegistry,
+    /// CM3 context slots (canon context.get/set).
+    pub context_slots: Vec<Value>,
 }
 
 /// A registered finalizer for an object.
@@ -538,6 +585,11 @@ impl VM {
             next_thread_id: 1,
             trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
+            handle_table: crate::handle_table::HandleTable::new(),
+            cm_tasks: Vec::new(),
+            next_cm_task_id: 1,
+            waitable_sets: crate::waitable::WaitableRegistry::new(),
+            context_slots: Vec::new(),
         }
     }
 

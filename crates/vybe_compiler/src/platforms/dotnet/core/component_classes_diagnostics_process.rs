@@ -1,7 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::{common_constructor_class, static_only_class};
 use vybe_bytecode::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+    ClassType, ConstructorDef, MethodBody, MethodDef,
 };
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
@@ -11,7 +11,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("Stopwatch")
                 .with_constructor(
                     ConstructorDef::new(0)
-                        .with_backing(HostTarget::new("wasi:clocks", "stopwatchNew")),
+                        .with_common_backing("dotnet.stopwatch_new"),
                 )
                 .with_method(MethodDef::static_method(
                     "StartNew",
@@ -21,17 +21,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Start",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchStart")),
+                    MethodBody::Common("dotnet.stopwatch_start".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Stop",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchStop")),
+                    MethodBody::Common("dotnet.stopwatch_stop".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Reset",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchReset")),
+                    MethodBody::Common("dotnet.stopwatch_reset".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Restart",
@@ -53,15 +53,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Diagnostics",
             "Debug",
             &[
-                ("WriteLine", 1, "wasi:cli", "log"),
-                ("Write", 1, "wasi:cli", "log"),
-                ("Assert", 1, "wasi:cli", "log"),
+                ("WriteLine", 1, "wasi:logging/logging", "log"),
+                ("Write", 1, "wasi:logging/logging", "log"),
+                ("Assert", 1, "wasi:logging/logging", "log"),
             ],
         ),
         static_only_class(
             "dotnet.System.Diagnostics",
             "Trace",
-            &[("WriteLine", 1, "wasi:cli", "log")],
+            &[("WriteLine", 1, "wasi:logging/logging", "log")],
         ),
         common_constructor_class(
             "dotnet.System.Diagnostics",

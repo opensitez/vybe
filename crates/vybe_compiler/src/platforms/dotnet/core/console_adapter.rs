@@ -25,7 +25,7 @@ use vybe_bytecode::{Chunk, Value};
 /// block (which would leak the block label to the caller's
 /// `label_stack` — the same trap iter_drain hit).
 pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
-    let log_idx = chunks[0].add_import("wasi:cli", "log");
+    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
     let chunk = &mut chunks[current];
     // `__vybe_tostring` (runtime helper wired by `bundle::finalize_with_runtime_helpers`)
     // dispatches to user-defined `ToString` / `tostring` methods first,
@@ -104,6 +104,31 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
     chunk.emit(1, line);
+    chunk.emit_op(Op::NULL, line);
+}
+
+/// `Console.ReadLine()` — wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read.
+/// Stack: [] → [string]
+pub fn emit_console_readline(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::io::emit_input(&mut chunks[current], line);
+}
+
+/// `Console.Error.WriteLine(v)` / `Console.Error.Write(v)` — log at error level.
+/// Prepends "error" level arg before calling wasi:logging/logging.log.
+/// Stack: [v] → [null]
+pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
+    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
+    let chunk = &mut chunks[current];
+    let level_idx = chunk.add_constant(Value::String(Arc::from("error")));
+    // Stack currently has [v]. We need to call log(level, v) = 2 args.
+    // Push level UNDER v: stash v, push level, restore v.
+    let v_local = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, v_local, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::CONST, level_idx, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
+    chunk.emit(2, line);
     chunk.emit_op(Op::NULL, line);
 }
 

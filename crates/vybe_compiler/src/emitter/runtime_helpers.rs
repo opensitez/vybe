@@ -3055,7 +3055,7 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, line);
 
-    let log_idx = imports.add_import("wasi:cli", "log");
+    let log_idx = imports.add_import("wasi:logging/logging", "log");
     c.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
     c.emit(1u8, line);
     c.emit_op(Op::DROP, line);

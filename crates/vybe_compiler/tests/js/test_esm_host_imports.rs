@@ -15,7 +15,7 @@ use super::helpers::run_js_with_imports;
 fn named_import_direct_call() {
     let out = run_js_with_imports(
         r#"
-import { log } from "wasi:cli";
+import { log } from "wasi:logging/logging";
 log("direct");
 "#,
     );
@@ -27,7 +27,7 @@ fn named_import_read_as_value() {
     // `const f = log; f(...)` — exercises the GLOBAL_GET path.
     let out = run_js_with_imports(
         r#"
-import { log } from "wasi:cli";
+import { log } from "wasi:logging/logging";
 const f = log;
 f("indirect");
 "#,
@@ -39,7 +39,7 @@ f("indirect");
 fn named_import_aliased() {
     let out = run_js_with_imports(
         r#"
-import { log as myLog } from "wasi:cli";
+import { log as myLog } from "wasi:logging/logging";
 myLog("aliased");
 "#,
     );
@@ -48,12 +48,12 @@ myLog("aliased");
 
 #[test]
 fn wildcard_namespace_import() {
-    // `import * as cli from "wasi:cli"` synthesizes a namespace object
+    // `import * as logging from "wasi:cli"` synthesizes a namespace object
     // with `log` (and every other fn in wasi:cli) as properties.
     let out = run_js_with_imports(
         r#"
-import * as cli from "wasi:cli";
-cli.log("namespaced");
+import * as logging from "wasi:logging/logging";
+logging.log("namespaced");
 "#,
     );
     assert_eq!(out, vec!["namespaced"]);
@@ -185,7 +185,7 @@ fn side_effect_import_is_noop() {
     // aren't code that runs, they're a bag of functions.
     let out = run_js_with_imports(
         r#"
-import "wasi:cli";
+import "wasi:logging/logging";
 console.log("after");
 "#,
     );
@@ -200,8 +200,8 @@ fn wildcard_namespace_typeof_is_object() {
     // object is exotic (frozen, null-prototype).
     let out = run_js_with_imports(
         r#"
-import * as cli from "wasi:cli";
-console.log(typeof cli);
+import * as logging from "wasi:logging/logging";
+console.log(typeof logging);
 "#,
     );
     assert_eq!(out, vec!["object"]);
@@ -216,8 +216,8 @@ fn wildcard_namespace_tostring_tag() {
     // produces.
     let out = run_js_with_imports(
         r#"
-import * as cli from "wasi:cli";
-console.log(String(cli));
+import * as logging from "wasi:logging/logging";
+console.log(String(logging));
 "#,
     );
     assert_eq!(out, vec!["[object Module]"]);
@@ -360,7 +360,7 @@ fn validator_accepts_resolvable_imports() {
 
     let module = vybe_compiler::languages::js::parse(
         r#"
-import { log } from "wasi:cli";
+import { log } from "wasi:logging/logging";
 log("hi");
 "#,
     )
@@ -398,7 +398,7 @@ fn validator_flags_unknown_export() {
 
     let module = vybe_compiler::languages::js::parse(
         r#"
-import { definitelyNotAThing } from "wasi:cli";
+import { definitelyNotAThing } from "wasi:logging/logging";
 definitelyNotAThing();
 "#,
     )

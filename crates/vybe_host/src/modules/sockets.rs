@@ -14,14 +14,14 @@ use vybe_bytecode::value::Object;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-struct SocketState {
-    tcp_streams: HashMap<u64, TcpStream>,
+pub(crate) struct SocketState {
+    pub(crate) tcp_streams: HashMap<u64, TcpStream>,
     tcp_listeners: HashMap<u64, TcpListener>,
     pending_accepts: HashMap<u64, Vec<TcpStream>>,
     udp_sockets: HashMap<u64, UdpSocket>,
 }
 
-fn get_state() -> Arc<Mutex<SocketState>> {
+pub(crate) fn get_state() -> Arc<Mutex<SocketState>> {
     use std::sync::OnceLock;
     static STATE: OnceLock<Arc<Mutex<SocketState>>> = OnceLock::new();
     STATE.get_or_init(|| Arc::new(Mutex::new(SocketState {
@@ -264,6 +264,7 @@ pub fn register(vm: &mut VM) {
     // `register_dotnet_sockets` + `register_dotnet_io`.
     register_wasi_io(vm);
     register_wasi_sockets(vm);
+    register_wasi_sockets_method_forms(vm);
 }
 
 fn register_wasi_io(vm: &mut VM) {
@@ -721,7 +722,7 @@ fn resolve_name_socket_addrs(host: &str) -> Vec<SocketAddr> {
     }
 }
 
-fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
+pub(crate) fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("__type".into(), Value::String(Arc::from("Pollable")));
     obj.properties.insert("__target".into(), Value::Object(target));
@@ -928,7 +929,7 @@ fn stream_kind(stream: &Arc<Mutex<Object>>) -> Option<String> {
     }
 }
 
-fn stream_socket_id(stream: &Arc<Mutex<Object>>) -> Option<u64> {
+pub(crate) fn stream_socket_id(stream: &Arc<Mutex<Object>>) -> Option<u64> {
     match stream.lock().unwrap().properties.get("__socket_id") {
         Some(Value::F64(id)) => Some(*id as u64),
         Some(Value::I64(id)) => Some(*id as u64),
@@ -937,16 +938,16 @@ fn stream_socket_id(stream: &Arc<Mutex<Object>>) -> Option<u64> {
     }
 }
 
-fn value_len_arg(value: &Value) -> usize {
+pub(crate) fn value_len_arg(value: &Value) -> usize {
     let len = value.as_i64();
     len.clamp(0, 64 * 1024) as usize
 }
 
-fn byte_array(bytes: &[u8]) -> Value {
+pub(crate) fn byte_array(bytes: &[u8]) -> Value {
     value_array(bytes.iter().map(|byte| Value::I32(*byte as i32)).collect())
 }
 
-fn bytes_from_value(value: &Value) -> Vec<u8> {
+pub(crate) fn bytes_from_value(value: &Value) -> Vec<u8> {
     match value {
         Value::String(text) => text.as_bytes().to_vec(),
         Value::Object(array) => {
@@ -961,7 +962,7 @@ fn bytes_from_value(value: &Value) -> Vec<u8> {
     }
 }
 
-fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {
+pub(crate) fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {
     let Some(socket_id) = stream_socket_id(stream) else { return Value::Null; };
     if len == 0 {
         return value_array(vec![]);
@@ -989,7 +990,7 @@ fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool) ->
     result
 }
 
-fn write_stream_bytes(stream: &Arc<Mutex<Object>>, contents: &[u8], flush: bool) -> Value {
+pub(crate) fn write_stream_bytes(stream: &Arc<Mutex<Object>>, contents: &[u8], flush: bool) -> Value {
     let Some(socket_id) = stream_socket_id(stream) else { return Value::Null; };
     let state = get_state();
     let mut guard = state.lock().unwrap();
@@ -1009,7 +1010,7 @@ fn write_stream_bytes(stream: &Arc<Mutex<Object>>, contents: &[u8], flush: bool)
     }
 }
 
-fn flush_stream(stream: &Arc<Mutex<Object>>) -> Value {
+pub(crate) fn flush_stream(stream: &Arc<Mutex<Object>>) -> Value {
     let Some(socket_id) = stream_socket_id(stream) else { return Value::Null; };
     let state = get_state();
     let mut guard = state.lock().unwrap();
@@ -1023,7 +1024,7 @@ fn flush_stream(stream: &Arc<Mutex<Object>>) -> Value {
     }
 }
 
-fn splice_streams(src: &Arc<Mutex<Object>>, dst: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {
+pub(crate) fn splice_streams(src: &Arc<Mutex<Object>>, dst: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {
     let bytes = read_stream_bytes(src, len, blocking);
     let Value::Object(array) = &bytes else { return Value::Null; };
     let contents = bytes_from_value(&Value::Object(array.clone()));
@@ -1034,7 +1035,7 @@ fn splice_streams(src: &Arc<Mutex<Object>>, dst: &Arc<Mutex<Object>>, len: usize
     }
 }
 
-fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
+pub(crate) fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
     match value {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
@@ -1048,7 +1049,7 @@ fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
     }
 }
 
-fn array_len(array: &Arc<Mutex<Object>>) -> usize {
+pub(crate) fn array_len(array: &Arc<Mutex<Object>>) -> usize {
     let array = array.lock().unwrap();
     if let vybe_bytecode::value::ObjectKind::Array(elements) = &array.kind {
         elements.len()
@@ -1064,7 +1065,7 @@ fn collect_ready_indices(pollables: &[Value]) -> Vec<usize> {
     }).collect()
 }
 
-fn pollable_ready(pollable: &Arc<Mutex<Object>>) -> bool {
+pub(crate) fn pollable_ready(pollable: &Arc<Mutex<Object>>) -> bool {
     let target = {
         let pollable = pollable.lock().unwrap();
         pollable.properties.get("__target").cloned().unwrap_or(Value::Null)
@@ -1075,7 +1076,7 @@ fn pollable_ready(pollable: &Arc<Mutex<Object>>) -> bool {
     stream_or_socket_ready(&target)
 }
 
-fn block_until_ready(pollable: &Arc<Mutex<Object>>) {
+pub(crate) fn block_until_ready(pollable: &Arc<Mutex<Object>>) {
     let start = Instant::now();
     while !pollable_ready(pollable) && start.elapsed() < Duration::from_secs(1) {
         thread::sleep(Duration::from_millis(1));
@@ -1088,6 +1089,16 @@ fn stream_or_socket_ready(resource: &Arc<Mutex<Object>>) -> bool {
         Some("OutputStream") => stream_socket_id(resource).is_some(),
         Some("TcpSocket") => tcp_socket_ready(resource),
         Some("Pollable") => pollable_ready(resource),
+        Some("TimerPollable") => {
+            use std::sync::OnceLock;
+            static START: OnceLock<Instant> = OnceLock::new();
+            let start = START.get_or_init(Instant::now);
+            let ready_at = resource.lock().unwrap()
+                .properties.get("__ready_at_ns")
+                .map(|v| v.as_f64() as u128)
+                .unwrap_or(0);
+            start.elapsed().as_nanos() >= ready_at
+        }
         _ => false,
     }
 }
@@ -1225,10 +1236,403 @@ fn ip_address_value(host: &str, family: &str) -> Value {
     value_array_inner(values)
 }
 
-fn value_array(elements: Vec<Value>) -> Value {
+pub(crate) fn value_array(elements: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
 }
 
 fn value_array_inner(elements: Vec<Value>) -> Value {
     value_array(elements)
+}
+
+// ── Phase 3: spec-correct [method] prefix forms ───────────────────────────────
+//
+// Each existing flat registration (e.g. `wasi:sockets/tcp`, `start-bind`) is
+// mirrored as `wasi:sockets/tcp`, `[method]tcp-socket.start-bind`. Both forms
+// stay registered so existing callers are not broken.
+
+fn register_wasi_sockets_method_forms(vm: &mut VM) {
+    // ── wasi:sockets/tcp — [method]tcp-socket.* ──────────────────────────────
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.start-bind", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let Some(local_addr_val) = method_arg(args, 1) else { return Value::Null; };
+        let Some((host, port, family)) = parse_ip_socket_address(local_addr_val) else { return Value::Null; };
+        match TcpListener::bind(format!("{}:{}", host, port)) {
+            Ok(listener) => {
+                let _ = listener.set_nonblocking(true);
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                get_state().lock().unwrap().tcp_listeners.insert(id, listener);
+                let mut obj = socket.lock().unwrap();
+                obj.properties.insert("__listener_id".into(), Value::F64(id as f64));
+                obj.properties.insert("__state".into(), Value::String(Arc::from("bound")));
+                obj.properties.insert("__address_family".into(), Value::String(Arc::from(family.as_str())));
+                obj.properties.insert("__local_address".into(), make_ip_socket_address(&host, port, &family));
+                Value::Bool(true)
+            }
+            Err(e) => { eprintln!("tcp.[method]start-bind: {}", e); Value::Null }
+        }
+    }));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.finish-bind",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Bool(true)));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.start-listen", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let mut obj = socket.lock().unwrap();
+        obj.properties.insert("__state".into(), Value::String(Arc::from("listening")));
+        obj.properties.insert("islistening".into(), Value::Bool(true));
+        Value::Bool(true)
+    }));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.finish-listen",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Bool(true)));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.start-connect", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let Some(remote_addr_val) = method_arg(args, 1) else { return Value::Null; };
+        let Some((host, port, family)) = parse_ip_socket_address(remote_addr_val) else { return Value::Null; };
+        match TcpStream::connect(format!("{}:{}", host, port)) {
+            Ok(stream) => {
+                let local_addr = stream.local_addr().ok();
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                get_state().lock().unwrap().tcp_streams.insert(id, stream);
+                let mut obj = socket.lock().unwrap();
+                obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
+                obj.properties.insert("__state".into(), Value::String(Arc::from("connected")));
+                obj.properties.insert("__address_family".into(), Value::String(Arc::from(family.as_str())));
+                obj.properties.insert("__remote_address".into(), make_ip_socket_address(&host, port, &family));
+                if let Some(addr) = local_addr {
+                    obj.properties.insert("__local_address".into(), socket_addr_to_value(addr));
+                }
+                Value::Bool(true)
+            }
+            Err(e) => { eprintln!("tcp.[method]start-connect: {}", e); Value::Null }
+        }
+    }));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.finish-connect", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        match socket.lock().unwrap().properties.get("__socket_id").cloned() {
+            Some(Value::F64(id)) => value_array(vec![make_input_stream(id as u64), make_output_stream(id as u64)]),
+            _ => Value::Null,
+        }
+    }));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.accept", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let Some(Value::F64(lid)) = socket.lock().unwrap().properties.get("__listener_id").cloned() else { return Value::Null; };
+        let listener_id = lid as u64;
+        let state = get_state();
+        let mut guard = state.lock().unwrap();
+        let pending = guard.pending_accepts.get_mut(&listener_id)
+            .and_then(|p| if p.is_empty() { None } else { Some(p.remove(0)) });
+        let accepted = if let Some(s) = pending { Some(s) }
+            else if let Some(listener) = guard.tcp_listeners.get(&listener_id) {
+                match listener.accept() {
+                    Ok((s, _)) => Some(s),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                    Err(e) => { eprintln!("tcp.[method]accept: {}", e); None }
+                }
+            } else { None };
+        if let Some(stream) = accepted {
+            let _ = stream.set_nonblocking(false);
+            let remote = stream.peer_addr().ok();
+            let local = stream.local_addr().ok();
+            let cid = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            guard.tcp_streams.insert(cid, stream);
+            let client = make_tcp_socket_resource("ipv4");
+            if let Value::Object(co) = &client {
+                let mut obj = co.lock().unwrap();
+                obj.properties.insert("__socket_id".into(), Value::F64(cid as f64));
+                obj.properties.insert("__state".into(), Value::String(Arc::from("connected")));
+                if let Some(a) = local { obj.properties.insert("__local_address".into(), socket_addr_to_value(a)); }
+                if let Some(a) = remote { obj.properties.insert("__remote_address".into(), socket_addr_to_value(a)); }
+            }
+            return value_array(vec![client, make_input_stream(cid), make_output_stream(cid)]);
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.local-address",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__local_address")));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.remote-address",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__remote_address")));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.is-listening", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "islistening") { Value::Bool(v) => Value::Bool(v), _ => Value::Bool(false) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.address-family",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__address_family")));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-listen-backlog-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        socket.lock().unwrap().properties.insert("__listen_backlog".into(), method_arg(args, 0).cloned().unwrap_or(Value::Null));
+        Value::Bool(true)
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.subscribe",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| args.first().cloned().unwrap_or(Value::Null)));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.shutdown", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let how_str = method_arg(args, 0).map(|v| format!("{}", v)).unwrap_or_else(|| "both".into());
+        let Some(Value::F64(id)) = socket.lock().unwrap().properties.get("__socket_id").cloned() else { return Value::Null; };
+        let state = get_state();
+        let mut guard = state.lock().unwrap();
+        if let Some(stream) = guard.tcp_streams.get_mut(&(id as u64)) {
+            let _ = stream.shutdown(match how_str.as_str() {
+                "receive" => Shutdown::Read,
+                "send" => Shutdown::Write,
+                _ => Shutdown::Both,
+            });
+        }
+        Value::Bool(true)
+    }));
+
+    // TCP keep-alive options (new — not in flat form)
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.keep-alive-enabled", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__keep_alive_enabled") { Value::Bool(v) => Value::Bool(v), _ => Value::Bool(false) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-keep-alive-enabled", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__keep_alive_enabled".into(), method_arg(args, 0).cloned().unwrap_or(Value::Bool(false)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.keep-alive-idle-time", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__keep_alive_idle") { v @ Value::I64(_) => v, _ => Value::I64(0) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-keep-alive-idle-time", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__keep_alive_idle".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(0)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.keep-alive-interval", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__keep_alive_interval") { v @ Value::I64(_) => v, _ => Value::I64(0) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-keep-alive-interval", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__keep_alive_interval".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(0)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.keep-alive-count", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__keep_alive_count") { v @ Value::I32(_) => v, _ => Value::I32(0) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-keep-alive-count", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__keep_alive_count".into(), method_arg(args, 0).cloned().unwrap_or(Value::I32(0)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.hop-limit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__hop_limit") { v @ Value::I32(_) => v, _ => Value::I32(64) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-hop-limit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__hop_limit".into(), method_arg(args, 0).cloned().unwrap_or(Value::I32(64)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.receive-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__recv_buf") { v @ Value::I64(_) => v, _ => Value::I64(65536) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-receive-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__recv_buf".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(65536)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.send-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__send_buf") { v @ Value::I64(_) => v, _ => Value::I64(65536) }
+    }));
+    vm.register_host_fn("wasi:sockets/tcp", "[method]tcp-socket.set-send-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__send_buf".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(65536)));
+        Value::Null
+    }));
+
+    // ── wasi:sockets/udp — [method]udp-socket.* ──────────────────────────────
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.start-bind", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let Some(local_addr_val) = method_arg(args, 1) else { return Value::Null; };
+        let Some((host, port, family)) = parse_ip_socket_address(local_addr_val) else { return Value::Null; };
+        match UdpSocket::bind(format!("{}:{}", host, port)) {
+            Ok(udp) => {
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                get_state().lock().unwrap().udp_sockets.insert(id, udp);
+                let mut obj = socket.lock().unwrap();
+                obj.properties.insert("__socket_id".into(), Value::F64(id as f64));
+                obj.properties.insert("__state".into(), Value::String(Arc::from("bound")));
+                obj.properties.insert("__address_family".into(), Value::String(Arc::from(family.as_str())));
+                obj.properties.insert("__local_address".into(), make_ip_socket_address(&host, port, &family));
+                Value::Bool(true)
+            }
+            Err(e) => { eprintln!("udp.[method]start-bind: {}", e); Value::Null }
+        }
+    }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.finish-bind",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Bool(true)));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.%stream", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(socket) = socket_arg(args) else { return Value::Null; };
+        let remote_address = method_arg(args, 0).cloned().unwrap_or(Value::Null);
+        if !matches!(remote_address, Value::Null) {
+            socket.lock().unwrap().properties.insert("__remote_address".into(), remote_address);
+        }
+        let socket_value = Value::Object(socket.clone());
+        value_array(vec![make_incoming_datagram_stream(socket_value.clone()), make_outgoing_datagram_stream(socket_value)])
+    }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.local-address",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__local_address")));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.remote-address",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__remote_address")));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.address-family",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| socket_property(args, "__address_family")));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.subscribe",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| args.first().cloned().unwrap_or(Value::Null)));
+
+    // UDP options (new — not in flat form)
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.unicast-hop-limit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__hop_limit") { v @ Value::I32(_) => v, _ => Value::I32(64) }
+    }));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.set-unicast-hop-limit", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__hop_limit".into(), method_arg(args, 0).cloned().unwrap_or(Value::I32(64)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.receive-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__recv_buf") { v @ Value::I64(_) => v, _ => Value::I64(65536) }
+    }));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.set-receive-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__recv_buf".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(65536)));
+        Value::Null
+    }));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.send-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        match socket_property(args, "__send_buf") { v @ Value::I64(_) => v, _ => Value::I64(65536) }
+    }));
+    vm.register_host_fn("wasi:sockets/udp", "[method]udp-socket.set-send-buffer-size", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(s) = socket_arg(args) else { return Value::Null; };
+        s.lock().unwrap().properties.insert("__send_buf".into(), method_arg(args, 0).cloned().unwrap_or(Value::I64(65536)));
+        Value::Null
+    }));
+
+    // ── wasi:sockets/udp — datagram stream resources (new) ───────────────────
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]incoming-datagram-stream.receive", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(stream) = socket_arg(args) else { return value_array(vec![]); };
+        let max = method_arg(args, 0).map(|v| v.as_i64().max(1).min(64) as usize).unwrap_or(1);
+        let socket_val = { stream.lock().unwrap().properties.get("__socket").cloned() };
+        let Some(Value::Object(socket_obj)) = socket_val else { return value_array(vec![]); };
+        let socket_id = socket_obj.lock().unwrap().properties.get("__socket_id").map(|v| v.as_f64() as u64).unwrap_or(0);
+        if socket_id == 0 { return value_array(vec![]); }
+        let mut datagrams = Vec::new();
+        let state = get_state();
+        let guard = state.lock().unwrap();
+        if let Some(udp) = guard.udp_sockets.get(&socket_id) {
+            let _ = udp.set_nonblocking(true);
+            let mut buf = [0u8; 65536];
+            for _ in 0..max {
+                match udp.recv_from(&mut buf) {
+                    Ok((n, addr)) => {
+                        let family = if addr.is_ipv6() { "ipv6" } else { "ipv4" };
+                        let mut dg = Object::new();
+                        dg.properties.insert("data".into(), value_array(buf[..n].iter().map(|b| Value::I32(*b as i32)).collect()));
+                        dg.properties.insert("remote-address".into(), make_ip_socket_address(&addr.ip().to_string(), addr.port(), family));
+                        datagrams.push(Value::Object(Arc::new(Mutex::new(dg))));
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = udp.set_nonblocking(false);
+        }
+        value_array(datagrams)
+    }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]incoming-datagram-stream.subscribe",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match args.first() {
+                Some(Value::Object(obj)) => make_pollable(obj.clone()),
+                _ => Value::Null,
+            }
+        }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]outgoing-datagram-stream.check-send", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(stream) = socket_arg(args) else { return Value::I64(0); };
+        let socket_val = { stream.lock().unwrap().properties.get("__socket").cloned() };
+        let Some(Value::Object(socket_obj)) = socket_val else { return Value::I64(0); };
+        let socket_id = socket_obj.lock().unwrap().properties.get("__socket_id").map(|v| v.as_f64() as u64).unwrap_or(0);
+        let state = get_state();
+        let guard = state.lock().unwrap();
+        if guard.udp_sockets.contains_key(&socket_id) { Value::I64(1) } else { Value::I64(0) }
+    }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]outgoing-datagram-stream.send", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(stream) = socket_arg(args) else { return Value::I64(0); };
+        let dgs_val = method_arg(args, 0).cloned().unwrap_or(Value::Null);
+        let (socket_id, remote_addr_val) = {
+            let stream_guard = stream.lock().unwrap();
+            let socket_val = stream_guard.properties.get("__socket").cloned();
+            if let Some(Value::Object(so)) = socket_val {
+                let sg = so.lock().unwrap();
+                (sg.properties.get("__socket_id").map(|v| v.as_f64() as u64).unwrap_or(0),
+                 sg.properties.get("__remote_address").cloned())
+            } else { (0, None) }
+        };
+        if socket_id == 0 { return Value::I64(0); }
+        let dgs = match &dgs_val {
+            Value::Object(obj) => {
+                let o = obj.lock().unwrap();
+                if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind { elems.clone() } else { Vec::new() }
+            }
+            _ => Vec::new(),
+        };
+        let state = get_state();
+        let guard = state.lock().unwrap();
+        let mut sent = 0i64;
+        if let Some(udp) = guard.udp_sockets.get(&socket_id) {
+            for dg in &dgs {
+                if let Value::Object(dg_obj) = dg {
+                    let (data_val, target_val) = {
+                        let g = dg_obj.lock().unwrap();
+                        (g.properties.get("data").cloned(), g.properties.get("remote-address").cloned())
+                    };
+                    let bytes = bytes_from_value(&data_val.unwrap_or(Value::Null));
+                    if let Some(target) = target_val.or_else(|| remote_addr_val.clone()) {
+                        if let Some((host, port, _)) = parse_ip_socket_address(&target) {
+                            if udp.send_to(&bytes, format!("{}:{}", host, port)).is_ok() { sent += 1; }
+                        }
+                    }
+                }
+            }
+        }
+        Value::I64(sent)
+    }));
+
+    vm.register_host_fn("wasi:sockets/udp", "[method]outgoing-datagram-stream.subscribe",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match args.first() {
+                Some(Value::Object(obj)) => make_pollable(obj.clone()),
+                _ => Value::Null,
+            }
+        }));
+
+    // ── wasi:sockets/ip-name-lookup — resolve-address-stream resource (new) ──
+
+    vm.register_host_fn("wasi:sockets/ip-name-lookup", "[method]resolve-address-stream.resolve-next-address", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(stream) = socket_arg(args) else { return Value::Null; };
+        let mut s = stream.lock().unwrap();
+        let pos = s.properties.get("__pos").map(|v| v.as_f64() as usize).unwrap_or(0);
+        let addr_list = s.properties.get("__addresses").cloned();
+        if let Some(Value::Object(arr_obj)) = addr_list {
+            let arr = arr_obj.lock().unwrap();
+            if let vybe_bytecode::value::ObjectKind::Array(elems) = &arr.kind {
+                if pos < elems.len() {
+                    let next = elems[pos].clone();
+                    drop(arr);
+                    s.properties.insert("__pos".into(), Value::F64((pos + 1) as f64));
+                    return next;
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:sockets/ip-name-lookup", "[method]resolve-address-stream.subscribe",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| args.first().cloned().unwrap_or(Value::Null)));
 }

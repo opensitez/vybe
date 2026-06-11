@@ -272,12 +272,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ReadLine",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:cli", "readLine")),
+                    MethodBody::Common("dotnet.console_readline".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Error",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:cli", "error")),
+                    MethodBody::Common("dotnet.console_error".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Print",
@@ -287,7 +287,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Assert",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:cli", "log")),
+                    MethodBody::Common("dotnet.console_writeline".into()),
                 )),
         ),
         DotnetClassExport::new(

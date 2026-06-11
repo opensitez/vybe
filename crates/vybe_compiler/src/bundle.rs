@@ -2232,15 +2232,16 @@ mod tests {
 
         vybe_host::register_all(&mut vm);
         vm.register_host_fn(
-            "wasi:cli",
+            "wasi:logging/logging",
             "log",
             Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                let line = args
-                    .iter()
-                    .map(|value| format!("{}", value))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                captured.lock().unwrap().push(line);
+                let msg = match args.len() {
+                    0 => String::new(),
+                    1 => format!("{}", args[0]),
+                    2 => format!("{}", args[1]),
+                    _ => format!("{}", args[2]),
+                };
+                captured.lock().unwrap().push(msg);
                 Value::Null
             }),
         );

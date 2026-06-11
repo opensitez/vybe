@@ -42,7 +42,7 @@ pub fn run_js(src: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
@@ -77,7 +77,7 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
@@ -128,7 +128,7 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
-        "wasi:cli",
+        "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

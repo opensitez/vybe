@@ -226,7 +226,8 @@ fn serialize_object(
             ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
                 Some("{}".to_string())
             }
-            ObjectKind::Function(_) | ObjectKind::HostFunction(_) | ObjectKind::Continuation(_) => None,
+            ObjectKind::Function(_) | ObjectKind::HostFunction(_) | ObjectKind::Continuation(_)
+            | ObjectKind::Future { .. } | ObjectKind::Stream { .. } => None,
             ObjectKind::Ordinary | ObjectKind::ModuleNamespace => {
                 let keys = object_serialization_keys(&guard, state.property_list.as_ref());
                 drop(guard);

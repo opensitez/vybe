@@ -208,6 +208,12 @@ pub fn register_all(vm: &mut VM) {
                             let phase = *cs.state.lock().unwrap();
                             eprintln!("  [Continuation] phase={:?}", phase);
                         }
+                        ObjectKind::Future { id } => {
+                            eprintln!("  [Future] id={}", id);
+                        }
+                        ObjectKind::Stream { id } => {
+                            eprintln!("  [Stream] id={}", id);
+                        }
                     }
                     for (k, v) in &o.properties {
                         let v_str = format!("{}", v);

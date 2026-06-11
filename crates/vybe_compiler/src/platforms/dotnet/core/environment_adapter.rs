@@ -111,7 +111,7 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_br(1, line);
 
-    let get_env = chunks[0].add_import("wasi:cli", "getEnv");
+    let get_env = chunks[0].add_import("wasi:cli/environment", "get-environment");
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(fallback_block);

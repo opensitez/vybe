@@ -364,7 +364,7 @@ module = "wasi:filesystem"
 #   wrapper Common emit (no `vybe:types/{exception,sb,timer}New` host fns).
 "Regex"           = ["ecma:regexp", "new"]
 "Random"          = ["wasi:random/insecure", "get-insecure-random-u64"]
-"Stopwatch"       = ["wasi:clocks", "stopwatchNew"]
+"Stopwatch"       = ["common", "dotnet.stopwatch_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — property access, NOT function call

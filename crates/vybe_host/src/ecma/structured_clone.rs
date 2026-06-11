@@ -97,7 +97,7 @@ fn clone_object(
         // spec-exotic objects — structuredClone on them is not
         // spec-defined; null is the conservative MVP result.
         KindTag::Function | KindTag::HostFunction | KindTag::Continuation
-            | KindTag::ModuleNamespace => Ok(Value::Null),
+            | KindTag::ModuleNamespace | KindTag::Future | KindTag::Stream => Ok(Value::Null),
     };
     active.remove(&id);
     result
@@ -105,7 +105,7 @@ fn clone_object(
 
 enum KindTag {
     Ordinary, Array, Map, Set, ArrayBuffer, TypedArray, Function, HostFunction, Continuation,
-    ModuleNamespace,
+    ModuleNamespace, Future, Stream,
 }
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
@@ -120,6 +120,8 @@ fn kind_discriminant(k: &ObjectKind) -> KindTag {
         ObjectKind::HostFunction(_) => KindTag::HostFunction,
         ObjectKind::Continuation(_) => KindTag::Continuation,
         ObjectKind::ModuleNamespace => KindTag::ModuleNamespace,
+        ObjectKind::Future { .. } => KindTag::Future,
+        ObjectKind::Stream { .. } => KindTag::Stream,
     }
 }
 

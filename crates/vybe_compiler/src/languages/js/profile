@@ -523,10 +523,9 @@ module = "wasi:filesystem"
 [[esm_default]]
 kind = "namespace"
 alias = "clock"
-# Compatibility alias over the legacy flat `wasi:clocks` namespace.
-# The actual WASI proposal surfaces are `wasi:clocks/wall-clock` and
-# `wasi:clocks/monotonic-clock`, which remain importable directly.
-module = "wasi:clocks"
+# Wall-clock time (seconds + nanoseconds). Use `wasi:clocks/monotonic-clock`
+# for high-resolution elapsed timing.
+module = "wasi:clocks/wall-clock"
 
 [[esm_default]]
 kind = "namespace"

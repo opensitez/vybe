@@ -228,7 +228,7 @@ pub fn emit_common_with_imports(
             // primitive can be swapped later (e.g. memory_atomic_wait32 with
             // a timeout, once shared-memory layout is settled) without
             // touching every language profile.
-            let idx = import("wasi:clocks", "sleep");
+            let idx = import("vybe:clocks", "sleep");
             threading::emit_sleep(chunk, idx, line);
             // emit_sleep already drops the import return; push null so the
             // call site has a stack value to consume.
