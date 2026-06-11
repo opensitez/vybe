@@ -20,9 +20,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
-use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::VM;
+use vybe_bytecode::chunk::Chunk;
+use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
 
 #[derive(Default)]
 struct AstSummary {
@@ -142,10 +142,18 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
         total_instructions,
     );
     for chunk in filtered.iter().take(20) {
-        eprintln!("  → chunk '{}' (arity={}, instructions={})", chunk.name, chunk.arity, chunk.code.len());
+        eprintln!(
+            "  → chunk '{}' (arity={}, instructions={})",
+            chunk.name,
+            chunk.arity,
+            chunk.code.len()
+        );
     }
     if filtered.len() > 20 {
-        eprintln!("  … {} more chunks omitted from summary", filtered.len() - 20);
+        eprintln!(
+            "  … {} more chunks omitted from summary",
+            filtered.len() - 20
+        );
     }
 }
 
@@ -259,7 +267,9 @@ pub fn run() {
     }
 
     if eval_source.is_some() && !dynamic_compile_caps.has(vybe_host::Capability::DynamicCompile) {
-        eprintln!("Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)");
+        eprintln!(
+            "Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)"
+        );
         std::process::exit(1);
     }
 
@@ -306,14 +316,19 @@ pub fn run() {
 
         match vybe_compiler::projects::load(path) {
             Ok(b) => b,
-            Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
     };
 
-    eprintln!("[vybex] Project '{}', sources={}, entry={:?}",
+    eprintln!(
+        "[vybex] Project '{}', sources={}, entry={:?}",
         bundle.name,
         bundle.sources.len(),
-        bundle.entry_point);
+        bundle.entry_point
+    );
     for s in &bundle.sources {
         eprintln!("  → {} ({} bytes)", s.path.display(), s.code.len());
     }
@@ -322,14 +337,19 @@ pub fn run() {
         eprintln!("[vybex] Preparing AST...");
         let module = match bundle.prepared_module() {
             Ok(module) => module,
-            Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("Parse error: {e}");
+                std::process::exit(1);
+            }
         };
         print_ast_summary(&module);
         if should_emit_full_ast(&module) {
             eprintln!("[vybex] Printing full AST...");
             println!("{:#?}", module);
         } else {
-            eprintln!("[vybex] AST is large; printing top-level outline. Set VYBEX_DUMP_AST_FULL=1 for full debug output.");
+            eprintln!(
+                "[vybex] AST is large; printing top-level outline. Set VYBEX_DUMP_AST_FULL=1 for full debug output."
+            );
             print_ast_outline(&module);
         }
         return;
@@ -342,21 +362,31 @@ pub fn run() {
 
     let gui = if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
-        vybe_host::register_with_capabilities_and_gui(
-            &mut vm, &vybe_host::Capabilities::safe(),
-        )
+        vybe_host::register_with_capabilities_and_gui(&mut vm, &vybe_host::Capabilities::safe())
     } else if portable {
         eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
-        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
-            for a in args { print!("{}", a); }
-            println!();
-            vybe_bytecode::Value::Null
-        }));
-        vm.register_host_fn("wasi:cli", "readLine", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line).ok();
-            vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
-        }));
+        vm.register_host_fn(
+            "wasi:cli",
+            "log",
+            Box::new(
+                |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
+                    for a in args {
+                        print!("{}", a);
+                    }
+                    println!();
+                    vybe_bytecode::Value::Null
+                },
+            ),
+        );
+        vm.register_host_fn(
+            "wasi:cli",
+            "readLine",
+            Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).ok();
+                vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
+            }),
+        );
         Arc::new(Mutex::new(vybe_host::gui_state::GuiState::new()))
     } else {
         vybe_host::register_all_with_gui(&mut vm)
@@ -391,14 +421,24 @@ pub fn run() {
         );
         match (&eval_source, &eval_language) {
             (Some(source), Some(language_name)) => {
-                match runtime_compiler.compile_source_by_name(source.clone(), language_name, source_path.clone()) {
+                match runtime_compiler.compile_source_by_name(
+                    source.clone(),
+                    language_name,
+                    source_path.clone(),
+                ) {
                     Ok(c) => c,
-                    Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+                    Err(e) => {
+                        eprintln!("Compile error: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
             _ => match runtime_compiler.compile_bundle(&bundle) {
                 Ok(c) => c,
-                Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("Compile error: {e}");
+                    std::process::exit(1);
+                }
             },
         }
     };
@@ -430,13 +470,14 @@ pub fn run() {
     }
 
     // ── Run ─────────────────────────────────────────────────────────────────
-    let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
-        &mut vm,
-        dynamic_compile_caps,
-    );
+    let mut runtime_compiler =
+        crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps);
     match runtime_compiler.run_compiled(compiled) {
         Ok(_) => {}
-        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("Runtime error: {e}");
+            std::process::exit(1);
+        }
     }
 
     if gui.lock().unwrap().should_run {
@@ -447,13 +488,19 @@ pub fn run() {
 fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
     let data = match std::fs::read(path) {
         Ok(d) => d,
-        Err(e) => { eprintln!("Error reading {}: {e}", path.display()); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("Error reading {}: {e}", path.display());
+            std::process::exit(1);
+        }
     };
     eprintln!("Loading WASM: {} ({} bytes)", path.display(), data.len());
 
     let chunks = match vybe_bytecode::wasm::read_wasm(&data) {
         Ok(c) => c,
-        Err(e) => { eprintln!("WASM error: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("WASM error: {e}");
+            std::process::exit(1);
+        }
     };
     eprintln!("Loaded {} chunks", chunks.len());
 
@@ -475,7 +522,10 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
 
     match vm.run(chunks) {
         Ok(_) => {}
-        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("Runtime error: {e}");
+            std::process::exit(1);
+        }
     }
 
     if gui.lock().unwrap().should_run {

@@ -1,8 +1,11 @@
 //! MonthCalendar widget — calendar grid with header and day numbers.
 
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
+use super::{WidgetColors, circle_path, rounded_rect_path};
 use tiny_skia::*;
-use super::{WidgetColors, rounded_rect_path, circle_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct MonthCalendar {
     pub year: u32,
@@ -35,7 +38,10 @@ impl MonthCalendar {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Header height for month/year and nav arrows.
     fn header_height(&self) -> f32 {
@@ -201,16 +207,24 @@ impl MonthCalendar {
         let (cw, ch) = self.cell_size();
         let grid_y = hh + dh;
 
-        if my < grid_y || my > self.height { return None; }
-        if mx < 0.0 || mx > self.width { return None; }
+        if my < grid_y || my > self.height {
+            return None;
+        }
+        if mx < 0.0 || mx > self.width {
+            return None;
+        }
 
         let col = (mx / cw) as u32;
         let row = ((my - grid_y) / ch) as u32;
-        if col >= 7 || row >= 6 { return None; }
+        if col >= 7 || row >= 6 {
+            return None;
+        }
 
         let cell_idx = row * 7 + col;
         let first_dow = self.first_day_of_week();
-        if cell_idx < first_dow { return None; }
+        if cell_idx < first_dow {
+            return None;
+        }
         let day = cell_idx - first_dow + 1;
         if day >= 1 && day <= self.days_in_month() {
             Some(day)
@@ -255,53 +269,127 @@ impl MonthCalendar {
 }
 
 impl PanelWidget for MonthCalendar {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw month/year header text
-        let months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-        let header = format!("{} {}", months.get(self.month.saturating_sub(1) as usize).unwrap_or(&"?"), self.year);
+        let months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
+        let header = format!(
+            "{} {}",
+            months
+                .get(self.month.saturating_sub(1) as usize)
+                .unwrap_or(&"?"),
+            self.year
+        );
         let white = cosmic_text::Color::rgba(255, 255, 255, 255);
-        super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &header, r.x + r.w / 2.0 - 40.0, r.y + 6.0, 13.0, white, ctx.scale);
+        super::ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &header,
+            r.x + r.w / 2.0 - 40.0,
+            r.y + 6.0,
+            13.0,
+            white,
+            ctx.scale,
+        );
         // Day-of-week labels
-        let dow = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+        let dow = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
         let (cw, _ch) = self.cell_size();
         let gray = cosmic_text::Color::rgba(80, 80, 80, 255);
         for (i, d) in dow.iter().enumerate() {
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, d, r.x + i as f32 * cw + cw / 2.0 - 6.0, r.y + self.header_height() + 2.0, 11.0, gray, ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                d,
+                r.x + i as f32 * cw + cw / 2.0 - 6.0,
+                r.y + self.header_height() + 2.0,
+                11.0,
+                gray,
+                ctx.scale,
+            );
         }
         // Day numbers
         let dark = cosmic_text::Color::rgba(30, 30, 30, 255);
         for day in 1..=self.days_in_month() {
             let (cx, cy, dw, dh) = self.day_cell(day);
-            let col = if day == self.selected_day { white } else { dark };
+            let col = if day == self.selected_day {
+                white
+            } else {
+                dark
+            };
             let txt = format!("{}", day);
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &txt, r.x + cx + dw / 2.0 - 5.0, r.y + cy + dh / 2.0 - 6.0, 12.0, col, ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &txt,
+                r.x + cx + dw / 2.0 - 5.0,
+                r.y + cy + dh / 2.0 - 6.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         let r = self.rect;
-        if !r.contains(event.x, event.y) { return false; }
+        if !r.contains(event.x, event.y) {
+            return false;
+        }
         let lx = event.x - r.x;
         let ly = event.y - r.y;
         match event.kind {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 // Check nav arrows
                 if ly < self.header_height() {
-                    if lx < 24.0 { self.prev_month(); return true; }
-                    if lx > self.width - 24.0 { self.next_month(); return true; }
+                    if lx < 24.0 {
+                        self.prev_month();
+                        return true;
+                    }
+                    if lx > self.width - 24.0 {
+                        self.next_month();
+                        return true;
+                    }
                     return false;
                 }
                 if let Some(day) = self.hit_test(lx, ly) {
                     self.selected_day = day;
-                    self.pending_events.push(WidgetEvent::CalendarDateSelected(self.name.clone(), day));
+                    self.pending_events
+                        .push(WidgetEvent::CalendarDateSelected(self.name.clone(), day));
                     return true;
                 }
             }
@@ -313,15 +401,24 @@ impl PanelWidget for MonthCalendar {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn focusable(&self) -> bool { true }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetValue(v) => { self.selected_day = *v as u32; CommandValue::None }
+            WidgetCommand::SetValue(v) => {
+                self.selected_day = *v as u32;
+                CommandValue::None
+            }
             WidgetCommand::GetValue => CommandValue::Number(self.selected_day as f64),
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

@@ -249,7 +249,10 @@ fn is_encoding_base64_returns_true() {
 
 #[test]
 fn is_encoding_base64url_returns_true() {
-    assert_eq!(call_buf("isEncoding", vec![s("base64url")]), Value::Bool(true));
+    assert_eq!(
+        call_buf("isEncoding", vec![s("base64url")]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -264,7 +267,10 @@ fn is_encoding_ascii_returns_true() {
 
 #[test]
 fn is_encoding_utf16le_returns_true() {
-    assert_eq!(call_buf("isEncoding", vec![s("utf16le")]), Value::Bool(true));
+    assert_eq!(
+        call_buf("isEncoding", vec![s("utf16le")]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -453,7 +459,10 @@ fn fill_sets_all_bytes_to_value() {
 #[test]
 fn fill_with_range_fills_only_that_range() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let filled = call_buf("fill", vec![buf, Value::I32(0xFF), Value::I32(1), Value::I32(3)]);
+    let filled = call_buf(
+        "fill",
+        vec![buf, Value::I32(0xFF), Value::I32(1), Value::I32(3)],
+    );
     let bytes = array_bytes(&filled);
     assert_eq!(bytes[0], 0x00);
     assert_eq!(bytes[1], 0xFF);
@@ -515,7 +524,10 @@ fn read_uint16_le_little_endian_value() {
 fn read_uint32_be_value() {
     // [0x00, 0x00, 0x01, 0x00] big-endian = 256
     let arr = make_arr(vec![
-        Value::I32(0x00), Value::I32(0x00), Value::I32(0x01), Value::I32(0x00),
+        Value::I32(0x00),
+        Value::I32(0x00),
+        Value::I32(0x01),
+        Value::I32(0x00),
     ]);
     let buf = call_buf("from", vec![arr]);
     let result = call_buf("readUInt32BE", vec![buf, Value::I32(0)]);
@@ -527,7 +539,10 @@ fn read_uint32_be_value() {
 #[test]
 fn write_uint8_sets_byte() {
     let buf = call_buf("alloc", vec![Value::I32(2)]);
-    let _ = call_buf("writeUInt8", vec![buf.clone(), Value::I32(0xAB), Value::I32(0)]);
+    let _ = call_buf(
+        "writeUInt8",
+        vec![buf.clone(), Value::I32(0xAB), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0xAB);
 }
@@ -544,7 +559,10 @@ fn write_uint8_returns_offset_after_write() {
 #[test]
 fn write_int8_negative_value() {
     let buf = call_buf("alloc", vec![Value::I32(2)]);
-    let _ = call_buf("writeInt8", vec![buf.clone(), Value::I32(-1), Value::I32(0)]);
+    let _ = call_buf(
+        "writeInt8",
+        vec![buf.clone(), Value::I32(-1), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0xFF);
 }
@@ -554,7 +572,10 @@ fn write_int8_negative_value() {
 #[test]
 fn write_uint16_be_sets_two_bytes() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let _ = call_buf("writeUInt16BE", vec![buf.clone(), Value::I32(0x0102), Value::I32(0)]);
+    let _ = call_buf(
+        "writeUInt16BE",
+        vec![buf.clone(), Value::I32(0x0102), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0x01);
     assert_eq!(bytes[1], 0x02);
@@ -565,7 +586,10 @@ fn write_uint16_be_sets_two_bytes() {
 #[test]
 fn write_uint32_be_sets_four_bytes() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let _ = call_buf("writeUInt32BE", vec![buf.clone(), Value::I32(0x01020304), Value::I32(0)]);
+    let _ = call_buf(
+        "writeUInt32BE",
+        vec![buf.clone(), Value::I32(0x01020304), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0x01);
     assert_eq!(bytes[1], 0x02);
@@ -579,7 +603,10 @@ fn write_uint32_be_sets_four_bytes() {
 fn swap16_swaps_byte_pairs() {
     // [0x01, 0x02, 0x03, 0x04] → [0x02, 0x01, 0x04, 0x03]
     let arr = make_arr(vec![
-        Value::I32(0x01), Value::I32(0x02), Value::I32(0x03), Value::I32(0x04),
+        Value::I32(0x01),
+        Value::I32(0x02),
+        Value::I32(0x03),
+        Value::I32(0x04),
     ]);
     let buf = call_buf("from", vec![arr]);
     let swapped = call_buf("swap16", vec![buf]);
@@ -594,7 +621,10 @@ fn swap16_swaps_byte_pairs() {
 fn swap32_swaps_quads() {
     // [0x01, 0x02, 0x03, 0x04] → [0x04, 0x03, 0x02, 0x01]
     let arr = make_arr(vec![
-        Value::I32(0x01), Value::I32(0x02), Value::I32(0x03), Value::I32(0x04),
+        Value::I32(0x01),
+        Value::I32(0x02),
+        Value::I32(0x03),
+        Value::I32(0x04),
     ]);
     let buf = call_buf("from", vec![arr]);
     let swapped = call_buf("swap32", vec![buf]);
@@ -621,8 +651,9 @@ fn buffer_from_string_length_is_byte_count() {
     let len = prop(&buf, "length");
     assert!(
         matches!(len, Value::I32(5) | Value::I64(5))
-        || matches!(len, Value::F64(f) if (f - 5.0).abs() < 0.01),
-        "buf.length must be 5 for 'hello', got {:?}", len
+            || matches!(len, Value::F64(f) if (f - 5.0).abs() < 0.01),
+        "buf.length must be 5 for 'hello', got {:?}",
+        len
     );
 }
 
@@ -631,7 +662,10 @@ fn buffer_from_string_length_is_byte_count() {
 #[test]
 fn read_uint32_le_value() {
     let arr = make_arr(vec![
-        Value::I32(0x78), Value::I32(0x56), Value::I32(0x34), Value::I32(0x12),
+        Value::I32(0x78),
+        Value::I32(0x56),
+        Value::I32(0x34),
+        Value::I32(0x12),
     ]);
     let buf = call_buf("from", vec![arr]);
     let val = call_buf("readUInt32LE", vec![buf, Value::I32(0)]);
@@ -671,7 +705,10 @@ fn read_int16_le_value() {
 #[test]
 fn read_int32_be_value() {
     let arr = make_arr(vec![
-        Value::I32(0x00), Value::I32(0x00), Value::I32(0x01), Value::I32(0x00),
+        Value::I32(0x00),
+        Value::I32(0x00),
+        Value::I32(0x01),
+        Value::I32(0x00),
     ]);
     let buf = call_buf("from", vec![arr]);
     let val = call_buf("readInt32BE", vec![buf, Value::I32(0)]);
@@ -681,7 +718,10 @@ fn read_int32_be_value() {
 #[test]
 fn read_int32_le_value() {
     let arr = make_arr(vec![
-        Value::I32(0x00), Value::I32(0x01), Value::I32(0x00), Value::I32(0x00),
+        Value::I32(0x00),
+        Value::I32(0x01),
+        Value::I32(0x00),
+        Value::I32(0x00),
     ]);
     let buf = call_buf("from", vec![arr]);
     let val = call_buf("readInt32LE", vec![buf, Value::I32(0)]);
@@ -693,10 +733,16 @@ fn read_int32_le_value() {
 #[test]
 fn read_float_be_round_trips_written_value() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let _ = call_buf("writeFloatBE", vec![buf.clone(), Value::F64(1.5), Value::I32(0)]);
+    let _ = call_buf(
+        "writeFloatBE",
+        vec![buf.clone(), Value::F64(1.5), Value::I32(0)],
+    );
     let val = call_buf("readFloatBE", vec![buf, Value::I32(0)]);
     if let Value::F64(f) = val {
-        assert!((f - 1.5).abs() < 0.001, "readFloatBE must round-trip 1.5, got {f}");
+        assert!(
+            (f - 1.5).abs() < 0.001,
+            "readFloatBE must round-trip 1.5, got {f}"
+        );
     }
     // TDD
 }
@@ -704,10 +750,16 @@ fn read_float_be_round_trips_written_value() {
 #[test]
 fn read_double_le_round_trips_written_value() {
     let buf = call_buf("alloc", vec![Value::I32(8)]);
-    let _ = call_buf("writeDoubleLE", vec![buf.clone(), Value::F64(3.14), Value::I32(0)]);
+    let _ = call_buf(
+        "writeDoubleLE",
+        vec![buf.clone(), Value::F64(3.14), Value::I32(0)],
+    );
     let val = call_buf("readDoubleLE", vec![buf, Value::I32(0)]);
     if let Value::F64(f) = val {
-        assert!((f - 3.14).abs() < 0.001, "readDoubleLE must round-trip 3.14, got {f}");
+        assert!(
+            (f - 3.14).abs() < 0.001,
+            "readDoubleLE must round-trip 3.14, got {f}"
+        );
     }
     // TDD
 }
@@ -717,7 +769,10 @@ fn read_double_le_round_trips_written_value() {
 #[test]
 fn write_uint16_le_sets_bytes_little_endian() {
     let buf = call_buf("alloc", vec![Value::I32(2)]);
-    let _ = call_buf("writeUInt16LE", vec![buf.clone(), Value::I32(0x0102), Value::I32(0)]);
+    let _ = call_buf(
+        "writeUInt16LE",
+        vec![buf.clone(), Value::I32(0x0102), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0x02, "LE: low byte first");
     assert_eq!(bytes[1], 0x01, "LE: high byte second");
@@ -726,7 +781,10 @@ fn write_uint16_le_sets_bytes_little_endian() {
 #[test]
 fn write_uint32_le_sets_bytes_little_endian() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let _ = call_buf("writeUInt32LE", vec![buf.clone(), Value::I32(0x01020304u32 as i32), Value::I32(0)]);
+    let _ = call_buf(
+        "writeUInt32LE",
+        vec![buf.clone(), Value::I32(0x01020304u32 as i32), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0x04);
     assert_eq!(bytes[3], 0x01);
@@ -737,7 +795,10 @@ fn write_uint32_le_sets_bytes_little_endian() {
 #[test]
 fn write_int16_be_negative_value() {
     let buf = call_buf("alloc", vec![Value::I32(2)]);
-    let _ = call_buf("writeInt16BE", vec![buf.clone(), Value::I32(-1), Value::I32(0)]);
+    let _ = call_buf(
+        "writeInt16BE",
+        vec![buf.clone(), Value::I32(-1), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
     assert_eq!(bytes[0], 0xFF);
     assert_eq!(bytes[1], 0xFF);
@@ -746,9 +807,15 @@ fn write_int16_be_negative_value() {
 #[test]
 fn write_int32_be_negative_value() {
     let buf = call_buf("alloc", vec![Value::I32(4)]);
-    let _ = call_buf("writeInt32BE", vec![buf.clone(), Value::I32(-1), Value::I32(0)]);
+    let _ = call_buf(
+        "writeInt32BE",
+        vec![buf.clone(), Value::I32(-1), Value::I32(0)],
+    );
     let bytes = array_bytes(&buf);
-    assert!(bytes.iter().all(|&b| b == 0xFF), "writeInt32BE(-1) must be all 0xFF");
+    assert!(
+        bytes.iter().all(|&b| b == 0xFF),
+        "writeInt32BE(-1) must be all 0xFF"
+    );
 }
 
 // ── swap64 ────────────────────────────────────────────────────────────────────
@@ -756,8 +823,14 @@ fn write_int32_be_negative_value() {
 #[test]
 fn swap64_swaps_eight_byte_groups() {
     let arr = make_arr(vec![
-        Value::I32(0x01), Value::I32(0x02), Value::I32(0x03), Value::I32(0x04),
-        Value::I32(0x05), Value::I32(0x06), Value::I32(0x07), Value::I32(0x08),
+        Value::I32(0x01),
+        Value::I32(0x02),
+        Value::I32(0x03),
+        Value::I32(0x04),
+        Value::I32(0x05),
+        Value::I32(0x06),
+        Value::I32(0x07),
+        Value::I32(0x08),
     ]);
     let buf = call_buf("from", vec![arr]);
     let swapped = call_buf("swap64", vec![buf]);
@@ -789,7 +862,10 @@ fn reverse_reverses_byte_order() {
 #[test]
 fn to_string_with_range_returns_partial_content() {
     let buf = call_buf("from", vec![s("hello world"), s("utf8")]);
-    let result = call_buf("toString", vec![buf, s("utf8"), Value::I32(0), Value::I32(5)]);
+    let result = call_buf(
+        "toString",
+        vec![buf, s("utf8"), Value::I32(0), Value::I32(5)],
+    );
     if let Value::String(s) = &result {
         assert_eq!(s.as_ref(), "hello");
     }
@@ -882,5 +958,8 @@ fn proposal_node_buffer_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:buffer imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:buffer imports: {missing:?}"
+    );
 }

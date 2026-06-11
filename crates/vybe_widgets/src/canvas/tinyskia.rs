@@ -38,17 +38,15 @@
 //! transform.
 
 use tiny_skia::{
-    Paint, FillRule, Stroke as TsStroke, LineCap as TsLineCap, LineJoin as TsLineJoin,
-    Transform, PathBuilder, Path, Pixmap, PixmapPaint, FilterQuality,
-    PixmapRef, Mask,
+    FillRule, FilterQuality, LineCap as TsLineCap, LineJoin as TsLineJoin, Mask, Paint, Path,
+    PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke as TsStroke, Transform,
 };
 
 use cosmic_text::{
-    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, SwashCache,
-    Shaping,
+    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
 
-use super::{Canvas, Color, LineCap, LineJoin, Font, FontWeight, FontStyle, Image};
+use super::{Canvas, Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
 
 /// `Canvas` impl that paints into a `tiny_skia::Pixmap`.
 ///
@@ -154,7 +152,10 @@ impl<'a> TinySkiaCanvas<'a> {
             state: PaintState::default(),
             state_stack: Vec::new(),
             path: PathBuilder::new(),
-            text_ctx: Some(TextCtx { font_system, swash_cache }),
+            text_ctx: Some(TextCtx {
+                font_system,
+                swash_cache,
+            }),
             clip_mask: None,
         }
     }
@@ -164,7 +165,9 @@ impl<'a> TinySkiaCanvas<'a> {
     /// by the host bridge's `canvasMeasureText` to back any
     /// framework-side `MeasureText` API.
     pub fn measure_text(&mut self, text: &str) -> (f32, f32) {
-        let Some(tc) = self.text_ctx.as_mut() else { return (0.0, 0.0); };
+        let Some(tc) = self.text_ctx.as_mut() else {
+            return (0.0, 0.0);
+        };
         let size = self.state.font.size;
         let metrics = Metrics::new(size, size * 1.3);
         let mut buf = Buffer::new(tc.font_system, metrics);
@@ -224,14 +227,30 @@ impl<'a> TinySkiaCanvas<'a> {
 impl<'a> Canvas for TinySkiaCanvas<'a> {
     // ─── Paint state ────────────────────────────────────────────────────
 
-    fn set_fill_color(&mut self, color: Color) { self.state.fill = color; }
-    fn set_stroke_color(&mut self, color: Color) { self.state.stroke = color; }
-    fn set_line_width(&mut self, width: f32) { self.state.line_width = width.max(0.0); }
-    fn set_line_cap(&mut self, cap: LineCap) { self.state.line_cap = cap; }
-    fn set_line_join(&mut self, join: LineJoin) { self.state.line_join = join; }
-    fn set_miter_limit(&mut self, limit: f32) { self.state.miter_limit = limit.max(1.0); }
-    fn set_global_alpha(&mut self, alpha: f32) { self.state.global_alpha = alpha.clamp(0.0, 1.0); }
-    fn set_font(&mut self, font: &Font) { self.state.font = font.clone(); }
+    fn set_fill_color(&mut self, color: Color) {
+        self.state.fill = color;
+    }
+    fn set_stroke_color(&mut self, color: Color) {
+        self.state.stroke = color;
+    }
+    fn set_line_width(&mut self, width: f32) {
+        self.state.line_width = width.max(0.0);
+    }
+    fn set_line_cap(&mut self, cap: LineCap) {
+        self.state.line_cap = cap;
+    }
+    fn set_line_join(&mut self, join: LineJoin) {
+        self.state.line_join = join;
+    }
+    fn set_miter_limit(&mut self, limit: f32) {
+        self.state.miter_limit = limit.max(1.0);
+    }
+    fn set_global_alpha(&mut self, alpha: f32) {
+        self.state.global_alpha = alpha.clamp(0.0, 1.0);
+    }
+    fn set_font(&mut self, font: &Font) {
+        self.state.font = font.clone();
+    }
     fn set_line_dash(&mut self, intervals: &[f32]) {
         self.state.dash_intervals = intervals.to_vec();
     }
@@ -271,7 +290,11 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         // segments is enough for visual smoothness up to ~100px radius.
         let segments = 32usize;
         let mut a = start;
-        let total = if ccw { -(start - end).abs() } else { (end - start).abs() };
+        let total = if ccw {
+            -(start - end).abs()
+        } else {
+            (end - start).abs()
+        };
         let step = total / segments as f32;
 
         // First point — move_to so we don't connect to whatever was last.
@@ -302,10 +325,14 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         let kx = rx * 0.5522848;
         let ky = ry * 0.5522848;
         self.path.move_to(x, y - ry);
-        self.path.cubic_to(x + kx, y - ry, x + rx, y - ky, x + rx, y);
-        self.path.cubic_to(x + rx, y + ky, x + kx, y + ry, x, y + ry);
-        self.path.cubic_to(x - kx, y + ry, x - rx, y + ky, x - rx, y);
-        self.path.cubic_to(x - rx, y - ky, x - kx, y - ry, x, y - ry);
+        self.path
+            .cubic_to(x + kx, y - ry, x + rx, y - ky, x + rx, y);
+        self.path
+            .cubic_to(x + rx, y + ky, x + kx, y + ry, x, y + ry);
+        self.path
+            .cubic_to(x - kx, y + ry, x - rx, y + ky, x - rx, y);
+        self.path
+            .cubic_to(x - rx, y - ky, x - kx, y - ry, x, y - ry);
         self.path.close();
     }
 
@@ -315,7 +342,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         if let Some(path) = self.take_path() {
             let paint = self.fill_paint();
             let mask = self.clip_mask.as_ref();
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
+            self.pixmap
+                .fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
@@ -323,7 +351,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         if let Some(path) = self.take_path() {
             let (paint, stroke) = self.stroke_paint();
             let mask = self.clip_mask.as_ref();
-            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, mask);
+            self.pixmap
+                .stroke_path(&path, &paint, &stroke, self.state.transform, mask);
         }
     }
 
@@ -337,7 +366,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         if let Some(path) = pb.finish() {
             let paint = self.fill_paint();
             let mask = self.clip_mask.as_ref();
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
+            self.pixmap
+                .fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
@@ -351,7 +381,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         if let Some(path) = pb.finish() {
             let (paint, stroke) = self.stroke_paint();
             let mask = self.clip_mask.as_ref();
-            self.pixmap.stroke_path(&path, &paint, &stroke, self.state.transform, mask);
+            self.pixmap
+                .stroke_path(&path, &paint, &stroke, self.state.transform, mask);
         }
     }
 
@@ -368,7 +399,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
             paint.set_color_rgba8(0, 0, 0, 0);
             paint.blend_mode = tiny_skia::BlendMode::Source;
             let mask = self.clip_mask.as_ref();
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
+            self.pixmap
+                .fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
         }
     }
 
@@ -376,7 +408,9 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         // Real text rendering through cosmic-text. Requires a font
         // context — without one, this is a no-op (used by tests that
         // construct a TinySkiaCanvas without text support).
-        let Some(tc) = self.text_ctx.as_mut() else { return; };
+        let Some(tc) = self.text_ctx.as_mut() else {
+            return;
+        };
 
         // Build a buffer for the text, shape it, and rasterise each
         // glyph through the swash cache. The pixel data lands on the
@@ -456,7 +490,9 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         if let Some(src) = PixmapRef::from_bytes(&img.pixels, img.width, img.height) {
             let scale_x = w / img.width as f32;
             let scale_y = h / img.height as f32;
-            let xform = self.state.transform
+            let xform = self
+                .state
+                .transform
                 .pre_translate(x, y)
                 .pre_scale(scale_x, scale_y);
             let pp = PixmapPaint {
@@ -520,8 +556,8 @@ fn apply_alpha(color: Color, alpha: f32) -> Color {
 
 fn line_cap_to_ts(cap: LineCap) -> TsLineCap {
     match cap {
-        LineCap::Butt   => TsLineCap::Butt,
-        LineCap::Round  => TsLineCap::Round,
+        LineCap::Butt => TsLineCap::Butt,
+        LineCap::Round => TsLineCap::Round,
         LineCap::Square => TsLineCap::Square,
     }
 }
@@ -559,8 +595,5 @@ fn build_attrs<'f>(font: &'f Font) -> Attrs<'f> {
         FontStyle::Normal => cosmic_text::Style::Normal,
         FontStyle::Italic => cosmic_text::Style::Italic,
     };
-    Attrs::new()
-        .family(family)
-        .weight(weight)
-        .style(style)
+    Attrs::new().family(family).weight(weight).style(style)
 }

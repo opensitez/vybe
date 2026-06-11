@@ -1,8 +1,8 @@
 //! Text editor engine — rope-based editing with tokenization, folding, undo/redo.
 //! No LSP dependency — diagnostics use a generic struct that IDEs can populate.
 
-use ropey::Rope;
 use crate::language::LanguageDef;
+use ropey::Rope;
 use std::collections::{HashSet, VecDeque};
 
 /// Generic diagnostic info — IDEs convert their LSP diagnostics into this.
@@ -61,14 +61,22 @@ pub struct TextEditor {
     pub redo_history: VecDeque<(String, usize, usize)>,
 }
 
-fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: LexerState) -> (Vec<TokenSpan>, LexerState) {
+fn tokenize_line(
+    line: &str,
+    base_offset: usize,
+    lang: &LanguageDef,
+    mut state: LexerState,
+) -> (Vec<TokenSpan>, LexerState) {
     let bytes = line.as_bytes();
     let mut i = 0usize;
     let n = bytes.len();
     let mut out = Vec::new();
 
     let line_comment = lang.comments.as_ref().and_then(|c| c.line_comment.as_ref());
-    let block_comment = lang.comments.as_ref().and_then(|c| c.block_comment.as_ref());
+    let block_comment = lang
+        .comments
+        .as_ref()
+        .and_then(|c| c.block_comment.as_ref());
 
     while i < n {
         if state == LexerState::InBlockComment {
@@ -77,7 +85,7 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
                 let emb = end_marker.as_bytes();
                 let mut found = false;
                 while i < n {
-                    if i + emb.len() <= n && &bytes[i..i+emb.len()] == emb {
+                    if i + emb.len() <= n && &bytes[i..i + emb.len()] == emb {
                         i += emb.len();
                         state = LexerState::Normal;
                         found = true;
@@ -85,9 +93,22 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
                     }
                     i += 1;
                 }
-                out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment });
-                if found { continue; }
-            } else { i = n; out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::BlockComment }); }
+                out.push(TokenSpan {
+                    start: base_offset + start,
+                    end: base_offset + i,
+                    kind: TokenKind::BlockComment,
+                });
+                if found {
+                    continue;
+                }
+            } else {
+                i = n;
+                out.push(TokenSpan {
+                    start: base_offset + start,
+                    end: base_offset + i,
+                    kind: TokenKind::BlockComment,
+                });
+            }
             continue;
         }
 
@@ -95,24 +116,36 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
         if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
             let start = i;
             i += 1;
-            while i < n && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n') { i += 1; }
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Whitespace });
+            while i < n
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
+                i += 1;
+            }
+            out.push(TokenSpan {
+                start: base_offset + start,
+                end: base_offset + i,
+                kind: TokenKind::Whitespace,
+            });
             continue;
         }
 
         if let Some(prefix) = line_comment {
             let pb = prefix.as_bytes();
-            if i + pb.len() <= n && &bytes[i..i+pb.len()] == pb {
+            if i + pb.len() <= n && &bytes[i..i + pb.len()] == pb {
                 let start = i;
                 i = n;
-                out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::LineComment });
+                out.push(TokenSpan {
+                    start: base_offset + start,
+                    end: base_offset + i,
+                    kind: TokenKind::LineComment,
+                });
                 continue;
             }
         }
 
         if let Some((start_marker, _)) = block_comment {
             let smb = start_marker.as_bytes();
-            if i + smb.len() <= n && &bytes[i..i+smb.len()] == smb {
+            if i + smb.len() <= n && &bytes[i..i + smb.len()] == smb {
                 state = LexerState::InBlockComment;
                 continue;
             }
@@ -123,30 +156,61 @@ fn tokenize_line(line: &str, base_offset: usize, lang: &LanguageDef, mut state: 
             let start = i;
             i += 1;
             while i < n {
-                if bytes[i] == b'\\' && i + 1 < n { i += 2; continue; }
-                if bytes[i] == quote { i += 1; break; }
+                if bytes[i] == b'\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
                 i += 1;
             }
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::String });
+            out.push(TokenSpan {
+                start: base_offset + start,
+                end: base_offset + i,
+                kind: TokenKind::String,
+            });
             continue;
         }
         if b >= b'0' && b <= b'9' {
             let start = i;
             i += 1;
-            while i < n && ((bytes[i] >= b'0' && bytes[i] <= b'9') || bytes[i] == b'.') { i += 1; }
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Number });
+            while i < n && ((bytes[i] >= b'0' && bytes[i] <= b'9') || bytes[i] == b'.') {
+                i += 1;
+            }
+            out.push(TokenSpan {
+                start: base_offset + start,
+                end: base_offset + i,
+                kind: TokenKind::Number,
+            });
             continue;
         }
         if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') || b == b'_' {
             let start = i;
             i += 1;
-            while i < n && ((bytes[i] >= b'a' && bytes[i] <= b'z') || (bytes[i] >= b'A' && bytes[i] <= b'Z') || (bytes[i] >= b'0' && bytes[i] <= b'9') || bytes[i] == b'_') { i += 1; }
-            out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Identifier });
+            while i < n
+                && ((bytes[i] >= b'a' && bytes[i] <= b'z')
+                    || (bytes[i] >= b'A' && bytes[i] <= b'Z')
+                    || (bytes[i] >= b'0' && bytes[i] <= b'9')
+                    || bytes[i] == b'_')
+            {
+                i += 1;
+            }
+            out.push(TokenSpan {
+                start: base_offset + start,
+                end: base_offset + i,
+                kind: TokenKind::Identifier,
+            });
             continue;
         }
         let start = i;
         i += 1;
-        out.push(TokenSpan { start: base_offset + start, end: base_offset + i, kind: TokenKind::Punct });
+        out.push(TokenSpan {
+            start: base_offset + start,
+            end: base_offset + i,
+            kind: TokenKind::Punct,
+        });
     }
     (out, state)
 }
@@ -171,18 +235,25 @@ impl TextEditor {
     pub fn save_snapshot(&mut self, line: usize, col: usize) {
         let current = self.rope.to_string();
         if let Some((last_text, _, _)) = self.history.back() {
-            if last_text == &current { return; }
+            if last_text == &current {
+                return;
+            }
         }
         self.history.push_back((current, line, col));
-        if self.history.len() > 100 { self.history.pop_front(); }
+        if self.history.len() > 100 {
+            self.history.pop_front();
+        }
         self.redo_history.clear();
     }
 
     pub fn undo(&mut self, cur_line: usize, cur_col: usize) -> Option<(String, usize, usize)> {
         let current_text = self.rope.to_string();
         let (prev_text, prev_line, prev_col) = self.history.pop_back()?;
-        self.redo_history.push_back((current_text, cur_line, cur_col));
-        if self.redo_history.len() > 100 { self.redo_history.pop_front(); }
+        self.redo_history
+            .push_back((current_text, cur_line, cur_col));
+        if self.redo_history.len() > 100 {
+            self.redo_history.pop_front();
+        }
         self.rope = Rope::from_str(&prev_text);
         Some((prev_text, prev_line, prev_col))
     }
@@ -191,15 +262,21 @@ impl TextEditor {
         let current_text = self.rope.to_string();
         let (next_text, next_line, next_col) = self.redo_history.pop_back()?;
         self.history.push_back((current_text, cur_line, cur_col));
-        if self.history.len() > 100 { self.history.pop_front(); }
+        if self.history.len() > 100 {
+            self.history.pop_front();
+        }
         self.rope = Rope::from_str(&next_text);
         Some((next_text, next_line, next_col))
     }
 
-    pub fn rope(&self) -> &Rope { &self.rope }
+    pub fn rope(&self) -> &Rope {
+        &self.rope
+    }
 
     pub fn delete_range(&mut self, start_byte: usize, end_byte: usize, lang: &LanguageDef) {
-        if start_byte >= end_byte { return; }
+        if start_byte >= end_byte {
+            return;
+        }
         let start_char = self.rope.byte_to_char(start_byte);
         let end_char = self.rope.byte_to_char(end_byte);
         self.rope.remove(start_char..end_char);
@@ -226,11 +303,18 @@ impl TextEditor {
         let char_pos = self.rope.byte_to_char(byte_pos);
         let line_idx = self.rope.char_to_line(char_pos);
         let line = self.rope.line(line_idx).to_string();
-        let indent = line.chars().take_while(|c| c.is_whitespace()).collect::<String>();
+        let indent = line
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<String>();
         let mut to_insert = String::from("\n");
         to_insert.push_str(&indent);
         let trimmed = line.trim_end();
-        if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') || trimmed.ends_with(':') {
+        if trimmed.ends_with('{')
+            || trimmed.ends_with('(')
+            || trimmed.ends_with('[')
+            || trimmed.ends_with(':')
+        {
             to_insert.push_str("    ");
         }
         self.rope.insert(char_pos, &to_insert);
@@ -240,7 +324,9 @@ impl TextEditor {
 
     #[allow(dead_code)]
     pub fn replace_all(&mut self, from: &str, to: &str, lang: &LanguageDef) {
-        if from.is_empty() { return; }
+        if from.is_empty() {
+            return;
+        }
         let content = self.rope.to_string();
         let new_content = content.replace(from, to);
         if content != new_content {
@@ -266,23 +352,37 @@ impl TextEditor {
     }
 
     pub fn retokenize_range(&mut self, start_line: usize, end_line: usize, lang: &LanguageDef) {
-        if start_line >= self.rope.len_lines() { return; }
+        if start_line >= self.rope.len_lines() {
+            return;
+        }
         let mut li = start_line;
         let mut byte_offset = 0usize;
-        for i in 0..start_line { byte_offset += self.rope.line(i).len_bytes(); }
+        for i in 0..start_line {
+            byte_offset += self.rope.line(i).len_bytes();
+        }
         let mut state = self.line_states[li];
         while li < self.rope.len_lines() {
-            if li < self.line_states.len() { self.line_states[li] = state; }
-            else { self.line_states.push(state); }
+            if li < self.line_states.len() {
+                self.line_states[li] = state;
+            } else {
+                self.line_states.push(state);
+            }
             let line = self.rope.line(li).to_string();
             let (tokens, next_state) = tokenize_line(&line, byte_offset, lang, state);
-            if li < self.line_tokens.len() { self.line_tokens[li] = tokens; }
-            else { self.line_tokens.push(tokens); }
+            if li < self.line_tokens.len() {
+                self.line_tokens[li] = tokens;
+            } else {
+                self.line_tokens.push(tokens);
+            }
             byte_offset += line.len();
             li += 1;
             if li > end_line {
-                if li < self.line_states.len() && self.line_states[li] == next_state { break; }
-                if li == self.rope.len_lines() { break; }
+                if li < self.line_states.len() && self.line_states[li] == next_state {
+                    break;
+                }
+                if li == self.rope.len_lines() {
+                    break;
+                }
             }
             state = next_state;
         }
@@ -290,7 +390,10 @@ impl TextEditor {
     }
 
     pub fn tokenize_all(&self) -> Vec<TokenSpan> {
-        self.line_tokens.iter().flat_map(|line| line.iter().cloned()).collect()
+        self.line_tokens
+            .iter()
+            .flat_map(|line| line.iter().cloned())
+            .collect()
     }
 
     pub fn toggle_fold(&mut self, line_idx: usize) {
@@ -303,26 +406,52 @@ impl TextEditor {
 
     fn recompute_folds(&mut self, lang: &LanguageDef) {
         self.folds.clear();
-        if lang.brackets.is_empty() { return; }
+        if lang.brackets.is_empty() {
+            return;
+        }
         let ic = lang.ignore_case;
         for (open, close) in &lang.brackets {
             let is_keyword = open.len() > 1; // multi-char brackets like "sub" need word-boundary checks
-            let o = if ic { open.to_lowercase() } else { open.clone() };
-            let c = if ic { close.to_lowercase() } else { close.clone() };
+            let o = if ic {
+                open.to_lowercase()
+            } else {
+                open.clone()
+            };
+            let c = if ic {
+                close.to_lowercase()
+            } else {
+                close.clone()
+            };
             let mut stack: Vec<usize> = Vec::new();
             for li in 0..self.rope.len_lines() {
                 let line = self.rope.line(li).to_string();
-                let trimmed = if ic { line.trim().to_lowercase() } else { line.trim().to_string() };
-                let has_open = if is_keyword { Self::contains_keyword(&trimmed, &o) } else { trimmed.contains(&*o) };
-                let has_close = if is_keyword { Self::contains_keyword(&trimmed, &c) } else { trimmed.contains(&*c) };
+                let trimmed = if ic {
+                    line.trim().to_lowercase()
+                } else {
+                    line.trim().to_string()
+                };
+                let has_open = if is_keyword {
+                    Self::contains_keyword(&trimmed, &o)
+                } else {
+                    trimmed.contains(&*o)
+                };
+                let has_close = if is_keyword {
+                    Self::contains_keyword(&trimmed, &c)
+                } else {
+                    trimmed.contains(&*c)
+                };
                 // Process close BEFORE open so lines like "} else {" close the
                 // previous block first, then open a new one.
                 if has_close {
                     if let Some(start) = stack.pop() {
-                        if li > start { self.folds.push((start, li)); }
+                        if li > start {
+                            self.folds.push((start, li));
+                        }
                     }
                 }
-                if has_open { stack.push(li); }
+                if has_open {
+                    stack.push(li);
+                }
             }
         }
         self.folds.sort_by_key(|(s, _)| *s);
@@ -334,16 +463,26 @@ impl TextEditor {
         while let Some(pos) = text[start..].find(kw) {
             let abs = start + pos;
             let before_ok = abs == 0 || !text.as_bytes()[abs - 1].is_ascii_alphanumeric();
-            let after_ok = abs + kw.len() >= text.len() || !text.as_bytes()[abs + kw.len()].is_ascii_alphanumeric();
-            if before_ok && after_ok { return true; }
+            let after_ok = abs + kw.len() >= text.len()
+                || !text.as_bytes()[abs + kw.len()].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return true;
+            }
             start = abs + 1;
         }
         false
     }
 
-    pub fn find_matching_bracket(&self, line_idx: usize, col: usize, lang: &LanguageDef) -> Option<(usize, usize)> {
+    pub fn find_matching_bracket(
+        &self,
+        line_idx: usize,
+        col: usize,
+        lang: &LanguageDef,
+    ) -> Option<(usize, usize)> {
         let line = self.rope.line(line_idx).to_string();
-        if col >= line.len() { return None; }
+        if col >= line.len() {
+            return None;
+        }
         let ch = line.chars().nth(col)?;
         for (open, close) in &lang.brackets {
             let o_ch = open.chars().next()?;
@@ -354,8 +493,14 @@ impl TextEditor {
                     let text = self.rope.line(li).to_string();
                     let start_col = if li == line_idx { col + 1 } else { 0 };
                     for (ci, c) in text.chars().enumerate().skip(start_col) {
-                        if c == o_ch { depth += 1; }
-                        else if c == c_ch { depth -= 1; if depth == 0 { return Some((li, ci)); } }
+                        if c == o_ch {
+                            depth += 1;
+                        } else if c == c_ch {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some((li, ci));
+                            }
+                        }
                     }
                 }
             } else if ch == c_ch {
@@ -366,8 +511,14 @@ impl TextEditor {
                     let end_col = if li == line_idx { col } else { chars.len() };
                     for ci in (0..end_col).rev() {
                         let c = chars[ci];
-                        if c == c_ch { depth += 1; }
-                        else if c == o_ch { depth -= 1; if depth == 0 { return Some((li, ci)); } }
+                        if c == c_ch {
+                            depth += 1;
+                        } else if c == o_ch {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some((li, ci));
+                            }
+                        }
                     }
                 }
             }
@@ -375,31 +526,53 @@ impl TextEditor {
         None
     }
 
-    pub fn folds(&self) -> &Vec<(usize, usize)> { &self.folds }
+    pub fn folds(&self) -> &Vec<(usize, usize)> {
+        &self.folds
+    }
 
     pub fn move_line_up(&mut self, line_idx: usize) {
-        if line_idx == 0 || line_idx >= self.rope.len_lines() { return; }
+        if line_idx == 0 || line_idx >= self.rope.len_lines() {
+            return;
+        }
         let current = self.rope.line(line_idx).to_string();
         let prev = self.rope.line(line_idx - 1).to_string();
-        self.rope.remove(self.rope.line_to_char(line_idx - 1)..self.rope.line_to_char(line_idx + 1));
-        self.rope.insert(self.rope.line_to_char(line_idx - 1), &format!("{}{}", current, prev));
+        self.rope
+            .remove(self.rope.line_to_char(line_idx - 1)..self.rope.line_to_char(line_idx + 1));
+        self.rope.insert(
+            self.rope.line_to_char(line_idx - 1),
+            &format!("{}{}", current, prev),
+        );
     }
 
     pub fn move_line_down(&mut self, line_idx: usize) {
-        if line_idx >= self.rope.len_lines() - 1 { return; }
+        if line_idx >= self.rope.len_lines() - 1 {
+            return;
+        }
         let current = self.rope.line(line_idx).to_string();
         let next = self.rope.line(line_idx + 1).to_string();
-        self.rope.remove(self.rope.line_to_char(line_idx)..self.rope.line_to_char(line_idx + 2));
-        self.rope.insert(self.rope.line_to_char(line_idx), &format!("{}{}", next, current));
+        self.rope
+            .remove(self.rope.line_to_char(line_idx)..self.rope.line_to_char(line_idx + 2));
+        self.rope.insert(
+            self.rope.line_to_char(line_idx),
+            &format!("{}{}", next, current),
+        );
     }
 
     pub fn duplicate_line(&mut self, line_idx: usize) {
-        if line_idx >= self.rope.len_lines() { return; }
+        if line_idx >= self.rope.len_lines() {
+            return;
+        }
         let current = self.rope.line(line_idx).to_string();
-        self.rope.insert(self.rope.line_to_char(line_idx + 1), &current);
+        self.rope
+            .insert(self.rope.line_to_char(line_idx + 1), &current);
     }
 
-    pub fn insert_string(&mut self, byte_pos: usize, text: &str, lang: &LanguageDef) -> (usize, usize) {
+    pub fn insert_string(
+        &mut self,
+        byte_pos: usize,
+        text: &str,
+        lang: &LanguageDef,
+    ) -> (usize, usize) {
         let char_pos = self.rope.byte_to_char(byte_pos);
         self.rope.insert(char_pos, text);
         self.retokenize_all(lang);

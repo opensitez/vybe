@@ -4,8 +4,8 @@
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 fn bytes_from_value(v: &Value) -> Vec<u8> {
     match v {
@@ -47,8 +47,12 @@ fn compression_level(opts: Option<&Value>) -> flate2::Compression {
                 Value::F64(f) => *f as i32,
                 _ => -1,
             };
-            if n == -1 { return flate2::Compression::default(); }
-            if n == 0 { return flate2::Compression::none(); }
+            if n == -1 {
+                return flate2::Compression::default();
+            }
+            if n == 0 {
+                return flate2::Compression::none();
+            }
             let clamped = n.clamp(1, 9) as u32;
             return flate2::Compression::new(clamped);
         }
@@ -129,111 +133,180 @@ fn stub_stream() -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("node:zlib", "deflateSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        let level = compression_level(args.get(1));
-        buf_from_bytes(deflate_sync(&input, level))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "deflateSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            let level = compression_level(args.get(1));
+            buf_from_bytes(deflate_sync(&input, level))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "inflateSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(inflate_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "inflateSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(inflate_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "gzipSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        let level = compression_level(args.get(1));
-        buf_from_bytes(gzip_sync(&input, level))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "gzipSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            let level = compression_level(args.get(1));
+            buf_from_bytes(gzip_sync(&input, level))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "gunzipSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(gunzip_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "gunzipSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(gunzip_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "deflateRawSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        let level = compression_level(args.get(1));
-        buf_from_bytes(deflate_raw_sync(&input, level))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "deflateRawSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            let level = compression_level(args.get(1));
+            buf_from_bytes(deflate_raw_sync(&input, level))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "inflateRawSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(inflate_raw_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "inflateRawSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(inflate_raw_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "brotliCompressSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(brotli_compress_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "brotliCompressSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(brotli_compress_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "brotliDecompressSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(brotli_decompress_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "brotliDecompressSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(brotli_decompress_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "unzipSync", Box::new(|_ctx, args| {
-        let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
-        buf_from_bytes(unzip_sync(&input))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "unzipSync",
+        Box::new(|_ctx, args| {
+            let input = bytes_from_value(args.first().unwrap_or(&Value::Undefined));
+            buf_from_bytes(unzip_sync(&input))
+        }),
+    );
 
-    vm.register_host_fn("node:zlib", "constants", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        // Return codes
-        o.properties.insert("Z_OK".into(), Value::I32(0));
-        o.properties.insert("Z_STREAM_END".into(), Value::I32(1));
-        o.properties.insert("Z_NEED_DICT".into(), Value::I32(2));
-        o.properties.insert("Z_ERRNO".into(), Value::I32(-1));
-        o.properties.insert("Z_STREAM_ERROR".into(), Value::I32(-2));
-        o.properties.insert("Z_DATA_ERROR".into(), Value::I32(-3));
-        o.properties.insert("Z_MEM_ERROR".into(), Value::I32(-4));
-        o.properties.insert("Z_BUF_ERROR".into(), Value::I32(-5));
-        o.properties.insert("Z_VERSION_ERROR".into(), Value::I32(-6));
-        // Compression levels
-        o.properties.insert("Z_NO_COMPRESSION".into(), Value::I32(0));
-        o.properties.insert("Z_BEST_SPEED".into(), Value::I32(1));
-        o.properties.insert("Z_BEST_COMPRESSION".into(), Value::I32(9));
-        o.properties.insert("Z_DEFAULT_COMPRESSION".into(), Value::I32(-1));
-        // Strategies
-        o.properties.insert("Z_FILTERED".into(), Value::I32(1));
-        o.properties.insert("Z_HUFFMAN_ONLY".into(), Value::I32(2));
-        o.properties.insert("Z_RLE".into(), Value::I32(3));
-        o.properties.insert("Z_FIXED".into(), Value::I32(4));
-        o.properties.insert("Z_DEFAULT_STRATEGY".into(), Value::I32(0));
-        // Data types
-        o.properties.insert("Z_BINARY".into(), Value::I32(0));
-        o.properties.insert("Z_TEXT".into(), Value::I32(1));
-        o.properties.insert("Z_ASCII".into(), Value::I32(1));
-        o.properties.insert("Z_UNKNOWN".into(), Value::I32(2));
-        // Flush constants
-        o.properties.insert("Z_NO_FLUSH".into(), Value::I32(0));
-        o.properties.insert("Z_PARTIAL_FLUSH".into(), Value::I32(1));
-        o.properties.insert("Z_SYNC_FLUSH".into(), Value::I32(2));
-        o.properties.insert("Z_FULL_FLUSH".into(), Value::I32(3));
-        o.properties.insert("Z_FINISH".into(), Value::I32(4));
-        o.properties.insert("Z_BLOCK".into(), Value::I32(5));
-        o.properties.insert("Z_TREES".into(), Value::I32(6));
-        // Brotli constants
-        o.properties.insert("BROTLI_OPERATION_PROCESS".into(), Value::I32(0));
-        o.properties.insert("BROTLI_OPERATION_FLUSH".into(), Value::I32(1));
-        o.properties.insert("BROTLI_OPERATION_FINISH".into(), Value::I32(2));
-        o.properties.insert("BROTLI_OPERATION_EMIT_METADATA".into(), Value::I32(3));
-        o.properties.insert("BROTLI_PARAM_MODE".into(), Value::I32(0));
-        o.properties.insert("BROTLI_PARAM_QUALITY".into(), Value::I32(1));
-        o.properties.insert("BROTLI_PARAM_LGWIN".into(), Value::I32(2));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:zlib",
+        "constants",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            // Return codes
+            o.properties.insert("Z_OK".into(), Value::I32(0));
+            o.properties.insert("Z_STREAM_END".into(), Value::I32(1));
+            o.properties.insert("Z_NEED_DICT".into(), Value::I32(2));
+            o.properties.insert("Z_ERRNO".into(), Value::I32(-1));
+            o.properties.insert("Z_STREAM_ERROR".into(), Value::I32(-2));
+            o.properties.insert("Z_DATA_ERROR".into(), Value::I32(-3));
+            o.properties.insert("Z_MEM_ERROR".into(), Value::I32(-4));
+            o.properties.insert("Z_BUF_ERROR".into(), Value::I32(-5));
+            o.properties
+                .insert("Z_VERSION_ERROR".into(), Value::I32(-6));
+            // Compression levels
+            o.properties
+                .insert("Z_NO_COMPRESSION".into(), Value::I32(0));
+            o.properties.insert("Z_BEST_SPEED".into(), Value::I32(1));
+            o.properties
+                .insert("Z_BEST_COMPRESSION".into(), Value::I32(9));
+            o.properties
+                .insert("Z_DEFAULT_COMPRESSION".into(), Value::I32(-1));
+            // Strategies
+            o.properties.insert("Z_FILTERED".into(), Value::I32(1));
+            o.properties.insert("Z_HUFFMAN_ONLY".into(), Value::I32(2));
+            o.properties.insert("Z_RLE".into(), Value::I32(3));
+            o.properties.insert("Z_FIXED".into(), Value::I32(4));
+            o.properties
+                .insert("Z_DEFAULT_STRATEGY".into(), Value::I32(0));
+            // Data types
+            o.properties.insert("Z_BINARY".into(), Value::I32(0));
+            o.properties.insert("Z_TEXT".into(), Value::I32(1));
+            o.properties.insert("Z_ASCII".into(), Value::I32(1));
+            o.properties.insert("Z_UNKNOWN".into(), Value::I32(2));
+            // Flush constants
+            o.properties.insert("Z_NO_FLUSH".into(), Value::I32(0));
+            o.properties.insert("Z_PARTIAL_FLUSH".into(), Value::I32(1));
+            o.properties.insert("Z_SYNC_FLUSH".into(), Value::I32(2));
+            o.properties.insert("Z_FULL_FLUSH".into(), Value::I32(3));
+            o.properties.insert("Z_FINISH".into(), Value::I32(4));
+            o.properties.insert("Z_BLOCK".into(), Value::I32(5));
+            o.properties.insert("Z_TREES".into(), Value::I32(6));
+            // Brotli constants
+            o.properties
+                .insert("BROTLI_OPERATION_PROCESS".into(), Value::I32(0));
+            o.properties
+                .insert("BROTLI_OPERATION_FLUSH".into(), Value::I32(1));
+            o.properties
+                .insert("BROTLI_OPERATION_FINISH".into(), Value::I32(2));
+            o.properties
+                .insert("BROTLI_OPERATION_EMIT_METADATA".into(), Value::I32(3));
+            o.properties
+                .insert("BROTLI_PARAM_MODE".into(), Value::I32(0));
+            o.properties
+                .insert("BROTLI_PARAM_QUALITY".into(), Value::I32(1));
+            o.properties
+                .insert("BROTLI_PARAM_LGWIN".into(), Value::I32(2));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
     // Async stubs (require event loop)
-    for name in ["deflate", "inflate", "gzip", "gunzip", "deflateRaw", "inflateRaw",
-                 "brotliCompress", "brotliDecompress", "unzip"] {
+    for name in [
+        "deflate",
+        "inflate",
+        "gzip",
+        "gunzip",
+        "deflateRaw",
+        "inflateRaw",
+        "brotliCompress",
+        "brotliDecompress",
+        "unzip",
+    ] {
         vm.register_host_fn("node:zlib", name, Box::new(|_ctx, _args| Value::Undefined));
     }
 
     // Stream constructor stubs
-    for name in ["createDeflate", "createInflate", "createGzip", "createGunzip",
-                 "createDeflateRaw", "createInflateRaw", "createBrotliCompress",
-                 "createBrotliDecompress", "createUnzip"] {
+    for name in [
+        "createDeflate",
+        "createInflate",
+        "createGzip",
+        "createGunzip",
+        "createDeflateRaw",
+        "createInflateRaw",
+        "createBrotliCompress",
+        "createBrotliDecompress",
+        "createUnzip",
+    ] {
         vm.register_host_fn("node:zlib", name, Box::new(|_ctx, _args| stub_stream()));
     }
 }

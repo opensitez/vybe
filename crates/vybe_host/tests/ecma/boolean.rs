@@ -25,25 +25,36 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(std::sync::Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(std::sync::Arc::from(text))
+}
 
 // ── ToBoolean — falsy values ─────────────────────────────────────────────────
 
 #[test]
 fn false_is_falsy() {
-    assert_eq!(invoke("toBoolean", vec![Value::Bool(false)]), Value::Bool(false));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::Bool(false)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn zero_is_falsy() {
     // ECMA-262 §7.1.2: +0, -0, and 0n are all falsy.
     assert_eq!(invoke("toBoolean", vec![Value::I32(0)]), Value::Bool(false));
-    assert_eq!(invoke("toBoolean", vec![Value::F64(0.0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::F64(0.0)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn nan_is_falsy() {
-    assert_eq!(invoke("toBoolean", vec![Value::F64(f64::NAN)]), Value::Bool(false));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::F64(f64::NAN)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -58,7 +69,10 @@ fn null_is_falsy() {
 
 #[test]
 fn undefined_is_falsy() {
-    assert_eq!(invoke("toBoolean", vec![Value::Undefined]), Value::Bool(false));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::Undefined]),
+        Value::Bool(false)
+    );
 }
 
 // ── ToBoolean — truthy values ────────────────────────────────────────────────
@@ -66,7 +80,10 @@ fn undefined_is_falsy() {
 #[test]
 fn non_zero_number_is_truthy() {
     assert_eq!(invoke("toBoolean", vec![Value::I32(1)]), Value::Bool(true));
-    assert_eq!(invoke("toBoolean", vec![Value::F64(-0.5)]), Value::Bool(true));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::F64(-0.5)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -92,7 +109,10 @@ fn object_is_always_truthy() {
 
 #[test]
 fn positive_infinity_is_truthy() {
-    assert_eq!(invoke("toBoolean", vec![Value::F64(f64::INFINITY)]), Value::Bool(true));
+    assert_eq!(
+        invoke("toBoolean", vec![Value::F64(f64::INFINITY)]),
+        Value::Bool(true)
+    );
 }
 
 // ── Boolean() constructor (primitive wrapper) ─────────────────────────────────
@@ -138,10 +158,16 @@ fn to_string_of_false_is_string_false() {
 
 #[test]
 fn value_of_true_is_true() {
-    assert_eq!(invoke("valueOf", vec![Value::Bool(true)]), Value::Bool(true));
+    assert_eq!(
+        invoke("valueOf", vec![Value::Bool(true)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn value_of_false_is_false() {
-    assert_eq!(invoke("valueOf", vec![Value::Bool(false)]), Value::Bool(false));
+    assert_eq!(
+        invoke("valueOf", vec![Value::Bool(false)]),
+        Value::Bool(false)
+    );
 }

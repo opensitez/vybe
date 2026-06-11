@@ -31,13 +31,18 @@ fn call_http(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:http"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:http"), name.to_string()))
 }
 
 fn array_len(value: &Value) -> usize {
-    let Value::Object(array) = value else { return 0 };
+    let Value::Object(array) = value else {
+        return 0;
+    };
     let array = array.lock().unwrap();
-    let ObjectKind::Array(values) = &array.kind else { return 0 };
+    let ObjectKind::Array(values) = &array.kind else {
+        return 0;
+    };
     values.len()
 }
 
@@ -74,7 +79,10 @@ fn method_returns_empty_string_without_request() {
 
 #[test]
 fn header_returns_null_without_request() {
-    assert_eq!(call_http("header", vec![Value::String("x-test".into())]), Value::Null);
+    assert_eq!(
+        call_http("header", vec![Value::String("x-test".into())]),
+        Value::Null
+    );
 }
 
 #[test]
@@ -110,43 +118,64 @@ fn query_pairs_returns_empty_array_without_request() {
 #[test]
 fn uri_returns_string_without_request() {
     let v = call_http("uri", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn path_returns_string_without_request() {
     let v = call_http("path", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn query_returns_string_without_request() {
     let v = call_http("query", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn scheme_returns_string_without_request() {
     let v = call_http("scheme", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn host_returns_string_without_request() {
     let v = call_http("host", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn remote_addr_returns_string_without_request() {
     let v = call_http("remote_addr", vec![]);
-    assert!(matches!(v, Value::String(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::String(_) | Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn body_length_returns_number_without_request() {
     let v = call_http("body_length", vec![]);
-    assert!(matches!(v, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null | Value::Undefined));
+    assert!(matches!(
+        v,
+        Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null | Value::Undefined
+    ));
 }
 
 // ── Response accessors — sentinel values without a live response ───────────────
@@ -163,7 +192,10 @@ fn headers_sent_is_false_without_response() {
 
 #[test]
 fn has_header_is_false_without_response() {
-    assert_eq!(call_http("has_header", vec![Value::String("x-test".into())]), Value::Bool(false));
+    assert_eq!(
+        call_http("has_header", vec![Value::String("x-test".into())]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -173,13 +205,19 @@ fn http_response_code_returns_200_without_response() {
 
 #[test]
 fn set_status_does_not_panic() {
-    assert!(matches!(call_http("set_status", vec![Value::F64(404.0)]), Value::Null | Value::Undefined));
+    assert!(matches!(
+        call_http("set_status", vec![Value::F64(404.0)]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn set_header_does_not_panic() {
     assert!(matches!(
-        call_http("set_header", vec![Value::String("X-Foo".into()), Value::String("bar".into())]),
+        call_http(
+            "set_header",
+            vec![Value::String("X-Foo".into()), Value::String("bar".into())]
+        ),
         Value::Null | Value::Undefined
     ));
 }
@@ -187,7 +225,10 @@ fn set_header_does_not_panic() {
 #[test]
 fn add_header_does_not_panic() {
     assert!(matches!(
-        call_http("add_header", vec![Value::String("X-Foo".into()), Value::String("bar".into())]),
+        call_http(
+            "add_header",
+            vec![Value::String("X-Foo".into()), Value::String("bar".into())]
+        ),
         Value::Null | Value::Undefined
     ));
 }
@@ -202,35 +243,53 @@ fn remove_header_does_not_panic() {
 
 #[test]
 fn write_does_not_panic() {
-    assert!(matches!(call_http("write", vec![Value::String("body".into())]), Value::Null | Value::Undefined));
+    assert!(matches!(
+        call_http("write", vec![Value::String("body".into())]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn write_text_does_not_panic() {
-    assert!(matches!(call_http("write_text", vec![Value::String("text".into())]), Value::Null | Value::Undefined));
+    assert!(matches!(
+        call_http("write_text", vec![Value::String("text".into())]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn end_does_not_panic() {
-    assert!(matches!(call_http("end", vec![]), Value::Null | Value::Undefined));
+    assert!(matches!(
+        call_http("end", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn flush_does_not_panic() {
-    assert!(matches!(call_http("flush", vec![]), Value::Null | Value::Undefined));
+    assert!(matches!(
+        call_http("flush", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn set_cookie_does_not_panic() {
     // set_cookie returns Bool(true) on success, Null/Undefined if no response context
-    let r = call_http("set_cookie", vec![Value::String("session".into()), Value::String("abc".into())]);
+    let r = call_http(
+        "set_cookie",
+        vec![Value::String("session".into()), Value::String("abc".into())],
+    );
     assert!(matches!(r, Value::Null | Value::Undefined | Value::Bool(_)));
 }
 
 #[test]
 fn send_header_raw_does_not_panic() {
     assert!(matches!(
-        call_http("send_header_raw", vec![Value::String("X-Raw: value".into())]),
+        call_http(
+            "send_header_raw",
+            vec![Value::String("X-Raw: value".into())]
+        ),
         Value::Null | Value::Undefined
     ));
 }

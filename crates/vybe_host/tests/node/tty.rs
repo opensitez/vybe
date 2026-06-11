@@ -142,7 +142,10 @@ fn read_stream_fd_property_reflects_arg() {
 #[test]
 fn read_stream_has_set_raw_mode_method() {
     let stream = call_tty("ReadStream", vec![Value::I32(0)]);
-    assert!(has_method(&stream, "setRawMode"), "ReadStream.setRawMode must exist");
+    assert!(
+        has_method(&stream, "setRawMode"),
+        "ReadStream.setRawMode must exist"
+    );
 }
 
 #[test]
@@ -154,14 +157,20 @@ fn read_stream_has_on_method() {
 #[test]
 fn read_stream_has_destroy_method() {
     let stream = call_tty("ReadStream", vec![Value::I32(0)]);
-    assert!(has_method(&stream, "destroy"), "ReadStream.destroy must exist");
+    assert!(
+        has_method(&stream, "destroy"),
+        "ReadStream.destroy must exist"
+    );
 }
 
 #[test]
 fn read_stream_has_pause_and_resume_methods() {
     let stream = call_tty("ReadStream", vec![Value::I32(0)]);
     assert!(has_method(&stream, "pause"), "ReadStream.pause must exist");
-    assert!(has_method(&stream, "resume"), "ReadStream.resume must exist");
+    assert!(
+        has_method(&stream, "resume"),
+        "ReadStream.resume must exist"
+    );
 }
 
 // ── WriteStream constructor ────────────────────────────────────────────────────
@@ -217,25 +226,37 @@ fn write_stream_fd_property_reflects_arg() {
 #[test]
 fn write_stream_has_clear_line_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "clearLine"), "WriteStream.clearLine must exist");
+    assert!(
+        has_method(&stream, "clearLine"),
+        "WriteStream.clearLine must exist"
+    );
 }
 
 #[test]
 fn write_stream_has_cursor_to_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "cursorTo"), "WriteStream.cursorTo must exist");
+    assert!(
+        has_method(&stream, "cursorTo"),
+        "WriteStream.cursorTo must exist"
+    );
 }
 
 #[test]
 fn write_stream_has_move_cursor_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "moveCursor"), "WriteStream.moveCursor must exist");
+    assert!(
+        has_method(&stream, "moveCursor"),
+        "WriteStream.moveCursor must exist"
+    );
 }
 
 #[test]
 fn write_stream_has_get_color_depth_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "getColorDepth"), "WriteStream.getColorDepth must exist");
+    assert!(
+        has_method(&stream, "getColorDepth"),
+        "WriteStream.getColorDepth must exist"
+    );
 }
 
 #[test]
@@ -253,7 +274,10 @@ fn write_stream_get_color_depth_returns_valid_depth() {
 #[test]
 fn write_stream_has_has_colors_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "hasColors"), "WriteStream.hasColors must exist");
+    assert!(
+        has_method(&stream, "hasColors"),
+        "WriteStream.hasColors must exist"
+    );
 }
 
 // ── WriteStream EventEmitter ──────────────────────────────────────────────────
@@ -291,7 +315,10 @@ fn write_stream_has_write_method() {
 #[test]
 fn write_stream_has_destroy_method() {
     let stream = call_tty("WriteStream", vec![Value::I32(1)]);
-    assert!(has_method(&stream, "destroy"), "WriteStream.destroy must exist");
+    assert!(
+        has_method(&stream, "destroy"),
+        "WriteStream.destroy must exist"
+    );
 }
 
 // ── getColorDepth (module-level) ──────────────────────────────────────────────

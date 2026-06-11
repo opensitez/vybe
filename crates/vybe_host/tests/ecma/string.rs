@@ -31,6 +31,23 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
+fn invoke_value(name: &str, args: Vec<Value>) -> Value {
+    let mut chunk = Chunk::new("<ecma-value-test>");
+    let import_idx = chunk.add_import("ecma:value", name);
+    let argc = args.len() as u8;
+    for value in args {
+        let constant = chunk.add_constant(value);
+        chunk.emit_op_u16(Op::CONST, constant, 0);
+    }
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
+    chunk.emit(argc, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    vm.run(vec![chunk]).expect("VM run failed")
+}
+
 fn s(text: &str) -> Value {
     Value::String(std::sync::Arc::from(text))
 }
@@ -68,33 +85,54 @@ fn length_counts_utf16_code_units() {
 
 #[test]
 fn char_at_returns_single_character() {
-    assert_eq!(as_string(&invoke("charAt", vec![s("hello"), Value::F64(1.0)])), "e");
+    assert_eq!(
+        as_string(&invoke("charAt", vec![s("hello"), Value::F64(1.0)])),
+        "e"
+    );
 }
 
 #[test]
 fn char_at_out_of_range_returns_empty_string() {
     // ECMA-262: out-of-range returns empty string (NOT undefined).
-    assert_eq!(as_string(&invoke("charAt", vec![s("hi"), Value::F64(99.0)])), "");
+    assert_eq!(
+        as_string(&invoke("charAt", vec![s("hi"), Value::F64(99.0)])),
+        ""
+    );
 }
 
 #[test]
 fn char_code_at_returns_unit_code() {
-    assert_eq!(invoke("charCodeAt", vec![s("Aa"), Value::F64(0.0)]), Value::F64(65.0));
-    assert_eq!(invoke("charCodeAt", vec![s("Aa"), Value::F64(1.0)]), Value::F64(97.0));
+    assert_eq!(
+        invoke("charCodeAt", vec![s("Aa"), Value::F64(0.0)]),
+        Value::F64(65.0)
+    );
+    assert_eq!(
+        invoke("charCodeAt", vec![s("Aa"), Value::F64(1.0)]),
+        Value::F64(97.0)
+    );
 }
 
 #[test]
 fn at_supports_negative_index() {
     // ECMA-262 §22.1.3.1 (added in ES2022).
-    assert_eq!(as_string(&invoke("at", vec![s("hello"), Value::F64(-1.0)])), "o");
-    assert_eq!(as_string(&invoke("at", vec![s("hello"), Value::F64(0.0)])), "h");
+    assert_eq!(
+        as_string(&invoke("at", vec![s("hello"), Value::F64(-1.0)])),
+        "o"
+    );
+    assert_eq!(
+        as_string(&invoke("at", vec![s("hello"), Value::F64(0.0)])),
+        "h"
+    );
 }
 
 // ── concat ────────────────────────────────────────────────────────
 
 #[test]
 fn concat_joins_arguments() {
-    assert_eq!(as_string(&invoke("concat", vec![s("ab"), s("cd"), s("ef")])), "abcdef");
+    assert_eq!(
+        as_string(&invoke("concat", vec![s("ab"), s("cd"), s("ef")])),
+        "abcdef"
+    );
 }
 
 // ── substring / slice ─────────────────────────────────────────────
@@ -102,64 +140,127 @@ fn concat_joins_arguments() {
 #[test]
 fn substring_extracts_range() {
     // substring(start, end) — both clamped non-negative.
-    assert_eq!(as_string(&invoke("substring", vec![s("abcdef"), Value::F64(1.0), Value::F64(4.0)])), "bcd");
+    assert_eq!(
+        as_string(&invoke(
+            "substring",
+            vec![s("abcdef"), Value::F64(1.0), Value::F64(4.0)]
+        )),
+        "bcd"
+    );
 }
 
 #[test]
 fn substring_swaps_when_start_greater_than_end() {
     // ECMA-262: substring swaps args if start > end.
-    assert_eq!(as_string(&invoke("substring", vec![s("abcdef"), Value::F64(4.0), Value::F64(1.0)])), "bcd");
+    assert_eq!(
+        as_string(&invoke(
+            "substring",
+            vec![s("abcdef"), Value::F64(4.0), Value::F64(1.0)]
+        )),
+        "bcd"
+    );
 }
 
 #[test]
 fn slice_extracts_range() {
-    assert_eq!(as_string(&invoke("slice", vec![s("abcdef"), Value::F64(1.0), Value::F64(4.0)])), "bcd");
+    assert_eq!(
+        as_string(&invoke(
+            "slice",
+            vec![s("abcdef"), Value::F64(1.0), Value::F64(4.0)]
+        )),
+        "bcd"
+    );
 }
 
 #[test]
 fn slice_supports_negative_indices() {
     // slice — negative indices count from end (substring does not).
-    assert_eq!(as_string(&invoke("slice", vec![s("abcdef"), Value::F64(-3.0)])), "def");
-    assert_eq!(as_string(&invoke("slice", vec![s("abcdef"), Value::F64(-3.0), Value::F64(-1.0)])), "de");
+    assert_eq!(
+        as_string(&invoke("slice", vec![s("abcdef"), Value::F64(-3.0)])),
+        "def"
+    );
+    assert_eq!(
+        as_string(&invoke(
+            "slice",
+            vec![s("abcdef"), Value::F64(-3.0), Value::F64(-1.0)]
+        )),
+        "de"
+    );
 }
 
 // ── includes / indexOf / lastIndexOf ──────────────────────────────
 
 #[test]
 fn includes_finds_substring() {
-    assert_eq!(invoke("includes", vec![s("hello world"), s("world")]), Value::Bool(true));
-    assert_eq!(invoke("includes", vec![s("hello world"), s("XYZ")]), Value::Bool(false));
+    assert_eq!(
+        invoke("includes", vec![s("hello world"), s("world")]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("includes", vec![s("hello world"), s("XYZ")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn includes_with_start_position() {
-    assert_eq!(invoke("includes", vec![s("hello world"), s("hello"), Value::F64(1.0)]), Value::Bool(false));
+    assert_eq!(
+        invoke(
+            "includes",
+            vec![s("hello world"), s("hello"), Value::F64(1.0)]
+        ),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn index_of_returns_position_or_minus_one() {
-    assert_eq!(invoke("indexOf", vec![s("hello world"), s("world")]), Value::F64(6.0));
-    assert_eq!(invoke("indexOf", vec![s("hello world"), s("XYZ")]), Value::F64(-1.0));
+    assert_eq!(
+        invoke("indexOf", vec![s("hello world"), s("world")]),
+        Value::F64(6.0)
+    );
+    assert_eq!(
+        invoke("indexOf", vec![s("hello world"), s("XYZ")]),
+        Value::F64(-1.0)
+    );
 }
 
 #[test]
 fn last_index_of_finds_last_occurrence() {
-    assert_eq!(invoke("lastIndexOf", vec![s("ababab"), s("ab")]), Value::F64(4.0));
-    assert_eq!(invoke("lastIndexOf", vec![s("ababab"), s("XYZ")]), Value::F64(-1.0));
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababab"), s("ab")]),
+        Value::F64(4.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababab"), s("XYZ")]),
+        Value::F64(-1.0)
+    );
 }
 
 // ── startsWith / endsWith ─────────────────────────────────────────
 
 #[test]
 fn starts_with_returns_bool() {
-    assert_eq!(invoke("startsWith", vec![s("hello"), s("hel")]), Value::Bool(true));
-    assert_eq!(invoke("startsWith", vec![s("hello"), s("ell")]), Value::Bool(false));
+    assert_eq!(
+        invoke("startsWith", vec![s("hello"), s("hel")]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("startsWith", vec![s("hello"), s("ell")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn ends_with_returns_bool() {
-    assert_eq!(invoke("endsWith", vec![s("hello"), s("llo")]), Value::Bool(true));
-    assert_eq!(invoke("endsWith", vec![s("hello"), s("hel")]), Value::Bool(false));
+    assert_eq!(
+        invoke("endsWith", vec![s("hello"), s("llo")]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("endsWith", vec![s("hello"), s("hel")]),
+        Value::Bool(false)
+    );
 }
 
 // ── toUpperCase / toLowerCase ─────────────────────────────────────
@@ -183,41 +284,62 @@ fn trim_strips_whitespace_both_sides() {
 
 #[test]
 fn trim_start_strips_only_leading() {
-    assert_eq!(as_string(&invoke("trimStart", vec![s("  hello  ")])), "hello  ");
+    assert_eq!(
+        as_string(&invoke("trimStart", vec![s("  hello  ")])),
+        "hello  "
+    );
 }
 
 #[test]
 fn trim_end_strips_only_trailing() {
-    assert_eq!(as_string(&invoke("trimEnd", vec![s("  hello  ")])), "  hello");
+    assert_eq!(
+        as_string(&invoke("trimEnd", vec![s("  hello  ")])),
+        "  hello"
+    );
 }
 
 // ── padStart / padEnd ─────────────────────────────────────────────
 
 #[test]
 fn pad_start_pads_to_target_length() {
-    assert_eq!(as_string(&invoke("padStart", vec![s("5"), Value::F64(3.0), s("0")])), "005");
+    assert_eq!(
+        as_string(&invoke("padStart", vec![s("5"), Value::F64(3.0), s("0")])),
+        "005"
+    );
 }
 
 #[test]
 fn pad_start_default_pad_is_space() {
-    assert_eq!(as_string(&invoke("padStart", vec![s("hi"), Value::F64(5.0)])), "   hi");
+    assert_eq!(
+        as_string(&invoke("padStart", vec![s("hi"), Value::F64(5.0)])),
+        "   hi"
+    );
 }
 
 #[test]
 fn pad_end_pads_to_target_length() {
-    assert_eq!(as_string(&invoke("padEnd", vec![s("5"), Value::F64(3.0), s(".")])), "5..");
+    assert_eq!(
+        as_string(&invoke("padEnd", vec![s("5"), Value::F64(3.0), s(".")])),
+        "5.."
+    );
 }
 
 // ── repeat ────────────────────────────────────────────────────────
 
 #[test]
 fn repeat_concatenates_n_times() {
-    assert_eq!(as_string(&invoke("repeat", vec![s("ab"), Value::F64(3.0)])), "ababab");
+    assert_eq!(
+        as_string(&invoke("repeat", vec![s("ab"), Value::F64(3.0)])),
+        "ababab"
+    );
 }
 
 #[test]
 fn repeat_zero_returns_empty() {
-    assert_eq!(as_string(&invoke("repeat", vec![s("ab"), Value::F64(0.0)])), "");
+    assert_eq!(
+        as_string(&invoke("repeat", vec![s("ab"), Value::F64(0.0)])),
+        ""
+    );
 }
 
 // ── replace / replaceAll ──────────────────────────────────────────
@@ -245,27 +367,42 @@ fn replace_all_replaces_every_occurrence() {
 
 #[test]
 fn split_returns_array_of_pieces() {
-    assert_eq!(array_strings(&invoke("split", vec![s("a,b,c"), s(",")])), vec!["a", "b", "c"]);
+    assert_eq!(
+        array_strings(&invoke("split", vec![s("a,b,c"), s(",")])),
+        vec!["a", "b", "c"]
+    );
 }
 
 #[test]
 fn split_with_limit_truncates() {
     assert_eq!(
-        array_strings(&invoke("split", vec![s("a,b,c,d"), s(","), Value::F64(2.0)])),
+        array_strings(&invoke(
+            "split",
+            vec![s("a,b,c,d"), s(","), Value::F64(2.0)]
+        )),
         vec!["a", "b"]
     );
 }
 
 #[test]
 fn split_empty_separator_yields_per_character() {
-    assert_eq!(array_strings(&invoke("split", vec![s("abc"), s("")])), vec!["a", "b", "c"]);
+    assert_eq!(
+        array_strings(&invoke("split", vec![s("abc"), s("")])),
+        vec!["a", "b", "c"]
+    );
 }
 
 // ── String.fromCharCode / fromCodePoint (constructor statics) ─────
 
 #[test]
 fn from_char_code_builds_string() {
-    assert_eq!(as_string(&invoke("fromCharCode", vec![Value::F64(65.0), Value::F64(97.0)])), "Aa");
+    assert_eq!(
+        as_string(&invoke(
+            "fromCharCode",
+            vec![Value::F64(65.0), Value::F64(97.0)]
+        )),
+        "Aa"
+    );
 }
 
 #[test]
@@ -295,7 +432,10 @@ fn locale_compare_returns_negative_for_less() {
 
 #[test]
 fn locale_compare_returns_zero_for_equal() {
-    assert_eq!(invoke("localeCompare", vec![s("abc"), s("abc")]), Value::I32(0));
+    assert_eq!(
+        invoke("localeCompare", vec![s("abc"), s("abc")]),
+        Value::I32(0)
+    );
 }
 
 #[test]
@@ -305,6 +445,14 @@ fn locale_compare_returns_positive_for_greater() {
     } else {
         panic!("localeCompare should return I32");
     }
+}
+
+#[test]
+fn value_invoke_method_locale_compare_on_string_primitive() {
+    assert_eq!(
+        invoke_value("invokeMethod", vec![s("a"), s("localeCompare"), s("b")]),
+        Value::I32(-1)
+    );
 }
 
 // ── normalize (ECMA-262 §22.1.3.13) ─────────────────────────────────
@@ -352,7 +500,10 @@ fn encode_uri_preserves_uri_syntax_chars() {
     // ECMA-262 §19.2.6.4: encodeURI leaves `;,/?:@&=+$#` unencoded
     // unlike encodeURIComponent.
     assert_eq!(
-        as_string(&invoke("encodeURI", vec![s("https://example.com/path?q=1")])),
+        as_string(&invoke(
+            "encodeURI",
+            vec![s("https://example.com/path?q=1")]
+        )),
         "https://example.com/path?q=1"
     );
 }
@@ -399,12 +550,18 @@ fn btoa_atob_roundtrip() {
 fn code_point_at_returns_full_unicode_codepoint() {
     // "A" = U+0041 = 65. This agrees with charCodeAt for BMP characters,
     // but codePointAt is the spec-correct API for code-point access.
-    assert_eq!(invoke("codePointAt", vec![s("A"), Value::F64(0.0)]), Value::F64(65.0));
+    assert_eq!(
+        invoke("codePointAt", vec![s("A"), Value::F64(0.0)]),
+        Value::F64(65.0)
+    );
 }
 
 #[test]
 fn code_point_at_out_of_bounds_returns_undefined() {
-    assert_eq!(invoke("codePointAt", vec![s("hi"), Value::F64(5.0)]), Value::Undefined);
+    assert_eq!(
+        invoke("codePointAt", vec![s("hi"), Value::F64(5.0)]),
+        Value::Undefined
+    );
 }
 
 // ── match (ECMA-262 §22.1.3.12) ─────────────────────────────────────────────
@@ -435,12 +592,18 @@ fn match_with_no_hit_returns_null() {
 
 #[test]
 fn search_returns_index_of_first_match() {
-    assert_eq!(invoke("search", vec![s("hello world"), s("world")]), Value::F64(6.0));
+    assert_eq!(
+        invoke("search", vec![s("hello world"), s("world")]),
+        Value::F64(6.0)
+    );
 }
 
 #[test]
 fn search_returns_negative_one_for_no_match() {
-    assert_eq!(invoke("search", vec![s("hello"), s("\\d+")]), Value::F64(-1.0));
+    assert_eq!(
+        invoke("search", vec![s("hello"), s("\\d+")]),
+        Value::F64(-1.0)
+    );
 }
 
 // ── startsWith / endsWith with position parameter ───────────────────────────
@@ -448,15 +611,27 @@ fn search_returns_negative_one_for_no_match() {
 #[test]
 fn starts_with_with_position_skips_prefix_chars() {
     // startsWith("hello", "ello", 1) — searching from index 1.
-    assert_eq!(invoke("startsWith", vec![s("hello"), s("ello"), Value::F64(1.0)]), Value::Bool(true));
-    assert_eq!(invoke("startsWith", vec![s("hello"), s("hello"), Value::F64(1.0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("startsWith", vec![s("hello"), s("ello"), Value::F64(1.0)]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("startsWith", vec![s("hello"), s("hello"), Value::F64(1.0)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn ends_with_with_end_position_treats_string_as_ending_earlier() {
     // endsWith("hello", "hell", 4) — acts as if the string has length 4 → "hell".
-    assert_eq!(invoke("endsWith", vec![s("hello"), s("hell"), Value::F64(4.0)]), Value::Bool(true));
-    assert_eq!(invoke("endsWith", vec![s("hello"), s("ello"), Value::F64(4.0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("endsWith", vec![s("hello"), s("hell"), Value::F64(4.0)]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("endsWith", vec![s("hello"), s("ello"), Value::F64(4.0)]),
+        Value::Bool(false)
+    );
 }
 
 // ── padStart — no-op when string already at target length ───────────────────
@@ -464,7 +639,10 @@ fn ends_with_with_end_position_treats_string_as_ending_earlier() {
 #[test]
 fn pad_start_is_noop_when_string_longer_than_target() {
     // padStart(1, "0") on a 3-char string must not truncate.
-    assert_eq!(as_string(&invoke("padStart", vec![s("abc"), Value::F64(1.0), s("0")])), "abc");
+    assert_eq!(
+        as_string(&invoke("padStart", vec![s("abc"), Value::F64(1.0), s("0")])),
+        "abc"
+    );
 }
 
 // ── String.raw (ECMA-262 §22.1.2.4) ─────────────────────────────────────────
@@ -474,7 +652,7 @@ fn raw_interpolates_without_escape_processing() {
     // String.raw receives a template-object (array of raw strings) + substitutions.
     // The host function takes the raw strings array + subs and joins them.
     let raw_parts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
-        vybe_bytecode::value::Object::new_array(vec![s("Hello\\n"), s("!")])
+        vybe_bytecode::value::Object::new_array(vec![s("Hello\\n"), s("!")]),
     )));
     let result = invoke("raw", vec![raw_parts, s("World")]);
     // Result should be "Hello\nWorld!" with a literal backslash-n, not a newline.
@@ -506,13 +684,19 @@ fn to_well_formed_returns_well_formed_string_unchanged() {
 #[test]
 fn to_locale_upper_case_uppercases_ascii() {
     // ECMA-262 §22.1.3.27: toLocaleUpperCase is locale-sensitive; for ASCII it matches toUpperCase.
-    assert_eq!(as_string(&invoke("toLocaleUpperCase", vec![s("hello")])), "HELLO");
+    assert_eq!(
+        as_string(&invoke("toLocaleUpperCase", vec![s("hello")])),
+        "HELLO"
+    );
 }
 
 #[test]
 fn to_locale_lower_case_lowercases_ascii() {
     // ECMA-262 §22.1.3.26: toLocaleLowerCase is locale-sensitive; for ASCII it matches toLowerCase.
-    assert_eq!(as_string(&invoke("toLocaleLowerCase", vec![s("WORLD")])), "world");
+    assert_eq!(
+        as_string(&invoke("toLocaleLowerCase", vec![s("WORLD")])),
+        "world"
+    );
 }
 
 // ── String.prototype.toLocaleString ──────────────────────────────────────────
@@ -521,7 +705,10 @@ fn to_locale_lower_case_lowercases_ascii() {
 fn to_locale_string_is_same_as_to_string_for_strings() {
     // ECMA-262 §22.1.3.28: String.prototype.toLocaleString is implementation-defined
     // but for a simple ASCII string it must return the string itself.
-    assert_eq!(as_string(&invoke("toLocaleString", vec![s("hello")])), "hello");
+    assert_eq!(
+        as_string(&invoke("toLocaleString", vec![s("hello")])),
+        "hello"
+    );
 }
 
 // ── String.prototype.toString (ECMA-262 §22.1.3.29) ─────────────────────────
@@ -543,19 +730,31 @@ fn to_string_of_empty_string_returns_empty() {
 fn substr_extracts_from_start_for_given_length() {
     // Annex B §B.2.2.1: substr(start, length) — length is character count, not end index.
     // "abcdef".substr(1, 3) → "bcd"
-    assert_eq!(as_string(&invoke("substr", vec![s("abcdef"), Value::F64(1.0), Value::F64(3.0)])), "bcd");
+    assert_eq!(
+        as_string(&invoke(
+            "substr",
+            vec![s("abcdef"), Value::F64(1.0), Value::F64(3.0)]
+        )),
+        "bcd"
+    );
 }
 
 #[test]
 fn substr_without_length_extracts_to_end() {
     // "abcdef".substr(2) → "cdef"
-    assert_eq!(as_string(&invoke("substr", vec![s("abcdef"), Value::F64(2.0)])), "cdef");
+    assert_eq!(
+        as_string(&invoke("substr", vec![s("abcdef"), Value::F64(2.0)])),
+        "cdef"
+    );
 }
 
 #[test]
 fn substr_negative_start_counts_from_end() {
     // "abcdef".substr(-2) → "ef"
-    assert_eq!(as_string(&invoke("substr", vec![s("abcdef"), Value::F64(-2.0)])), "ef");
+    assert_eq!(
+        as_string(&invoke("substr", vec![s("abcdef"), Value::F64(-2.0)])),
+        "ef"
+    );
 }
 
 // ── escape / unescape (ECMA-262 Annex B §B.2.1) ─────────────────────────────
@@ -572,7 +771,10 @@ fn escape_percent_encodes_non_ascii_safe_chars() {
 #[test]
 fn unescape_reverses_escape_encoding() {
     // Annex B §B.2.1.2: unescape decodes %XX sequences.
-    assert_eq!(as_string(&invoke("unescape", vec![s("hello%20world")])), "hello world");
+    assert_eq!(
+        as_string(&invoke("unescape", vec![s("hello%20world")])),
+        "hello world"
+    );
 }
 
 #[allow(dead_code)]

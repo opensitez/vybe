@@ -51,7 +51,13 @@ fn s(text: &str) -> Value {
 
 fn prop(v: &Value, key: &str) -> Value {
     match v {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -75,13 +81,19 @@ fn as_str(v: &Value) -> String {
 #[test]
 fn create_socket_udp4_returns_object() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(matches!(sock, Value::Object(_)), "createSocket('udp4') must return object");
+    assert!(
+        matches!(sock, Value::Object(_)),
+        "createSocket('udp4') must return object"
+    );
 }
 
 #[test]
 fn create_socket_udp6_returns_object() {
     let sock = call_dgram("createSocket", vec![s("udp6")]);
-    assert!(matches!(sock, Value::Object(_)), "createSocket('udp6') must return object");
+    assert!(
+        matches!(sock, Value::Object(_)),
+        "createSocket('udp6') must return object"
+    );
 }
 
 #[test]
@@ -100,7 +112,8 @@ fn create_socket_udp6_type_property_is_udp6() {
 fn create_socket_with_options_object_udp4_returns_socket() {
     let mut opts = Object::new();
     opts.properties.insert("type".to_string(), s("udp4"));
-    opts.properties.insert("reuseAddr".to_string(), Value::Bool(false));
+    opts.properties
+        .insert("reuseAddr".to_string(), Value::Bool(false));
     let opts_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(opts)));
     let sock = call_dgram("createSocket", vec![opts_val]);
     assert!(matches!(sock, Value::Object(_)));
@@ -110,7 +123,8 @@ fn create_socket_with_options_object_udp4_returns_socket() {
 fn create_socket_with_ipv6only_option() {
     let mut opts = Object::new();
     opts.properties.insert("type".to_string(), s("udp6"));
-    opts.properties.insert("ipv6Only".to_string(), Value::Bool(true));
+    opts.properties
+        .insert("ipv6Only".to_string(), Value::Bool(true));
     let opts_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(opts)));
     let sock = call_dgram("createSocket", vec![opts_val]);
     assert!(matches!(sock, Value::Object(_)));
@@ -120,9 +134,18 @@ fn create_socket_with_ipv6only_option() {
 fn two_sockets_are_distinct_objects() {
     let s1 = call_dgram("createSocket", vec![s("udp4")]);
     let s2 = call_dgram("createSocket", vec![s("udp4")]);
-    let p1 = match &s1 { Value::Object(a) => std::sync::Arc::as_ptr(a) as usize, _ => 0 };
-    let p2 = match &s2 { Value::Object(a) => std::sync::Arc::as_ptr(a) as usize, _ => 1 };
-    assert_ne!(p1, p2, "two createSocket calls must return distinct objects");
+    let p1 = match &s1 {
+        Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let p2 = match &s2 {
+        Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
+    assert_ne!(
+        p1, p2,
+        "two createSocket calls must return distinct objects"
+    );
 }
 
 // ── Socket method surface — I/O ───────────────────────────────────────────────
@@ -148,7 +171,10 @@ fn socket_has_send_method() {
 #[test]
 fn socket_has_address_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "address"), "socket.address must be present");
+    assert!(
+        has_method(&sock, "address"),
+        "socket.address must be present"
+    );
 }
 
 // ── Socket method surface — multicast / options ───────────────────────────────
@@ -156,7 +182,10 @@ fn socket_has_address_method() {
 #[test]
 fn socket_has_set_broadcast_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setBroadcast"), "socket.setBroadcast must be present");
+    assert!(
+        has_method(&sock, "setBroadcast"),
+        "socket.setBroadcast must be present"
+    );
 }
 
 #[test]
@@ -168,31 +197,46 @@ fn socket_has_set_ttl_method() {
 #[test]
 fn socket_has_set_multicast_ttl_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setMulticastTTL"), "socket.setMulticastTTL must be present");
+    assert!(
+        has_method(&sock, "setMulticastTTL"),
+        "socket.setMulticastTTL must be present"
+    );
 }
 
 #[test]
 fn socket_has_set_multicast_loopback_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setMulticastLoopback"), "socket.setMulticastLoopback must be present");
+    assert!(
+        has_method(&sock, "setMulticastLoopback"),
+        "socket.setMulticastLoopback must be present"
+    );
 }
 
 #[test]
 fn socket_has_set_multicast_interface_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setMulticastInterface"), "socket.setMulticastInterface must be present");
+    assert!(
+        has_method(&sock, "setMulticastInterface"),
+        "socket.setMulticastInterface must be present"
+    );
 }
 
 #[test]
 fn socket_has_add_membership_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "addMembership"), "socket.addMembership must be present");
+    assert!(
+        has_method(&sock, "addMembership"),
+        "socket.addMembership must be present"
+    );
 }
 
 #[test]
 fn socket_has_drop_membership_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "dropMembership"), "socket.dropMembership must be present");
+    assert!(
+        has_method(&sock, "dropMembership"),
+        "socket.dropMembership must be present"
+    );
 }
 
 #[test]
@@ -232,25 +276,37 @@ fn socket_has_unref_method() {
 #[test]
 fn socket_has_get_send_buffer_size_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "getSendBufferSize"), "socket.getSendBufferSize must be present");
+    assert!(
+        has_method(&sock, "getSendBufferSize"),
+        "socket.getSendBufferSize must be present"
+    );
 }
 
 #[test]
 fn socket_has_get_recv_buffer_size_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "getRecvBufferSize"), "socket.getRecvBufferSize must be present");
+    assert!(
+        has_method(&sock, "getRecvBufferSize"),
+        "socket.getRecvBufferSize must be present"
+    );
 }
 
 #[test]
 fn socket_has_set_send_buffer_size_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setSendBufferSize"), "socket.setSendBufferSize must be present");
+    assert!(
+        has_method(&sock, "setSendBufferSize"),
+        "socket.setSendBufferSize must be present"
+    );
 }
 
 #[test]
 fn socket_has_set_recv_buffer_size_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "setRecvBufferSize"), "socket.setRecvBufferSize must be present");
+    assert!(
+        has_method(&sock, "setRecvBufferSize"),
+        "socket.setRecvBufferSize must be present"
+    );
 }
 
 // ── Socket method surface — connected UDP (Node 12+) ─────────────────────────
@@ -258,19 +314,28 @@ fn socket_has_set_recv_buffer_size_method() {
 #[test]
 fn socket_has_connect_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "connect"), "socket.connect must be present (connected UDP, Node 12+)");
+    assert!(
+        has_method(&sock, "connect"),
+        "socket.connect must be present (connected UDP, Node 12+)"
+    );
 }
 
 #[test]
 fn socket_has_disconnect_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "disconnect"), "socket.disconnect must be present (connected UDP, Node 12+)");
+    assert!(
+        has_method(&sock, "disconnect"),
+        "socket.disconnect must be present (connected UDP, Node 12+)"
+    );
 }
 
 #[test]
 fn socket_has_remote_address_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "remoteAddress"), "socket.remoteAddress must be present");
+    assert!(
+        has_method(&sock, "remoteAddress"),
+        "socket.remoteAddress must be present"
+    );
 }
 
 // ── Socket EventEmitter interface ─────────────────────────────────────────────
@@ -278,61 +343,91 @@ fn socket_has_remote_address_method() {
 #[test]
 fn socket_has_on_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "on"), "socket.on (EventEmitter) must be present");
+    assert!(
+        has_method(&sock, "on"),
+        "socket.on (EventEmitter) must be present"
+    );
 }
 
 #[test]
 fn socket_has_once_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "once"), "socket.once (EventEmitter) must be present");
+    assert!(
+        has_method(&sock, "once"),
+        "socket.once (EventEmitter) must be present"
+    );
 }
 
 #[test]
 fn socket_has_off_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "off"), "socket.off (EventEmitter) must be present");
+    assert!(
+        has_method(&sock, "off"),
+        "socket.off (EventEmitter) must be present"
+    );
 }
 
 #[test]
 fn socket_has_emit_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "emit"), "socket.emit (EventEmitter) must be present");
+    assert!(
+        has_method(&sock, "emit"),
+        "socket.emit (EventEmitter) must be present"
+    );
 }
 
 #[test]
 fn socket_has_remove_listener_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "removeListener"), "socket.removeListener must be present");
+    assert!(
+        has_method(&sock, "removeListener"),
+        "socket.removeListener must be present"
+    );
 }
 
 #[test]
 fn socket_has_remove_all_listeners_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "removeAllListeners"), "socket.removeAllListeners must be present");
+    assert!(
+        has_method(&sock, "removeAllListeners"),
+        "socket.removeAllListeners must be present"
+    );
 }
 
 #[test]
 fn socket_has_listener_count_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "listenerCount"), "socket.listenerCount must be present");
+    assert!(
+        has_method(&sock, "listenerCount"),
+        "socket.listenerCount must be present"
+    );
 }
 
 #[test]
 fn socket_has_listeners_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "listeners"), "socket.listeners must be present");
+    assert!(
+        has_method(&sock, "listeners"),
+        "socket.listeners must be present"
+    );
 }
 
 #[test]
 fn socket_has_raw_listeners_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "rawListeners"), "socket.rawListeners must be present");
+    assert!(
+        has_method(&sock, "rawListeners"),
+        "socket.rawListeners must be present"
+    );
 }
 
 #[test]
 fn socket_has_event_names_method() {
     let sock = call_dgram("createSocket", vec![s("udp4")]);
-    assert!(has_method(&sock, "eventNames"), "socket.eventNames must be present");
+    assert!(
+        has_method(&sock, "eventNames"),
+        "socket.eventNames must be present"
+    );
 }
 
 // ── Surface check ─────────────────────────────────────────────────────────────
@@ -344,6 +439,8 @@ fn proposal_node_dgram_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:dgram imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:dgram imports: {missing:?}"
+    );
 }
-

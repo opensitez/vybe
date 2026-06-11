@@ -3,21 +3,21 @@
 //! The renderer reads these definitions — no rendering logic here.
 
 pub mod button;
-pub mod label;
-pub mod textbox;
 pub mod checkbox;
-pub mod radio;
 pub mod combobox;
+pub mod datetime;
+pub mod dialog;
+pub mod grid;
+pub mod label;
 pub mod listbox;
+pub mod menu;
+pub mod numeric;
 pub mod panel;
 pub mod progress;
-pub mod grid;
-pub mod tabs;
-pub mod menu;
-pub mod datetime;
-pub mod numeric;
+pub mod radio;
 pub mod rich;
-pub mod dialog;
+pub mod tabs;
+pub mod textbox;
 
 use std::collections::HashMap;
 

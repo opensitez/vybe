@@ -1,8 +1,11 @@
 //! ToolStrip widget — toolbar with button-like items and separators.
 
-use tiny_skia::*;
+use super::layout::{
+    KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
+    PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use tiny_skia::*;
 
 #[derive(Clone, Debug)]
 pub enum ToolStripItem {
@@ -46,7 +49,10 @@ impl ToolStrip {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// X position of each item (returns (x, width) pairs).
     pub fn item_positions(&self) -> Vec<(f32, f32)> {
@@ -97,7 +103,9 @@ impl ToolStrip {
         let btn_y = y + 2.0;
 
         for (i, item) in self.items.iter().enumerate() {
-            if i >= positions.len() { break; }
+            if i >= positions.len() {
+                break;
+            }
             let (ix, iw) = positions[i];
             let item_x = x + ix;
 
@@ -149,7 +157,9 @@ impl ToolStrip {
 
     /// Hit test — returns item index of the button at position.
     pub fn hit_test(&self, mx: f32, my: f32) -> Option<usize> {
-        if my < 0.0 || my > self.height { return None; }
+        if my < 0.0 || my > self.height {
+            return None;
+        }
         let positions = self.item_positions();
         for (i, (ix, iw)) in positions.iter().enumerate() {
             if matches!(self.items.get(i), Some(ToolStripItem::Button(_))) {
@@ -168,24 +178,48 @@ impl ToolStrip {
 }
 
 impl PanelWidget for ToolStrip {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw button labels
         let (fr, fg, fb, _) = self.colors.foreground;
         let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
         let positions = self.item_positions();
         for (i, item) in self.items.iter().enumerate() {
-            if i >= positions.len() { break; }
+            if i >= positions.len() {
+                break;
+            }
             if let ToolStripItem::Button(label) = item {
                 let (ix, _iw) = positions[i];
-                super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label, r.x + ix + 4.0, r.y + 6.0, 11.0, col, ctx.scale);
+                super::ide_text::draw_text(
+                    ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                    label,
+                    r.x + ix + 4.0,
+                    r.y + 6.0,
+                    11.0,
+                    col,
+                    ctx.scale,
+                );
             }
         }
     }
@@ -200,11 +234,14 @@ impl PanelWidget for ToolStrip {
         let lx = event.x - r.x;
         let ly = event.y - r.y;
         match event.kind {
-            MouseEventKind::Move => { self.mouse_move(lx, ly); }
+            MouseEventKind::Move => {
+                self.mouse_move(lx, ly);
+            }
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 if let Some(idx) = self.hit_test(lx, ly) {
                     self.pressed_index = Some(idx);
-                    self.pending_events.push(WidgetEvent::ToolStripItemClicked(self.name.clone(), idx));
+                    self.pending_events
+                        .push(WidgetEvent::ToolStripItemClicked(self.name.clone(), idx));
                     return true;
                 }
             }
@@ -216,6 +253,10 @@ impl PanelWidget for ToolStrip {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

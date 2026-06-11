@@ -3,7 +3,15 @@ use super::{ControlDef, Props, base_css};
 pub static DEF: ControlDef = ControlDef {
     tag: "select",
     inner_tag: None,
-    props: &["Text", "Items", "SelectedIndex", "SelectedItem", "Enabled", "Visible", "DropDownStyle"],
+    props: &[
+        "Text",
+        "Items",
+        "SelectedIndex",
+        "SelectedItem",
+        "Enabled",
+        "Visible",
+        "DropDownStyle",
+    ],
     events: &["SelectedIndexChanged", "TextChanged", "DropDown"],
     default_size: (120, 23),
     css_fn: css,

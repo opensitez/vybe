@@ -261,5 +261,8 @@ fn proposal_node_querystring_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:querystring imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:querystring imports: {missing:?}"
+    );
 }

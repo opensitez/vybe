@@ -226,7 +226,13 @@ impl EventLoop {
     pub fn create_future(&mut self) -> u64 {
         let id = self.next_future_id;
         self.next_future_id += 1;
-        self.future_states.insert(id, FutureRecord { phase: FuturePhase::Pending, value: None });
+        self.future_states.insert(
+            id,
+            FutureRecord {
+                phase: FuturePhase::Pending,
+                value: None,
+            },
+        );
         id
     }
 
@@ -241,7 +247,11 @@ impl EventLoop {
             rec.phase = FuturePhase::Resolved;
             rec.value = Some(value.clone());
         }
-        if let Some(pos) = self.future_waiting_fibers.iter().position(|(id, _)| *id == future_id) {
+        if let Some(pos) = self
+            .future_waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == future_id)
+        {
             let (_, mut fiber) = self.future_waiting_fibers.remove(pos);
             fiber.resume_value = Some(value);
             Some(fiber)
@@ -256,7 +266,11 @@ impl EventLoop {
             rec.phase = FuturePhase::Rejected;
             rec.value = Some(reason.clone());
         }
-        if let Some(pos) = self.future_waiting_fibers.iter().position(|(id, _)| *id == future_id) {
+        if let Some(pos) = self
+            .future_waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == future_id)
+        {
             let (_, mut fiber) = self.future_waiting_fibers.remove(pos);
             fiber.resume_exception = Some(reason);
             Some(fiber)
@@ -271,7 +285,13 @@ impl EventLoop {
     pub fn create_stream(&mut self) -> u64 {
         let id = self.next_stream_id;
         self.next_stream_id += 1;
-        self.stream_buffers.insert(id, StreamRecord { buffer: VecDeque::new(), closed: false });
+        self.stream_buffers.insert(
+            id,
+            StreamRecord {
+                buffer: VecDeque::new(),
+                closed: false,
+            },
+        );
         id
     }
 
@@ -283,7 +303,11 @@ impl EventLoop {
     /// Push one item to a stream. If a fiber is waiting, wake it directly with the item.
     /// Returns the fiber to queue as ResumeFiber, if any.
     pub fn stream_push(&mut self, stream_id: u64, item: Value) -> Option<Fiber> {
-        if let Some(pos) = self.stream_waiting_fibers.iter().position(|(id, _)| *id == stream_id) {
+        if let Some(pos) = self
+            .stream_waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == stream_id)
+        {
             // Direct wake — don't buffer, give item straight to the waiting fiber.
             let (_, mut fiber) = self.stream_waiting_fibers.remove(pos);
             fiber.resume_value = Some(item);
@@ -298,17 +322,23 @@ impl EventLoop {
 
     /// Pop one buffered item from a stream. Returns None if the buffer is empty.
     pub fn stream_pop(&mut self, stream_id: u64) -> Option<Value> {
-        self.stream_buffers.get_mut(&stream_id).and_then(|rec| rec.buffer.pop_front())
+        self.stream_buffers
+            .get_mut(&stream_id)
+            .and_then(|rec| rec.buffer.pop_front())
     }
 
     /// Check whether a stream's buffer is empty AND the stream is closed (EOF).
     pub fn stream_is_eof(&self, stream_id: u64) -> bool {
-        self.stream_buffers.get(&stream_id).map_or(true, |rec| rec.closed && rec.buffer.is_empty())
+        self.stream_buffers
+            .get(&stream_id)
+            .map_or(true, |rec| rec.closed && rec.buffer.is_empty())
     }
 
     /// Check whether a stream has buffered items ready to read.
     pub fn stream_has_item(&self, stream_id: u64) -> bool {
-        self.stream_buffers.get(&stream_id).map_or(false, |rec| !rec.buffer.is_empty())
+        self.stream_buffers
+            .get(&stream_id)
+            .map_or(false, |rec| !rec.buffer.is_empty())
     }
 
     /// Close a stream. If a fiber is waiting, wake it with EOF (resume_value = None → Null).
@@ -316,7 +346,11 @@ impl EventLoop {
         if let Some(rec) = self.stream_buffers.get_mut(&stream_id) {
             rec.closed = true;
         }
-        if let Some(pos) = self.stream_waiting_fibers.iter().position(|(id, _)| *id == stream_id) {
+        if let Some(pos) = self
+            .stream_waiting_fibers
+            .iter()
+            .position(|(id, _)| *id == stream_id)
+        {
             let (_, mut fiber) = self.stream_waiting_fibers.remove(pos);
             // EOF sentinel: resume_value stays None; dispatch will push Value::Null
             fiber.resume_value = Some(Value::Null);

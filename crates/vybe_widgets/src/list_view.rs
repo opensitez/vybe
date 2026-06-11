@@ -1,8 +1,11 @@
 //! ListView widget — column-based list with header row.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 pub struct ListView {
     pub items: Vec<String>,
@@ -43,7 +46,10 @@ impl ListView {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Paint the list view — white background, header, column dividers, selection.
     /// Text drawn by caller.
@@ -60,7 +66,8 @@ impl ListView {
 
         // Header background (darker gray)
         paint.set_color_rgba8(230, 230, 230, 255);
-        if let Some(rect) = Rect::from_xywh(x + 1.0, y + 1.0, self.width - 2.0, self.header_height) {
+        if let Some(rect) = Rect::from_xywh(x + 1.0, y + 1.0, self.width - 2.0, self.header_height)
+        {
             pixmap.fill_rect(rect, &paint, ts, None);
         }
 
@@ -92,13 +99,16 @@ impl ListView {
 
         // Selection highlight
         if let Some(idx) = self.selected_index {
-            let item_y = y + self.header_height + 1.0 + (idx as f32 * self.item_height) - self.scroll_offset;
+            let item_y =
+                y + self.header_height + 1.0 + (idx as f32 * self.item_height) - self.scroll_offset;
             let bar_top = item_y.max(y + self.header_height + 1.0);
             let bar_bottom = (item_y + self.item_height).min(y + self.height - 1.0);
             if bar_top < bar_bottom {
                 let (r, g, b, _) = self.colors.accent;
                 paint.set_color_rgba8(r, g, b, 50);
-                if let Some(rect) = Rect::from_xywh(x + 1.0, bar_top, self.width - 2.0, bar_bottom - bar_top) {
+                if let Some(rect) =
+                    Rect::from_xywh(x + 1.0, bar_top, self.width - 2.0, bar_bottom - bar_top)
+                {
                     pixmap.fill_rect(rect, &paint, ts, None);
                 }
             }
@@ -166,39 +176,83 @@ impl ListView {
 }
 
 impl PanelWidget for ListView {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw column headers
         let (fr, fg, fb, _) = self.colors.foreground;
         let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
         let cw = self.column_width();
         for (i, header) in self.columns.iter().enumerate() {
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, header, r.x + i as f32 * cw + 4.0, r.y + 4.0, 12.0, col, ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                header,
+                r.x + i as f32 * cw + 4.0,
+                r.y + 4.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
         // Draw items
         for (i, item) in self.items.iter().enumerate() {
-            let iy = r.y + self.header_height + 1.0 + i as f32 * self.item_height - self.scroll_offset;
-            if iy + self.item_height < r.y + self.header_height || iy > r.y + r.h { continue; }
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, r.x + 4.0, iy + 2.0, 12.0, col, ctx.scale);
+            let iy =
+                r.y + self.header_height + 1.0 + i as f32 * self.item_height - self.scroll_offset;
+            if iy + self.item_height < r.y + self.header_height || iy > r.y + r.h {
+                continue;
+            }
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                item,
+                r.x + 4.0,
+                iy + 2.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         let r = self.rect;
-        if !r.contains(event.x, event.y) { return false; }
+        if !r.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             if let Some(idx) = self.click(event.x - r.x, event.y - r.y) {
-                self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), idx));
+                self.pending_events
+                    .push(WidgetEvent::ListViewSelected(self.name.clone(), idx));
                 return true;
             }
         }
@@ -206,22 +260,32 @@ impl PanelWidget for ListView {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused { return false; }
+        if !self.focused {
+            return false;
+        }
         use winit::keyboard::{Key, NamedKey};
         match &event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
-                let next = self.selected_index.map(|i| (i + 1).min(self.items.len().saturating_sub(1))).unwrap_or(0);
+                let next = self
+                    .selected_index
+                    .map(|i| (i + 1).min(self.items.len().saturating_sub(1)))
+                    .unwrap_or(0);
                 if next < self.items.len() {
                     self.selected_index = Some(next);
-                    self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), next));
+                    self.pending_events
+                        .push(WidgetEvent::ListViewSelected(self.name.clone(), next));
                 }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
-                let prev = self.selected_index.map(|i| i.saturating_sub(1)).unwrap_or(0);
+                let prev = self
+                    .selected_index
+                    .map(|i| i.saturating_sub(1))
+                    .unwrap_or(0);
                 if prev < self.items.len() {
                     self.selected_index = Some(prev);
-                    self.pending_events.push(WidgetEvent::ListViewSelected(self.name.clone(), prev));
+                    self.pending_events
+                        .push(WidgetEvent::ListViewSelected(self.name.clone(), prev));
                 }
                 true
             }
@@ -229,30 +293,48 @@ impl PanelWidget for ListView {
         }
     }
 
-    fn focusable(&self) -> bool { true }
+    fn focusable(&self) -> bool {
+        true
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetSelectedIndex(i) => {
                 if *i < self.items.len() && self.selected_index != Some(*i) {
                     self.selected_index = Some(*i);
-                    self.pending_events.push(WidgetEvent::ListViewSelected(
-                        self.name.clone(),
-                        *i,
-                    ));
+                    self.pending_events
+                        .push(WidgetEvent::ListViewSelected(self.name.clone(), *i));
                 }
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),
-            WidgetCommand::AddItem(s) => { self.items.push(s.clone()); CommandValue::None }
-            WidgetCommand::RemoveItem(i) => { if *i < self.items.len() { self.items.remove(*i); } CommandValue::None }
-            WidgetCommand::ClearItems => { self.items.clear(); self.selected_index = None; CommandValue::None }
+            WidgetCommand::AddItem(s) => {
+                self.items.push(s.clone());
+                CommandValue::None
+            }
+            WidgetCommand::RemoveItem(i) => {
+                if *i < self.items.len() {
+                    self.items.remove(*i);
+                }
+                CommandValue::None
+            }
+            WidgetCommand::ClearItems => {
+                self.items.clear();
+                self.selected_index = None;
+                CommandValue::None
+            }
             WidgetCommand::GetText => {
-                let t = self.selected_index.and_then(|i| self.items.get(i)).cloned().unwrap_or_default();
+                let t = self
+                    .selected_index
+                    .and_then(|i| self.items.get(i))
+                    .cloned()
+                    .unwrap_or_default();
                 CommandValue::Text(t)
             }
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

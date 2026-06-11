@@ -8,8 +8,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, Value};
 
 static NEXT_TIMER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -26,31 +26,45 @@ fn make_handle() -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("node:timers", "setTimeout", Box::new(|_ctx, _args| {
-        make_handle()
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "setTimeout",
+        Box::new(|_ctx, _args| make_handle()),
+    );
 
-    vm.register_host_fn("node:timers", "clearTimeout", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "clearTimeout",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 
-    vm.register_host_fn("node:timers", "setInterval", Box::new(|_ctx, _args| {
-        make_handle()
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "setInterval",
+        Box::new(|_ctx, _args| make_handle()),
+    );
 
-    vm.register_host_fn("node:timers", "clearInterval", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "clearInterval",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 
-    vm.register_host_fn("node:timers", "setImmediate", Box::new(|_ctx, _args| {
-        make_handle()
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "setImmediate",
+        Box::new(|_ctx, _args| make_handle()),
+    );
 
-    vm.register_host_fn("node:timers", "clearImmediate", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "clearImmediate",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 
-    vm.register_host_fn("node:timers", "queueMicrotask", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:timers",
+        "queueMicrotask",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 }

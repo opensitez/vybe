@@ -35,7 +35,11 @@ fn next_step(it: Value) -> (Value, bool) {
         Value::Object(o) => {
             let o = o.lock().unwrap();
             let done = matches!(o.properties.get("done"), Some(Value::Bool(true)));
-            let val = o.properties.get("value").cloned().unwrap_or(Value::Undefined);
+            let val = o
+                .properties
+                .get("value")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             (val, done)
         }
         _ => (Value::Undefined, true),
@@ -83,7 +87,10 @@ fn next_done_becomes_true_after_exhaustion() {
 
 #[test]
 fn next_yields_values_in_source_order() {
-    let it = invoke("from", vec![arr(vec![Value::I32(10), Value::I32(20), Value::I32(30)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![Value::I32(10), Value::I32(20), Value::I32(30)])],
+    );
     let (v1, _) = next_step(it.clone());
     let (v2, _) = next_step(it.clone());
     let (v3, _) = next_step(it);
@@ -120,7 +127,15 @@ fn range_with_step_skips_values() {
 
 #[test]
 fn take_limits_to_at_most_n_elements() {
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![
+            Value::I32(1),
+            Value::I32(2),
+            Value::I32(3),
+            Value::I32(4),
+        ])],
+    );
     let taken = invoke("take", vec![it, Value::I32(2)]);
     assert_eq!(collect(taken).len(), 2);
 }
@@ -143,7 +158,15 @@ fn take_more_than_available_yields_all_elements() {
 
 #[test]
 fn drop_skips_first_n_elements() {
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![
+            Value::I32(1),
+            Value::I32(2),
+            Value::I32(3),
+            Value::I32(4),
+        ])],
+    );
     let remaining = invoke("drop", vec![it, Value::I32(2)]);
     let vals = collect(remaining);
     assert_eq!(vals, vec![Value::I32(3), Value::I32(4)]);
@@ -202,7 +225,15 @@ fn map_produces_an_iterator_of_transformed_values() {
 #[test]
 fn filter_keeps_only_matching_values() {
     // §3.1.3.4: iterator.filter(pred) yields only elements where pred returns true.
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![
+            Value::I32(1),
+            Value::I32(2),
+            Value::I32(3),
+            Value::I32(4),
+        ])],
+    );
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(2));
@@ -218,10 +249,14 @@ fn filter_keeps_only_matching_values() {
 #[test]
 fn reduce_folds_iterator_to_single_value() {
     // §3.1.3.8: iterator.reduce(fn, init) left-folds.
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)])],
+    );
     let reducer = {
         let mut o = Object::new();
-        o.properties.insert("__reduce_add".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__reduce_add".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("reduce", vec![it, reducer, Value::I32(0)]);
@@ -232,7 +267,10 @@ fn reduce_folds_iterator_to_single_value() {
 
 #[test]
 fn some_returns_true_when_any_element_matches() {
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(5), Value::I32(3)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![Value::I32(1), Value::I32(5), Value::I32(3)])],
+    );
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(4));
@@ -243,7 +281,10 @@ fn some_returns_true_when_any_element_matches() {
 
 #[test]
 fn every_returns_false_when_any_element_fails() {
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)])],
+    );
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(1));
@@ -254,7 +295,10 @@ fn every_returns_false_when_any_element_fails() {
 
 #[test]
 fn find_returns_first_matching_element() {
-    let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(4), Value::I32(9)])]);
+    let it = invoke(
+        "from",
+        vec![arr(vec![Value::I32(1), Value::I32(4), Value::I32(9)])],
+    );
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(3));
@@ -271,12 +315,16 @@ fn flat_map_flattens_one_level_of_returned_iterators() {
     let it = invoke("from", vec![arr(vec![Value::I32(1), Value::I32(2)])]);
     let flat_fn = {
         let mut o = Object::new();
-        o.properties.insert("__flatmap_dup".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__flatmap_dup".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("flatMap", vec![it, flat_fn]);
     let values = collect(result);
-    assert_eq!(values, vec![Value::I32(1), Value::I32(1), Value::I32(2), Value::I32(2)]);
+    assert_eq!(
+        values,
+        vec![Value::I32(1), Value::I32(1), Value::I32(2), Value::I32(2)]
+    );
 }
 
 // ── Iterator.prototype.forEach ────────────────────────────────────────────────
@@ -303,7 +351,10 @@ fn concat_chains_multiple_iterables_in_order() {
     let it2 = invoke("from", vec![arr(vec![Value::I32(3), Value::I32(4)])]);
     let combined = invoke("concat", vec![it1, it2]);
     let values = collect(combined);
-    assert_eq!(values, vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    assert_eq!(
+        values,
+        vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]
+    );
 }
 
 #[test]

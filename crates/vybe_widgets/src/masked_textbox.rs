@@ -1,8 +1,11 @@
 //! MaskedTextBox widget — text field with input mask.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 pub struct MaskedTextBox {
     pub mask: String,
@@ -39,7 +42,10 @@ impl MaskedTextBox {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Paint — white background with inset border. Text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -48,7 +54,11 @@ impl MaskedTextBox {
         paint.anti_alias = true;
 
         // White background
-        let bg = if self.disabled { (240, 240, 240, 255) } else { (255, 255, 255, 255) };
+        let bg = if self.disabled {
+            (240, 240, 240, 255)
+        } else {
+            (255, 255, 255, 255)
+        };
         paint.set_color_rgba8(bg.0, bg.1, bg.2, bg.3);
         if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 2.0) {
             pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
@@ -95,17 +105,35 @@ impl MaskedTextBox {
 }
 
 impl PanelWidget for MaskedTextBox {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw display text (masked)
         let display: String = if self.mask.is_empty() {
@@ -115,12 +143,24 @@ impl PanelWidget for MaskedTextBox {
         };
         if !display.is_empty() {
             let (fr, fg, fb, _) = self.colors.foreground;
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &display, r.x + 4.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &display,
+                r.x + 4.0,
+                r.y + 4.0,
+                12.0,
+                cosmic_text::Color::rgba(fr, fg, fb, 255),
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             self.focused = true;
             return true;
@@ -129,26 +169,36 @@ impl PanelWidget for MaskedTextBox {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused || self.disabled { return false; }
+        if !self.focused || self.disabled {
+            return false;
+        }
         use winit::keyboard::Key;
         match &event.logical_key {
             Key::Character(ch) => {
                 self.value.push_str(ch.as_str());
                 self.cursor = self.value.len();
-                self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                self.pending_events.push(WidgetEvent::TextChanged(
+                    self.name.clone(),
+                    self.value.clone(),
+                ));
                 true
             }
             Key::Named(winit::keyboard::NamedKey::Backspace) => {
                 self.value.pop();
                 self.cursor = self.value.len();
-                self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                self.pending_events.push(WidgetEvent::TextChanged(
+                    self.name.clone(),
+                    self.value.clone(),
+                ));
                 true
             }
             _ => false,
         }
     }
 
-    fn focusable(&self) -> bool { !self.disabled }
+    fn focusable(&self) -> bool {
+        !self.disabled
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetText(t) => {
@@ -163,10 +213,15 @@ impl PanelWidget for MaskedTextBox {
             }
             WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
             WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
-            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::SetEnabled(e) => {
+                self.disabled = !e;
+                CommandValue::None
+            }
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

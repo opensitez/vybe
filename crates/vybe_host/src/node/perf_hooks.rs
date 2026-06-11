@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -42,7 +42,8 @@ fn mark_entry(name: &str) -> Value {
     let mut o = Object::new();
     o.properties.insert("name".into(), s(name));
     o.properties.insert("entryType".into(), s("mark"));
-    o.properties.insert("startTime".into(), Value::F64(now_ms()));
+    o.properties
+        .insert("startTime".into(), Value::F64(now_ms()));
     o.properties.insert("duration".into(), Value::F64(0.0));
     Value::Object(Arc::new(Mutex::new(o)))
 }
@@ -63,77 +64,116 @@ fn histogram_stub() -> Value {
 pub fn register(vm: &mut VM) {
     let _ = perf_origin();
 
-    vm.register_host_fn("node:perf_hooks", "performanceNow", Box::new(|_ctx, _args| {
-        Value::F64(now_ms())
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceNow",
+        Box::new(|_ctx, _args| Value::F64(now_ms())),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceTimeOrigin", Box::new(|_ctx, _args| {
-        Value::F64(time_origin_ms().max(1.0))
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceTimeOrigin",
+        Box::new(|_ctx, _args| Value::F64(time_origin_ms().max(1.0))),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceMark", Box::new(|_ctx, args| {
-        let name = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            _ => String::new(),
-        };
-        mark_entry(&name)
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceMark",
+        Box::new(|_ctx, args| {
+            let name = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => String::new(),
+            };
+            mark_entry(&name)
+        }),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceMeasure", Box::new(|_ctx, args| {
-        let name = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            _ => String::new(),
-        };
-        let mut o = Object::new();
-        o.properties.insert("name".into(), s(&name));
-        o.properties.insert("entryType".into(), s("measure"));
-        o.properties.insert("startTime".into(), Value::F64(now_ms()));
-        o.properties.insert("duration".into(), Value::F64(0.0));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceMeasure",
+        Box::new(|_ctx, args| {
+            let name = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => String::new(),
+            };
+            let mut o = Object::new();
+            o.properties.insert("name".into(), s(&name));
+            o.properties.insert("entryType".into(), s("measure"));
+            o.properties
+                .insert("startTime".into(), Value::F64(now_ms()));
+            o.properties.insert("duration".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceClearMarks", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceClearMarks",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceClearMeasures", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceClearMeasures",
+        Box::new(|_ctx, _args| Value::Undefined),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceGetEntries", Box::new(|_ctx, _args| {
-        empty_array()
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceGetEntries",
+        Box::new(|_ctx, _args| empty_array()),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceGetEntriesByName", Box::new(|_ctx, _args| {
-        empty_array()
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceGetEntriesByName",
+        Box::new(|_ctx, _args| empty_array()),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "performanceGetEntriesByType", Box::new(|_ctx, _args| {
-        empty_array()
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "performanceGetEntriesByType",
+        Box::new(|_ctx, _args| empty_array()),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "eventLoopUtilization", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("idle".into(), Value::F64(0.0));
-        o.properties.insert("active".into(), Value::F64(0.0));
-        o.properties.insert("utilization".into(), Value::F64(0.0));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "eventLoopUtilization",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            o.properties.insert("idle".into(), Value::F64(0.0));
+            o.properties.insert("active".into(), Value::F64(0.0));
+            o.properties.insert("utilization".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "monitorEventLoopDelay", Box::new(|_ctx, _args| {
-        histogram_stub()
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "monitorEventLoopDelay",
+        Box::new(|_ctx, _args| histogram_stub()),
+    );
 
-    vm.register_host_fn("node:perf_hooks", "createHistogram", Box::new(|_ctx, _args| {
-        histogram_stub()
-    }));
+    vm.register_host_fn(
+        "node:perf_hooks",
+        "createHistogram",
+        Box::new(|_ctx, _args| histogram_stub()),
+    );
 
     // Stub constructors — just return an empty object
-    for name in ["PerformanceObserver", "PerformanceEntry", "PerformanceMark",
-                 "PerformanceMeasure", "PerformanceResourceTiming", "PerformanceNodeTiming"] {
-        vm.register_host_fn("node:perf_hooks", name, Box::new(|_ctx, _args| {
-            Value::Object(Arc::new(Mutex::new(Object::new())))
-        }));
+    for name in [
+        "PerformanceObserver",
+        "PerformanceEntry",
+        "PerformanceMark",
+        "PerformanceMeasure",
+        "PerformanceResourceTiming",
+        "PerformanceNodeTiming",
+    ] {
+        vm.register_host_fn(
+            "node:perf_hooks",
+            name,
+            Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+        );
     }
 }
 

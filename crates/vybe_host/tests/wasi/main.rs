@@ -1,5 +1,5 @@
-mod clocks;
 mod cli;
+mod clocks;
 mod crypto;
 mod crypto_vectors;
 mod filesystem;

@@ -1,17 +1,23 @@
 //! Standalone code editor widget — renders a full code editor with syntax highlighting,
 //! gutter, minimap, search/replace, and folding. No LSP dependency.
 
-use std::collections::HashMap;
-use cosmic_text::{Attrs, AttrsList, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Action, Cursor, Selection, Edit};
-use tiny_skia::{Paint, Pixmap, PixmapPaint, Rect, Transform, ColorU8, Stroke, PathBuilder};
-use winit::event::MouseButton;
 use arboard::Clipboard;
+use cosmic_text::{
+    Action, Attrs, AttrsList, Buffer, Color, Cursor, Edit, Family, FontSystem, Metrics, Selection,
+    Shaping, SwashCache,
+};
+use std::collections::HashMap;
+use tiny_skia::{ColorU8, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
+use winit::event::MouseButton;
 
-use crate::text_editor::TextEditor;
 use crate::language::LanguageDef;
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, MouseEventKind, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
-use winit::window::CursorIcon;
+use crate::layout::{
+    KeyEvent, LayoutRect, MouseEvent, MouseEventKind, PanelWidget, RenderContext, WidgetEvent,
+    WidgetId,
+};
+use crate::text_editor::TextEditor;
 pub use crate::text_editor::TokenKind;
+use winit::window::CursorIcon;
 
 /// Default layout constants. Can be overridden per-widget via the config fields.
 pub const DEFAULT_SCALE: f32 = 2.0;
@@ -532,7 +538,13 @@ pub struct CachedGlyph {
     pub top: i32,
 }
 
-pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: &TextEditor, attrs: &Attrs, lang: &LanguageDef, theme: &Theme) {
+pub fn apply_highlighting(
+    editor: &mut cosmic_text::Editor<'static>,
+    my_editor: &TextEditor,
+    attrs: &Attrs,
+    lang: &LanguageDef,
+    theme: &Theme,
+) {
     editor.with_buffer_mut(|buffer| {
         let mut byte_offset = 0usize;
         for (li, line) in buffer.lines.iter_mut().enumerate() {
@@ -546,15 +558,30 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                         TokenKind::Punct => theme.punctuation,
                         TokenKind::Identifier => {
                             let text = my_editor.slice(token.start, token.end);
-                            if lang.keywords.contains(&text) { theme.kw }
-                            else if lang.type_keywords.contains(&text) { theme.type_kw }
-                            else if lang.constants.contains(&text) { theme.number }
-                            else {
+                            if lang.keywords.contains(&text) {
+                                theme.kw
+                            } else if lang.type_keywords.contains(&text) {
+                                theme.type_kw
+                            } else if lang.constants.contains(&text) {
+                                theme.number
+                            } else {
                                 // Heuristic: if identifier is followed by '(', highlight as function
-                                let next_char = my_editor.rope.chars().nth(my_editor.rope.byte_to_char(token.end));
-                                if next_char == Some('(') { theme.kw }
-                                else if text.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) { theme.type_kw }
-                                else { theme.text }
+                                let next_char = my_editor
+                                    .rope
+                                    .chars()
+                                    .nth(my_editor.rope.byte_to_char(token.end));
+                                if next_char == Some('(') {
+                                    theme.kw
+                                } else if text
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.is_uppercase())
+                                    .unwrap_or(false)
+                                {
+                                    theme.type_kw
+                                } else {
+                                    theme.text
+                                }
                             }
                         }
                         _ => theme.text,
@@ -565,8 +592,11 @@ pub fn apply_highlighting(editor: &mut cosmic_text::Editor<'static>, my_editor: 
                 }
             }
             line.set_attrs_list(list);
-            if li < my_editor.rope.len_lines() { byte_offset += my_editor.rope.line(li).len_bytes(); }
-            else { byte_offset += line.text().len() + 1; }
+            if li < my_editor.rope.len_lines() {
+                byte_offset += my_editor.rope.line(li).len_bytes();
+            } else {
+                byte_offset += line.text().len() + 1;
+            }
         }
     });
 }
@@ -623,15 +653,59 @@ impl CodeEditorWidget {
         let font_size = 14.0;
         let metrics = Metrics::new(font_size, 20.0).scale(SCALE);
         let lang_def = crate::language::load_language("rust").unwrap_or_else(|| LanguageDef {
-            keywords: std::collections::HashSet::new(), type_keywords: std::collections::HashSet::new(), constants: std::collections::HashSet::new(), operators: std::collections::HashSet::new(), ignore_case: false, comments: None, brackets: Vec::new(),
+            keywords: std::collections::HashSet::new(),
+            type_keywords: std::collections::HashSet::new(),
+            constants: std::collections::HashSet::new(),
+            operators: std::collections::HashSet::new(),
+            ignore_case: false,
+            comments: None,
+            brackets: Vec::new(),
         });
         let theme = Theme::dark();
         my_editor.retokenize_all(&lang_def);
         let mut buffer = Buffer::new(font_system, metrics);
         let text = my_editor.rope.to_string();
-        buffer.set_text(font_system, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+        buffer.set_text(
+            font_system,
+            &text,
+            &Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+            None,
+        );
 
-        let mut widget = Self { id: WidgetId::next(), editor: cosmic_text::Editor::new(buffer), my_editor, lang_def, theme, metrics, glyph_cache: HashMap::new(), digit_cache: Vec::new(), needs_reshape: true, scroll_y: 0.0, search_query: String::new(), replace_query: String::new(), is_search_open: false, is_replace_open: false, case_sensitive: false, context_menu: None, font_size, show_whitespace: false, minimap_pixmap: None, minimap_needs_redraw: true, wrap_lines: false, diagnostics: Vec::new(), matching_bracket: None, autocomplete_items: Vec::new(), autocomplete_selected: 0, autocomplete_visible: false, hover_text: None, hover_pos: (0.0, 0.0), layout_rect: LayoutRect::zero(), clipboard: Clipboard::new().ok(), pending_events: Vec::new() };
+        let mut widget = Self {
+            id: WidgetId::next(),
+            editor: cosmic_text::Editor::new(buffer),
+            my_editor,
+            lang_def,
+            theme,
+            metrics,
+            glyph_cache: HashMap::new(),
+            digit_cache: Vec::new(),
+            needs_reshape: true,
+            scroll_y: 0.0,
+            search_query: String::new(),
+            replace_query: String::new(),
+            is_search_open: false,
+            is_replace_open: false,
+            case_sensitive: false,
+            context_menu: None,
+            font_size,
+            show_whitespace: false,
+            minimap_pixmap: None,
+            minimap_needs_redraw: true,
+            wrap_lines: false,
+            diagnostics: Vec::new(),
+            matching_bracket: None,
+            autocomplete_items: Vec::new(),
+            autocomplete_selected: 0,
+            autocomplete_visible: false,
+            hover_text: None,
+            hover_pos: (0.0, 0.0),
+            layout_rect: LayoutRect::zero(),
+            clipboard: Clipboard::new().ok(),
+            pending_events: Vec::new(),
+        };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -642,28 +716,66 @@ impl CodeEditorWidget {
         let digit_color = Color::rgb(0x85, 0x85, 0x85);
         for i in 0..10 {
             let mut lab = Buffer::new(font_system, self.metrics);
-            lab.set_text(font_system, &format!("{}", i), &Attrs::new().family(Family::Monospace).color(digit_color), Shaping::Advanced, None);
+            lab.set_text(
+                font_system,
+                &format!("{}", i),
+                &Attrs::new().family(Family::Monospace).color(digit_color),
+                Shaping::Advanced,
+                None,
+            );
             lab.shape_until_scroll(font_system, false);
             if let Some(r) = lab.layout_runs().next() {
                 for g in r.glyphs {
                     let pg = g.physical((0.0, 0.0), 1.0);
                     if let Some(img) = swash_cache.get_image(font_system, pg.cache_key) {
-                        let mut p = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)).unwrap();
-                        let (r, g, b, a) = (digit_color.r(), digit_color.g(), digit_color.b(), digit_color.a());
-                        for (idx, &alpha) in img.data.iter().enumerate() { let af = (alpha as f32 / 255.0) * (a as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply(); }
-                        self.digit_cache.push(CachedGlyph { pixmap: p, left: img.placement.left, top: img.placement.top }); break;
+                        let mut p =
+                            Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
+                                .unwrap();
+                        let (r, g, b, a) = (
+                            digit_color.r(),
+                            digit_color.g(),
+                            digit_color.b(),
+                            digit_color.a(),
+                        );
+                        for (idx, &alpha) in img.data.iter().enumerate() {
+                            let af = (alpha as f32 / 255.0) * (a as f32 / 255.0);
+                            p.pixels_mut()[idx] = ColorU8::from_rgba(
+                                (r as f32 * af) as u8,
+                                (g as f32 * af) as u8,
+                                (b as f32 * af) as u8,
+                                (255.0 * af) as u8,
+                            )
+                            .premultiply();
+                        }
+                        self.digit_cache.push(CachedGlyph {
+                            pixmap: p,
+                            left: img.placement.left,
+                            top: img.placement.top,
+                        });
+                        break;
                     }
                 }
             }
-            if self.digit_cache.len() <= i { self.digit_cache.push(CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 }); }
+            if self.digit_cache.len() <= i {
+                self.digit_cache.push(CachedGlyph {
+                    pixmap: Pixmap::new(1, 1).unwrap(),
+                    left: 0,
+                    top: 0,
+                });
+            }
         }
     }
 
     pub fn set_zoom(&mut self, fs: &mut FontSystem, delta: f32) {
         self.font_size = (self.font_size + delta).clamp(6.0, 72.0);
         self.metrics = Metrics::new(self.font_size, self.font_size * 1.5).scale(SCALE);
-        self.editor.with_buffer_mut(|b| b.set_metrics(fs, self.metrics));
-        self.glyph_cache.clear(); self.update_digit_cache(fs); self.needs_reshape = true; self.minimap_needs_redraw = true; self.sync();
+        self.editor
+            .with_buffer_mut(|b| b.set_metrics(fs, self.metrics));
+        self.glyph_cache.clear();
+        self.update_digit_cache(fs);
+        self.needs_reshape = true;
+        self.minimap_needs_redraw = true;
+        self.sync();
     }
 
     pub fn set_language(&mut self, lang_name: &str) {
@@ -684,7 +796,8 @@ impl CodeEditorWidget {
             for (li, tokens) in self.my_editor.line_tokens.iter().enumerate() {
                 if let Some(line) = buffer.lines.get_mut(li) {
                     let line_text = line.text();
-                    let mut attrs_list = AttrsList::new(&Attrs::new().family(Family::Monospace).color(theme.text));
+                    let mut attrs_list =
+                        AttrsList::new(&Attrs::new().family(Family::Monospace).color(theme.text));
                     for token in tokens {
                         let mut col = theme.text;
                         match token.kind {
@@ -692,17 +805,22 @@ impl CodeEditorWidget {
                                 let start = token.start.min(line_text.len());
                                 let end = token.end.min(line_text.len());
                                 let word = &line_text[start..end];
-                                let mut is_kw = lang_def.keywords.contains(word) || lang_def.type_keywords.contains(word);
+                                let mut is_kw = lang_def.keywords.contains(word)
+                                    || lang_def.type_keywords.contains(word);
                                 let mut is_const = lang_def.constants.contains(word);
-                                
+
                                 if !is_kw && !is_const && lang_def.ignore_case {
                                     let upper = word.to_uppercase();
-                                    is_kw = lang_def.keywords.contains(&upper) || lang_def.type_keywords.contains(&upper);
+                                    is_kw = lang_def.keywords.contains(&upper)
+                                        || lang_def.type_keywords.contains(&upper);
                                     is_const = lang_def.constants.contains(&upper);
                                 }
 
-                                if is_kw { col = theme.kw; }
-                                else if is_const { col = theme.string; }
+                                if is_kw {
+                                    col = theme.kw;
+                                } else if is_const {
+                                    col = theme.string;
+                                }
                             }
                             TokenKind::String => col = theme.string,
                             TokenKind::Number => col = theme.number,
@@ -711,7 +829,10 @@ impl CodeEditorWidget {
                         }
                         let start = token.start.min(line_text.len());
                         let end = token.end.min(line_text.len());
-                        attrs_list.add_span(start..end, &Attrs::new().family(Family::Monospace).color(col));
+                        attrs_list.add_span(
+                            start..end,
+                            &Attrs::new().family(Family::Monospace).color(col),
+                        );
                     }
                     line.set_attrs_list(attrs_list);
                 }
@@ -719,33 +840,60 @@ impl CodeEditorWidget {
         });
     }
 
-    fn get_offsets(&self, rect: Rect) -> (f32, f32) { (rect.left() + GUTTER_WIDTH * SCALE, rect.top()) }
-
-    pub fn is_line_hidden(&self, li: usize) -> bool {
-        for (s, e) in &self.my_editor.folds { if self.my_editor.collapsed_starts.contains(s) && li > *s && li <= *e { return true; } } false
+    fn get_offsets(&self, rect: Rect) -> (f32, f32) {
+        (rect.left() + GUTTER_WIDTH * SCALE, rect.top())
     }
 
+    pub fn is_line_hidden(&self, li: usize) -> bool {
+        for (s, e) in &self.my_editor.folds {
+            if self.my_editor.collapsed_starts.contains(s) && li > *s && li <= *e {
+                return true;
+            }
+        }
+        false
+    }
 
     pub fn find_next(&mut self, _fs: &mut FontSystem) {
-        if self.search_query.is_empty() { return; }
+        if self.search_query.is_empty() {
+            return;
+        }
         let cursor = self.editor.cursor();
         let total = self.my_editor.rope.to_string();
-        let (query, content) = if self.case_sensitive { (self.search_query.clone(), total) } else { (self.search_query.to_lowercase(), total.to_lowercase()) };
-        
+        let (query, content) = if self.case_sensitive {
+            (self.search_query.clone(), total)
+        } else {
+            (self.search_query.to_lowercase(), total.to_lowercase())
+        };
+
         let mut start = 0;
-        self.editor.with_buffer(|b| { for l in b.lines.iter().take(cursor.line) { start += l.text().len() + 1; } start += cursor.index; });
-        let match_idx = content[start.min(content.len())..].find(&query).map(|i| i + start).or_else(|| content.find(&query));
-        if let Some(idx) = match_idx {
-            let mut cb: usize = 0; 
-            let mut tl: usize = 0; 
-            let mut tc: usize = 0;
-            for (li, text) in content.split('\n').enumerate() { 
-                let l_len = text.len();
-                if idx >= cb && idx <= cb + l_len { tl = li; tc = idx - cb; break; } 
-                cb += l_len + 1; 
+        self.editor.with_buffer(|b| {
+            for l in b.lines.iter().take(cursor.line) {
+                start += l.text().len() + 1;
             }
-            self.editor.set_cursor(Cursor::new(tl, tc)); 
-            self.editor.set_selection(Selection::Normal(Cursor::new(tl, tc + self.search_query.len()))); 
+            start += cursor.index;
+        });
+        let match_idx = content[start.min(content.len())..]
+            .find(&query)
+            .map(|i| i + start)
+            .or_else(|| content.find(&query));
+        if let Some(idx) = match_idx {
+            let mut cb: usize = 0;
+            let mut tl: usize = 0;
+            let mut tc: usize = 0;
+            for (li, text) in content.split('\n').enumerate() {
+                let l_len = text.len();
+                if idx >= cb && idx <= cb + l_len {
+                    tl = li;
+                    tc = idx - cb;
+                    break;
+                }
+                cb += l_len + 1;
+            }
+            self.editor.set_cursor(Cursor::new(tl, tc));
+            self.editor.set_selection(Selection::Normal(Cursor::new(
+                tl,
+                tc + self.search_query.len(),
+            )));
             self.needs_reshape = true;
         }
     }
@@ -756,16 +904,37 @@ impl CodeEditorWidget {
             Some(c) => c.line_comment.as_deref().unwrap_or("//"),
             None => "//",
         };
-        let (start, end) = self.editor.selection_bounds().map(|(s, e)| (s.line, e.line)).unwrap_or((self.editor.cursor().line, self.editor.cursor().line));
-        let mut lines: Vec<String> = self.editor.with_buffer(|b| b.lines.iter().map(|l| l.text().to_string()).collect());
+        let (start, end) = self
+            .editor
+            .selection_bounds()
+            .map(|(s, e)| (s.line, e.line))
+            .unwrap_or((self.editor.cursor().line, self.editor.cursor().line));
+        let mut lines: Vec<String> = self
+            .editor
+            .with_buffer(|b| b.lines.iter().map(|l| l.text().to_string()).collect());
         let all_commented = (start..=end).all(|li| lines[li].trim().starts_with(prefix));
         for li in start..=end {
-            if all_commented { if let Some(idx) = lines[li].find(prefix) { lines[li].replace_range(idx..idx+prefix.len(), ""); } }
-            else { let first_char = lines[li].chars().take_while(|c| c.is_whitespace()).count(); lines[li].insert_str(first_char, prefix); }
+            if all_commented {
+                if let Some(idx) = lines[li].find(prefix) {
+                    lines[li].replace_range(idx..idx + prefix.len(), "");
+                }
+            } else {
+                let first_char = lines[li].chars().take_while(|c| c.is_whitespace()).count();
+                lines[li].insert_str(first_char, prefix);
+            }
         }
         let text = lines.join("\n");
-        self.editor.with_buffer_mut(|b| b.set_text(fs, &text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None));
-        self.needs_reshape = true; self.sync();
+        self.editor.with_buffer_mut(|b| {
+            b.set_text(
+                fs,
+                &text,
+                &Attrs::new().family(Family::Monospace),
+                Shaping::Advanced,
+                None,
+            )
+        });
+        self.needs_reshape = true;
+        self.sync();
     }
 
     #[allow(dead_code)]
@@ -776,50 +945,171 @@ impl CodeEditorWidget {
         let amp = 1.5 * SCALE;
         pb.move_to(cx, y);
         while cx < x + w {
-            pb.quad_to(cx + step/2.0, y + amp, cx + step, y);
+            pb.quad_to(cx + step / 2.0, y + amp, cx + step, y);
             pb.quad_to(cx + step * 1.5, y - amp, cx + step * 2.0, y);
             cx += step * 2.0;
         }
         if let Some(path) = pb.finish() {
             let mut paint = Paint::default();
             paint.set_color_rgba8(color.r(), color.g(), color.b(), 200);
-            pixmap.stroke_path(&path, &paint, &Stroke { width: 1.0 * SCALE, ..Default::default() }, Transform::identity(), None);
+            pixmap.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0 * SCALE,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
     }
 
-    pub fn render_pixels(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
-        if self.needs_reshape { apply_highlighting(&mut self.editor, &self.my_editor, &Attrs::new().family(Family::Monospace), &self.lang_def, &self.theme); self.editor.shape_as_needed(fs, false); self.needs_reshape = false; }
+    pub fn render_pixels(
+        &mut self,
+        pixmap: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        rect: Rect,
+    ) {
+        if self.needs_reshape {
+            apply_highlighting(
+                &mut self.editor,
+                &self.my_editor,
+                &Attrs::new().family(Family::Monospace),
+                &self.lang_def,
+                &self.theme,
+            );
+            self.editor.shape_as_needed(fs, false);
+            self.needs_reshape = false;
+        }
         let (x_off, y_off) = self.get_offsets(rect);
-        let mut sp = Paint::default(); sp.set_color_rgba8(self.theme.sidebar_bg.r(), self.theme.sidebar_bg.g(), self.theme.sidebar_bg.b(), self.theme.sidebar_bg.a());
-        pixmap.fill_rect(Rect::from_xywh(rect.left(), rect.top(), GUTTER_WIDTH * SCALE, rect.height()).unwrap(), &sp, Transform::identity(), None);
-        
-        // Git Gutter Indicator: Emerald bar for modified lines (simulated for now)
-        let mut gp = Paint::default(); gp.set_color_rgba8(34, 197, 94, 200); // emerald-500
-        pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE - 3.0 * SCALE, rect.top(), 2.0 * SCALE, rect.height()).unwrap(), &gp, Transform::identity(), None);
+        let mut sp = Paint::default();
+        sp.set_color_rgba8(
+            self.theme.sidebar_bg.r(),
+            self.theme.sidebar_bg.g(),
+            self.theme.sidebar_bg.b(),
+            self.theme.sidebar_bg.a(),
+        );
+        pixmap.fill_rect(
+            Rect::from_xywh(rect.left(), rect.top(), GUTTER_WIDTH * SCALE, rect.height()).unwrap(),
+            &sp,
+            Transform::identity(),
+            None,
+        );
 
-        let mut sep_p = Paint::default(); sep_p.set_color_rgba8(self.theme.gutter_divider.r(), self.theme.gutter_divider.g(), self.theme.gutter_divider.b(), 255);
-        pixmap.fill_rect(Rect::from_xywh(rect.left() + (GUTTER_WIDTH - 2.0) * SCALE, rect.top(), 1.0 * SCALE, rect.height()).unwrap(), &sep_p, Transform::identity(), None);
+        // Git Gutter Indicator: Emerald bar for modified lines (simulated for now)
+        let mut gp = Paint::default();
+        gp.set_color_rgba8(34, 197, 94, 200); // emerald-500
+        pixmap.fill_rect(
+            Rect::from_xywh(
+                rect.left() + GUTTER_WIDTH * SCALE - 3.0 * SCALE,
+                rect.top(),
+                2.0 * SCALE,
+                rect.height(),
+            )
+            .unwrap(),
+            &gp,
+            Transform::identity(),
+            None,
+        );
+
+        let mut sep_p = Paint::default();
+        sep_p.set_color_rgba8(
+            self.theme.gutter_divider.r(),
+            self.theme.gutter_divider.g(),
+            self.theme.gutter_divider.b(),
+            255,
+        );
+        pixmap.fill_rect(
+            Rect::from_xywh(
+                rect.left() + (GUTTER_WIDTH - 2.0) * SCALE,
+                rect.top(),
+                1.0 * SCALE,
+                rect.height(),
+            )
+            .unwrap(),
+            &sep_p,
+            Transform::identity(),
+            None,
+        );
 
         // 80-Character Ruler: A subtle vertical guide
         let char_w = 8.4 * (self.metrics.font_size / 14.0) * SCALE;
         let ruler_x = x_off + (80.0 * char_w);
         if ruler_x < rect.right() - MINIMAP_WIDTH * SCALE {
-            let mut rp = Paint::default(); rp.set_color_rgba8(255, 255, 255, 20);
-            pixmap.fill_rect(Rect::from_xywh(ruler_x, rect.top(), 1.0, rect.height()).unwrap(), &rp, Transform::identity(), None);
+            let mut rp = Paint::default();
+            rp.set_color_rgba8(255, 255, 255, 20);
+            pixmap.fill_rect(
+                Rect::from_xywh(ruler_x, rect.top(), 1.0, rect.height()).unwrap(),
+                &rp,
+                Transform::identity(),
+                None,
+            );
         }
 
-        let cursor_state = self.editor.cursor(); let _selection = self.editor.selection_bounds();
+        let cursor_state = self.editor.cursor();
+        let _selection = self.editor.selection_bounds();
         let _selected_text = self.editor.copy_selection();
-        let _partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
-        let mut total_h = 0.0; self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { total_h += r.line_height; } } });
-        self.scroll_y = self.scroll_y.clamp(0.0, (total_h - (rect.height() - FOOTER_HEIGHT * SCALE) + 100.0).max(0.0));
-        
+        let _partner = self
+            .my_editor
+            .find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def)
+            .or_else(|| {
+                if cursor_state.index > 0 {
+                    self.my_editor.find_matching_bracket(
+                        cursor_state.line,
+                        cursor_state.index - 1,
+                        &self.lang_def,
+                    )
+                } else {
+                    None
+                }
+            });
+        let mut total_h = 0.0;
+        self.editor.with_buffer(|b| {
+            for r in b.layout_runs() {
+                if !self.is_line_hidden(r.line_i) {
+                    total_h += r.line_height;
+                }
+            }
+        });
+        self.scroll_y = self.scroll_y.clamp(
+            0.0,
+            (total_h - (rect.height() - FOOTER_HEIGHT * SCALE) + 100.0).max(0.0),
+        );
+
         let theme = &self.theme;
-        let cursor_state = self.editor.cursor(); let selection = self.editor.selection_bounds();
+        let cursor_state = self.editor.cursor();
+        let selection = self.editor.selection_bounds();
         let selected_text = self.editor.copy_selection();
-        let partner = self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def).or_else(|| if cursor_state.index > 0 { self.my_editor.find_matching_bracket(cursor_state.line, cursor_state.index - 1, &self.lang_def) } else { None });
-        let mut cp = Paint::default(); cp.set_color_rgba8(theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), theme.current_line.a());
-        let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 100);
+        let partner = self
+            .my_editor
+            .find_matching_bracket(cursor_state.line, cursor_state.index, &self.lang_def)
+            .or_else(|| {
+                if cursor_state.index > 0 {
+                    self.my_editor.find_matching_bracket(
+                        cursor_state.line,
+                        cursor_state.index - 1,
+                        &self.lang_def,
+                    )
+                } else {
+                    None
+                }
+            });
+        let mut cp = Paint::default();
+        cp.set_color_rgba8(
+            theme.current_line.r(),
+            theme.current_line.g(),
+            theme.current_line.b(),
+            theme.current_line.a(),
+        );
+        let mut mp = Paint::default();
+        mp.set_color_rgba8(
+            theme.match_highlight.r(),
+            theme.match_highlight.g(),
+            theme.match_highlight.b(),
+            100,
+        );
         let mut last_para = None;
 
         let my_editor = &self.my_editor;
@@ -834,9 +1124,11 @@ impl CodeEditorWidget {
         let mut initial_top = None;
         self.editor.with_buffer(|buffer| {
             for run in buffer.layout_runs() {
-                if initial_top.is_none() { initial_top = Some(run.line_top); }
+                if initial_top.is_none() {
+                    initial_top = Some(run.line_top);
+                }
                 let itop = initial_top.unwrap_or(0.0);
-                
+
                 let i = run.line_i;
                 if self.is_line_hidden(i) {
                     v_shift += run.line_height;
@@ -848,91 +1140,316 @@ impl CodeEditorWidget {
                 // Vertically center baseline in line height
                 let centering_v = (lh - metrics.font_size) / 2.0;
                 let adj_ly = adj_lt + metrics.font_size - centering_v + 4.0 * SCALE;
-                
+
                 let cyo = y_off - scroll_y;
                 let v_t = adj_lt + cyo;
-                
-                if v_t + lh < rect.top() { continue; }
-                if v_t > rect.bottom() { break; }
+
+                if v_t + lh < rect.top() {
+                    continue;
+                }
+                if v_t > rect.bottom() {
+                    break;
+                }
 
                 let glyphs = run.glyphs;
                 let text = run.text;
-                
+
                 // Aura Glow: Current line highlight with subtle gradient/border
-                if i == cursor_state.line { 
-                    let mut cp = Paint::default(); 
-                    cp.set_color_rgba8(theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 100);
-                    pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, lh).unwrap(), &cp, Transform::identity(), None); 
+                if i == cursor_state.line {
+                    let mut cp = Paint::default();
+                    cp.set_color_rgba8(
+                        theme.current_line.r(),
+                        theme.current_line.g(),
+                        theme.current_line.b(),
+                        100,
+                    );
+                    pixmap.fill_rect(
+                        Rect::from_xywh(
+                            rect.left() + GUTTER_WIDTH * SCALE,
+                            cyo + adj_lt,
+                            rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE,
+                            lh,
+                        )
+                        .unwrap(),
+                        &cp,
+                        Transform::identity(),
+                        None,
+                    );
                     // Subtle bottom border for the glow effect
-                    let mut gp = Paint::default(); gp.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 40);
-                    pixmap.fill_rect(Rect::from_xywh(rect.left() + GUTTER_WIDTH * SCALE, cyo + adj_lt + lh - 1.0, rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE, 1.0).unwrap(), &gp, Transform::identity(), None);
+                    let mut gp = Paint::default();
+                    gp.set_color_rgba8(theme.kw.r(), theme.kw.g(), theme.kw.b(), 40);
+                    pixmap.fill_rect(
+                        Rect::from_xywh(
+                            rect.left() + GUTTER_WIDTH * SCALE,
+                            cyo + adj_lt + lh - 1.0,
+                            rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * SCALE,
+                            1.0,
+                        )
+                        .unwrap(),
+                        &gp,
+                        Transform::identity(),
+                        None,
+                    );
                 }
-                if let Some(st) = &selected_text { 
-                    if st.len() > 1 && !st.contains('\n') { 
-                        let mut start = 0; 
-                        while let Some(pos) = text[start..].find(st) { 
-                            let real_pos = start + pos; let mut g_x = 0.0; let mut g_w = 0.0; 
-                            for g in glyphs { if g.start >= real_pos && g.start < real_pos + st.len() { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } } 
-                            if g_w > 0.0 { pixmap.fill_rect(Rect::from_xywh(x_off + g_x, cyo + adj_lt, g_w, lh).unwrap(), &mp, Transform::identity(), None); } start = real_pos + 1; 
-                        } 
-                    } 
+                if let Some(st) = &selected_text {
+                    if st.len() > 1 && !st.contains('\n') {
+                        let mut start = 0;
+                        while let Some(pos) = text[start..].find(st) {
+                            let real_pos = start + pos;
+                            let mut g_x = 0.0;
+                            let mut g_w = 0.0;
+                            for g in glyphs {
+                                if g.start >= real_pos && g.start < real_pos + st.len() {
+                                    if g_w == 0.0 {
+                                        g_x = g.x;
+                                    }
+                                    g_w += g.w;
+                                }
+                            }
+                            if g_w > 0.0 {
+                                pixmap.fill_rect(
+                                    Rect::from_xywh(x_off + g_x, cyo + adj_lt, g_w, lh).unwrap(),
+                                    &mp,
+                                    Transform::identity(),
+                                    None,
+                                );
+                            }
+                            start = real_pos + 1;
+                        }
+                    }
                 }
-                
+
                 for diag in &my_editor.diagnostics {
                     if diag.line == i {
-                        let mut g_x = 0.0; let mut g_w = 0.0;
-                        for g in glyphs { if g.start >= diag.col_start && g.start < diag.col_end { if g_w == 0.0 { g_x = g.x; } g_w += g.w; } }
-                        if g_w > 0.0 { 
+                        let mut g_x = 0.0;
+                        let mut g_w = 0.0;
+                        for g in glyphs {
+                            if g.start >= diag.col_start && g.start < diag.col_end {
+                                if g_w == 0.0 {
+                                    g_x = g.x;
+                                }
+                                g_w += g.w;
+                            }
+                        }
+                        if g_w > 0.0 {
                             let mut pb = PathBuilder::new();
-                            let mut cx = x_off + g_x; let step = 3.0 * SCALE; let amp = 1.5 * SCALE; let sy = cyo + adj_lt + lh - 2.0 * SCALE;
+                            let mut cx = x_off + g_x;
+                            let step = 3.0 * SCALE;
+                            let amp = 1.5 * SCALE;
+                            let sy = cyo + adj_lt + lh - 2.0 * SCALE;
                             pb.move_to(cx, sy);
-                            while cx < x_off + g_x + g_w { pb.quad_to(cx + step/2.0, sy + amp, cx + step, sy); pb.quad_to(cx + step * 1.5, sy - amp, cx + step * 2.0, sy); cx += step * 2.0; }
+                            while cx < x_off + g_x + g_w {
+                                pb.quad_to(cx + step / 2.0, sy + amp, cx + step, sy);
+                                pb.quad_to(cx + step * 1.5, sy - amp, cx + step * 2.0, sy);
+                                cx += step * 2.0;
+                            }
                             if let Some(path) = pb.finish() {
-                                let mut paint = Paint::default(); paint.set_color_rgba8(theme.diagnostic_error.r(), theme.diagnostic_error.g(), theme.diagnostic_error.b(), 200);
-                                pixmap.stroke_path(&path, &paint, &Stroke { width: 1.0 * SCALE, ..Default::default() }, Transform::identity(), None);
+                                let mut paint = Paint::default();
+                                paint.set_color_rgba8(
+                                    theme.diagnostic_error.r(),
+                                    theme.diagnostic_error.g(),
+                                    theme.diagnostic_error.b(),
+                                    200,
+                                );
+                                pixmap.stroke_path(
+                                    &path,
+                                    &paint,
+                                    &Stroke {
+                                        width: 1.0 * SCALE,
+                                        ..Default::default()
+                                    },
+                                    Transform::identity(),
+                                    None,
+                                );
                             }
                         }
                     }
                 }
 
-                let mut gp_paint = Paint::default(); gp_paint.set_color_rgba8(theme.guide.r(), theme.guide.g(), theme.guide.b(), theme.guide.a());
-                let tw = 4.0 * 8.4 * (metrics.font_size / 14.0) * SCALE; let ls = text.chars().take_while(|c| c.is_whitespace()).count();
-                for j in 1..=(ls/4) { pixmap.fill_rect(Rect::from_xywh(x_off + (j as f32 * tw), cyo + adj_lt, 1.0, lh).unwrap(), &gp_paint, Transform::identity(), None); }
+                let mut gp_paint = Paint::default();
+                gp_paint.set_color_rgba8(
+                    theme.guide.r(),
+                    theme.guide.g(),
+                    theme.guide.b(),
+                    theme.guide.a(),
+                );
+                let tw = 4.0 * 8.4 * (metrics.font_size / 14.0) * SCALE;
+                let ls = text.chars().take_while(|c| c.is_whitespace()).count();
+                for j in 1..=(ls / 4) {
+                    pixmap.fill_rect(
+                        Rect::from_xywh(x_off + (j as f32 * tw), cyo + adj_lt, 1.0, lh).unwrap(),
+                        &gp_paint,
+                        Transform::identity(),
+                        None,
+                    );
+                }
                 if last_para != Some(i) {
-                    let s = format!("{}", i + 1); let mut dx = (rect.left() + GUTTER_WIDTH * SCALE) as i32 - 15;
-                    for ch in s.chars().rev() { if let Some(d) = ch.to_digit(10) { if (d as usize) < digit_cache.len() { let cg = &digit_cache[d as usize]; pixmap.draw_pixmap(dx - cg.pixmap.width() as i32 + cg.left, (cyo + adj_ly) as i32 - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None); dx -= 10 * SCALE as i32; } } }
-                    if my_editor.folds.iter().any(|(s, _)| *s == i) { 
-                        let col_folded = collapsed.contains(&i); 
-                        draw_ui_text(pixmap, fs, sc, if col_folded { "+" } else { "-" }, rect.left() + 5.0 * SCALE, cyo + adj_ly - (12.0 * SCALE), if col_folded { theme.kw } else { Color::rgb(0x85, 0x85, 0x85) }); 
+                    let s = format!("{}", i + 1);
+                    let mut dx = (rect.left() + GUTTER_WIDTH * SCALE) as i32 - 15;
+                    for ch in s.chars().rev() {
+                        if let Some(d) = ch.to_digit(10) {
+                            if (d as usize) < digit_cache.len() {
+                                let cg = &digit_cache[d as usize];
+                                pixmap.draw_pixmap(
+                                    dx - cg.pixmap.width() as i32 + cg.left,
+                                    (cyo + adj_ly) as i32 - cg.top,
+                                    cg.pixmap.as_ref(),
+                                    &PixmapPaint::default(),
+                                    Transform::identity(),
+                                    None,
+                                );
+                                dx -= 10 * SCALE as i32;
+                            }
+                        }
+                    }
+                    if my_editor.folds.iter().any(|(s, _)| *s == i) {
+                        let col_folded = collapsed.contains(&i);
+                        draw_ui_text(
+                            pixmap,
+                            fs,
+                            sc,
+                            if col_folded { "+" } else { "-" },
+                            rect.left() + 5.0 * SCALE,
+                            cyo + adj_ly - (12.0 * SCALE),
+                            if col_folded {
+                                theme.kw
+                            } else {
+                                Color::rgb(0x85, 0x85, 0x85)
+                            },
+                        );
                     }
                     last_para = Some(i);
                 }
-                if let Some((ss, se)) = selection { 
-                    if let Some((hx, hw)) = run.highlight(ss, se) { 
-                        let mut sp_paint = Paint::default(); sp_paint.set_color_rgba8(theme.selection.r(), theme.selection.g(), theme.selection.b(), theme.selection.a()); 
-                        pixmap.fill_rect(Rect::from_xywh(x_off + hx, cyo + adj_lt, hw, lh).unwrap(), &sp_paint, Transform::identity(), None); 
-                    } 
+                if let Some((ss, se)) = selection {
+                    if let Some((hx, hw)) = run.highlight(ss, se) {
+                        let mut sp_paint = Paint::default();
+                        sp_paint.set_color_rgba8(
+                            theme.selection.r(),
+                            theme.selection.g(),
+                            theme.selection.b(),
+                            theme.selection.a(),
+                        );
+                        pixmap.fill_rect(
+                            Rect::from_xywh(x_off + hx, cyo + adj_lt, hw, lh).unwrap(),
+                            &sp_paint,
+                            Transform::identity(),
+                            None,
+                        );
+                    }
                 }
                 for g in glyphs {
-                    let ip = partner.map(|(pl, pi)| i == pl && g.start == pi).unwrap_or(false);
-                    let pg = g.physical((x_off, cyo + adj_ly), 1.0); let gc = g.color_opt.unwrap_or(theme.text);
-                    if show_whitespace { if text[g.start..g.end].starts_with(' ') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + g.w/2.0 - 1.0, cyo + adj_ly - (lh*0.25), 2.0, 2.0).unwrap(), &wp, Transform::identity(), None); } else if text[g.start..g.end].starts_with('\t') { let mut wp = Paint::default(); wp.set_color_rgba8(80, 80, 80, 255); pixmap.fill_rect(Rect::from_xywh(x_off + g.x + 2.0, cyo + adj_ly - (lh*0.25), g.w - 4.0, 1.0).unwrap(), &wp, Transform::identity(), None); } }
-                    let cg = glyph_cache.entry((pg.cache_key, gc, ip)).or_insert_with(|| {
-                        if let Some(im) = sc.get_image(fs, pg.cache_key) {
-                            let mut p = Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap(); let (r, g, b, a) = if ip { (theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()) } else { (gc.r(), gc.g(), gc.b(), gc.a()) };
-                            for (idx, &al) in im.data.iter().enumerate() { let af = (al as f32 / 255.0) * (a as f32 / 255.0); p.pixels_mut()[idx] = ColorU8::from_rgba((r as f32 * af) as u8, (g as f32 * af) as u8, (b as f32 * af) as u8, (255.0 * af) as u8).premultiply(); }
-                            CachedGlyph { pixmap: p, left: im.placement.left, top: im.placement.top }
-                        } else { CachedGlyph { pixmap: Pixmap::new(1, 1).unwrap(), left: 0, top: 0 } }
-                    });
-                    pixmap.draw_pixmap(pg.x + cg.left, pg.y - cg.top, cg.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-                    if ip { let mut bp = Paint::default(); bp.set_color_rgba8(theme.bracket.r(), theme.bracket.g(), theme.bracket.b(), theme.bracket.a()); pixmap.fill_rect(Rect::from_xywh(x_off + g.x, cyo + adj_lt + lh - 2.0, g.w, 2.0).unwrap(), &bp, Transform::identity(), None); }
+                    let ip = partner
+                        .map(|(pl, pi)| i == pl && g.start == pi)
+                        .unwrap_or(false);
+                    let pg = g.physical((x_off, cyo + adj_ly), 1.0);
+                    let gc = g.color_opt.unwrap_or(theme.text);
+                    if show_whitespace {
+                        if text[g.start..g.end].starts_with(' ') {
+                            let mut wp = Paint::default();
+                            wp.set_color_rgba8(80, 80, 80, 255);
+                            pixmap.fill_rect(
+                                Rect::from_xywh(
+                                    x_off + g.x + g.w / 2.0 - 1.0,
+                                    cyo + adj_ly - (lh * 0.25),
+                                    2.0,
+                                    2.0,
+                                )
+                                .unwrap(),
+                                &wp,
+                                Transform::identity(),
+                                None,
+                            );
+                        } else if text[g.start..g.end].starts_with('\t') {
+                            let mut wp = Paint::default();
+                            wp.set_color_rgba8(80, 80, 80, 255);
+                            pixmap.fill_rect(
+                                Rect::from_xywh(
+                                    x_off + g.x + 2.0,
+                                    cyo + adj_ly - (lh * 0.25),
+                                    g.w - 4.0,
+                                    1.0,
+                                )
+                                .unwrap(),
+                                &wp,
+                                Transform::identity(),
+                                None,
+                            );
+                        }
+                    }
+                    let cg = glyph_cache
+                        .entry((pg.cache_key, gc, ip))
+                        .or_insert_with(|| {
+                            if let Some(im) = sc.get_image(fs, pg.cache_key) {
+                                let mut p = Pixmap::new(
+                                    im.placement.width.max(1),
+                                    im.placement.height.max(1),
+                                )
+                                .unwrap();
+                                let (r, g, b, a) = if ip {
+                                    (
+                                        theme.bracket.r(),
+                                        theme.bracket.g(),
+                                        theme.bracket.b(),
+                                        theme.bracket.a(),
+                                    )
+                                } else {
+                                    (gc.r(), gc.g(), gc.b(), gc.a())
+                                };
+                                for (idx, &al) in im.data.iter().enumerate() {
+                                    let af = (al as f32 / 255.0) * (a as f32 / 255.0);
+                                    p.pixels_mut()[idx] = ColorU8::from_rgba(
+                                        (r as f32 * af) as u8,
+                                        (g as f32 * af) as u8,
+                                        (b as f32 * af) as u8,
+                                        (255.0 * af) as u8,
+                                    )
+                                    .premultiply();
+                                }
+                                CachedGlyph {
+                                    pixmap: p,
+                                    left: im.placement.left,
+                                    top: im.placement.top,
+                                }
+                            } else {
+                                CachedGlyph {
+                                    pixmap: Pixmap::new(1, 1).unwrap(),
+                                    left: 0,
+                                    top: 0,
+                                }
+                            }
+                        });
+                    pixmap.draw_pixmap(
+                        pg.x + cg.left,
+                        pg.y - cg.top,
+                        cg.pixmap.as_ref(),
+                        &PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
+                    if ip {
+                        let mut bp = Paint::default();
+                        bp.set_color_rgba8(
+                            theme.bracket.r(),
+                            theme.bracket.g(),
+                            theme.bracket.b(),
+                            theme.bracket.a(),
+                        );
+                        pixmap.fill_rect(
+                            Rect::from_xywh(x_off + g.x, cyo + adj_lt + lh - 2.0, g.w, 2.0)
+                                .unwrap(),
+                            &bp,
+                            Transform::identity(),
+                            None,
+                        );
+                    }
                 }
 
                 // Match Highlighting: highlight occurrences of word under cursor
                 if !selected_text.is_some() {
-                    let cli = cursor_state.line; let cur = cursor_state.index;
+                    let cli = cursor_state.line;
+                    let cur = cursor_state.index;
                     let line_text = buffer.lines[cli].text();
-                    
+
                     // Safely find word boundaries using byte offsets
                     let mut start = cur;
                     while start > 0 {
@@ -961,11 +1478,32 @@ impl CodeEditorWidget {
                             let mut s = 0;
                             while s < line_text.len() {
                                 if let Some(pos) = line_text[s..].find(word) {
-                                    let rp = s + pos; let mut gx = 0.0; let mut gw = 0.0;
-                                    for g in glyphs { if g.start >= rp && g.start < rp + word.len() { if gw == 0.0 { gx = g.x; } gw += g.w; } }
-                                    if gw > 0.0 { 
-                                        let mut mp = Paint::default(); mp.set_color_rgba8(theme.match_highlight.r(), theme.match_highlight.g(), theme.match_highlight.b(), 80);
-                                        pixmap.fill_rect(Rect::from_xywh(x_off + gx, cyo + adj_lt, gw, lh).unwrap(), &mp, Transform::identity(), None); 
+                                    let rp = s + pos;
+                                    let mut gx = 0.0;
+                                    let mut gw = 0.0;
+                                    for g in glyphs {
+                                        if g.start >= rp && g.start < rp + word.len() {
+                                            if gw == 0.0 {
+                                                gx = g.x;
+                                            }
+                                            gw += g.w;
+                                        }
+                                    }
+                                    if gw > 0.0 {
+                                        let mut mp = Paint::default();
+                                        mp.set_color_rgba8(
+                                            theme.match_highlight.r(),
+                                            theme.match_highlight.g(),
+                                            theme.match_highlight.b(),
+                                            80,
+                                        );
+                                        pixmap.fill_rect(
+                                            Rect::from_xywh(x_off + gx, cyo + adj_lt, gw, lh)
+                                                .unwrap(),
+                                            &mp,
+                                            Transform::identity(),
+                                            None,
+                                        );
                                     }
                                     s = rp + word.len();
                                 } else {
@@ -978,21 +1516,36 @@ impl CodeEditorWidget {
             }
         });
         self.glyph_cache = glyph_cache;
-        let minimap_rect = Rect::from_xywh(rect.right() - MINIMAP_WIDTH * SCALE, rect.top(), MINIMAP_WIDTH * SCALE, rect.height() - FOOTER_HEIGHT * SCALE).unwrap();
+        let minimap_rect = Rect::from_xywh(
+            rect.right() - MINIMAP_WIDTH * SCALE,
+            rect.top(),
+            MINIMAP_WIDTH * SCALE,
+            rect.height() - FOOTER_HEIGHT * SCALE,
+        )
+        .unwrap();
         let mx = minimap_rect.left();
-        
+
         let m_w = minimap_rect.width() as u32;
         let m_h = minimap_rect.height() as u32;
 
-        if self.minimap_needs_redraw || self.minimap_pixmap.as_ref().map(|p| p.width() != m_w || p.height() != m_h).unwrap_or(true) {
+        if self.minimap_needs_redraw
+            || self
+                .minimap_pixmap
+                .as_ref()
+                .map(|p| p.width() != m_w || p.height() != m_h)
+                .unwrap_or(true)
+        {
             let mut mp = Pixmap::new(m_w.max(1), m_h.max(1)).unwrap();
             let to_skia = |c: Color| tiny_skia::Color::from_rgba8(c.r(), c.g(), c.b(), c.a());
             mp.fill(to_skia(theme.minimap_bg));
-            
-            let m_step = (minimap_rect.height() / self.my_editor.line_tokens.len().max(1) as f32).min(2.5 * SCALE); 
+
+            let m_step = (minimap_rect.height() / self.my_editor.line_tokens.len().max(1) as f32)
+                .min(2.5 * SCALE);
             let mut m_y = 0.0;
             for li in 0..self.my_editor.line_tokens.len() {
-                if self.is_line_hidden(li) { continue; }
+                if self.is_line_hidden(li) {
+                    continue;
+                }
                 if let Some(tks) = self.my_editor.line_tokens.get(li) {
                     let mut xp = 2.0;
                     for t in tks {
@@ -1001,76 +1554,185 @@ impl CodeEditorWidget {
                             TokenKind::String => self.theme.string,
                             TokenKind::LineComment | TokenKind::BlockComment => self.theme.comment,
                             TokenKind::Number => self.theme.number,
-                            _ => self.theme.guide
+                            _ => self.theme.guide,
                         };
                         let mut tp = Paint::default();
                         tp.set_color_rgba8(tc.r(), tc.g(), tc.b(), 0xaa);
-                        let w = ((t.end - t.start) as f32 * 0.4 * SCALE).min(minimap_rect.width() - xp);
+                        let w =
+                            ((t.end - t.start) as f32 * 0.4 * SCALE).min(minimap_rect.width() - xp);
                         if w > 0.0 {
-                            mp.fill_rect(Rect::from_xywh(xp, m_y, w, (m_step * 0.7).max(1.0)).unwrap(), &tp, Transform::identity(), None);
+                            mp.fill_rect(
+                                Rect::from_xywh(xp, m_y, w, (m_step * 0.7).max(1.0)).unwrap(),
+                                &tp,
+                                Transform::identity(),
+                                None,
+                            );
                         }
                         xp += w + 1.0;
-                        if xp >= minimap_rect.width() { break; }
+                        if xp >= minimap_rect.width() {
+                            break;
+                        }
                     }
                 }
                 m_y += m_step;
-                if m_y > minimap_rect.height() { break; }
+                if m_y > minimap_rect.height() {
+                    break;
+                }
             }
             self.minimap_pixmap = Some(mp);
             self.minimap_needs_redraw = false;
         }
 
         if let Some(mp) = &self.minimap_pixmap {
-            pixmap.draw_pixmap(mx as i32, rect.top() as i32, mp.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            pixmap.draw_pixmap(
+                mx as i32,
+                rect.top() as i32,
+                mp.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
         }
 
-        let v_h = ((rect.height() - FOOTER_HEIGHT * SCALE) / total_h.max(1.0)) * (rect.height() - FOOTER_HEIGHT * SCALE);
+        let v_h = ((rect.height() - FOOTER_HEIGHT * SCALE) / total_h.max(1.0))
+            * (rect.height() - FOOTER_HEIGHT * SCALE);
         let v_y = (self.scroll_y / total_h.max(1.0)) * (rect.height() - FOOTER_HEIGHT * SCALE);
-        let mut vp = Paint::default(); vp.set_color_rgba8(255, 255, 255, 17);
-        pixmap.fill_rect(Rect::from_xywh(mx, rect.top() + v_y.min(rect.height() - FOOTER_HEIGHT * SCALE - v_h), MINIMAP_WIDTH * SCALE, v_h).unwrap(), &vp, Transform::identity(), None);
+        let mut vp = Paint::default();
+        vp.set_color_rgba8(255, 255, 255, 17);
+        pixmap.fill_rect(
+            Rect::from_xywh(
+                mx,
+                rect.top() + v_y.min(rect.height() - FOOTER_HEIGHT * SCALE - v_h),
+                MINIMAP_WIDTH * SCALE,
+                v_h,
+            )
+            .unwrap(),
+            &vp,
+            Transform::identity(),
+            None,
+        );
         if self.is_search_open {
-             let mut sep = Paint::default(); sep.set_color_rgba8(51, 51, 51, 250);
-             let eh = if self.is_replace_open { 60.0 } else { 30.0 } * SCALE;
-             pixmap.fill_rect(Rect::from_xywh(rect.right() - 260.0 * SCALE, rect.top() + 10.0 * SCALE, 160.0 * SCALE, eh).unwrap(), &sep, Transform::identity(), None);
-             draw_ui_text(pixmap, fs, sc, &format!("Find: {}", self.search_query), rect.right() - 250.0 * SCALE, rect.top() + 14.0 * SCALE, self.theme.text);
-             if self.is_replace_open { draw_ui_text(pixmap, fs, sc, &format!("Replace: {}", self.replace_query), rect.right() - 250.0 * SCALE, rect.top() + 44.0 * SCALE, Color::rgb(206, 145, 120)); }
+            let mut sep = Paint::default();
+            sep.set_color_rgba8(51, 51, 51, 250);
+            let eh = if self.is_replace_open { 60.0 } else { 30.0 } * SCALE;
+            pixmap.fill_rect(
+                Rect::from_xywh(
+                    rect.right() - 260.0 * SCALE,
+                    rect.top() + 10.0 * SCALE,
+                    160.0 * SCALE,
+                    eh,
+                )
+                .unwrap(),
+                &sep,
+                Transform::identity(),
+                None,
+            );
+            draw_ui_text(
+                pixmap,
+                fs,
+                sc,
+                &format!("Find: {}", self.search_query),
+                rect.right() - 250.0 * SCALE,
+                rect.top() + 14.0 * SCALE,
+                self.theme.text,
+            );
+            if self.is_replace_open {
+                draw_ui_text(
+                    pixmap,
+                    fs,
+                    sc,
+                    &format!("Replace: {}", self.replace_query),
+                    rect.right() - 250.0 * SCALE,
+                    rect.top() + 44.0 * SCALE,
+                    Color::rgb(206, 145, 120),
+                );
+            }
         }
         if let Some((pos, items)) = &self.context_menu {
-            let mut mep = Paint::default(); mep.set_color_rgba8(45, 45, 45, 255);
-            pixmap.fill_rect(Rect::from_xywh(pos.0, pos.1, 100.0 * SCALE, (items.len() as f32 * 25.0) * SCALE).unwrap(), &mep, Transform::identity(), None);
-            for (i, item) in items.iter().enumerate() { draw_ui_text(pixmap, fs, sc, item, pos.0 + 10.0 * SCALE, pos.1 + (i as f32 * 25.0 + 5.0) * SCALE, self.theme.text); }
+            let mut mep = Paint::default();
+            mep.set_color_rgba8(45, 45, 45, 255);
+            pixmap.fill_rect(
+                Rect::from_xywh(
+                    pos.0,
+                    pos.1,
+                    100.0 * SCALE,
+                    (items.len() as f32 * 25.0) * SCALE,
+                )
+                .unwrap(),
+                &mep,
+                Transform::identity(),
+                None,
+            );
+            for (i, item) in items.iter().enumerate() {
+                draw_ui_text(
+                    pixmap,
+                    fs,
+                    sc,
+                    item,
+                    pos.0 + 10.0 * SCALE,
+                    pos.1 + (i as f32 * 25.0 + 5.0) * SCALE,
+                    self.theme.text,
+                );
+            }
         }
         if let Some((cx, cy)) = self.editor.cursor_position() {
-             let mut cy_final = None;
-             self.editor.with_buffer(|b| {
-                 let mut v_sh = 0.0;
-                 let mut i_top = None;
-                 for r in b.layout_runs() {
-                     if i_top.is_none() { i_top = Some(r.line_top); }
-                     if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
-                     if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 {
-                         let it = i_top.unwrap_or(0.0);
-                         let l_h = r.line_height;
-                         let c_v = (l_h - self.metrics.font_size) / 2.0;
-                         // Center characters in rectangle
-                         cy_final = Some(y_off - self.scroll_y + (r.line_top - it - v_sh) + c_v);
-                         break;
-                     }
-                 }
-             });
-             if let Some(final_y) = cy_final {
-                 let mut cp = Paint::default(); cp.set_color_rgba8(255, 255, 255, 255);
-                 pixmap.fill_rect(Rect::from_xywh(x_off + cx as f32, final_y, 2.0, self.metrics.line_height).unwrap(), &cp, Transform::identity(), None);
-             }
+            let mut cy_final = None;
+            self.editor.with_buffer(|b| {
+                let mut v_sh = 0.0;
+                let mut i_top = None;
+                for r in b.layout_runs() {
+                    if i_top.is_none() {
+                        i_top = Some(r.line_top);
+                    }
+                    if self.is_line_hidden(r.line_i) {
+                        v_sh += r.line_height;
+                        continue;
+                    }
+                    if cy >= r.line_top as i32 && cy < (r.line_top + r.line_height) as i32 {
+                        let it = i_top.unwrap_or(0.0);
+                        let l_h = r.line_height;
+                        let c_v = (l_h - self.metrics.font_size) / 2.0;
+                        // Center characters in rectangle
+                        cy_final = Some(y_off - self.scroll_y + (r.line_top - it - v_sh) + c_v);
+                        break;
+                    }
+                }
+            });
+            if let Some(final_y) = cy_final {
+                let mut cp = Paint::default();
+                cp.set_color_rgba8(255, 255, 255, 255);
+                pixmap.fill_rect(
+                    Rect::from_xywh(x_off + cx as f32, final_y, 2.0, self.metrics.line_height)
+                        .unwrap(),
+                    &cp,
+                    Transform::identity(),
+                    None,
+                );
+            }
         }
-        
+
         // 6. Context Menu Overlay
         if let Some(((mx, my), items)) = &self.context_menu {
-            let mut bg = Paint::default(); bg.set_color_rgba8(40, 40, 45, 255);
-            let mw = 120.0 * SCALE; let mh = items.len() as f32 * 25.0 * SCALE;
-            pixmap.fill_rect(Rect::from_xywh(*mx * SCALE, *my * SCALE, mw, mh).unwrap(), &bg, Transform::identity(), None);
+            let mut bg = Paint::default();
+            bg.set_color_rgba8(40, 40, 45, 255);
+            let mw = 120.0 * SCALE;
+            let mh = items.len() as f32 * 25.0 * SCALE;
+            pixmap.fill_rect(
+                Rect::from_xywh(*mx * SCALE, *my * SCALE, mw, mh).unwrap(),
+                &bg,
+                Transform::identity(),
+                None,
+            );
             for (i, item) in items.iter().enumerate() {
-                draw_ui_text(pixmap, fs, sc, item, *mx * SCALE + 10.0 * SCALE, *my * SCALE + (i as f32 * 25.0 + 5.0) * SCALE, Color::rgb(220, 220, 220));
+                draw_ui_text(
+                    pixmap,
+                    fs,
+                    sc,
+                    item,
+                    *mx * SCALE + 10.0 * SCALE,
+                    *my * SCALE + (i as f32 * 25.0 + 5.0) * SCALE,
+                    Color::rgb(220, 220, 220),
+                );
             }
         }
 
@@ -1085,7 +1747,13 @@ impl CodeEditorWidget {
         }
     }
 
-    fn render_autocomplete(&mut self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, rect: Rect) {
+    fn render_autocomplete(
+        &mut self,
+        pixmap: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        rect: Rect,
+    ) {
         let max_visible = 10.min(self.autocomplete_items.len());
         let item_h = 22.0 * SCALE;
         let popup_w = 300.0 * SCALE;
@@ -1101,8 +1769,13 @@ impl CodeEditorWidget {
                 let mut first_top = None;
                 let mut v_sh = 0.0;
                 for r in b.layout_runs() {
-                    if first_top.is_none() { first_top = Some(r.line_top); }
-                    if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
+                    if first_top.is_none() {
+                        first_top = Some(r.line_top);
+                    }
+                    if self.is_line_hidden(r.line_i) {
+                        v_sh += r.line_height;
+                        continue;
+                    }
                     if r.line_i == cursor_line {
                         let ft = first_top.unwrap_or(0.0);
                         cy_pixel = y_off - self.scroll_y + (r.line_top - ft - v_sh) + r.line_height;
@@ -1114,7 +1787,10 @@ impl CodeEditorWidget {
             let py = cy_pixel;
             // Flip popup above cursor if it would go below the rect
             if py + popup_h > rect.bottom() {
-                (px, (py - self.metrics.line_height - popup_h).max(rect.top()))
+                (
+                    px,
+                    (py - self.metrics.line_height - popup_h).max(rect.top()),
+                )
             } else {
                 (px, py)
             }
@@ -1130,30 +1806,45 @@ impl CodeEditorWidget {
         // Scroll offset for items if selected item is out of visible range
         let scroll_start = if self.autocomplete_selected >= max_visible {
             self.autocomplete_selected - max_visible + 1
-        } else { 0 };
+        } else {
+            0
+        };
 
         // Background
-        let mut bg = Paint::default(); bg.set_color_rgba8(30, 30, 35, 245);
+        let mut bg = Paint::default();
+        bg.set_color_rgba8(30, 30, 35, 245);
         if let Some(r) = Rect::from_xywh(popup_x, popup_y, popup_w, popup_h) {
             pixmap.fill_rect(r, &bg, Transform::identity(), None);
         }
         // Border
-        let mut border = Paint::default(); border.set_color_rgba8(70, 130, 180, 200);
-        if let Some(r) = Rect::from_xywh(popup_x, popup_y, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(popup_x, popup_y + popup_h - 1.0, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(popup_x, popup_y, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(popup_x + popup_w - 1.0, popup_y, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        let mut border = Paint::default();
+        border.set_color_rgba8(70, 130, 180, 200);
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y, popup_w, 1.0) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y + popup_h - 1.0, popup_w, 1.0) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(popup_x, popup_y, 1.0, popup_h) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(popup_x + popup_w - 1.0, popup_y, 1.0, popup_h) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
 
         // Items
         for vi in 0..max_visible {
             let idx = scroll_start + vi;
-            if idx >= self.autocomplete_items.len() { break; }
+            if idx >= self.autocomplete_items.len() {
+                break;
+            }
             let item = &self.autocomplete_items[idx];
             let iy = popup_y + vi as f32 * item_h;
 
             // Highlight selected
             if idx == self.autocomplete_selected {
-                let mut sel = Paint::default(); sel.set_color_rgba8(50, 100, 150, 180);
+                let mut sel = Paint::default();
+                sel.set_color_rgba8(50, 100, 150, 180);
                 if let Some(r) = Rect::from_xywh(popup_x + 1.0, iy, popup_w - 2.0, item_h) {
                     pixmap.fill_rect(r, &sel, Transform::identity(), None);
                 }
@@ -1161,33 +1852,61 @@ impl CodeEditorWidget {
 
             // Kind icon badge
             let kind_color = match item.kind_icon {
-                "fn" => Color::rgb(220, 170, 80),   // function - amber
-                "ty" => Color::rgb(80, 200, 180),   // type - teal
-                "kw" => Color::rgb(200, 120, 220),  // keyword - purple
-                "md" => Color::rgb(100, 180, 240),  // module - blue
-                "fi" => Color::rgb(180, 200, 100),  // field - yellow-green
-                "va" => Color::rgb(150, 200, 240),  // variable - light blue
-                "ct" => Color::rgb(240, 150, 100),  // constant - orange
-                "sn" => Color::rgb(200, 200, 100),  // snippet - yellow
-                _ => Color::rgb(180, 180, 180),     // other - gray
+                "fn" => Color::rgb(220, 170, 80),  // function - amber
+                "ty" => Color::rgb(80, 200, 180),  // type - teal
+                "kw" => Color::rgb(200, 120, 220), // keyword - purple
+                "md" => Color::rgb(100, 180, 240), // module - blue
+                "fi" => Color::rgb(180, 200, 100), // field - yellow-green
+                "va" => Color::rgb(150, 200, 240), // variable - light blue
+                "ct" => Color::rgb(240, 150, 100), // constant - orange
+                "sn" => Color::rgb(200, 200, 100), // snippet - yellow
+                _ => Color::rgb(180, 180, 180),    // other - gray
             };
-            draw_ui_text(pixmap, fs, sc, item.kind_icon, popup_x + 4.0 * SCALE, iy + 3.0 * SCALE, kind_color);
+            draw_ui_text(
+                pixmap,
+                fs,
+                sc,
+                item.kind_icon,
+                popup_x + 4.0 * SCALE,
+                iy + 3.0 * SCALE,
+                kind_color,
+            );
 
             // Label
-            draw_ui_text(pixmap, fs, sc, &item.label, popup_x + icon_w, iy + 3.0 * SCALE, Color::rgb(220, 220, 220));
+            draw_ui_text(
+                pixmap,
+                fs,
+                sc,
+                &item.label,
+                popup_x + icon_w,
+                iy + 3.0 * SCALE,
+                Color::rgb(220, 220, 220),
+            );
 
             // Detail (dimmed, right-aligned)
             if let Some(ref detail) = item.detail {
                 let truncated: String = detail.chars().take(25).collect();
-                draw_ui_text(pixmap, fs, sc, &truncated, popup_x + popup_w - 140.0 * SCALE, iy + 3.0 * SCALE, Color::rgb(120, 120, 140));
+                draw_ui_text(
+                    pixmap,
+                    fs,
+                    sc,
+                    &truncated,
+                    popup_x + popup_w - 140.0 * SCALE,
+                    iy + 3.0 * SCALE,
+                    Color::rgb(120, 120, 140),
+                );
             }
         }
     }
 
     /// Accept the currently selected autocomplete item, inserting its text.
     pub fn accept_autocomplete(&mut self, fs: &mut FontSystem) {
-        if !self.autocomplete_visible || self.autocomplete_items.is_empty() { return; }
-        let idx = self.autocomplete_selected.min(self.autocomplete_items.len() - 1);
+        if !self.autocomplete_visible || self.autocomplete_items.is_empty() {
+            return;
+        }
+        let idx = self
+            .autocomplete_selected
+            .min(self.autocomplete_items.len() - 1);
         let insert = self.autocomplete_items[idx].insert_text.clone();
         // Delete the partial word the user has typed (from the trigger point)
         // We find the word prefix before the cursor and remove it before inserting
@@ -1198,7 +1917,11 @@ impl CodeEditorWidget {
             let byte_pos = cursor.index.min(text.len());
             let before = &text[..byte_pos];
             // Walk back to find the start of the identifier
-            before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').count()
+            before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .count()
         });
         // Delete prefix_len chars before cursor
         for _ in 0..prefix_len {
@@ -1220,10 +1943,25 @@ impl CodeEditorWidget {
         self.autocomplete_selected = 0;
     }
 
-    fn render_hover_tooltip(&self, pixmap: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, _rect: Rect, text: String) {
+    fn render_hover_tooltip(
+        &self,
+        pixmap: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        _rect: Rect,
+        text: String,
+    ) {
         let lines: Vec<&str> = text.lines().take(12).collect();
-        if lines.is_empty() { return; }
-        let max_chars = lines.iter().map(|l| l.len()).max().unwrap_or(20).max(20).min(80);
+        if lines.is_empty() {
+            return;
+        }
+        let max_chars = lines
+            .iter()
+            .map(|l| l.len())
+            .max()
+            .unwrap_or(20)
+            .max(20)
+            .min(80);
         let line_h = 18.0 * SCALE;
         let popup_w = max_chars as f32 * 7.5 * SCALE;
         let popup_h = lines.len() as f32 * line_h + 8.0 * SCALE;
@@ -1231,16 +1969,26 @@ impl CodeEditorWidget {
         let py = (self.hover_pos.1 - popup_h - 4.0 * SCALE).max(0.0);
 
         // Background
-        let mut bg = Paint::default(); bg.set_color_rgba8(35, 35, 40, 240);
+        let mut bg = Paint::default();
+        bg.set_color_rgba8(35, 35, 40, 240);
         if let Some(r) = Rect::from_xywh(px, py, popup_w, popup_h) {
             pixmap.fill_rect(r, &bg, Transform::identity(), None);
         }
         // Border
-        let mut border = Paint::default(); border.set_color_rgba8(80, 80, 100, 180);
-        if let Some(r) = Rect::from_xywh(px, py, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(px, py + popup_h - 1.0, popup_w, 1.0) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(px, py, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
-        if let Some(r) = Rect::from_xywh(px + popup_w - 1.0, py, 1.0, popup_h) { pixmap.fill_rect(r, &border, Transform::identity(), None); }
+        let mut border = Paint::default();
+        border.set_color_rgba8(80, 80, 100, 180);
+        if let Some(r) = Rect::from_xywh(px, py, popup_w, 1.0) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(px, py + popup_h - 1.0, popup_w, 1.0) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(px, py, 1.0, popup_h) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(px + popup_w - 1.0, py, 1.0, popup_h) {
+            pixmap.fill_rect(r, &border, Transform::identity(), None);
+        }
 
         // Text lines
         for (i, line) in lines.iter().enumerate() {
@@ -1250,79 +1998,199 @@ impl CodeEditorWidget {
             } else {
                 Color::rgb(200, 210, 220)
             };
-            draw_ui_text(pixmap, fs, sc, &truncated, px + 6.0 * SCALE, py + 4.0 * SCALE + i as f32 * line_h, color);
+            draw_ui_text(
+                pixmap,
+                fs,
+                sc,
+                &truncated,
+                px + 6.0 * SCALE,
+                py + 4.0 * SCALE + i as f32 * line_h,
+                color,
+            );
         }
     }
 
-    pub fn handle_mouse_pixels(&mut self, fs: &mut FontSystem, x: f32, y: f32, rect: Rect, click: Option<(u32, MouseButton, bool)>, clipboard: &mut Option<Clipboard>) -> bool {
-        if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() { return false; }
-        if let Some((_, MouseButton::Right, _)) = click { self.context_menu = Some(((x, y), vec!["Copy".to_string(), "Paste".to_string(), "Cut".to_string(), "Select All".to_string(), "Find".to_string(), "Replace".to_string()])); return false; }
+    pub fn handle_mouse_pixels(
+        &mut self,
+        fs: &mut FontSystem,
+        x: f32,
+        y: f32,
+        rect: Rect,
+        click: Option<(u32, MouseButton, bool)>,
+        clipboard: &mut Option<Clipboard>,
+    ) -> bool {
+        if x < rect.left() || x > rect.right() || y < rect.top() || y > rect.bottom() {
+            return false;
+        }
+        if let Some((_, MouseButton::Right, _)) = click {
+            self.context_menu = Some((
+                (x, y),
+                vec![
+                    "Copy".to_string(),
+                    "Paste".to_string(),
+                    "Cut".to_string(),
+                    "Select All".to_string(),
+                    "Find".to_string(),
+                    "Replace".to_string(),
+                ],
+            ));
+            return false;
+        }
         if let Some((pos, _)) = self.context_menu {
             let menu_h = (6.0 * 25.0) * SCALE;
             if x >= pos.0 && x <= pos.0 + 100.0 * SCALE && y >= pos.1 && y <= pos.1 + menu_h {
-                let idx = ((y - pos.1) / (25.0 * SCALE)) as usize; self.context_menu = None;
-                match idx { 
-                    0 => { if let Some(t) = self.editor.copy_selection() { if let Some(cb) = clipboard { let _ = cb.set_text(t); } } },
-                    1 => { if let Some(cb) = clipboard { if let Ok(t) = cb.get_text() { for ch in t.chars() { self.editor.action(fs, Action::Insert(ch)); } self.needs_reshape = true; self.sync(); } } },
-                    2 => { if let Some(t) = self.editor.copy_selection() { if let Some(cb) = clipboard { let _ = cb.set_text(t); } self.editor.action(fs, Action::Delete); self.needs_reshape = true; self.sync(); } },
-                    3 => { self.editor.action(fs, Action::Motion(cosmic_text::Motion::BufferStart)); let mut ly = 0.0; self.editor.with_buffer(|b| if let Some(r) = b.layout_runs().last() { ly = r.line_top + r.line_height; }); self.editor.action(fs, Action::Drag { x: 999999, y: ly as i32 }); },
-                    4 => { self.is_search_open = true; self.search_query.clear(); },
-                    5 => { self.is_search_open = true; self.is_replace_open = true; self.search_query.clear(); self.replace_query.clear(); },
-                    _ => {} 
-                } return false;
-            } self.context_menu = None;
+                let idx = ((y - pos.1) / (25.0 * SCALE)) as usize;
+                self.context_menu = None;
+                match idx {
+                    0 => {
+                        if let Some(t) = self.editor.copy_selection() {
+                            if let Some(cb) = clipboard {
+                                let _ = cb.set_text(t);
+                            }
+                        }
+                    }
+                    1 => {
+                        if let Some(cb) = clipboard {
+                            if let Ok(t) = cb.get_text() {
+                                for ch in t.chars() {
+                                    self.editor.action(fs, Action::Insert(ch));
+                                }
+                                self.needs_reshape = true;
+                                self.sync();
+                            }
+                        }
+                    }
+                    2 => {
+                        if let Some(t) = self.editor.copy_selection() {
+                            if let Some(cb) = clipboard {
+                                let _ = cb.set_text(t);
+                            }
+                            self.editor.action(fs, Action::Delete);
+                            self.needs_reshape = true;
+                            self.sync();
+                        }
+                    }
+                    3 => {
+                        self.editor
+                            .action(fs, Action::Motion(cosmic_text::Motion::BufferStart));
+                        let mut ly = 0.0;
+                        self.editor.with_buffer(|b| {
+                            if let Some(r) = b.layout_runs().last() {
+                                ly = r.line_top + r.line_height;
+                            }
+                        });
+                        self.editor.action(
+                            fs,
+                            Action::Drag {
+                                x: 999999,
+                                y: ly as i32,
+                            },
+                        );
+                    }
+                    4 => {
+                        self.is_search_open = true;
+                        self.search_query.clear();
+                    }
+                    5 => {
+                        self.is_search_open = true;
+                        self.is_replace_open = true;
+                        self.search_query.clear();
+                        self.replace_query.clear();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+            self.context_menu = None;
         }
         if y >= rect.top() && y < rect.bottom() && x > rect.right() - MINIMAP_WIDTH * SCALE {
-             let mry = (y - rect.top()) / rect.height(); let mut th = 0.0;
-             self.editor.with_buffer(|b| { for r in b.layout_runs() { if !self.is_line_hidden(r.line_i) { th += r.line_height; } } });
-             self.scroll_y = (mry * th).max(0.0); return false;
+            let mry = (y - rect.top()) / rect.height();
+            let mut th = 0.0;
+            self.editor.with_buffer(|b| {
+                for r in b.layout_runs() {
+                    if !self.is_line_hidden(r.line_i) {
+                        th += r.line_height;
+                    }
+                }
+            });
+            self.scroll_y = (mry * th).max(0.0);
+            return false;
         }
         let (x_off, y_off) = self.get_offsets(rect);
 
-        if let Some((1, MouseButton::Left, _)) = click { 
-            if x < x_off && x > rect.left() { 
-                let mut fl = None; 
-                self.editor.with_buffer(|b| { 
+        if let Some((1, MouseButton::Left, _)) = click {
+            if x < x_off && x > rect.left() {
+                let mut fl = None;
+                self.editor.with_buffer(|b| {
                     let mut i_top = None;
                     let mut v_sh = 0.0;
-                    for r in b.layout_runs() { 
-                        if i_top.is_none() { i_top = Some(r.line_top); }
-                        if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; }
-                        let vy = y_off - self.scroll_y + (r.line_top - i_top.unwrap_or(0.0) - v_sh); 
-                        if y >= vy && y < vy + r.line_height { fl = Some(r.line_i); break; } 
-                    } 
-                }); 
-                if let Some(li) = fl { self.my_editor.toggle_fold(li); return true; } 
-            } 
+                    for r in b.layout_runs() {
+                        if i_top.is_none() {
+                            i_top = Some(r.line_top);
+                        }
+                        if self.is_line_hidden(r.line_i) {
+                            v_sh += r.line_height;
+                            continue;
+                        }
+                        let vy = y_off - self.scroll_y + (r.line_top - i_top.unwrap_or(0.0) - v_sh);
+                        if y >= vy && y < vy + r.line_height {
+                            fl = Some(r.line_i);
+                            break;
+                        }
+                    }
+                });
+                if let Some(li) = fl {
+                    self.my_editor.toggle_fold(li);
+                    return true;
+                }
+            }
         }
         let mut final_ts = 0.0;
-        self.editor.with_buffer(|b| { 
+        self.editor.with_buffer(|b| {
             let mut i_top = None;
             let mut v_sh = 0.0;
-            for r in b.layout_runs() { 
-                if i_top.is_none() { i_top = Some(r.line_top); }
+            for r in b.layout_runs() {
+                if i_top.is_none() {
+                    i_top = Some(r.line_top);
+                }
                 let it = i_top.unwrap_or(0.0);
-                if self.is_line_hidden(r.line_i) { v_sh += r.line_height; continue; } 
+                if self.is_line_hidden(r.line_i) {
+                    v_sh += r.line_height;
+                    continue;
+                }
                 let vy = y_off - self.scroll_y + (r.line_top - it - v_sh);
-                if y >= vy && y < vy + r.line_height { 
-                    final_ts = it + v_sh; break; 
-                } 
-            } 
+                if y >= vy && y < vy + r.line_height {
+                    final_ts = it + v_sh;
+                    break;
+                }
+            }
         });
-        let ex = (x - x_off) as i32; let ey = (y - y_off + final_ts + self.scroll_y) as i32;
+        let ex = (x - x_off) as i32;
+        let ey = (y - y_off + final_ts + self.scroll_y) as i32;
         if let Some((count, _, shift_held)) = click {
-            if !shift_held && count == 1 { self.editor.action(fs, Action::Escape); }
-            match count { 1 => self.editor.action(fs, Action::Click { x: ex, y: ey }), 2 => self.editor.action(fs, Action::DoubleClick { x: ex, y: ey }), 3 => self.editor.action(fs, Action::TripleClick { x: ex, y: ey }), _ => {} }
-        } else { self.editor.action(fs, Action::Drag { x: ex, y: ey }); }
+            if !shift_held && count == 1 {
+                self.editor.action(fs, Action::Escape);
+            }
+            match count {
+                1 => self.editor.action(fs, Action::Click { x: ex, y: ey }),
+                2 => self.editor.action(fs, Action::DoubleClick { x: ex, y: ey }),
+                3 => self.editor.action(fs, Action::TripleClick { x: ex, y: ey }),
+                _ => {}
+            }
+        } else {
+            self.editor.action(fs, Action::Drag { x: ex, y: ey });
+        }
         false
     }
 
-    pub fn sync(&mut self) { 
-        if self.needs_reshape { 
+    pub fn sync(&mut self) {
+        if self.needs_reshape {
             let mut t = String::new();
             self.editor.with_buffer(|b| {
                 for (i, line) in b.lines.iter().enumerate() {
-                    if i > 0 { t.push('\n'); }
+                    if i > 0 {
+                        t.push('\n');
+                    }
                     t.push_str(line.text());
                 }
             });
@@ -1358,13 +2226,22 @@ impl CodeEditorWidget {
 
     /// Get selection bounds as ((start_line, start_col), (end_line, end_col)).
     pub fn selection_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.editor.selection_bounds().map(|(s, e)| ((s.line, s.index), (e.line, e.index)))
+        self.editor
+            .selection_bounds()
+            .map(|(s, e)| ((s.line, s.index), (e.line, e.index)))
     }
 
     /// Set selection from start to end.
-    pub fn set_selection(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) {
+    pub fn set_selection(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) {
         self.editor.set_cursor(Cursor::new(start_line, start_col));
-        self.editor.set_selection(Selection::Normal(Cursor::new(end_line, end_col)));
+        self.editor
+            .set_selection(Selection::Normal(Cursor::new(end_line, end_col)));
     }
 
     /// Clear the selection.
@@ -1382,7 +2259,8 @@ impl CodeEditorWidget {
         self.editor.set_cursor(Cursor::new(0, 0));
         let last_line = self.editor.with_buffer(|b| b.lines.len().saturating_sub(1));
         let last_col = self.editor.with_buffer(|b| b.lines[last_line].text().len());
-        self.editor.set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
+        self.editor
+            .set_selection(Selection::Normal(Cursor::new(last_line, last_col)));
     }
 
     // ── Editing actions ────────────────────────────────────────────────
@@ -1461,14 +2339,24 @@ impl CodeEditorWidget {
     /// Get the text of a specific line.
     pub fn line_text(&self, line: usize) -> String {
         self.editor.with_buffer(|b| {
-            if line < b.lines.len() { b.lines[line].text().to_string() } else { String::new() }
+            if line < b.lines.len() {
+                b.lines[line].text().to_string()
+            } else {
+                String::new()
+            }
         })
     }
 
     /// Set the entire buffer text, preserving monospace attrs.
     pub fn set_buffer_text(&mut self, fs: &mut FontSystem, text: &str) {
         self.editor.with_buffer_mut(|b| {
-            b.set_text(fs, text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+            b.set_text(
+                fs,
+                text,
+                &Attrs::new().family(Family::Monospace),
+                Shaping::Advanced,
+                None,
+            );
         });
     }
 
@@ -1486,17 +2374,29 @@ impl CodeEditorWidget {
     /// Start selection from current cursor position (for shift+arrow).
     pub fn start_selection_if_none(&mut self) {
         if self.editor.selection_bounds().is_none() {
-            self.editor.set_selection(Selection::Normal(self.editor.cursor()));
+            self.editor
+                .set_selection(Selection::Normal(self.editor.cursor()));
         }
     }
 
     /// Apply wrap mode and buffer size before rendering.
     /// `content_width` and `content_height` are in physical pixels.
-    pub fn sync_wrap_and_size(&mut self, fs: &mut FontSystem, content_width: f32, content_height: f32) {
+    pub fn sync_wrap_and_size(
+        &mut self,
+        fs: &mut FontSystem,
+        content_width: f32,
+        content_height: f32,
+    ) {
         let wrap_lines = self.wrap_lines;
         self.editor.with_buffer_mut(|b| {
-            let wrap = if wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
-            if b.wrap() != wrap { b.set_wrap(fs, wrap); }
+            let wrap = if wrap_lines {
+                cosmic_text::Wrap::Word
+            } else {
+                cosmic_text::Wrap::None
+            };
+            if b.wrap() != wrap {
+                b.set_wrap(fs, wrap);
+            }
             if wrap_lines {
                 b.set_size(fs, Some(content_width), Some(content_height));
             } else {
@@ -1529,9 +2429,15 @@ impl CodeEditorWidget {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for CodeEditorWidget {
-    fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
-    fn rect(&self) -> LayoutRect { self.layout_rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.layout_rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.layout_rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;
@@ -1540,10 +2446,20 @@ impl PanelWidget for CodeEditorWidget {
             // Update buffer size for wrap
             let wrap_lines = self.wrap_lines;
             self.editor.with_buffer_mut(|b| {
-                let wrap = if wrap_lines { cosmic_text::Wrap::Word } else { cosmic_text::Wrap::None };
-                if b.wrap() != wrap { b.set_wrap(ctx.font_system, wrap); }
+                let wrap = if wrap_lines {
+                    cosmic_text::Wrap::Word
+                } else {
+                    cosmic_text::Wrap::None
+                };
+                if b.wrap() != wrap {
+                    b.set_wrap(ctx.font_system, wrap);
+                }
                 if wrap_lines {
-                    b.set_size(ctx.font_system, Some(pixel_rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * s), Some(pixel_rect.height()));
+                    b.set_size(
+                        ctx.font_system,
+                        Some(pixel_rect.width() - (GUTTER_WIDTH + MINIMAP_WIDTH) * s),
+                        Some(pixel_rect.height()),
+                    );
                 } else {
                     b.set_size(ctx.font_system, Some(999999.0), Some(999999.0));
                 }
@@ -1555,7 +2471,9 @@ impl PanelWidget for CodeEditorWidget {
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         let r = self.layout_rect;
-        if !r.contains(event.x, event.y) { return false; }
+        if !r.contains(event.x, event.y) {
+            return false;
+        }
         // Actual mouse handling is done by the IDE which has the shared FontSystem.
         // This just claims the event so containers route it correctly.
         match &event.kind {
@@ -1593,24 +2511,55 @@ impl PanelWidget for CodeEditorWidget {
         std::mem::take(&mut self.pending_events)
     }
 
-    fn focusable(&self) -> bool { true }
+    fn focusable(&self) -> bool {
+        true
+    }
 }
 
-fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: Color) {
+fn draw_ui_text(
+    pix: &mut Pixmap,
+    fs: &mut FontSystem,
+    sc: &mut SwashCache,
+    text: &str,
+    x: f32,
+    y: f32,
+    col: Color,
+) {
     let mut lab = Buffer::new(fs, Metrics::new(14.0, 20.0).scale(SCALE));
-    lab.set_text(fs, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+    lab.set_text(
+        fs,
+        text,
+        &Attrs::new().family(Family::Monospace).color(col),
+        Shaping::Advanced,
+        None,
+    );
     lab.shape_until_scroll(fs, false);
     for r in lab.layout_runs() {
         for g in r.glyphs {
             let pg = g.physical((x, y + r.line_y), 1.0);
             if let Some(img) = sc.get_image(fs, pg.cache_key) {
-                if let Some(mut p) = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)) {
+                if let Some(mut p) =
+                    Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
+                {
                     let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
                     for (idx, &al) in img.data.iter().enumerate() {
                         let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                        p.pixels_mut()[idx] = ColorU8::from_rgba((cr as f32 * af) as u8, (cg as f32 * af) as u8, (cb as f32 * af) as u8, (255.0 * af) as u8).premultiply();
+                        p.pixels_mut()[idx] = ColorU8::from_rgba(
+                            (cr as f32 * af) as u8,
+                            (cg as f32 * af) as u8,
+                            (cb as f32 * af) as u8,
+                            (255.0 * af) as u8,
+                        )
+                        .premultiply();
                     }
-                    pix.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                    pix.draw_pixmap(
+                        pg.x + img.placement.left,
+                        pg.y - img.placement.top,
+                        p.as_ref(),
+                        &PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }

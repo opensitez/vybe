@@ -85,11 +85,10 @@ fn stringify_array_with_undefined_becomes_null() {
         run_js(
             r#"
 const arr = [1, undefined, null, 3];
-const result = JSON.parse(JSON.stringify(arr));
-console.log(result.join(","));
+console.log(JSON.stringify(arr));
 "#
         ),
-        vec!["1,null,null,3"]
+        vec!["[1,null,null,3]"]
     );
 }
 

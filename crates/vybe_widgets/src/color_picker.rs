@@ -6,14 +6,13 @@
 //! - Current color swatch + hex display
 //! - Click to select color
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
-use super::rounded_rect_path;
 use super::layout::{
-    LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
-    KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId,
-    WidgetCommand, CommandValue,
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
 };
+use super::rounded_rect_path;
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 /// A picked color in RGBA.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,7 +34,9 @@ impl PickedColor {
 
     pub fn from_hex(hex: &str) -> Option<Self> {
         let hex = hex.trim_start_matches('#');
-        if hex.len() < 6 { return None; }
+        if hex.len() < 6 {
+            return None;
+        }
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -45,7 +46,12 @@ impl PickedColor {
 
 impl Default for PickedColor {
     fn default() -> Self {
-        Self { r: 255, g: 255, b: 255, a: 255 }
+        Self {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        }
     }
 }
 
@@ -151,7 +157,11 @@ impl ColorPicker {
     pub fn new() -> Self {
         Self {
             id: WidgetId::next(),
-            hsv: Hsv { h: 0.0, s: 1.0, v: 1.0 },
+            hsv: Hsv {
+                h: 0.0,
+                s: 1.0,
+                v: 1.0,
+            },
             color: PickedColor::default(),
             open: false,
             dragging_sv: false,
@@ -162,7 +172,10 @@ impl ColorPicker {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     pub fn set_color(&mut self, c: PickedColor) {
         self.color = c;
@@ -199,14 +212,25 @@ impl ColorPicker {
         if let Some(r) = Rect::from_xywh(x * scale, y * scale, half_w * scale, half_h * scale) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
-        if let Some(r) = Rect::from_xywh((x + half_w) * scale, (y + half_h) * scale, half_w * scale, half_h * scale) {
+        if let Some(r) = Rect::from_xywh(
+            (x + half_w) * scale,
+            (y + half_h) * scale,
+            half_w * scale,
+            half_h * scale,
+        ) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
 
         // Actual color
         paint.set_color_rgba8(self.color.r, self.color.g, self.color.b, self.color.a);
         if let Some(path) = rounded_rect_path(x, y, w, h, 2.0) {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // Border
@@ -214,13 +238,21 @@ impl ColorPicker {
         let mut stroke = Stroke::default();
         stroke.width = 1.0;
         if let Some(path) = rounded_rect_path(x, y, w, h, 2.0) {
-            pix.stroke_path(&path, &paint, &stroke, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &stroke,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
     }
 
     /// Render the full color picker popup.
     pub fn render_popup(&self, pix: &mut Pixmap, popup_x: f32, popup_y: f32, scale: f32) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
 
         let (pw, ph) = Self::popup_size();
         let mut paint = Paint::default();
@@ -228,14 +260,25 @@ impl ColorPicker {
 
         // Shadow
         paint.set_color_rgba8(0, 0, 0, 40);
-        if let Some(r) = Rect::from_xywh((popup_x + 2.0) * scale, (popup_y + 2.0) * scale, pw * scale, ph * scale) {
+        if let Some(r) = Rect::from_xywh(
+            (popup_x + 2.0) * scale,
+            (popup_y + 2.0) * scale,
+            pw * scale,
+            ph * scale,
+        ) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
 
         // Background
         paint.set_color_rgba8(250, 250, 250, 255);
         if let Some(path) = rounded_rect_path(popup_x, popup_y, pw, ph, 4.0) {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // Border
@@ -243,7 +286,13 @@ impl ColorPicker {
         let mut stroke = Stroke::default();
         stroke.width = 1.0;
         if let Some(path) = rounded_rect_path(popup_x, popup_y, pw, ph, 4.0) {
-            pix.stroke_path(&path, &paint, &stroke, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &stroke,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         let sv_x = popup_x + PADDING;
@@ -258,7 +307,11 @@ impl ColorPicker {
             while sy < SV_SIZE {
                 let s = sx / SV_SIZE;
                 let v = 1.0 - (sy / SV_SIZE);
-                let hsv = Hsv { h: self.hsv.h, s, v };
+                let hsv = Hsv {
+                    h: self.hsv.h,
+                    s,
+                    v,
+                };
                 let (r, g, b) = hsv.to_rgb();
                 paint.set_color_rgba8(r, g, b, 255);
                 if let Some(r) = Rect::from_xywh(
@@ -277,11 +330,22 @@ impl ColorPicker {
         // SV square border
         paint.set_color_rgba8(160, 160, 160, 255);
         let mut pb = PathBuilder::new();
-        if let Some(r) = Rect::from_xywh(sv_x * scale, sv_y * scale, SV_SIZE * scale, SV_SIZE * scale) {
+        if let Some(r) =
+            Rect::from_xywh(sv_x * scale, sv_y * scale, SV_SIZE * scale, SV_SIZE * scale)
+        {
             pb.push_rect(r);
         }
         if let Some(path) = pb.finish() {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0 * scale, ..Default::default() }, Transform::identity(), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0 * scale,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
 
         // SV cursor (circle)
@@ -289,11 +353,29 @@ impl ColorPicker {
         let cy = sv_y + (1.0 - self.hsv.v) * SV_SIZE;
         paint.set_color_rgba8(255, 255, 255, 255);
         if let Some(path) = super::circle_path(cx, cy, 5.0) {
-            pix.stroke_path(&path, &paint, &Stroke { width: 2.0, ..Default::default() }, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 2.0,
+                    ..Default::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
         paint.set_color_rgba8(0, 0, 0, 255);
         if let Some(path) = super::circle_path(cx, cy, 4.0) {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0,
+                    ..Default::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // ── Hue bar ──
@@ -321,26 +403,55 @@ impl ColorPicker {
         // Hue bar border
         paint.set_color_rgba8(160, 160, 160, 255);
         let mut pb = PathBuilder::new();
-        if let Some(r) = Rect::from_xywh(hue_x * scale, hue_y * scale, HUE_W * scale, hue_h * scale) {
+        if let Some(r) = Rect::from_xywh(hue_x * scale, hue_y * scale, HUE_W * scale, hue_h * scale)
+        {
             pb.push_rect(r);
         }
         if let Some(path) = pb.finish() {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0 * scale, ..Default::default() }, Transform::identity(), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0 * scale,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
 
         // Hue cursor (two horizontal lines)
         let hue_cursor_y = hue_y + (self.hsv.h / 360.0) * hue_h;
         paint.set_color_rgba8(255, 255, 255, 255);
-        if let Some(r) = Rect::from_xywh((hue_x - 1.0) * scale, (hue_cursor_y - 1.5) * scale, (HUE_W + 2.0) * scale, 3.0 * scale) {
+        if let Some(r) = Rect::from_xywh(
+            (hue_x - 1.0) * scale,
+            (hue_cursor_y - 1.5) * scale,
+            (HUE_W + 2.0) * scale,
+            3.0 * scale,
+        ) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
         paint.set_color_rgba8(0, 0, 0, 255);
         let mut pb = PathBuilder::new();
-        if let Some(r) = Rect::from_xywh((hue_x - 1.0) * scale, (hue_cursor_y - 1.5) * scale, (HUE_W + 2.0) * scale, 3.0 * scale) {
+        if let Some(r) = Rect::from_xywh(
+            (hue_x - 1.0) * scale,
+            (hue_cursor_y - 1.5) * scale,
+            (HUE_W + 2.0) * scale,
+            3.0 * scale,
+        ) {
             pb.push_rect(r);
         }
         if let Some(path) = pb.finish() {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0 * scale, ..Default::default() }, Transform::identity(), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0 * scale,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
 
         // ── Swatch + hex text at bottom ──
@@ -348,18 +459,41 @@ impl ColorPicker {
         // Color swatch
         paint.set_color_rgba8(self.color.r, self.color.g, self.color.b, self.color.a);
         if let Some(path) = rounded_rect_path(sv_x, swatch_y, SWATCH_H, SWATCH_H, 3.0) {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
         paint.set_color_rgba8(160, 160, 160, 255);
         if let Some(path) = rounded_rect_path(sv_x, swatch_y, SWATCH_H, SWATCH_H, 3.0) {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0,
+                    ..Default::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
     }
 
     /// Handle a click at (mx, my) relative to the popup position.
     /// Returns a `ColorPickerEvent`.
-    pub fn handle_click(&mut self, mx: f32, my: f32, popup_x: f32, popup_y: f32) -> ColorPickerEvent {
-        if !self.open { return ColorPickerEvent::None; }
+    pub fn handle_click(
+        &mut self,
+        mx: f32,
+        my: f32,
+        popup_x: f32,
+        popup_y: f32,
+    ) -> ColorPickerEvent {
+        if !self.open {
+            return ColorPickerEvent::None;
+        }
 
         let (pw, ph) = Self::popup_size();
 
@@ -399,8 +533,16 @@ impl ColorPicker {
     }
 
     /// Handle mouse drag (call on mouse move while button is down).
-    pub fn handle_drag(&mut self, mx: f32, my: f32, popup_x: f32, popup_y: f32) -> ColorPickerEvent {
-        if !self.open { return ColorPickerEvent::None; }
+    pub fn handle_drag(
+        &mut self,
+        mx: f32,
+        my: f32,
+        popup_x: f32,
+        popup_y: f32,
+    ) -> ColorPickerEvent {
+        if !self.open {
+            return ColorPickerEvent::None;
+        }
 
         let sv_x = popup_x + PADDING;
         let sv_y = popup_y + PADDING;
@@ -467,17 +609,25 @@ impl ColorPicker {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for ColorPicker {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Render the full picker inline — temporarily set open so render_popup works
         let was_open = self.open;
@@ -491,9 +641,15 @@ impl PanelWidget for ColorPicker {
         let text_x = r.x + PADDING + SWATCH_H + 6.0;
         let hex = self.color.to_hex();
         super::ide_text::draw_text(
-            ctx.pixmap, ctx.font_system, ctx.swash_cache,
-            &hex, text_x, swatch_y + 4.0, 12.0,
-            CosmicColor::rgba(60, 60, 60, 255), ctx.scale,
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &hex,
+            text_x,
+            swatch_y + 4.0,
+            12.0,
+            CosmicColor::rgba(60, 60, 60, 255),
+            ctx.scale,
         );
     }
 
@@ -507,16 +663,20 @@ impl PanelWidget for ColorPicker {
         match event.kind {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 // SV square hit
-                if event.x >= sv_x && event.x <= sv_x + SV_SIZE
-                    && event.y >= sv_y && event.y <= sv_y + SV_SIZE
+                if event.x >= sv_x
+                    && event.x <= sv_x + SV_SIZE
+                    && event.y >= sv_y
+                    && event.y <= sv_y + SV_SIZE
                 {
                     self.dragging_sv = true;
                     self.pick_sv(event.x, event.y, sv_x, sv_y);
                     return true;
                 }
                 // Hue bar hit
-                if event.x >= hue_x && event.x <= hue_x + HUE_W
-                    && event.y >= hue_y && event.y <= hue_y + SV_SIZE
+                if event.x >= hue_x
+                    && event.x <= hue_x + HUE_W
+                    && event.y >= hue_y
+                    && event.y <= hue_y + SV_SIZE
                 {
                     self.dragging_hue = true;
                     self.pick_hue(event.y, hue_y);
@@ -546,13 +706,20 @@ impl PanelWidget for ColorPicker {
         }
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(hex) => { self.set_from_hex(hex); CommandValue::None }
+            WidgetCommand::SetText(hex) => {
+                self.set_from_hex(hex);
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.color.to_hex()),
-            WidgetCommand::GetValue => CommandValue::Color(self.color.r, self.color.g, self.color.b, self.color.a),
+            WidgetCommand::GetValue => {
+                CommandValue::Color(self.color.r, self.color.g, self.color.b, self.color.a)
+            }
             _ => CommandValue::None,
         }
     }

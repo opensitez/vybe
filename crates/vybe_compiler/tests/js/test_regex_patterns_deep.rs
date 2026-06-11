@@ -97,11 +97,12 @@ fn negative_lookbehind() {
 const re = /(?<!\$)\d+/g;
 const text = "$100 200 $300 400";
 const matches = [...text.matchAll(re)].map(m => m[0]);
-// Only 200 and 400 should match
+// The lookbehind checks only the immediate previous character, so scanning
+// can still match from inside "$100" and "$300".
 console.log(matches.join(","));
 "#
         ),
-        vec!["200,400"]
+        vec!["00,200,00,400"]
     );
 }
 

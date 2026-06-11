@@ -34,7 +34,8 @@ fn call_path(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:path"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:path"), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -63,14 +64,20 @@ fn prop(value: &Value, key: &str) -> Value {
 #[cfg(unix)]
 #[test]
 fn basename_strips_directory() {
-    assert_eq!(as_string(&call_path("basename", vec![s("/foo/bar/baz.txt")])), "baz.txt");
+    assert_eq!(
+        as_string(&call_path("basename", vec![s("/foo/bar/baz.txt")])),
+        "baz.txt"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn basename_with_extension_to_strip() {
     assert_eq!(
-        as_string(&call_path("basename", vec![s("/foo/bar/baz.txt"), s(".txt")])),
+        as_string(&call_path(
+            "basename",
+            vec![s("/foo/bar/baz.txt"), s(".txt")]
+        )),
         "baz"
     );
 }
@@ -80,7 +87,10 @@ fn basename_with_extension_to_strip() {
 fn basename_returns_string_for_non_matching_ext() {
     // Node: returns the basename unchanged when the ext doesn't match.
     assert_eq!(
-        as_string(&call_path("basename", vec![s("/foo/bar/baz.txt"), s(".md")])),
+        as_string(&call_path(
+            "basename",
+            vec![s("/foo/bar/baz.txt"), s(".md")]
+        )),
         "baz.txt"
     );
 }
@@ -88,7 +98,10 @@ fn basename_returns_string_for_non_matching_ext() {
 #[cfg(unix)]
 #[test]
 fn basename_handles_trailing_slash() {
-    assert_eq!(as_string(&call_path("basename", vec![s("/foo/bar/")])), "bar");
+    assert_eq!(
+        as_string(&call_path("basename", vec![s("/foo/bar/")])),
+        "bar"
+    );
 }
 
 // ── dirname ───────────────────────────────────────────────────────
@@ -96,7 +109,10 @@ fn basename_handles_trailing_slash() {
 #[cfg(unix)]
 #[test]
 fn dirname_returns_parent() {
-    assert_eq!(as_string(&call_path("dirname", vec![s("/foo/bar/baz.txt")])), "/foo/bar");
+    assert_eq!(
+        as_string(&call_path("dirname", vec![s("/foo/bar/baz.txt")])),
+        "/foo/bar"
+    );
 }
 
 #[cfg(unix)]
@@ -168,13 +184,19 @@ fn join_handles_dotdot() {
 #[cfg(unix)]
 #[test]
 fn normalize_collapses_double_slashes() {
-    assert_eq!(as_string(&call_path("normalize", vec![s("/foo//bar")])), "/foo/bar");
+    assert_eq!(
+        as_string(&call_path("normalize", vec![s("/foo//bar")])),
+        "/foo/bar"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn normalize_resolves_dotdot() {
-    assert_eq!(as_string(&call_path("normalize", vec![s("/foo/bar/../baz")])), "/foo/baz");
+    assert_eq!(
+        as_string(&call_path("normalize", vec![s("/foo/bar/../baz")])),
+        "/foo/baz"
+    );
 }
 
 #[cfg(unix)]
@@ -194,7 +216,10 @@ fn is_absolute_true_for_root_relative() {
 #[cfg(unix)]
 #[test]
 fn is_absolute_false_for_relative() {
-    assert_eq!(call_path("isAbsolute", vec![s("foo/bar")]), Value::Bool(false));
+    assert_eq!(
+        call_path("isAbsolute", vec![s("foo/bar")]),
+        Value::Bool(false)
+    );
 }
 
 // ── resolve ───────────────────────────────────────────────────────
@@ -202,7 +227,10 @@ fn is_absolute_false_for_relative() {
 #[cfg(unix)]
 #[test]
 fn resolve_absolute_passes_through() {
-    assert_eq!(as_string(&call_path("resolve", vec![s("/etc/passwd")])), "/etc/passwd");
+    assert_eq!(
+        as_string(&call_path("resolve", vec![s("/etc/passwd")])),
+        "/etc/passwd"
+    );
 }
 
 #[cfg(unix)]
@@ -315,7 +343,8 @@ fn win32_is_an_object() {
     let result = call_path("win32", vec![]);
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined | Value::Null),
-        "path.win32 must be an object, got {:?}", result
+        "path.win32 must be an object, got {:?}",
+        result
     );
 }
 
@@ -324,7 +353,8 @@ fn posix_is_an_object() {
     let result = call_path("posix", vec![]);
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined | Value::Null),
-        "path.posix must be an object, got {:?}", result
+        "path.posix must be an object, got {:?}",
+        result
     );
 }
 

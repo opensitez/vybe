@@ -65,13 +65,20 @@ fn is_error(value: &Value) -> Option<String> {
 }
 
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke("wasi:filesystem/types", "__test_open_root", vec![s(dir.to_str().unwrap())])
+    invoke(
+        "wasi:filesystem/types",
+        "__test_open_root",
+        vec![s(dir.to_str().unwrap())],
+    )
 }
 
 fn directory_names(value: &Value) -> Vec<String> {
     let mut names = Vec::new();
     loop {
-        let entry = types("[method]directory-entry-stream.read-directory-entry", vec![value.clone()]);
+        let entry = types(
+            "[method]directory-entry-stream.read-directory-entry",
+            vec![value.clone()],
+        );
         if matches!(entry, Value::Null) {
             break;
         }
@@ -96,7 +103,10 @@ macro_rules! file_name_case {
                 vec![root, Value::I32(0), s($name), Value::I32(0), Value::I32(0)],
             );
             assert!(is_error(&descriptor).is_none());
-            assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("regular-file"));
+            assert_eq!(
+                types("[method]descriptor.get-type", vec![descriptor]),
+                s("regular-file")
+            );
         }
 
         #[test]
@@ -104,7 +114,10 @@ macro_rules! file_name_case {
             let dir = scratch_dir(concat!($label, "_stat"));
             std::fs::write(dir.join($name), "payload").unwrap();
             let root = open_test_root(&dir);
-            let stat = types("[method]descriptor.stat-at", vec![root, Value::I32(0), s($name)]);
+            let stat = types(
+                "[method]descriptor.stat-at",
+                vec![root, Value::I32(0), s($name)],
+            );
             assert_eq!(prop(&stat, "size"), Value::F64(7.0));
             assert_eq!(prop(&stat, "type"), s("regular-file"));
         }
@@ -127,7 +140,10 @@ macro_rules! dir_name_case {
         fn $create_name() {
             let dir = scratch_dir($label);
             let root = open_test_root(&dir);
-            let result = types("[method]descriptor.create-directory-at", vec![root, s($name)]);
+            let result = types(
+                "[method]descriptor.create-directory-at",
+                vec![root, s($name)],
+            );
             assert!(is_error(&result).is_none());
             assert!(dir.join($name).is_dir());
         }
@@ -141,7 +157,10 @@ macro_rules! dir_name_case {
                 "[method]descriptor.open-at",
                 vec![root, Value::I32(0), s($name), Value::I32(2), Value::I32(0)],
             );
-            assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("directory"));
+            assert_eq!(
+                types("[method]descriptor.get-type", vec![descriptor]),
+                s("directory")
+            );
         }
 
         #[test]
@@ -160,17 +179,82 @@ macro_rules! dir_name_case {
     };
 }
 
-file_name_case!(open_hidden_file_name, stat_hidden_file_name, unlink_hidden_file_name, "hidden_file", ".hidden");
-file_name_case!(open_spaced_file_name, stat_spaced_file_name, unlink_spaced_file_name, "spaced_file", "space name.txt");
-file_name_case!(open_mixed_case_file_name, stat_mixed_case_file_name, unlink_mixed_case_file_name, "mixed_case_file", "CamelCase.TXT");
-file_name_case!(open_multi_dot_file_name, stat_multi_dot_file_name, unlink_multi_dot_file_name, "multi_dot_file", "archive.tar.gz");
-file_name_case!(open_numeric_file_name, stat_numeric_file_name, unlink_numeric_file_name, "numeric_file", "12345.bin");
+file_name_case!(
+    open_hidden_file_name,
+    stat_hidden_file_name,
+    unlink_hidden_file_name,
+    "hidden_file",
+    ".hidden"
+);
+file_name_case!(
+    open_spaced_file_name,
+    stat_spaced_file_name,
+    unlink_spaced_file_name,
+    "spaced_file",
+    "space name.txt"
+);
+file_name_case!(
+    open_mixed_case_file_name,
+    stat_mixed_case_file_name,
+    unlink_mixed_case_file_name,
+    "mixed_case_file",
+    "CamelCase.TXT"
+);
+file_name_case!(
+    open_multi_dot_file_name,
+    stat_multi_dot_file_name,
+    unlink_multi_dot_file_name,
+    "multi_dot_file",
+    "archive.tar.gz"
+);
+file_name_case!(
+    open_numeric_file_name,
+    stat_numeric_file_name,
+    unlink_numeric_file_name,
+    "numeric_file",
+    "12345.bin"
+);
 
-dir_name_case!(create_hidden_directory_name, open_hidden_directory_name, rename_hidden_directory_name, "hidden_dir", ".config", ".config-renamed");
-dir_name_case!(create_spaced_directory_name, open_spaced_directory_name, rename_spaced_directory_name, "spaced_dir", "space dir", "space dir renamed");
-dir_name_case!(create_mixed_case_directory_name, open_mixed_case_directory_name, rename_mixed_case_directory_name, "mixed_case_dir", "MixedCaseDir", "MixedCaseDirRenamed");
-dir_name_case!(create_multi_dot_directory_name, open_multi_dot_directory_name, rename_multi_dot_directory_name, "multi_dot_dir", "multi.part.dir", "multi.part.dir.renamed");
-dir_name_case!(create_numeric_directory_name, open_numeric_directory_name, rename_numeric_directory_name, "numeric_dir", "12345dir", "12345dir-renamed");
+dir_name_case!(
+    create_hidden_directory_name,
+    open_hidden_directory_name,
+    rename_hidden_directory_name,
+    "hidden_dir",
+    ".config",
+    ".config-renamed"
+);
+dir_name_case!(
+    create_spaced_directory_name,
+    open_spaced_directory_name,
+    rename_spaced_directory_name,
+    "spaced_dir",
+    "space dir",
+    "space dir renamed"
+);
+dir_name_case!(
+    create_mixed_case_directory_name,
+    open_mixed_case_directory_name,
+    rename_mixed_case_directory_name,
+    "mixed_case_dir",
+    "MixedCaseDir",
+    "MixedCaseDirRenamed"
+);
+dir_name_case!(
+    create_multi_dot_directory_name,
+    open_multi_dot_directory_name,
+    rename_multi_dot_directory_name,
+    "multi_dot_dir",
+    "multi.part.dir",
+    "multi.part.dir.renamed"
+);
+dir_name_case!(
+    create_numeric_directory_name,
+    open_numeric_directory_name,
+    rename_numeric_directory_name,
+    "numeric_dir",
+    "12345dir",
+    "12345dir-renamed"
+);
 
 #[test]
 fn read_directory_lists_special_file_and_directory_names() {

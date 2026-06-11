@@ -12,22 +12,40 @@
 
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 
-fn bound_iterator_method(receiver: &Arc<Mutex<Object>>, module: &str, name: &str, idx: usize) -> Value {
+fn bound_iterator_method(
+    receiver: &Arc<Mutex<Object>>,
+    module: &str,
+    name: &str,
+    idx: usize,
+) -> Value {
     let mut fn_obj = Object::new();
     fn_obj.kind = ObjectKind::HostFunction(idx);
-    fn_obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-    fn_obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-    fn_obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-    fn_obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
-    fn_obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__host_module".into(), Value::String(Arc::from(module)));
+    fn_obj
+        .properties
+        .insert("__host_name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    fn_obj.properties.insert(
+        "__proto__".into(),
+        crate::ecma::function::shared_function_prototype(),
+    );
+    fn_obj
+        .properties
+        .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::Object(receiver.clone())])))),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(receiver.clone()),
+        ])))),
     );
     Value::Object(Arc::new(Mutex::new(fn_obj)))
 }
@@ -39,7 +57,8 @@ fn new_map_value() -> Value {
     // __type stamp lets TypeRegistry-driven runtime method dispatch
     // (`STRUCT_GET m "set"` → host fn) find the right binding. Without
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Map")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Map")));
     let map = Arc::new(Mutex::new(obj));
     if let Some(idx) = MAP_ITERATOR_IDX.get() {
         map.lock().unwrap().properties.insert(
@@ -76,7 +95,11 @@ fn map_groupby_magic(callback: &Value, item: &Value) -> Option<Value> {
         if o.properties.contains_key("__groupby_even_odd") {
             drop(o);
             let n = item.as_i32();
-            return Some(Value::String(std::sync::Arc::from(if n % 2 == 0 { "even" } else { "odd" })));
+            return Some(Value::String(std::sync::Arc::from(if n % 2 == 0 {
+                "even"
+            } else {
+                "odd"
+            })));
         }
         drop(o);
     }
@@ -98,7 +121,9 @@ pub fn register(vm: &mut VM) {
     // `new Map(iterable?)` — per ECMA-262 §24.1.1.1 the constructor optionally
     // takes an iterable whose entries are `[key, value]` pairs (typically an
     // Array of Arrays). Same semantics as `Map.fromEntries(iterable)`.
-    vm.register_host_fn("ecma:map", "new",
+    vm.register_host_fn(
+        "ecma:map",
+        "new",
         Box::new(|_ctx, args| {
             let m = new_map_value();
             if let (Value::Object(mapobj), Some(Value::Object(src))) = (&m, args.first()) {
@@ -123,10 +148,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             m
-        }));
+        }),
+    );
 
     // fromEntries(iterable) — iterable is an Array of [k, v] pairs.
-    vm.register_host_fn("ecma:map", "fromEntries",
+    vm.register_host_fn(
+        "ecma:map",
+        "fromEntries",
         Box::new(|_ctx, args| {
             let m = new_map_value();
             if let Value::Object(mapobj) = &m {
@@ -153,9 +181,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             m
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "get",
+    vm.register_host_fn(
+        "ecma:map",
+        "get",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -165,9 +196,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "set",
+    vm.register_host_fn(
+        "ecma:map",
+        "set",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -182,9 +216,12 @@ pub fn register(vm: &mut VM) {
                 return Value::Object(mapobj);
             }
             Value::Null
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "has",
+    vm.register_host_fn(
+        "ecma:map",
+        "has",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -194,9 +231,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "delete",
+    vm.register_host_fn(
+        "ecma:map",
+        "delete",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -212,9 +252,12 @@ pub fn register(vm: &mut VM) {
                 return Value::Bool(removed);
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "clear",
+    vm.register_host_fn(
+        "ecma:map",
+        "clear",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let mut m = mapobj.lock().unwrap();
@@ -224,9 +267,12 @@ pub fn register(vm: &mut VM) {
                 sync_map_size(&mut m);
             }
             Value::Null
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "size",
+    vm.register_host_fn(
+        "ecma:map",
+        "size",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -235,10 +281,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
     // keys / values / entries — Array Iterators over insertion-order snapshots
-    vm.register_host_fn("ecma:map", "keys",
+    vm.register_host_fn(
+        "ecma:map",
+        "keys",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -248,9 +297,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             crate::ecma::array::make_array_iterator(Vec::new())
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "values",
+    vm.register_host_fn(
+        "ecma:map",
+        "values",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -260,13 +312,16 @@ pub fn register(vm: &mut VM) {
                 }
             }
             crate::ecma::array::make_array_iterator(Vec::new())
-        }));
+        }),
+    );
 
     // .NET `Dictionary<K,V>.ContainsValue(v)` — linear-scan check
     // against the Map's values. No ECMA-262 spec equivalent (Map only
     // exposes `has(key)`); the .NET adapter routes `ContainsValue`
     // here to keep all collection state in `ObjectKind::Map`.
-    vm.register_host_fn("ecma:map", "containsValue",
+    vm.register_host_fn(
+        "ecma:map",
+        "containsValue",
         Box::new(|_ctx, args| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(mapobj) = is_map(args, 0) {
@@ -276,24 +331,33 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:map", "entries",
+    vm.register_host_fn(
+        "ecma:map",
+        "entries",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    let pairs: Vec<Value> = im.iter()
-                        .map(|(k, v)| Value::Object(Arc::new(Mutex::new(
-                            Object::new_array(vec![k.clone(), v.clone()])
-                        ))))
+                    let pairs: Vec<Value> = im
+                        .iter()
+                        .map(|(k, v)| {
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                                k.clone(),
+                                v.clone(),
+                            ]))))
+                        })
                         .collect();
                     return crate::ecma::array::make_array_iterator(pairs);
                 }
             }
             crate::ecma::array::make_array_iterator(Vec::new())
-        }));
-    if let Some(idx) = vm.host_registry
+        }),
+    );
+    if let Some(idx) = vm
+        .host_registry
         .get(&("ecma:map".to_string(), "entries".to_string()))
         .copied()
     {
@@ -302,7 +366,9 @@ pub fn register(vm: &mut VM) {
 
     // forEach(map, callback) — invokes callback(value, key, map) per
     // entry in insertion order. ECMA-262 §24.1.3.5.
-    vm.register_host_fn("ecma:map", "forEach",
+    vm.register_host_fn(
+        "ecma:map",
+        "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let this_arg = args.get(2).cloned();
@@ -328,11 +394,14 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
     // Map.groupBy(iterable, fn) → Map — groups iterable entries by the
     // value fn returns for each. ES2025.
-    vm.register_host_fn("ecma:map", "groupBy",
+    vm.register_host_fn(
+        "ecma:map",
+        "groupBy",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let out = new_map_value();
@@ -368,10 +437,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             out
-        }));
+        }),
+    );
 
     // Map.prototype.getOrInsert(key, default) — ES2026.
-    vm.register_host_fn("ecma:map", "getOrInsert",
+    vm.register_host_fn(
+        "ecma:map",
+        "getOrInsert",
         Box::new(|_ctx, args| {
             if let Some(Value::Object(mapobj)) = args.first() {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -387,10 +459,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
     // Map.prototype.getOrInsertComputed(key, factory) — ES2026.
-    vm.register_host_fn("ecma:map", "getOrInsertComputed",
+    vm.register_host_fn(
+        "ecma:map",
+        "getOrInsertComputed",
         Box::new(|ctx, args| {
             if let Some(Value::Object(mapobj)) = args.first() {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -415,5 +490,6 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 }

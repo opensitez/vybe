@@ -41,7 +41,8 @@ fn call_import_result(module: &str, name: &str, args: Vec<Value>) -> Result<Valu
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -99,9 +100,18 @@ fn listen_on_localhost(port: u16) -> (Value, Value, Value) {
         ),
         Value::Bool(true)
     );
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]), Value::Bool(true));
-    assert_eq!(call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]), Value::Bool(true));
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]),
+        Value::Bool(true)
+    );
 
     (listener, family, s(&format!("127.0.0.1:{}", port)))
 }
@@ -114,13 +124,23 @@ fn tcp_create_socket_reports_requested_address_family() {
         vec![s("ipv4")],
     );
 
-    assert_eq!(call_import("wasi:sockets/tcp", "address-family", vec![socket]), s("ipv4"));
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "address-family", vec![socket]),
+        s("ipv4")
+    );
 }
 
 #[test]
 fn tcp_create_socket_defaults_to_ipv4_family() {
-    let socket = call_import("wasi:sockets/tcp-create-socket", "create-tcp-socket", vec![]);
-    assert_eq!(call_import("wasi:sockets/tcp", "address-family", vec![socket]), s("ipv4"));
+    let socket = call_import(
+        "wasi:sockets/tcp-create-socket",
+        "create-tcp-socket",
+        vec![],
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "address-family", vec![socket]),
+        s("ipv4")
+    );
 }
 
 #[test]
@@ -130,7 +150,10 @@ fn tcp_local_address_is_null_before_bind() {
         "create-tcp-socket",
         vec![s("ipv4")],
     );
-    assert!(matches!(call_import("wasi:sockets/tcp", "local-address", vec![socket]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/tcp", "local-address", vec![socket]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -138,7 +161,10 @@ fn tcp_bind_and_listen_expose_surface_state() {
     let port = free_port();
     let (listener, _, _) = listen_on_localhost(port);
 
-    assert_eq!(call_import("wasi:sockets/tcp", "is-listening", vec![listener.clone()]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "is-listening", vec![listener.clone()]),
+        Value::Bool(true)
+    );
     assert!(matches!(
         call_import("wasi:sockets/tcp", "local-address", vec![listener]),
         Value::Object(_)
@@ -149,7 +175,10 @@ fn tcp_bind_and_listen_expose_surface_state() {
 fn tcp_accept_returns_null_before_client_connects() {
     let port = free_port();
     let (listener, _, _) = listen_on_localhost(port);
-    assert!(matches!(call_import("wasi:sockets/tcp", "accept", vec![listener]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/tcp", "accept", vec![listener]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -157,7 +186,11 @@ fn tcp_set_listen_backlog_size_returns_true() {
     let port = free_port();
     let (listener, _, _) = listen_on_localhost(port);
     assert_eq!(
-        call_import("wasi:sockets/tcp", "set-listen-backlog-size", vec![listener, Value::I64(32)]),
+        call_import(
+            "wasi:sockets/tcp",
+            "set-listen-backlog-size",
+            vec![listener, Value::I64(32)]
+        ),
         Value::Bool(true)
     );
 }
@@ -167,7 +200,10 @@ fn tcp_subscribe_preserves_socket_behavior() {
     let port = free_port();
     let (listener, _, _) = listen_on_localhost(port);
     let subscribed = call_import("wasi:sockets/tcp", "subscribe", vec![listener]);
-    assert_eq!(call_import("wasi:sockets/tcp", "is-listening", vec![subscribed]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "is-listening", vec![subscribed]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -224,7 +260,10 @@ fn tcp_finish_connect_before_start_returns_null() {
         "create-tcp-socket",
         vec![s("ipv4")],
     );
-    assert!(matches!(call_import("wasi:sockets/tcp", "finish-connect", vec![socket]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/tcp", "finish-connect", vec![socket]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -261,7 +300,10 @@ fn tcp_shutdown_unconnected_socket_returns_null() {
         "create-tcp-socket",
         vec![s("ipv4")],
     );
-    assert!(matches!(call_import("wasi:sockets/tcp", "shutdown", vec![socket, s("both")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/tcp", "shutdown", vec![socket, s("both")]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -272,13 +314,23 @@ fn udp_create_socket_reports_requested_address_family() {
         vec![s("ipv4")],
     );
 
-    assert_eq!(call_import("wasi:sockets/udp", "address-family", vec![socket]), s("ipv4"));
+    assert_eq!(
+        call_import("wasi:sockets/udp", "address-family", vec![socket]),
+        s("ipv4")
+    );
 }
 
 #[test]
 fn udp_create_socket_defaults_to_ipv4_family() {
-    let socket = call_import("wasi:sockets/udp-create-socket", "create-udp-socket", vec![]);
-    assert_eq!(call_import("wasi:sockets/udp", "address-family", vec![socket]), s("ipv4"));
+    let socket = call_import(
+        "wasi:sockets/udp-create-socket",
+        "create-udp-socket",
+        vec![],
+    );
+    assert_eq!(
+        call_import("wasi:sockets/udp", "address-family", vec![socket]),
+        s("ipv4")
+    );
 }
 
 #[test]
@@ -288,14 +340,21 @@ fn udp_local_address_is_null_before_bind() {
         "create-udp-socket",
         vec![s("ipv4")],
     );
-    assert!(matches!(call_import("wasi:sockets/udp", "local-address", vec![socket]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/udp", "local-address", vec![socket]),
+        Value::Null
+    ));
 }
 
 #[test]
 fn ip_name_lookup_resolve_addresses_returns_stream_handle() {
     let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
     assert!(matches!(
-        call_import("wasi:sockets/ip-name-lookup", "resolve-addresses", vec![network, s("localhost")]),
+        call_import(
+            "wasi:sockets/ip-name-lookup",
+            "resolve-addresses",
+            vec![network, s("localhost")]
+        ),
         Value::Object(_)
     ));
 }
@@ -309,7 +368,11 @@ fn tcp_start_bind_rejects_invalid_socket_address() {
     );
     let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
     assert!(matches!(
-        call_import("wasi:sockets/tcp", "start-bind", vec![socket, network, s("not-an-address")]),
+        call_import(
+            "wasi:sockets/tcp",
+            "start-bind",
+            vec![socket, network, s("not-an-address")]
+        ),
         Value::Null
     ));
 }
@@ -321,7 +384,10 @@ fn udp_remote_address_is_null_before_stream_assignment() {
         "create-udp-socket",
         vec![s("ipv4")],
     );
-    assert!(matches!(call_import("wasi:sockets/udp", "remote-address", vec![socket]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:sockets/udp", "remote-address", vec![socket]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -342,7 +408,10 @@ fn udp_bind_exposes_local_address() {
         ),
         Value::Bool(true)
     );
-    assert_eq!(call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]),
+        Value::Bool(true)
+    );
     assert!(matches!(
         call_import("wasi:sockets/udp", "local-address", vec![socket]),
         Value::Object(_)
@@ -368,7 +437,10 @@ fn udp_stream_returns_datagram_stream_pair() {
         ),
         Value::Bool(true)
     );
-    assert_eq!(call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]),
+        Value::Bool(true)
+    );
 
     let streams = call_import("wasi:sockets/udp", "stream", vec![socket.clone(), remote]);
     assert_eq!(len_of(&streams), 2);
@@ -388,13 +460,21 @@ fn udp_subscribe_preserves_socket_behavior() {
         vec![s("ipv4")],
     );
     let subscribed = call_import("wasi:sockets/udp", "subscribe", vec![socket]);
-    assert_eq!(call_import("wasi:sockets/udp", "address-family", vec![subscribed]), s("ipv4"));
+    assert_eq!(
+        call_import("wasi:sockets/udp", "address-family", vec![subscribed]),
+        s("ipv4")
+    );
 }
 
 #[test]
 fn proposal_ip_name_lookup_resolve_addresses_accepts_name_only_signature() {
     assert!(
-        call_import_result("wasi:sockets/ip-name-lookup", "resolve-addresses", vec![s("localhost")]).is_ok(),
+        call_import_result(
+            "wasi:sockets/ip-name-lookup",
+            "resolve-addresses",
+            vec![s("localhost")]
+        )
+        .is_ok(),
         "wasi:sockets/ip-name-lookup.resolve-addresses should be covered with the proposal signature"
     );
 }

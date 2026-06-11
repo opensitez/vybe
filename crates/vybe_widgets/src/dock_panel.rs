@@ -3,8 +3,8 @@
 //! Children are processed in order. Each non-Fill child takes space from the
 //! remaining rectangle. The last Fill child gets whatever remains.
 
-use tiny_skia::*;
 use crate::layout::*;
+use tiny_skia::*;
 
 /// A docked child with its position and requested size.
 pub struct DockChild {
@@ -48,7 +48,13 @@ impl DockPanel {
         self.relayout();
     }
 
-    pub fn add_with_min(&mut self, dock: Dock, size: f32, min_size: f32, widget: Box<dyn PanelWidget>) {
+    pub fn add_with_min(
+        &mut self,
+        dock: Dock,
+        size: f32,
+        min_size: f32,
+        widget: Box<dyn PanelWidget>,
+    ) {
         self.children.push(DockChild {
             dock,
             size,
@@ -125,7 +131,9 @@ impl PanelWidget for DockPanel {
         self.rect
     }
 
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         // Background
@@ -134,10 +142,13 @@ impl PanelWidget for DockPanel {
         let mut paint = Paint::default();
         paint.set_color_rgba8(r, g, b, a);
         if let Some(rect) = Rect::from_xywh(
-            self.rect.x * s, self.rect.y * s,
-            self.rect.w * s, self.rect.h * s,
+            self.rect.x * s,
+            self.rect.y * s,
+            self.rect.w * s,
+            self.rect.h * s,
         ) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
         // Children
         for child in &mut self.children {

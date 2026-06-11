@@ -3,7 +3,15 @@ use super::{ControlDef, Props, base_css};
 pub static DEF: ControlDef = ControlDef {
     tag: "div",
     inner_tag: None,
-    props: &["Text", "Visible", "BackColor", "ForeColor", "Font", "TextAlign", "AutoSize"],
+    props: &[
+        "Text",
+        "Visible",
+        "BackColor",
+        "ForeColor",
+        "Font",
+        "TextAlign",
+        "AutoSize",
+    ],
     events: &["Click"],
     default_size: (100, 23),
     css_fn: css,
@@ -28,7 +36,9 @@ fn css(props: &Props) -> String {
     let mut s = String::from("display: flex; align-items: center; user-select: none; ");
     if let Some(align) = props.get("TextAlign") {
         match align.as_str() {
-            "MiddleCenter" | "TopCenter" | "BottomCenter" => s.push_str("justify-content: center; "),
+            "MiddleCenter" | "TopCenter" | "BottomCenter" => {
+                s.push_str("justify-content: center; ")
+            }
             "MiddleRight" | "TopRight" | "BottomRight" => s.push_str("justify-content: flex-end; "),
             _ => {}
         }
@@ -38,7 +48,9 @@ fn css(props: &Props) -> String {
 }
 
 fn link_css(props: &Props) -> String {
-    let mut s = String::from("display: flex; align-items: center; color: #0066cc; text-decoration: underline; cursor: pointer; ");
+    let mut s = String::from(
+        "display: flex; align-items: center; color: #0066cc; text-decoration: underline; cursor: pointer; ",
+    );
     s.push_str(&base_css(props));
     s
 }

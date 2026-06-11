@@ -1,8 +1,11 @@
 //! Select/dropdown widget — standalone tiny-skia rendered select box.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 pub struct Select {
     pub options: Vec<String>,
@@ -39,10 +42,16 @@ impl Select {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     pub fn selected_text(&self) -> &str {
-        self.options.get(self.selected_index).map(|s| s.as_str()).unwrap_or("")
+        self.options
+            .get(self.selected_index)
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     /// Paint the select box (closed state). Draws border + dropdown arrow.
@@ -60,7 +69,11 @@ impl Select {
         }
 
         // Border
-        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        let (r, g, b, a) = if self.focused {
+            self.colors.focus_ring
+        } else {
+            self.colors.border
+        };
         paint.set_color_rgba8(r, g, b, a);
         let mut stroke = Stroke::default();
         stroke.width = if self.focused { 2.0 } else { 1.0 };
@@ -88,7 +101,9 @@ impl Select {
     }
 
     pub fn click(&mut self, _x: f32, _y: f32) -> bool {
-        if self.disabled { return false; }
+        if self.disabled {
+            return false;
+        }
         self.open = !self.open;
         true
     }
@@ -102,51 +117,92 @@ impl Select {
 }
 
 impl PanelWidget for Select {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw selected text
         let txt = self.selected_text();
         if !txt.is_empty() {
             let (fr, fg, fb, _) = self.colors.foreground;
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, txt, r.x + 6.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                txt,
+                r.x + 6.0,
+                r.y + 4.0,
+                12.0,
+                cosmic_text::Color::rgba(fr, fg, fb, 255),
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             self.click(event.x - self.rect.x, event.y - self.rect.y);
-            self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+            self.pending_events.push(WidgetEvent::SelectChanged(
+                self.name.clone(),
+                self.selected_index,
+            ));
             return true;
         }
         false
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused { return false; }
+        if !self.focused {
+            return false;
+        }
         use winit::keyboard::{Key, NamedKey};
         match &event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 if self.selected_index + 1 < self.options.len() {
                     self.selected_index += 1;
-                    self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+                    self.pending_events.push(WidgetEvent::SelectChanged(
+                        self.name.clone(),
+                        self.selected_index,
+                    ));
                 }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
-                    self.pending_events.push(WidgetEvent::SelectChanged(self.name.clone(), self.selected_index));
+                    self.pending_events.push(WidgetEvent::SelectChanged(
+                        self.name.clone(),
+                        self.selected_index,
+                    ));
                 }
                 true
             }
@@ -154,7 +210,9 @@ impl PanelWidget for Select {
         }
     }
 
-    fn focusable(&self) -> bool { !self.disabled }
+    fn focusable(&self) -> bool {
+        !self.disabled
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetSelectedIndex(i) => {
@@ -168,17 +226,38 @@ impl PanelWidget for Select {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index),
-            WidgetCommand::AddItem(s) => { self.options.push(s.clone()); CommandValue::None }
-            WidgetCommand::RemoveItem(i) => { if *i < self.options.len() { self.options.remove(*i); } CommandValue::None }
-            WidgetCommand::ClearItems => { self.options.clear(); self.selected_index = 0; CommandValue::None }
-            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::AddItem(s) => {
+                self.options.push(s.clone());
+                CommandValue::None
+            }
+            WidgetCommand::RemoveItem(i) => {
+                if *i < self.options.len() {
+                    self.options.remove(*i);
+                }
+                CommandValue::None
+            }
+            WidgetCommand::ClearItems => {
+                self.options.clear();
+                self.selected_index = 0;
+                CommandValue::None
+            }
+            WidgetCommand::SetEnabled(e) => {
+                self.disabled = !e;
+                CommandValue::None
+            }
             WidgetCommand::GetText => {
-                let t = self.options.get(self.selected_index).cloned().unwrap_or_default();
+                let t = self
+                    .options
+                    .get(self.selected_index)
+                    .cloned()
+                    .unwrap_or_default();
                 CommandValue::Text(t)
             }
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

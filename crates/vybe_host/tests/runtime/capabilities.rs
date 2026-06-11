@@ -1,6 +1,6 @@
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::*;
 use vybe_host::{Capabilities, Capability, register_with_capabilities};
-use std::sync::{Arc, Mutex};
 
 // ============================================================
 // Capability preset tests
@@ -81,7 +81,10 @@ fn all_caps_registers_filesystem() {
 fn all_caps_registers_database() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
+    let has_db = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sql"));
     assert!(has_db, "Full caps should register database");
 }
 
@@ -89,7 +92,10 @@ fn all_caps_registers_database() {
 fn all_caps_registers_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    let has_sock = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sockets/"));
     assert!(has_sock, "Full caps should register wasi:sockets modules");
 }
 
@@ -97,7 +103,10 @@ fn all_caps_registers_sockets() {
 fn all_caps_registers_wasi_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    let has_sock = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sockets/"));
     assert!(has_sock, "Full caps should register wasi:sockets modules");
 }
 
@@ -105,7 +114,10 @@ fn all_caps_registers_wasi_sockets() {
 fn all_caps_registers_wasi_io() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    let has_io = vm.host_registry.keys().any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
+    let has_io = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
     assert!(has_io, "Full caps should register wasi:io modules");
 }
 
@@ -133,7 +145,10 @@ fn safe_blocks_filesystem() {
 fn safe_blocks_database() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
+    let has_db = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sql"));
     assert!(!has_db, "Safe mode should NOT have database");
 }
 
@@ -141,7 +156,10 @@ fn safe_blocks_database() {
 fn safe_blocks_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    let has_sock = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sockets/"));
     assert!(!has_sock, "Safe mode should NOT have wasi:sockets modules");
 }
 
@@ -149,7 +167,10 @@ fn safe_blocks_sockets() {
 fn safe_blocks_wasi_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    let has_sock = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sockets/"));
     assert!(!has_sock, "Safe mode should NOT have wasi:sockets modules");
 }
 
@@ -157,7 +178,10 @@ fn safe_blocks_wasi_sockets() {
 fn safe_blocks_wasi_io() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_io = vm.host_registry.keys().any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
+    let has_io = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
     assert!(!has_io, "Safe mode should NOT have wasi:io modules");
 }
 
@@ -220,7 +244,10 @@ fn safe_allows_convert() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
     let has_number = vm.host_registry.keys().any(|(m, _)| m == "ecma:number");
-    assert!(has_number, "Safe mode should expose ecma:number for conversions");
+    assert!(
+        has_number,
+        "Safe mode should expose ecma:number for conversions"
+    );
 }
 
 // ============================================================
@@ -233,7 +260,10 @@ fn custom_database_only() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &caps);
 
-    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
+    let has_db = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sql"));
     let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
     let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
 
@@ -249,8 +279,14 @@ fn custom_network_only() {
     register_with_capabilities(&mut vm, &caps);
 
     let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
-    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
-    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
+    let has_sock = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sockets/"));
+    let has_db = vm
+        .host_registry
+        .keys()
+        .any(|(m, _)| m.starts_with("wasi:sql"));
     let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
 
     assert!(has_http, "Should have HTTP");
@@ -284,7 +320,10 @@ fn blocked_host_call_returns_undefined() {
     let result = vm.run(vec![chunk]).unwrap();
     // ref_is_null on Undefined should be true
     // REF_IS_NULL returns I32(1) per WASM spec (i32.const 1), not Bool
-    assert!(matches!(result, Value::I32(1)), "Blocked function should be undefined/null");
+    assert!(
+        matches!(result, Value::I32(1)),
+        "Blocked function should be undefined/null"
+    );
 }
 
 // ============================================================
@@ -299,11 +338,17 @@ fn sandbox_console_capture() {
 
     register_with_capabilities(&mut vm, &Capabilities::safe());
     // Override console.log to capture output
-    vm.register_host_fn("wasi:logging/logging", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.lock().unwrap().push(parts.join(" "));
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+                out.lock().unwrap().push(parts.join(" "));
+                Value::Null
+            },
+        ),
+    );
 
     // Build a simple chunk: push "hello sandbox", call console.log
     let mut chunk = Chunk::new("<test>");

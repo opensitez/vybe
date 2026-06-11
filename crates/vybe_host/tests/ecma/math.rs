@@ -40,24 +40,36 @@ fn sign_reports_negative_zero_and_positive_values() {
 
 #[test]
 fn log_with_explicit_base_uses_change_of_base() {
-    assert_eq!(invoke("log", vec![Value::F64(100.0), Value::F64(10.0)]), Value::F64(2.0));
+    assert_eq!(
+        invoke("log", vec![Value::F64(100.0), Value::F64(10.0)]),
+        Value::F64(2.0)
+    );
 }
 
 #[test]
 fn clamp_limits_to_closed_interval() {
     assert_eq!(
-        invoke("clamp", vec![Value::F64(10.0), Value::F64(0.0), Value::F64(5.0)]),
+        invoke(
+            "clamp",
+            vec![Value::F64(10.0), Value::F64(0.0), Value::F64(5.0)]
+        ),
         Value::F64(5.0)
     );
     assert_eq!(
-        invoke("clamp", vec![Value::F64(-2.0), Value::F64(0.0), Value::F64(5.0)]),
+        invoke(
+            "clamp",
+            vec![Value::F64(-2.0), Value::F64(0.0), Value::F64(5.0)]
+        ),
         Value::F64(0.0)
     );
 }
 
 #[test]
 fn imul_multiplies_using_32_bit_wrapping_rules() {
-    assert_eq!(invoke("imul", vec![Value::F64(3.0), Value::F64(4.0)]), Value::F64(12.0));
+    assert_eq!(
+        invoke("imul", vec![Value::F64(3.0), Value::F64(4.0)]),
+        Value::F64(12.0)
+    );
 }
 
 #[test]
@@ -66,7 +78,12 @@ fn random_and_rnd_return_unit_interval_values() {
         let Value::F64(number) = invoke(name, vec![]) else {
             panic!("{} should return f64", name);
         };
-        assert!((0.0..1.0).contains(&number), "{} out of range: {}", name, number);
+        assert!(
+            (0.0..1.0).contains(&number),
+            "{} out of range: {}",
+            name,
+            number
+        );
     }
 }
 
@@ -84,14 +101,21 @@ fn min_of_and_max_of_materialize_iterables() {
 
 #[test]
 fn sum_precise_handles_catastrophic_cancellation_case() {
-    let values = array(vec![Value::F64(1.0e16), Value::F64(1.0), Value::F64(-1.0e16)]);
+    let values = array(vec![
+        Value::F64(1.0e16),
+        Value::F64(1.0),
+        Value::F64(-1.0e16),
+    ]);
     assert_eq!(invoke("sumPrecise", vec![values]), Value::F64(1.0));
 }
 
 #[test]
 fn cbrt_and_hypot_follow_standard_library_results() {
     assert_eq!(invoke("cbrt", vec![Value::F64(27.0)]), Value::F64(3.0));
-    assert_eq!(invoke("hypot", vec![Value::F64(3.0), Value::F64(4.0)]), Value::F64(5.0));
+    assert_eq!(
+        invoke("hypot", vec![Value::F64(3.0), Value::F64(4.0)]),
+        Value::F64(5.0)
+    );
 }
 
 // ── abs ───────────────────────────────────────────────────────────────────────
@@ -164,7 +188,10 @@ fn trunc_of_negative_rounds_toward_zero() {
 
 #[test]
 fn pow_integer_exponent() {
-    assert_eq!(invoke("pow", vec![Value::F64(2.0), Value::F64(10.0)]), Value::F64(1024.0));
+    assert_eq!(
+        invoke("pow", vec![Value::F64(2.0), Value::F64(10.0)]),
+        Value::F64(1024.0)
+    );
 }
 
 #[test]
@@ -326,12 +353,24 @@ fn min_of_no_args_is_positive_infinity() {
 
 #[test]
 fn max_returns_largest_of_multiple_args() {
-    assert_eq!(invoke("max", vec![Value::F64(1.0), Value::F64(5.0), Value::F64(3.0)]), Value::F64(5.0));
+    assert_eq!(
+        invoke(
+            "max",
+            vec![Value::F64(1.0), Value::F64(5.0), Value::F64(3.0)]
+        ),
+        Value::F64(5.0)
+    );
 }
 
 #[test]
 fn min_returns_smallest_of_multiple_args() {
-    assert_eq!(invoke("min", vec![Value::F64(4.0), Value::F64(2.0), Value::F64(7.0)]), Value::F64(2.0));
+    assert_eq!(
+        invoke(
+            "min",
+            vec![Value::F64(4.0), Value::F64(2.0), Value::F64(7.0)]
+        ),
+        Value::F64(2.0)
+    );
 }
 
 // ── clz32 — count leading zeros in 32-bit representation ─────────────────────
@@ -434,7 +473,9 @@ fn sum_precise_avoids_floating_point_cancellation() {
     // Math.sumPrecise([1e20, -1e20, 1.0]) = 1.0 without catastrophic cancellation.
     use vybe_bytecode::value::Object;
     let values = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
-        Value::F64(1e20), Value::F64(-1e20), Value::F64(1.0),
+        Value::F64(1e20),
+        Value::F64(-1e20),
+        Value::F64(1.0),
     ]))));
     let result = invoke("sumPrecise", vec![values]);
     assert!(matches!(result, Value::F64(f) if (f - 1.0).abs() < 0.0001));

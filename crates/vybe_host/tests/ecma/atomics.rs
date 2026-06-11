@@ -30,7 +30,8 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
 fn shared_int32(len: i32) -> Value {
     // Creates a SharedArrayBuffer-backed Int32Array for atomic operations.
     let mut o = Object::new();
-    o.properties.insert("__shared_int32_len".to_string(), Value::I32(len));
+    o.properties
+        .insert("__shared_int32_len".to_string(), Value::I32(len));
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -119,9 +120,10 @@ fn compare_exchange_swaps_when_expected_matches() {
     // ECMA-262 §25.4.4: if cell == expected, write replacement; return old.
     let ta = shared_int32(4);
     invoke("store", vec![ta.clone(), Value::I32(0), Value::I32(7)]);
-    let old = invoke("compareExchange", vec![
-        ta.clone(), Value::I32(0), Value::I32(7), Value::I32(99),
-    ]);
+    let old = invoke(
+        "compareExchange",
+        vec![ta.clone(), Value::I32(0), Value::I32(7), Value::I32(99)],
+    );
     assert_eq!(old, Value::I32(7));
     assert_eq!(invoke("load", vec![ta, Value::I32(0)]), Value::I32(99));
 }
@@ -130,9 +132,10 @@ fn compare_exchange_swaps_when_expected_matches() {
 fn compare_exchange_does_not_swap_when_expected_mismatches() {
     let ta = shared_int32(4);
     invoke("store", vec![ta.clone(), Value::I32(0), Value::I32(7)]);
-    let old = invoke("compareExchange", vec![
-        ta.clone(), Value::I32(0), Value::I32(0), Value::I32(99),
-    ]);
+    let old = invoke(
+        "compareExchange",
+        vec![ta.clone(), Value::I32(0), Value::I32(0), Value::I32(99)],
+    );
     // Expected was 0 but actual was 7 → no swap, returns actual value 7.
     assert_eq!(old, Value::I32(7));
     assert_eq!(invoke("load", vec![ta, Value::I32(0)]), Value::I32(7));
@@ -161,7 +164,10 @@ fn wait_on_non_matching_value_returns_not_equal() {
     // ECMA-262: if the cell value ≠ expected, wait returns "not-equal" immediately.
     let ta = shared_int32(4);
     invoke("store", vec![ta.clone(), Value::I32(0), Value::I32(5)]);
-    let result = invoke("wait", vec![ta, Value::I32(0), Value::I32(0), Value::I32(0)]);
+    let result = invoke(
+        "wait",
+        vec![ta, Value::I32(0), Value::I32(0), Value::I32(0)],
+    );
     // result should be the string "not-equal".
     match &result {
         Value::String(s) => assert_eq!(s.as_ref(), "not-equal"),
@@ -187,11 +193,20 @@ fn wait_async_returns_object_with_async_flag() {
     // In single-threaded context, the result is synchronous.
     let ta = shared_int32(4);
     let result = invoke("waitAsync", vec![ta, Value::I32(0), Value::I32(0)]);
-    assert!(matches!(result, Value::Object(_)), "waitAsync must return an object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "waitAsync must return an object"
+    );
     if let Value::Object(obj) = result {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("async"), "result must have 'async' property");
-        assert!(o.properties.contains_key("value"), "result must have 'value' property");
+        assert!(
+            o.properties.contains_key("async"),
+            "result must have 'async' property"
+        );
+        assert!(
+            o.properties.contains_key("value"),
+            "result must have 'value' property"
+        );
     }
 }
 

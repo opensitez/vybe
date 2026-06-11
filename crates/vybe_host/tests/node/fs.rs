@@ -7,9 +7,9 @@
 //!
 //! Reference: <https://nodejs.org/api/fs.html>.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::HashMap;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
@@ -55,7 +55,8 @@ fn call_fs(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:fs"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:fs"), name.to_string()))
 }
 
 /// Convenience: wrap a borrowed string as a `Value::String`.
@@ -142,7 +143,10 @@ fn read_file_sync_default_encoding_returns_buffer_like_array() {
             return;
         }
     }
-    panic!("readFileSync without encoding should return a byte array, got {:?}", value);
+    panic!(
+        "readFileSync without encoding should return a byte array, got {:?}",
+        value
+    );
 }
 
 // ── writeFileSync ─────────────────────────────────────────────────
@@ -151,7 +155,10 @@ fn read_file_sync_default_encoding_returns_buffer_like_array() {
 fn write_file_sync_creates_new_file() {
     let dir = scratch_dir("wfs_create");
     let file = dir.join("out.txt");
-    call_fs("writeFileSync", vec![s(file.to_str().unwrap()), s("written")]);
+    call_fs(
+        "writeFileSync",
+        vec![s(file.to_str().unwrap()), s("written")],
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "written");
 }
 
@@ -171,7 +178,10 @@ fn append_file_sync_appends_to_existing() {
     let dir = scratch_dir("afs_append");
     let file = dir.join("log.txt");
     std::fs::write(&file, "line1\n").unwrap();
-    call_fs("appendFileSync", vec![s(file.to_str().unwrap()), s("line2\n")]);
+    call_fs(
+        "appendFileSync",
+        vec![s(file.to_str().unwrap()), s("line2\n")],
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "line1\nline2\n");
 }
 
@@ -179,7 +189,10 @@ fn append_file_sync_appends_to_existing() {
 fn append_file_sync_creates_when_missing() {
     let dir = scratch_dir("afs_create");
     let file = dir.join("log.txt");
-    call_fs("appendFileSync", vec![s(file.to_str().unwrap()), s("first\n")]);
+    call_fs(
+        "appendFileSync",
+        vec![s(file.to_str().unwrap()), s("first\n")],
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\n");
 }
 
@@ -246,7 +259,11 @@ fn stat_sync_mtime_ms_is_finite_number() {
     let stats = call_fs("statSync", vec![s(file.to_str().unwrap())]);
     let mtime = prop(&stats, "mtimeMs");
     if let Value::F64(ms) = mtime {
-        assert!(ms > 0.0 && ms.is_finite(), "mtimeMs should be a finite positive number, got {}", ms);
+        assert!(
+            ms > 0.0 && ms.is_finite(),
+            "mtimeMs should be a finite positive number, got {}",
+            ms
+        );
     } else {
         panic!("mtimeMs expected number, got {:?}", mtime);
     }
@@ -387,7 +404,11 @@ fn realpath_sync_resolves_existing_path() {
     std::fs::write(&file, "").unwrap();
     let value = call_fs("realpathSync", vec![s(file.to_str().unwrap())]);
     if let Value::String(text) = value {
-        assert!(text.contains("real.txt"), "expected resolved path to contain real.txt, got {}", text);
+        assert!(
+            text.contains("real.txt"),
+            "expected resolved path to contain real.txt, got {}",
+            text
+        );
     } else {
         panic!("realpathSync expected string, got {:?}", value);
     }
@@ -424,7 +445,11 @@ fn readlink_sync_returns_target() {
 
     let value = call_fs("readlinkSync", vec![s(link.to_str().unwrap())]);
     if let Value::String(text) = value {
-        assert!(text.contains("real.txt"), "expected target path, got {}", text);
+        assert!(
+            text.contains("real.txt"),
+            "expected target path, got {}",
+            text
+        );
     } else {
         panic!("readlinkSync expected string, got {:?}", value);
     }
@@ -535,7 +560,13 @@ fn read_sync_returns_bytes_read_count() {
     // readSync(fd, buffer, offset, length, position)
     let bytes_read = call_fs(
         "readSync",
-        vec![fd.clone(), buf, Value::I32(0), Value::I32(10), Value::I32(0)],
+        vec![
+            fd.clone(),
+            buf,
+            Value::I32(0),
+            Value::I32(10),
+            Value::I32(0),
+        ],
     );
     let n = as_fd(&bytes_read);
     assert_eq!(n, 5, "should have read 5 bytes from 'hello'");
@@ -570,11 +601,21 @@ fn fdatasync_sync_returns_undefined_for_open_fd() {
 
 #[test]
 fn mkdtemp_sync_returns_created_directory_path() {
-    let prefix = std::env::temp_dir().join("vybe-mkdtemp-").to_str().unwrap().to_string();
+    let prefix = std::env::temp_dir()
+        .join("vybe-mkdtemp-")
+        .to_str()
+        .unwrap()
+        .to_string();
     let result = call_fs("mkdtempSync", vec![s(&prefix)]);
     if let Value::String(path) = &result {
-        assert!(path.starts_with(&prefix), "path should start with prefix, got {path}");
-        assert!(std::path::Path::new(path.as_ref()).is_dir(), "mkdtempSync must create the directory");
+        assert!(
+            path.starts_with(&prefix),
+            "path should start with prefix, got {path}"
+        );
+        assert!(
+            std::path::Path::new(path.as_ref()).is_dir(),
+            "mkdtempSync must create the directory"
+        );
         let _ = std::fs::remove_dir(path.as_ref());
     } else {
         panic!("mkdtempSync expected string path, got {:?}", result);
@@ -583,12 +624,20 @@ fn mkdtemp_sync_returns_created_directory_path() {
 
 #[test]
 fn mkdtemp_sync_each_call_returns_unique_path() {
-    let prefix = std::env::temp_dir().join("vybe-mkdtemp-uniq-").to_str().unwrap().to_string();
+    let prefix = std::env::temp_dir()
+        .join("vybe-mkdtemp-uniq-")
+        .to_str()
+        .unwrap()
+        .to_string();
     let a = call_fs("mkdtempSync", vec![s(&prefix)]);
     let b = call_fs("mkdtempSync", vec![s(&prefix)]);
     assert_ne!(a, b, "two mkdtempSync calls must return distinct paths");
-    if let Value::String(p) = &a { let _ = std::fs::remove_dir(p.as_ref()); }
-    if let Value::String(p) = &b { let _ = std::fs::remove_dir(p.as_ref()); }
+    if let Value::String(p) = &a {
+        let _ = std::fs::remove_dir(p.as_ref());
+    }
+    if let Value::String(p) = &b {
+        let _ = std::fs::remove_dir(p.as_ref());
+    }
 }
 
 // ── chmodSync ─────────────────────────────────────────────────────
@@ -600,7 +649,10 @@ fn chmod_sync_returns_undefined() {
     let file = dir.join("perm.txt");
     std::fs::write(&file, "").unwrap();
     // 0o644 = 420
-    let result = call_fs("chmodSync", vec![s(file.to_str().unwrap()), Value::I32(0o644)]);
+    let result = call_fs(
+        "chmodSync",
+        vec![s(file.to_str().unwrap()), Value::I32(0o644)],
+    );
     assert!(matches!(result, Value::Undefined | Value::Null));
 }
 
@@ -612,7 +664,10 @@ fn create_read_stream_returns_object() {
     let file = dir.join("src.txt");
     std::fs::write(&file, "stream data").unwrap();
     let result = call_fs("createReadStream", vec![s(file.to_str().unwrap())]);
-    assert!(matches!(result, Value::Object(_)), "createReadStream must return an object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "createReadStream must return an object"
+    );
 }
 
 #[test]
@@ -620,7 +675,10 @@ fn create_write_stream_returns_object() {
     let dir = scratch_dir("writestream_basic");
     let file = dir.join("dst.txt");
     let result = call_fs("createWriteStream", vec![s(file.to_str().unwrap())]);
-    assert!(matches!(result, Value::Object(_)), "createWriteStream must return an object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "createWriteStream must return an object"
+    );
 }
 
 // ── statSync — extended properties ───────────────────────────────
@@ -633,7 +691,10 @@ fn stat_sync_atime_ms_is_finite_number() {
     let stats = call_fs("statSync", vec![s(file.to_str().unwrap())]);
     let atime = prop(&stats, "atimeMs");
     if let Value::F64(ms) = atime {
-        assert!(ms.is_finite() && ms > 0.0, "atimeMs must be positive finite");
+        assert!(
+            ms.is_finite() && ms > 0.0,
+            "atimeMs must be positive finite"
+        );
     } // TDD: may be Null if not yet implemented
 }
 
@@ -645,7 +706,10 @@ fn stat_sync_ctime_ms_is_finite_number() {
     let stats = call_fs("statSync", vec![s(file.to_str().unwrap())]);
     let ctime = prop(&stats, "ctimeMs");
     if let Value::F64(ms) = ctime {
-        assert!(ms.is_finite() && ms > 0.0, "ctimeMs must be positive finite");
+        assert!(
+            ms.is_finite() && ms > 0.0,
+            "ctimeMs must be positive finite"
+        );
     }
 }
 
@@ -658,7 +722,8 @@ fn stat_sync_birthtime_ms_is_present() {
     let btime = prop(&stats, "birthtimeMs");
     assert!(
         matches!(btime, Value::F64(_) | Value::I32(_) | Value::Null),
-        "birthtimeMs must be present, got {:?}", btime
+        "birthtimeMs must be present, got {:?}",
+        btime
     );
 }
 
@@ -670,8 +735,12 @@ fn stat_sync_mode_is_present() {
     let stats = call_fs("statSync", vec![s(file.to_str().unwrap())]);
     let mode = prop(&stats, "mode");
     assert!(
-        matches!(mode, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null),
-        "mode must be a number, got {:?}", mode
+        matches!(
+            mode,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null
+        ),
+        "mode must be a number, got {:?}",
+        mode
     );
 }
 
@@ -683,8 +752,12 @@ fn stat_sync_nlink_is_present() {
     let stats = call_fs("statSync", vec![s(file.to_str().unwrap())]);
     let nlink = prop(&stats, "nlink");
     assert!(
-        matches!(nlink, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null),
-        "nlink must be a number, got {:?}", nlink
+        matches!(
+            nlink,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null
+        ),
+        "nlink must be a number, got {:?}",
+        nlink
     );
 }
 
@@ -750,7 +823,8 @@ fn readdir_sync_with_file_types_returns_dirent_objects() {
 
     let opts = {
         let mut o = Object::new();
-        o.properties.insert("withFileTypes".into(), Value::Bool(true));
+        o.properties
+            .insert("withFileTypes".into(), Value::Bool(true));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
     let result = call_fs("readdirSync", vec![s(dir.to_str().unwrap()), opts]);
@@ -763,7 +837,8 @@ fn readdir_sync_with_file_types_returns_dirent_objects() {
                 for elem in elems {
                     assert!(
                         matches!(elem, Value::Object(_)),
-                        "withFileTypes dirent must be object, got {:?}", elem
+                        "withFileTypes dirent must be object, got {:?}",
+                        elem
                     );
                 }
                 return;
@@ -781,7 +856,8 @@ fn readdir_sync_dirent_has_name_property() {
 
     let opts = {
         let mut o = Object::new();
-        o.properties.insert("withFileTypes".into(), Value::Bool(true));
+        o.properties
+            .insert("withFileTypes".into(), Value::Bool(true));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
     let result = call_fs("readdirSync", vec![s(dir.to_str().unwrap()), opts]);
@@ -790,7 +866,10 @@ fn readdir_sync_dirent_has_name_property() {
         if let ObjectKind::Array(elems) = &arr_obj.kind {
             if let Some(Value::Object(dirent)) = elems.first() {
                 let d = dirent.lock().unwrap();
-                assert!(d.properties.contains_key("name"), "Dirent must have name property");
+                assert!(
+                    d.properties.contains_key("name"),
+                    "Dirent must have name property"
+                );
                 return;
             }
         }
@@ -805,7 +884,8 @@ fn readdir_sync_dirent_has_is_file_method() {
 
     let opts = {
         let mut o = Object::new();
-        o.properties.insert("withFileTypes".into(), Value::Bool(true));
+        o.properties
+            .insert("withFileTypes".into(), Value::Bool(true));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
     let result = call_fs("readdirSync", vec![s(dir.to_str().unwrap()), opts]);
@@ -814,8 +894,14 @@ fn readdir_sync_dirent_has_is_file_method() {
         if let ObjectKind::Array(elems) = &arr_obj.kind {
             if let Some(Value::Object(dirent)) = elems.first() {
                 let d = dirent.lock().unwrap();
-                assert!(d.properties.contains_key("isFile"), "Dirent must have isFile method");
-                assert!(d.properties.contains_key("isDirectory"), "Dirent must have isDirectory method");
+                assert!(
+                    d.properties.contains_key("isFile"),
+                    "Dirent must have isFile method"
+                );
+                assert!(
+                    d.properties.contains_key("isDirectory"),
+                    "Dirent must have isDirectory method"
+                );
                 return;
             }
         }
@@ -830,7 +916,8 @@ fn readdir_sync_dirent_file_is_file_returns_true() {
 
     let opts = {
         let mut o = Object::new();
-        o.properties.insert("withFileTypes".into(), Value::Bool(true));
+        o.properties
+            .insert("withFileTypes".into(), Value::Bool(true));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
     let result = call_fs("readdirSync", vec![s(dir.to_str().unwrap()), opts]);
@@ -839,9 +926,17 @@ fn readdir_sync_dirent_file_is_file_returns_true() {
         if let ObjectKind::Array(elems) = &arr_obj.kind {
             if let Some(dirent) = elems.first() {
                 let is_file = invoke_method(dirent, "isFile");
-                assert_eq!(is_file, Value::Bool(true), "Dirent.isFile() must be true for a file");
+                assert_eq!(
+                    is_file,
+                    Value::Bool(true),
+                    "Dirent.isFile() must be true for a file"
+                );
                 let is_dir = invoke_method(dirent, "isDirectory");
-                assert_eq!(is_dir, Value::Bool(false), "Dirent.isDirectory() must be false for a file");
+                assert_eq!(
+                    is_dir,
+                    Value::Bool(false),
+                    "Dirent.isDirectory() must be false for a file"
+                );
                 return;
             }
         }
@@ -856,7 +951,8 @@ fn readdir_sync_dirent_directory_is_directory_returns_true() {
 
     let opts = {
         let mut o = Object::new();
-        o.properties.insert("withFileTypes".into(), Value::Bool(true));
+        o.properties
+            .insert("withFileTypes".into(), Value::Bool(true));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
     let result = call_fs("readdirSync", vec![s(dir.to_str().unwrap()), opts]);
@@ -865,9 +961,17 @@ fn readdir_sync_dirent_directory_is_directory_returns_true() {
         if let ObjectKind::Array(elems) = &arr_obj.kind {
             if let Some(dirent) = elems.first() {
                 let is_dir = invoke_method(dirent, "isDirectory");
-                assert_eq!(is_dir, Value::Bool(true), "Dirent.isDirectory() must be true for a dir");
+                assert_eq!(
+                    is_dir,
+                    Value::Bool(true),
+                    "Dirent.isDirectory() must be true for a dir"
+                );
                 let is_file = invoke_method(dirent, "isFile");
-                assert_eq!(is_file, Value::Bool(false), "Dirent.isFile() must be false for a dir");
+                assert_eq!(
+                    is_file,
+                    Value::Bool(false),
+                    "Dirent.isFile() must be false for a dir"
+                );
                 return;
             }
         }
@@ -886,7 +990,10 @@ fn write_file_sync_with_encoding_option_object() {
         o.properties.insert("encoding".into(), s("utf8"));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
-    call_fs("writeFileSync", vec![s(file.to_str().unwrap()), s("hello"), opts]);
+    call_fs(
+        "writeFileSync",
+        vec![s(file.to_str().unwrap()), s("hello"), opts],
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
 }
 
@@ -914,7 +1021,10 @@ fn write_file_sync_with_flag_option_appends() {
         o.properties.insert("flag".into(), s("a"));
         Value::Object(std::sync::Arc::new(std::sync::Mutex::new(o)))
     };
-    call_fs("writeFileSync", vec![s(file.to_str().unwrap()), s("second"), opts]);
+    call_fs(
+        "writeFileSync",
+        vec![s(file.to_str().unwrap()), s("second"), opts],
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "firstsecond");
 }
 
@@ -1123,7 +1233,8 @@ fn fs_constants_o_creat_is_present() {
     let val = prop(&consts, "O_CREAT");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "O_CREAT must be a number, got {:?}", val
+        "O_CREAT must be a number, got {:?}",
+        val
     );
 }
 
@@ -1307,7 +1418,8 @@ fn watch_returns_watcher_object() {
     // during implementation.
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined | Value::Null),
-        "watch() must not panic, got {:?}", result
+        "watch() must not panic, got {:?}",
+        result
     );
 }
 
@@ -1319,7 +1431,8 @@ fn watch_file_returns_stat_watcher() {
     let result = call_fs("watchFile", vec![s(file.to_str().unwrap())]);
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined | Value::Null),
-        "watchFile() must not panic, got {:?}", result
+        "watchFile() must not panic, got {:?}",
+        result
     );
 }
 
@@ -1331,7 +1444,8 @@ fn unwatch_file_returns_undefined() {
     let result = call_fs("unwatchFile", vec![s(file.to_str().unwrap())]);
     assert!(
         matches!(result, Value::Undefined | Value::Null | Value::Object(_)),
-        "unwatchFile() must not panic, got {:?}", result
+        "unwatchFile() must not panic, got {:?}",
+        result
     );
 }
 

@@ -25,11 +25,19 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn prop(obj: &Value, key: &str) -> Value {
     match obj {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -53,7 +61,7 @@ fn error_with_no_argument_has_empty_or_undefined_message() {
     let e = invoke("Error", vec![]);
     assert!(
         matches!(prop(&e, "message"), Value::String(ref s) if s.is_empty())
-        || matches!(prop(&e, "message"), Value::Undefined),
+            || matches!(prop(&e, "message"), Value::Undefined),
         "no-arg Error must have empty or undefined message"
     );
 }
@@ -121,8 +129,14 @@ fn type_error_message_is_independent_of_its_name() {
 fn two_error_instances_are_not_the_same_object() {
     let e1 = invoke("Error", vec![s("a")]);
     let e2 = invoke("Error", vec![s("b")]);
-    let p1 = match &e1 { Value::Object(a) => std::sync::Arc::as_ptr(a) as usize, _ => 0 };
-    let p2 = match &e2 { Value::Object(a) => std::sync::Arc::as_ptr(a) as usize, _ => 1 };
+    let p1 = match &e1 {
+        Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let p2 = match &e2 {
+        Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_ne!(p1, p2);
 }
 
@@ -181,9 +195,20 @@ fn error_without_cause_option_has_no_cause_property() {
 #[test]
 fn each_error_subtype_has_distinct_name_from_generic_error() {
     // All subtypes must have a name that differs from "Error".
-    for kind in &["TypeError", "RangeError", "SyntaxError", "ReferenceError", "URIError", "EvalError"] {
+    for kind in &[
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "URIError",
+        "EvalError",
+    ] {
         let e = invoke(kind, vec![s("test")]);
-        assert_ne!(prop(&e, "name"), s("Error"), "{kind} must not have name 'Error'");
+        assert_ne!(
+            prop(&e, "name"),
+            s("Error"),
+            "{kind} must not have name 'Error'"
+        );
     }
 }
 
@@ -201,7 +226,11 @@ fn is_error_true_for_subtype_error_instances() {
     for kind in &["TypeError", "RangeError", "SyntaxError"] {
         let e = invoke(kind, vec![s("test")]);
         let result = invoke("isError", vec![e]);
-        assert_eq!(result, Value::Bool(true), "isError must return true for {kind}");
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "isError must return true for {kind}"
+        );
     }
 }
 
@@ -216,7 +245,10 @@ fn is_error_false_for_plain_objects() {
 
 #[test]
 fn is_error_false_for_primitives() {
-    assert_eq!(invoke("isError", vec![s("error string")]), Value::Bool(false));
+    assert_eq!(
+        invoke("isError", vec![s("error string")]),
+        Value::Bool(false)
+    );
     assert_eq!(invoke("isError", vec![Value::I32(42)]), Value::Bool(false));
     assert_eq!(invoke("isError", vec![Value::Null]), Value::Bool(false));
 }
@@ -225,21 +257,48 @@ fn is_error_false_for_primitives() {
 
 #[test]
 fn to_string_formats_name_colon_message() {
-    use std::sync::Mutex; use vybe_bytecode::value::Object;
-    let e = invoke("TypeError", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("bad value")]);
-    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("TypeError: bad value")));
+    use std::sync::Mutex;
+    use vybe_bytecode::value::Object;
+    let e = invoke(
+        "TypeError",
+        vec![
+            Value::Object(Arc::new(Mutex::new(Object::new()))),
+            s("bad value"),
+        ],
+    );
+    assert_eq!(
+        invoke("toString", vec![e]),
+        Value::String(Arc::from("TypeError: bad value"))
+    );
 }
 
 #[test]
 fn to_string_omits_message_when_empty() {
-    use std::sync::Mutex; use vybe_bytecode::value::Object;
-    let e = invoke("RangeError", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("")]);
-    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("RangeError")));
+    use std::sync::Mutex;
+    use vybe_bytecode::value::Object;
+    let e = invoke(
+        "RangeError",
+        vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("")],
+    );
+    assert_eq!(
+        invoke("toString", vec![e]),
+        Value::String(Arc::from("RangeError"))
+    );
 }
 
 #[test]
 fn to_string_of_plain_error_uses_error_name() {
-    use std::sync::Mutex; use vybe_bytecode::value::Object;
-    let e = invoke("Error", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("oops")]);
-    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("Error: oops")));
+    use std::sync::Mutex;
+    use vybe_bytecode::value::Object;
+    let e = invoke(
+        "Error",
+        vec![
+            Value::Object(Arc::new(Mutex::new(Object::new()))),
+            s("oops"),
+        ],
+    );
+    assert_eq!(
+        invoke("toString", vec![e]),
+        Value::String(Arc::from("Error: oops"))
+    );
 }

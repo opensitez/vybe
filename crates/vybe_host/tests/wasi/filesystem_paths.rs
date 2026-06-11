@@ -65,22 +65,39 @@ fn is_error(value: &Value) -> Option<String> {
 }
 
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke("wasi:filesystem/types", "__test_open_root", vec![s(dir.to_str().unwrap())])
+    invoke(
+        "wasi:filesystem/types",
+        "__test_open_root",
+        vec![s(dir.to_str().unwrap())],
+    )
 }
 
 fn open_directory(parent: Value, child: &str) -> Value {
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![parent, Value::I32(0), s(child), Value::I32(2), Value::I32(0)],
+        vec![
+            parent,
+            Value::I32(0),
+            s(child),
+            Value::I32(2),
+            Value::I32(0),
+        ],
     );
-    assert!(is_error(&descriptor).is_none(), "directory open should succeed");
+    assert!(
+        is_error(&descriptor).is_none(),
+        "directory open should succeed"
+    );
     descriptor
 }
 
 fn bytes_from_array(value: &Value) -> Vec<u8> {
-    let Value::Object(object) = value else { return Vec::new() };
+    let Value::Object(object) = value else {
+        return Vec::new();
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else { return Vec::new() };
+    let ObjectKind::Array(values) = &object.kind else {
+        return Vec::new();
+    };
     values
         .iter()
         .filter_map(|value| match value {
@@ -131,10 +148,19 @@ fn open_at_root_can_open_nested_file_path() {
 
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("nested/deeper/file.txt"), Value::I32(0), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("nested/deeper/file.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
     assert!(is_error(&descriptor).is_none());
-    assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("regular-file"));
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![descriptor]),
+        s("regular-file")
+    );
 }
 
 #[test]
@@ -147,10 +173,19 @@ fn open_at_directory_descriptor_can_open_child_relative_path() {
 
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![nested, Value::I32(0), s("deeper/file.txt"), Value::I32(0), Value::I32(0)],
+        vec![
+            nested,
+            Value::I32(0),
+            s("deeper/file.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
     assert!(is_error(&descriptor).is_none());
-    assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("regular-file"));
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![descriptor]),
+        s("regular-file")
+    );
 }
 
 #[test]
@@ -162,7 +197,13 @@ fn open_at_create_creates_file_beneath_open_subdirectory() {
 
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![nested, Value::I32(0), s("created.txt"), Value::I32(1), Value::I32(0)],
+        vec![
+            nested,
+            Value::I32(0),
+            s("created.txt"),
+            Value::I32(1),
+            Value::I32(0),
+        ],
     );
     assert!(is_error(&descriptor).is_none());
     assert!(dir.join("nested/created.txt").exists());
@@ -174,7 +215,13 @@ fn open_at_create_fails_when_intermediate_parent_missing() {
     let root = open_test_root(&dir);
     let result = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("missing/child.txt"), Value::I32(1), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("missing/child.txt"),
+            Value::I32(1),
+            Value::I32(0),
+        ],
     );
     assert_wasi_error!(result, "no-entry");
 }
@@ -189,11 +236,23 @@ fn open_at_truncate_only_affects_target_nested_file() {
 
     let result = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("nested/a.txt"), Value::I32(8), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("nested/a.txt"),
+            Value::I32(8),
+            Value::I32(0),
+        ],
     );
     assert!(is_error(&result).is_none());
-    assert_eq!(std::fs::read_to_string(dir.join("nested/a.txt")).unwrap(), "");
-    assert_eq!(std::fs::read_to_string(dir.join("nested/b.txt")).unwrap(), "bbbb");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("nested/a.txt")).unwrap(),
+        ""
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("nested/b.txt")).unwrap(),
+        "bbbb"
+    );
 }
 
 #[test]
@@ -204,9 +263,18 @@ fn open_at_on_nested_directory_returns_directory_descriptor() {
 
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("nested/deeper"), Value::I32(2), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("nested/deeper"),
+            Value::I32(2),
+            Value::I32(0),
+        ],
     );
-    assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("directory"));
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![descriptor]),
+        s("directory")
+    );
 }
 
 #[test]
@@ -257,7 +325,10 @@ fn stat_at_reports_nested_directory_type() {
 fn stat_at_rejects_non_string_path_argument() {
     let dir = scratch_dir("stat_invalid_path_arg");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.stat-at", vec![root, Value::I32(0), Value::I32(7)]);
+    let result = types(
+        "[method]descriptor.stat-at",
+        vec![root, Value::I32(0), Value::I32(7)],
+    );
     assert_wasi_error!(result, "invalid");
 }
 
@@ -301,7 +372,10 @@ fn create_directory_at_creates_child_in_open_subdirectory() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let result = types("[method]descriptor.create-directory-at", vec![nested, s("new-child")]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![nested, s("new-child")],
+    );
     assert!(is_error(&result).is_none());
     assert!(dir.join("nested/new-child").is_dir());
 }
@@ -310,7 +384,10 @@ fn create_directory_at_creates_child_in_open_subdirectory() {
 fn create_directory_at_fails_when_parent_component_is_missing() {
     let dir = scratch_dir("mkdir_missing_parent");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.create-directory-at", vec![root, s("missing/child")]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![root, s("missing/child")],
+    );
     assert_wasi_error!(result, "no-entry");
 }
 
@@ -319,7 +396,10 @@ fn create_directory_at_existing_file_returns_exist() {
     let dir = scratch_dir("mkdir_existing_file");
     std::fs::write(dir.join("taken"), "payload").unwrap();
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.create-directory-at", vec![root, s("taken")]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![root, s("taken")],
+    );
     assert_wasi_error!(result, "exist");
 }
 
@@ -327,7 +407,10 @@ fn create_directory_at_existing_file_returns_exist() {
 fn create_directory_at_rejects_non_string_path_argument() {
     let dir = scratch_dir("mkdir_invalid_arg");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.create-directory-at", vec![root, Value::I32(9)]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![root, Value::I32(9)],
+    );
     assert_wasi_error!(result, "invalid");
 }
 
@@ -339,7 +422,10 @@ fn unlink_file_at_removes_nested_file_from_open_subdirectory() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let result = types("[method]descriptor.unlink-file-at", vec![nested, s("doomed.txt")]);
+    let result = types(
+        "[method]descriptor.unlink-file-at",
+        vec![nested, s("doomed.txt")],
+    );
     assert!(is_error(&result).is_none());
     assert!(!dir.join("nested/doomed.txt").exists());
 }
@@ -348,7 +434,10 @@ fn unlink_file_at_removes_nested_file_from_open_subdirectory() {
 fn unlink_file_at_missing_parent_component_returns_no_entry() {
     let dir = scratch_dir("unlink_missing_parent");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.unlink-file-at", vec![root, s("missing/file.txt")]);
+    let result = types(
+        "[method]descriptor.unlink-file-at",
+        vec![root, s("missing/file.txt")],
+    );
     assert_wasi_error!(result, "no-entry");
 }
 
@@ -356,7 +445,10 @@ fn unlink_file_at_missing_parent_component_returns_no_entry() {
 fn unlink_file_at_rejects_non_string_path_argument() {
     let dir = scratch_dir("unlink_invalid_arg");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.unlink-file-at", vec![root, Value::I32(4)]);
+    let result = types(
+        "[method]descriptor.unlink-file-at",
+        vec![root, Value::I32(4)],
+    );
     assert_wasi_error!(result, "invalid");
 }
 
@@ -367,7 +459,10 @@ fn remove_directory_at_removes_nested_empty_directory_from_open_subdirectory() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let result = types("[method]descriptor.remove-directory-at", vec![nested, s("empty-child")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![nested, s("empty-child")],
+    );
     assert!(is_error(&result).is_none());
     assert!(!dir.join("nested/empty-child").exists());
 }
@@ -377,7 +472,10 @@ fn remove_directory_at_file_path_returns_not_directory() {
     let dir = scratch_dir("rmdir_file_path");
     std::fs::write(dir.join("plain.txt"), "payload").unwrap();
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.remove-directory-at", vec![root, s("plain.txt")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![root, s("plain.txt")],
+    );
     assert_wasi_error!(result, "not-directory");
 }
 
@@ -385,7 +483,10 @@ fn remove_directory_at_file_path_returns_not_directory() {
 fn remove_directory_at_rejects_non_string_path_argument() {
     let dir = scratch_dir("rmdir_invalid_arg");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.remove-directory-at", vec![root, Value::I32(11)]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![root, Value::I32(11)],
+    );
     assert_wasi_error!(result, "invalid");
 }
 
@@ -399,9 +500,15 @@ fn rename_at_moves_nested_file_between_open_subdirectories() {
     let from = open_directory(root.clone(), "from");
     let to = open_directory(root, "to");
 
-    let result = types("[method]descriptor.rename-at", vec![from, s("note.txt"), to, s("moved.txt")]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![from, s("note.txt"), to, s("moved.txt")],
+    );
     assert!(is_error(&result).is_none());
-    assert_eq!(std::fs::read_to_string(dir.join("to/moved.txt")).unwrap(), "payload");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("to/moved.txt")).unwrap(),
+        "payload"
+    );
 }
 
 #[test]
@@ -447,7 +554,10 @@ fn get_type_on_nested_directory_descriptor_returns_directory() {
     std::fs::create_dir_all(dir.join("nested/inner")).unwrap();
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested/inner");
-    assert_eq!(types("[method]descriptor.get-type", vec![nested]), s("directory"));
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![nested]),
+        s("directory")
+    );
 }
 
 #[test]
@@ -457,9 +567,18 @@ fn is_same_object_is_false_for_root_and_child_descriptor() {
     let root = open_test_root(&dir);
     let child = types(
         "[method]descriptor.open-at",
-        vec![root.clone(), Value::I32(0), s("file.txt"), Value::I32(0), Value::I32(0)],
+        vec![
+            root.clone(),
+            Value::I32(0),
+            s("file.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
-    assert_eq!(types("[method]descriptor.is-same-object", vec![root, child]), Value::Bool(false));
+    assert_eq!(
+        types("[method]descriptor.is-same-object", vec![root, child]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -470,10 +589,19 @@ fn read_via_stream_from_nested_file_observes_initial_offset() {
     let root = open_test_root(&dir);
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("nested/file.txt"), Value::I32(0), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("nested/file.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
 
-    let stream = types("[method]descriptor.read-via-stream", vec![descriptor, Value::F64(3.0)]);
+    let stream = types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(3.0)],
+    );
     let bytes = invoke(
         "wasi:io/streams",
         "[method]input-stream.read",
@@ -489,9 +617,18 @@ fn input_stream_read_consumes_remaining_bytes_across_multiple_reads() {
     let root = open_test_root(&dir);
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("payload.bin"), Value::I32(0), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("payload.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
-    let stream = types("[method]descriptor.read-via-stream", vec![descriptor, Value::F64(1.0)]);
+    let stream = types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(1.0)],
+    );
 
     let first = invoke(
         "wasi:io/streams",
@@ -515,9 +652,18 @@ fn blocking_read_past_end_of_nested_file_returns_empty_array() {
     let root = open_test_root(&dir);
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("nested/file.txt"), Value::I32(0), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("nested/file.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
-    let stream = types("[method]descriptor.read-via-stream", vec![descriptor, Value::F64(3.0)]);
+    let stream = types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(3.0)],
+    );
 
     let bytes = invoke(
         "wasi:io/streams",
@@ -537,7 +683,10 @@ fn readlink_at_reads_symlink_relative_target_from_open_subdirectory() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let result = types("[method]descriptor.readlink-at", vec![nested, s("alias.txt")]);
+    let result = types(
+        "[method]descriptor.readlink-at",
+        vec![nested, s("alias.txt")],
+    );
     assert_eq!(result, s("target.txt"));
 }
 

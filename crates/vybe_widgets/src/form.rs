@@ -16,11 +16,11 @@
 //! //   for ev in form.drain_events() { match ev { ... } }
 //! ```
 
-use tiny_skia::*;
 use super::layout::{
-    LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, FocusManager, WidgetId,
-    WidgetCommand, CommandValue,
+    CommandValue, FocusManager, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext,
+    WidgetCommand, WidgetEvent, WidgetId,
 };
+use tiny_skia::*;
 
 /// A form holds a collection of controls laid out at absolute positions.
 ///
@@ -92,11 +92,23 @@ impl Form {
 
     /// Dump all widgets' names, positions and types for debugging.
     pub fn debug_dump(&self) {
-        eprintln!("[WIDGET-DUMP] Form '{}' bg={:?} controls={}:", self.title, self.background, self.controls.len());
+        eprintln!(
+            "[WIDGET-DUMP] Form '{}' bg={:?} controls={}:",
+            self.title,
+            self.background,
+            self.controls.len()
+        );
         for (i, w) in self.controls.iter().enumerate() {
             let r = w.rect();
-            eprintln!("  [{}] name='{}' rect=({:.0},{:.0} {:.0}x{:.0})",
-                i, w.name(), r.x, r.y, r.w, r.h);
+            eprintln!(
+                "  [{}] name='{}' rect=({:.0},{:.0} {:.0}x{:.0})",
+                i,
+                w.name(),
+                r.x,
+                r.y,
+                r.w,
+                r.h
+            );
         }
     }
 
@@ -173,12 +185,18 @@ impl PanelWidget for Form {
         }
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Fill background
         let ts = Transform::from_scale(ctx.scale, ctx.scale);
@@ -195,7 +213,9 @@ impl PanelWidget for Form {
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         self.focus.handle_mouse(&mut self.controls, event);
         true // Consume to prevent fall-through
     }
@@ -205,7 +225,9 @@ impl PanelWidget for Form {
     }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
-        if !self.rect.contains(x, y) { return false; }
+        if !self.rect.contains(x, y) {
+            return false;
+        }
         for ctrl in self.controls.iter_mut().rev() {
             if ctrl.handle_scroll(delta, x, y) {
                 return true;
@@ -215,7 +237,9 @@ impl PanelWidget for Form {
     }
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
-        if !self.rect.contains(x, y) { return winit::window::CursorIcon::Default; }
+        if !self.rect.contains(x, y) {
+            return winit::window::CursorIcon::Default;
+        }
         for ctrl in self.controls.iter().rev() {
             let r = ctrl.rect();
             if r.contains(x, y) {
@@ -230,7 +254,10 @@ impl PanelWidget for Form {
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.title = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                self.title = t.clone();
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
             _ => CommandValue::None,
         }

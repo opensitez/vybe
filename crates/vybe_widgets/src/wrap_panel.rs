@@ -4,10 +4,13 @@
 //! Unlike FlowLayoutPanel (which preserves each child's size), WrapPanel can
 //! optionally enforce uniform item width/height for a grid-like appearance.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetEvent, WidgetId,
+};
 use super::stack_panel::Orientation;
+use tiny_skia::*;
 
 pub struct WrapPanel {
     pub orientation: Orientation,
@@ -45,14 +48,33 @@ impl WrapPanel {
         }
     }
 
-    pub fn horizontal() -> Self { Self::new(Orientation::Horizontal) }
-    pub fn vertical() -> Self { Self::new(Orientation::Vertical) }
+    pub fn horizontal() -> Self {
+        Self::new(Orientation::Horizontal)
+    }
+    pub fn vertical() -> Self {
+        Self::new(Orientation::Vertical)
+    }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
-    pub fn with_padding(mut self, padding: f32) -> Self { self.padding = padding; self }
-    pub fn with_item_width(mut self, w: f32) -> Self { self.item_width = Some(w); self }
-    pub fn with_item_height(mut self, h: f32) -> Self { self.item_height = Some(h); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    pub fn with_spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+    pub fn with_padding(mut self, padding: f32) -> Self {
+        self.padding = padding;
+        self
+    }
+    pub fn with_item_width(mut self, w: f32) -> Self {
+        self.item_width = Some(w);
+        self
+    }
+    pub fn with_item_height(mut self, h: f32) -> Self {
+        self.item_height = Some(h);
+        self
+    }
     pub fn with_background(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
         self.colors.background = (r, g, b, a);
         self
@@ -63,9 +85,15 @@ impl WrapPanel {
         self.relayout();
     }
 
-    pub fn child(&self, index: usize) -> &dyn PanelWidget { &*self.children[index] }
-    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget { &mut *self.children[index] }
-    pub fn child_count(&self) -> usize { self.children.len() }
+    pub fn child(&self, index: usize) -> &dyn PanelWidget {
+        &*self.children[index]
+    }
+    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget {
+        &mut *self.children[index]
+    }
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
 
     pub fn remove(&mut self, index: usize) -> Box<dyn PanelWidget> {
         let w = self.children.remove(index);
@@ -75,7 +103,9 @@ impl WrapPanel {
 
     fn relayout(&mut self) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         match self.orientation {
             Orientation::Horizontal => self.layout_horizontal(),
@@ -133,19 +163,27 @@ impl WrapPanel {
 }
 
 impl PanelWidget for WrapPanel {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.relayout();
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         let (br, bg, bb, ba) = self.colors.background;
         if ba > 0 {

@@ -95,7 +95,10 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "json_encode" => Some(CommonImport::Host("ecma:json", "stringify")),
 
         // ── Environment ──────────────────────────────────────────────────
-        "getenv" => Some(CommonImport::Host("wasi:cli/environment", "get-environment")),
+        "getenv" => Some(CommonImport::Host(
+            "wasi:cli/environment",
+            "get-environment",
+        )),
 
         _ => None,
     }

@@ -28,11 +28,15 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
-    for (k, v) in pairs { o.properties.insert(k.to_string(), v); }
+    for (k, v) in pairs {
+        o.properties.insert(k.to_string(), v);
+    }
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 // ── new — construction ────────────────────────────────────────────────────────
 
@@ -86,7 +90,10 @@ fn has_without_trap_reflects_target_properties() {
     let target = obj(vec![("present", Value::I32(1))]);
     let handler = obj(vec![]);
     let proxy = invoke("new", vec![target, handler]);
-    assert_eq!(invoke("has", vec![proxy.clone(), s("present")]), Value::Bool(true));
+    assert_eq!(
+        invoke("has", vec![proxy.clone(), s("present")]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("has", vec![proxy, s("absent")]), Value::Bool(false));
 }
 
@@ -122,8 +129,14 @@ fn revocable_returns_object_with_proxy_and_revoke_properties() {
     // ECMA-262 §28.3.2: Proxy.revocable returns { proxy, revoke }.
     if let Value::Object(o) = &result {
         let o = o.lock().unwrap();
-        assert!(o.properties.contains_key("proxy"), "must have proxy property");
-        assert!(o.properties.contains_key("revoke"), "must have revoke property");
+        assert!(
+            o.properties.contains_key("proxy"),
+            "must have proxy property"
+        );
+        assert!(
+            o.properties.contains_key("revoke"),
+            "must have revoke property"
+        );
     } else {
         panic!("expected object");
     }
@@ -137,7 +150,10 @@ fn after_revoke_operations_on_proxy_return_error_or_undefined() {
     if let Value::Object(o) = &result {
         let (proxy, revoke) = {
             let o = o.lock().unwrap();
-            (o.properties["proxy"].clone(), o.properties["revoke"].clone())
+            (
+                o.properties["proxy"].clone(),
+                o.properties["revoke"].clone(),
+            )
         };
         invoke("callRevoke", vec![revoke]);
         // Any operation on a revoked proxy must fail.
@@ -145,7 +161,8 @@ fn after_revoke_operations_on_proxy_return_error_or_undefined() {
         // Implementation may return Undefined or an error marker.
         assert!(
             matches!(after, Value::Undefined | Value::Null),
-            "revoked proxy access should fail gracefully, got {:?}", after
+            "revoked proxy access should fail gracefully, got {:?}",
+            after
         );
     } else {
         panic!("expected revocable result object");
@@ -216,7 +233,8 @@ fn construct_without_trap_delegates_to_target_constructor() {
     // ECMA-262 §28.3.2.2: without construct trap, `new proxy(args)` calls target.
     let ctor = {
         let mut o = Object::new();
-        o.properties.insert("__ctor_point".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__ctor_point".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let proxy = invoke("new", vec![ctor, obj(vec![])]);

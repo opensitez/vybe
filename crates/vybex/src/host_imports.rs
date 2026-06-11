@@ -19,9 +19,9 @@
 //! matters for read-as-value and namespace access.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{Value, VM};
 use vybe_bytecode::module_record::ExportEntry;
 use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::{VM, Value};
 
 use vybe_compiler::compiler::HostImportMetadata;
 
@@ -66,9 +66,10 @@ fn resolve_export_value(
     match record.exports.get(name)? {
         ExportEntry::Function { idx } => vm.func_table.get(*idx).cloned(),
         ExportEntry::Value(value) => Some(value.clone()),
-        ExportEntry::Indirect { from, name: target_name } => {
-            resolve_export_value(vm, from, target_name, visited)
-        }
+        ExportEntry::Indirect {
+            from,
+            name: target_name,
+        } => resolve_export_value(vm, from, target_name, visited),
         ExportEntry::Class { .. } | ExportEntry::ResourceType { .. } => None,
     }
 }
@@ -88,7 +89,9 @@ fn resolve_export_value(
 /// in the VM's property-set path (Phase 5b; today the object is
 /// constructed once and never handed to mutable code paths).
 fn build_namespace(vm: &VM, module: &str) -> Value {
-    let mut exports: Vec<(String, Value)> = vm.modules.get(module)
+    let mut exports: Vec<(String, Value)> = vm
+        .modules
+        .get(module)
         .into_iter()
         .flat_map(|record| record.exports.keys())
         .filter_map(|name| export_value(vm, module, name).map(|value| (name.clone(), value)))

@@ -3,22 +3,22 @@
 //!
 //! Each sub-module registers one domain (math, io, forms, etc.).
 
-mod math;
-mod console;
-mod string;
 mod array;
-mod io;
+mod console;
+mod data;
+mod ecma_globals;
 mod environment;
 mod forms;
 mod gui;
-mod net;
-mod json;
-mod types;
-mod threading;
-mod data;
 mod intl;
+mod io;
+mod json;
+mod math;
+mod net;
+mod string;
+mod threading;
+mod types;
 mod vb_globals;
-mod ecma_globals;
 mod web_globals;
 
 use std::sync::{Arc, Mutex};
@@ -71,10 +71,14 @@ pub fn setup_namespaces(vm: &mut VM) {
 /// underlying Object, so writes through either name are visible from
 /// the other.
 pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
-    if path.is_empty() { return Value::Null; }
+    if path.is_empty() {
+        return Value::Null;
+    }
     let root_orig = path[0].to_string();
     let root_lc = root_orig.to_lowercase();
-    let root = if let Some(existing) = vm.globals.get(&root_orig)
+    let root = if let Some(existing) = vm
+        .globals
+        .get(&root_orig)
         .or_else(|| vm.globals.get(&root_lc))
     {
         existing.clone()
@@ -92,7 +96,8 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
         let key_lc = orig.to_lowercase();
         let next = if let Value::Object(ref obj) = current {
             let lock = obj.lock().unwrap();
-            lock.properties.get(&orig)
+            lock.properties
+                .get(&orig)
                 .or_else(|| lock.properties.get(&key_lc))
                 .cloned()
         } else {
@@ -132,13 +137,23 @@ pub(crate) fn set_prop(ns: &Value, name: &str, value: Value) {
 
 /// Create a HostFunction Value referencing a registered host function.
 pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
-    if let Some(&idx) = vm.host_registry.get(&(module.to_string(), name.to_string())) {
+    if let Some(&idx) = vm
+        .host_registry
+        .get(&(module.to_string(), name.to_string()))
+    {
         let mut obj = Object::new();
-        obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-        obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-        obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-        obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
-        obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+        obj.properties
+            .insert("__host_module".into(), Value::String(Arc::from(module)));
+        obj.properties
+            .insert("__host_name".into(), Value::String(Arc::from(name)));
+        obj.properties
+            .insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties.insert(
+            "__proto__".into(),
+            crate::ecma::function::shared_function_prototype(),
+        );
+        obj.properties
+            .insert("name".into(), Value::String(Arc::from(name)));
         obj.kind = ObjectKind::HostFunction(idx);
         Value::Object(Arc::new(Mutex::new(obj)))
     } else {
@@ -153,12 +168,20 @@ pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
 /// passes the receiver as the first argument when the function is invoked.
 pub(crate) fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-    obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-    obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-    obj.properties.insert("__vybe_method_receiver".into(), Value::Bool(true));
-    obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
-    obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    obj.properties
+        .insert("__host_module".into(), Value::String(Arc::from(module)));
+    obj.properties
+        .insert("__host_name".into(), Value::String(Arc::from(name)));
+    obj.properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    obj.properties
+        .insert("__vybe_method_receiver".into(), Value::Bool(true));
+    obj.properties.insert(
+        "__proto__".into(),
+        crate::ecma::function::shared_function_prototype(),
+    );
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from(name)));
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(Arc::new(Mutex::new(obj)))
 }
@@ -169,17 +192,33 @@ pub(crate) fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Valu
 /// §20.2.3.2 semantics. The VM-side dispatch lives in
 /// `vybe_bytecode/src/calls.rs` HostFunction arm.
 #[allow(dead_code)]
-pub(crate) fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Value>) -> Value {
-    if let Some(&idx) = vm.host_registry.get(&(module.to_string(), name.to_string())) {
+pub(crate) fn bound_host_fn_ref(
+    vm: &VM,
+    module: &str,
+    name: &str,
+    bound_args: Vec<Value>,
+) -> Value {
+    if let Some(&idx) = vm
+        .host_registry
+        .get(&(module.to_string(), name.to_string()))
+    {
         let mut obj = Object::new();
-        obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-        obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-        obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-        obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
-        obj.properties.insert("name".into(), Value::String(Arc::from(name)));
-        obj.properties.insert("__bound_args".into(), Value::Object(
-            Arc::new(Mutex::new(Object::new_array(bound_args)))
-        ));
+        obj.properties
+            .insert("__host_module".into(), Value::String(Arc::from(module)));
+        obj.properties
+            .insert("__host_name".into(), Value::String(Arc::from(name)));
+        obj.properties
+            .insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties.insert(
+            "__proto__".into(),
+            crate::ecma::function::shared_function_prototype(),
+        );
+        obj.properties
+            .insert("name".into(), Value::String(Arc::from(name)));
+        obj.properties.insert(
+            "__bound_args".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
+        );
         obj.kind = ObjectKind::HostFunction(idx);
         Value::Object(Arc::new(Mutex::new(obj)))
     } else {

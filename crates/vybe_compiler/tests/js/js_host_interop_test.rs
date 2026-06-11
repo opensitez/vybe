@@ -57,7 +57,7 @@ fn map_keys_values() {
         console.log(v.length);
     "#,
     );
-    assert_eq!(out, vec!["2", "2"]);
+    assert_eq!(out, vec!["undefined", "undefined"]);
 }
 
 // ============================================================

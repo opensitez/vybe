@@ -16,12 +16,12 @@
 //! Marshaling + error-handling contract pinned in
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
+use crate::ecma::typedarray::{read_element, ta_live_length, write_element};
+use crate::namespaces::receiver_host_fn_ref;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
-use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
-use crate::ecma::typedarray::{ta_live_length, read_element, write_element};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
     if let Some(v) = crate::ecma::function::invoke_bound_callback_if_needed(ctx, callback, args) {
@@ -34,9 +34,13 @@ fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> V
 }
 
 fn invoke_magic_callback(callback: &Value, args: &[Value]) -> Option<Value> {
-    let Value::Object(obj) = callback else { return None; };
+    let Value::Object(obj) = callback else {
+        return None;
+    };
     let o = obj.lock().unwrap();
-    if !matches!(o.kind, ObjectKind::Ordinary) { return None; }
+    if !matches!(o.kind, ObjectKind::Ordinary) {
+        return None;
+    }
 
     let x = args.first().cloned().unwrap_or(Value::Undefined);
     let idx = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -112,8 +116,10 @@ fn array_of<'a>(args: &'a [Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 
 fn make_array(elements: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elements);
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
-    obj.properties.insert("__proto__".into(), shared_array_prototype());
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Array")));
+    obj.properties
+        .insert("__proto__".into(), shared_array_prototype());
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -167,7 +173,9 @@ fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
             let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
-            object.properties.insert("__holes".into(), Value::Object(created.clone()));
+            object
+                .properties
+                .insert("__holes".into(), Value::Object(created.clone()));
             created
         }
     };
@@ -236,7 +244,9 @@ fn parse_js_array_length(value: &Value) -> Result<usize, &'static str> {
     match value {
         Value::I32(length) if *length >= 0 => Ok(*length as usize),
         Value::I64(length) if *length >= 0 => Ok(*length as usize),
-        Value::F64(length) if *length >= 0.0 && length.fract() == 0.0 && *length <= u32::MAX as f64 => {
+        Value::F64(length)
+            if *length >= 0.0 && length.fract() == 0.0 && *length <= u32::MAX as f64 =>
+        {
             Ok(*length as usize)
         }
         Value::String(text) => text
@@ -337,90 +347,120 @@ pub fn register(vm: &mut VM) {
 
 fn register_adapters(vm: &mut VM) {
     // clear(arr) — `arr.length = 0`. Mutates in place.
-    vm.register_host_fn("ecma:array", "clear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(arr) = array_of(args, 0) {
-            if !is_frozen(&arr) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind { v.clear(); }
-            }
-        }
-        Value::Undefined
-    }));
-
-    // first(arr) — `arr.at(0)`. Convenience for Queue.Peek.
-    vm.register_host_fn("ecma:array", "first", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(arr) = array_of(args, 0) {
-            let o = arr.lock().unwrap();
-            if let ObjectKind::Array(ref v) = o.kind {
-                return v.first().cloned().unwrap_or(Value::Undefined);
-            }
-        }
-        Value::Undefined
-    }));
-
-    // last(arr) — `arr.at(-1)`. Convenience for Stack.Peek.
-    vm.register_host_fn("ecma:array", "last", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(arr) = array_of(args, 0) {
-            let o = arr.lock().unwrap();
-            if let ObjectKind::Array(ref v) = o.kind {
-                return v.last().cloned().unwrap_or(Value::Undefined);
-            }
-        }
-        Value::Undefined
-    }));
-
-    // removeAt(arr, idx) — `arr.splice(idx, 1)`, returns removed value.
-    vm.register_host_fn("ecma:array", "removeAt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-        if let Some(arr) = array_of(args, 0) {
-            if !is_frozen(&arr) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    let len = v.len() as i32;
-                    let resolved = if idx < 0 { len + idx } else { idx };
-                    if resolved >= 0 && (resolved as usize) < v.len() {
-                        return v.remove(resolved as usize);
+    vm.register_host_fn(
+        "ecma:array",
+        "clear",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(arr) = array_of(args, 0) {
+                if !is_frozen(&arr) {
+                    let mut o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        v.clear();
                     }
                 }
             }
-        }
-        Value::Undefined
-    }));
+            Value::Undefined
+        }),
+    );
 
-    // insertAt(arr, idx, v) — `arr.splice(idx, 0, v)`. Mutates in place.
-    vm.register_host_fn("ecma:array", "insertAt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-        let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-        if let Some(arr) = array_of(args, 0) {
-            if !is_frozen(&arr) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    let len = v.len() as i32;
-                    let resolved = if idx < 0 { (len + idx).max(0) } else { idx.min(len) };
-                    v.insert(resolved as usize, val);
+    // first(arr) — `arr.at(0)`. Convenience for Queue.Peek.
+    vm.register_host_fn(
+        "ecma:array",
+        "first",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(arr) = array_of(args, 0) {
+                let o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    return v.first().cloned().unwrap_or(Value::Undefined);
                 }
             }
-        }
-        Value::Undefined
-    }));
+            Value::Undefined
+        }),
+    );
+
+    // last(arr) — `arr.at(-1)`. Convenience for Stack.Peek.
+    vm.register_host_fn(
+        "ecma:array",
+        "last",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(arr) = array_of(args, 0) {
+                let o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    return v.last().cloned().unwrap_or(Value::Undefined);
+                }
+            }
+            Value::Undefined
+        }),
+    );
+
+    // removeAt(arr, idx) — `arr.splice(idx, 1)`, returns removed value.
+    vm.register_host_fn(
+        "ecma:array",
+        "removeAt",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            if let Some(arr) = array_of(args, 0) {
+                if !is_frozen(&arr) {
+                    let mut o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        let len = v.len() as i32;
+                        let resolved = if idx < 0 { len + idx } else { idx };
+                        if resolved >= 0 && (resolved as usize) < v.len() {
+                            return v.remove(resolved as usize);
+                        }
+                    }
+                }
+            }
+            Value::Undefined
+        }),
+    );
+
+    // insertAt(arr, idx, v) — `arr.splice(idx, 0, v)`. Mutates in place.
+    vm.register_host_fn(
+        "ecma:array",
+        "insertAt",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+            if let Some(arr) = array_of(args, 0) {
+                if !is_frozen(&arr) {
+                    let mut o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        let len = v.len() as i32;
+                        let resolved = if idx < 0 {
+                            (len + idx).max(0)
+                        } else {
+                            idx.min(len)
+                        };
+                        v.insert(resolved as usize, val);
+                    }
+                }
+            }
+            Value::Undefined
+        }),
+    );
 
     // removeValue(arr, v) — `arr.splice(arr.indexOf(v), 1)` if found.
     // Returns true if removed, false otherwise (matches .NET List.Remove).
-    vm.register_host_fn("ecma:array", "removeValue", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
-        if let Some(arr) = array_of(args, 0) {
-            if !is_frozen(&arr) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    if let Some(pos) = v.iter().position(|e| e.eq(&needle)) {
-                        v.remove(pos);
-                        return Value::Bool(true);
+    vm.register_host_fn(
+        "ecma:array",
+        "removeValue",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(arr) = array_of(args, 0) {
+                if !is_frozen(&arr) {
+                    let mut o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        if let Some(pos) = v.iter().position(|e| e.eq(&needle)) {
+                            v.remove(pos);
+                            return Value::Bool(true);
+                        }
                     }
                 }
             }
-        }
-        Value::Bool(false)
-    }));
+            Value::Bool(false)
+        }),
+    );
 }
 
 // ── Constructors ──────────────────────────────────────────────────────
@@ -436,21 +476,21 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "new",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            match args.len() {
-                0 => make_array(Vec::new()),
-                1 => match &args[0] {
-                    Value::F64(_) | Value::I32(_) | Value::I64(_) => match parse_js_array_length(&args[0]) {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| match args.len() {
+            0 => make_array(Vec::new()),
+            1 => match &args[0] {
+                Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+                    match parse_js_array_length(&args[0]) {
                         Ok(length) => make_holey_array(length),
                         Err(message) => {
                             ctx.throw_value(crate::ecma::error::new_error("RangeError", message));
                             Value::Undefined
                         }
-                    },
-                    other => make_array(vec![other.clone()]),
-                },
-                _ => make_array(args.to_vec()),
-            }
+                    }
+                }
+                other => make_array(vec![other.clone()]),
+            },
+            _ => make_array(args.to_vec()),
         }),
     );
 
@@ -462,7 +502,10 @@ fn register_constructors(vm: &mut VM) {
         "ecma:array",
         "newWithLength",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let n = args
+                .first()
+                .map(|v| v.as_i32().max(0) as usize)
+                .unwrap_or(0);
             make_array(vec![Value::Null; n])
         }),
     );
@@ -470,7 +513,10 @@ fn register_constructors(vm: &mut VM) {
         "vybe:js-array",
         "newWithLength",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let n = args
+                .first()
+                .map(|v| v.as_i32().max(0) as usize)
+                .unwrap_or(0);
             make_array(vec![Value::Null; n])
         }),
     );
@@ -483,9 +529,7 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "of",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            make_array(args.to_vec())
-        }),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| make_array(args.to_vec())),
     );
 
     // from(src, mapFn?) -> Array
@@ -527,7 +571,9 @@ fn register_constructors(vm: &mut VM) {
                                 let len = len_val.as_f64().max(0.0) as usize;
                                 for i in 0..len {
                                     let key = i.to_string();
-                                    out.push(s.properties.get(&key).cloned().unwrap_or(Value::Undefined));
+                                    out.push(
+                                        s.properties.get(&key).cloned().unwrap_or(Value::Undefined),
+                                    );
                                 }
                             }
                         }
@@ -544,7 +590,11 @@ fn register_constructors(vm: &mut VM) {
                 if !matches!(mapper, Value::Null | Value::Undefined) {
                     let mut mapped = Vec::with_capacity(out.len());
                     for (i, v) in out.iter().enumerate() {
-                        mapped.push(invoke_callback(ctx, mapper, &[v.clone(), Value::I32(i as i32)]));
+                        mapped.push(invoke_callback(
+                            ctx,
+                            mapper,
+                            &[v.clone(), Value::I32(i as i32)],
+                        ));
                     }
                     out = mapped;
                 }
@@ -564,9 +614,18 @@ fn register_constructors(vm: &mut VM) {
                 match &s.kind {
                     ObjectKind::Array(elems) => out.extend(elems.iter().cloned()),
                     _ => {
-                        let len = s.properties.get("length").map(|v| v.as_f64().max(0.0) as usize).unwrap_or(0);
+                        let len = s
+                            .properties
+                            .get("length")
+                            .map(|v| v.as_f64().max(0.0) as usize)
+                            .unwrap_or(0);
                         for i in 0..len {
-                            out.push(s.properties.get(&i.to_string()).cloned().unwrap_or(Value::Undefined));
+                            out.push(
+                                s.properties
+                                    .get(&i.to_string())
+                                    .cloned()
+                                    .unwrap_or(Value::Undefined),
+                            );
                         }
                     }
                 }
@@ -574,7 +633,11 @@ fn register_constructors(vm: &mut VM) {
             if let Some(mapper) = args.get(1) {
                 let mut mapped = Vec::with_capacity(out.len());
                 for (i, v) in out.iter().enumerate() {
-                    mapped.push(invoke_callback(ctx, mapper, &[v.clone(), Value::I32(i as i32)]));
+                    mapped.push(invoke_callback(
+                        ctx,
+                        mapper,
+                        &[v.clone(), Value::I32(i as i32)],
+                    ));
                 }
                 out = mapped;
             }
@@ -593,20 +656,21 @@ fn register_constructors(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let source = args.first().cloned().unwrap_or(Value::Undefined);
             let mapper = args.get(1).cloned();
-            let mapped: Vec<Value> = crate::ecma::iterator::materialize_iterable_values(ctx, &source, true)
-                .into_iter()
-                .enumerate()
-                .map(|(index, value)| {
-                    let awaited = crate::ecma::iterator::maybe_await_value(value);
-                    let mapped = match mapper.as_ref() {
-                        Some(mapper) if !matches!(mapper, Value::Null | Value::Undefined) => {
-                            ctx.invoke(mapper, &[awaited, Value::I32(index as i32)])
-                        }
-                        _ => awaited,
-                    };
-                    crate::ecma::iterator::maybe_await_value(mapped)
-                })
-                .collect();
+            let mapped: Vec<Value> =
+                crate::ecma::iterator::materialize_iterable_values(ctx, &source, true)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let awaited = crate::ecma::iterator::maybe_await_value(value);
+                        let mapped = match mapper.as_ref() {
+                            Some(mapper) if !matches!(mapper, Value::Null | Value::Undefined) => {
+                                ctx.invoke(mapper, &[awaited, Value::I32(index as i32)])
+                            }
+                            _ => awaited,
+                        };
+                        crate::ecma::iterator::maybe_await_value(mapped)
+                    })
+                    .collect();
             make_array(mapped)
         }),
     );
@@ -615,9 +679,7 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "isArray",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::Bool(array_of(args, 0).is_some())
-        }),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| Value::Bool(array_of(args, 0).is_some())),
     );
 }
 
@@ -640,7 +702,9 @@ fn register_property_access(vm: &mut VM) {
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let i = key.as_i32();
-                        if i < 0 { return Value::Undefined; }
+                        if i < 0 {
+                            return Value::Undefined;
+                        }
                         return v.get(i as usize).cloned().unwrap_or(Value::Undefined);
                     }
                     // Polymorphic dispatch on Map — the canonical cross-
@@ -651,8 +715,12 @@ fn register_property_access(vm: &mut VM) {
                     // resolve identically.
                     ObjectKind::Map(m) => {
                         let lookup_key = match &key {
-                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
-                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())),
+                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => {
+                                key.clone()
+                            }
+                            other => {
+                                Value::String(std::sync::Arc::from(format!("{}", other).as_str()))
+                            }
                         };
                         if let Some(v) = m.get(&lookup_key) {
                             return v.clone();
@@ -663,10 +731,14 @@ fn register_property_access(vm: &mut VM) {
                         // purely numeric strings to avoid surprises.
                         if let Value::String(s) = &key {
                             if let Ok(n) = s.parse::<i32>() {
-                                if let Some(v) = m.get(&Value::I32(n)) { return v.clone(); }
+                                if let Some(v) = m.get(&Value::I32(n)) {
+                                    return v.clone();
+                                }
                             }
                         } else if let Value::I32(n) = &key {
-                            if let Some(v) = m.get(&Value::String(std::sync::Arc::from(n.to_string().as_str()))) {
+                            if let Some(v) =
+                                m.get(&Value::String(std::sync::Arc::from(n.to_string().as_str())))
+                            {
                                 return v.clone();
                             }
                         }
@@ -791,7 +863,9 @@ fn register_property_access(vm: &mut VM) {
                     ObjectKind::Map(m) => Value::I32(m.len() as i32),
                     ObjectKind::Set(s) => Value::I32(s.len() as i32),
                     ObjectKind::TypedArray(t) => Value::I32(t.length as i32),
-                    _ => lock.properties.get("length")
+                    _ => lock
+                        .properties
+                        .get("length")
                         .map(|v| Value::I32(v.as_i32()))
                         .unwrap_or(Value::Null),
                 };
@@ -905,7 +979,9 @@ fn register_mutators(vm: &mut VM) {
         "pop",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
-                if is_frozen(&arr) { return Value::Undefined; }
+                if is_frozen(&arr) {
+                    return Value::Undefined;
+                }
                 let mut o = arr.lock().unwrap();
                 let popped = if let ObjectKind::Array(ref v) = o.kind {
                     if v.is_empty() {
@@ -937,7 +1013,9 @@ fn register_mutators(vm: &mut VM) {
         "shift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
-                if is_frozen(&arr) { return Value::Undefined; }
+                if is_frozen(&arr) {
+                    return Value::Undefined;
+                }
                 let mut o = arr.lock().unwrap();
                 let shifted = if let ObjectKind::Array(ref v) = o.kind {
                     if v.is_empty() {
@@ -1046,7 +1124,9 @@ fn register_mutators(vm: &mut VM) {
                 let mut o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(_) => {
-                        if let ObjectKind::Array(ref mut v) = o.kind { v.reverse(); }
+                        if let ObjectKind::Array(ref mut v) = o.kind {
+                            v.reverse();
+                        }
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta);
@@ -1057,7 +1137,8 @@ fn register_mutators(vm: &mut VM) {
                             let b = read_element(ta, j);
                             write_element(ta, i, &b);
                             write_element(ta, j, &a);
-                            i += 1; j -= 1;
+                            i += 1;
+                            j -= 1;
                         }
                     }
                     _ => {}
@@ -1086,17 +1167,27 @@ fn register_mutators(vm: &mut VM) {
                             let is_callable = matches!(&compare_fn, Some(Value::Object(_)));
                             if is_callable {
                                 if let Some(compare_fn) = compare_fn.as_ref() {
-                                    if let Some(magic) = invoke_magic_callback(compare_fn, &[a.clone(), b.clone()]) {
+                                    if let Some(magic) =
+                                        invoke_magic_callback(compare_fn, &[a.clone(), b.clone()])
+                                    {
                                         let order = magic.as_f64();
-                                        return if order < 0.0 { std::cmp::Ordering::Less }
-                                            else if order > 0.0 { std::cmp::Ordering::Greater }
-                                            else { std::cmp::Ordering::Equal };
+                                        return if order < 0.0 {
+                                            std::cmp::Ordering::Less
+                                        } else if order > 0.0 {
+                                            std::cmp::Ordering::Greater
+                                        } else {
+                                            std::cmp::Ordering::Equal
+                                        };
                                     }
                                     let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
                                     let order = result.as_f64();
-                                    return if order < 0.0 { std::cmp::Ordering::Less }
-                                        else if order > 0.0 { std::cmp::Ordering::Greater }
-                                        else { std::cmp::Ordering::Equal };
+                                    return if order < 0.0 {
+                                        std::cmp::Ordering::Less
+                                    } else if order > 0.0 {
+                                        std::cmp::Ordering::Greater
+                                    } else {
+                                        std::cmp::Ordering::Equal
+                                    };
                                 }
                             }
                             format!("{}", a).cmp(&format!("{}", b))
@@ -1108,7 +1199,8 @@ fn register_mutators(vm: &mut VM) {
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta);
-                        let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                        let mut values: Vec<Value> =
+                            (0..live).map(|i| read_element(ta, i)).collect();
                         values.sort_by(|a, b| {
                             if let Some(compare_fn) = compare_fn.as_ref() {
                                 let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
@@ -1121,11 +1213,14 @@ fn register_mutators(vm: &mut VM) {
                                     std::cmp::Ordering::Equal
                                 }
                             } else {
-                                a.as_f64().partial_cmp(&b.as_f64())
+                                a.as_f64()
+                                    .partial_cmp(&b.as_f64())
                                     .unwrap_or(std::cmp::Ordering::Equal)
                             }
                         });
-                        for (i, v) in values.iter().enumerate() { write_element(ta, i, v); }
+                        for (i, v) in values.iter().enumerate() {
+                            write_element(ta, i, v);
+                        }
                     }
                     _ => {}
                 }
@@ -1152,10 +1247,14 @@ fn register_mutators(vm: &mut VM) {
                             let len = v.len() as i32;
                             let s = start.max(0).min(len) as usize;
                             let e = end.max(0).min(len) as usize;
-                            for i in s..e { v[i] = val.clone(); }
+                            for i in s..e {
+                                v[i] = val.clone();
+                            }
                             // Clear hole markers for the filled range
                             let mut holes = hole_indices(&o);
-                            for i in s..e { holes.remove(&i); }
+                            for i in s..e {
+                                holes.remove(&i);
+                            }
                             store_hole_indices(&mut o, &holes);
                         }
                         sync_length(&mut o);
@@ -1164,7 +1263,9 @@ fn register_mutators(vm: &mut VM) {
                         let live = ta_live_length(ta) as i32;
                         let s = start.max(0).min(live) as usize;
                         let e = end.max(0).min(live) as usize;
-                        for i in s..e { write_element(ta, i, &val); }
+                        for i in s..e {
+                            write_element(ta, i, &val);
+                        }
                     }
                     _ => {}
                 }
@@ -1241,16 +1342,24 @@ fn register_non_mutators(vm: &mut VM) {
             if let Some(Value::String(s)) = args.first() {
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len() as i32;
-                let si = (if start < 0 { len + start } else { start }).max(0).min(len) as usize;
+                let si = (if start < 0 { len + start } else { start })
+                    .max(0)
+                    .min(len) as usize;
                 let ei = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
-                let out: String = if si < ei { chars[si..ei].iter().collect() } else { String::new() };
+                let out: String = if si < ei {
+                    chars[si..ei].iter().collect()
+                } else {
+                    String::new()
+                };
                 return Value::String(Arc::from(out.as_str()));
             }
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
                     let len = v.len() as i32;
-                    let s = (if start < 0 { len + start } else { start }).max(0).min(len) as usize;
+                    let s = (if start < 0 { len + start } else { start })
+                        .max(0)
+                        .min(len) as usize;
                     let e = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
                     let out: Vec<Value> = if s < e { v[s..e].to_vec() } else { Vec::new() };
                     return make_array(out);
@@ -1426,7 +1535,10 @@ fn register_non_mutators(vm: &mut VM) {
         "ecma:array",
         "join",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let sep = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| ",".into());
+            let sep = args
+                .get(1)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| ",".into());
             let parts: Vec<String> = match args.first() {
                 Some(Value::Object(o)) => {
                     let inner = o.lock().unwrap();
@@ -1459,46 +1571,59 @@ fn register_non_mutators(vm: &mut VM) {
                                     })
                                     .collect()
                             } else {
-                            // Plain JS object — iterate values in
-                            // insertion order. The compiler tracks
-                            // insertion order in a side `__keys` array
-                            // when index-assigning string keys; without
-                            // it, `properties` is a HashMap and
-                            // iteration order is randomized per
-                            // process. Honor `__keys` first; fall back
-                            // to the hash-map order only when the
-                            // compiler hasn't installed one (e.g. an
-                            // empty `{}` literal that's never been
-                            // mutated).
-                            //
-                            // Skip internal `__*` metadata keys (Vybe
-                            // stores prototype links and type tags as
-                            // `__type`, `__proto__`, etc.).
-                            let ordered_keys: Option<Vec<String>> =
-                                inner.properties.get("__keys").and_then(|v| {
-                                    if let Value::Object(arr) = v {
-                                        let a = arr.lock().unwrap();
-                                        if let ObjectKind::Array(items) = &a.kind {
-                                            Some(items.iter().map(|k| format!("{}", k)).collect())
-                                        } else { None }
-                                    } else { None }
-                                });
-                            if let Some(keys) = ordered_keys {
-                                keys.iter()
-                                    .filter(|k| !k.starts_with("__"))
-                                    .filter_map(|k| inner.properties.get(k).map(stringify))
-                                    .collect()
-                            } else {
-                                inner.properties.iter()
-                                    .filter(|(k, _)| !k.starts_with("__"))
-                                    .map(|(_, v)| stringify(v))
-                                    .collect()
-                            }
+                                // Plain JS object — iterate values in
+                                // insertion order. The compiler tracks
+                                // insertion order in a side `__keys` array
+                                // when index-assigning string keys; without
+                                // it, `properties` is a HashMap and
+                                // iteration order is randomized per
+                                // process. Honor `__keys` first; fall back
+                                // to the hash-map order only when the
+                                // compiler hasn't installed one (e.g. an
+                                // empty `{}` literal that's never been
+                                // mutated).
+                                //
+                                // Skip internal `__*` metadata keys (Vybe
+                                // stores prototype links and type tags as
+                                // `__type`, `__proto__`, etc.).
+                                let ordered_keys: Option<Vec<String>> =
+                                    inner.properties.get("__keys").and_then(|v| {
+                                        if let Value::Object(arr) = v {
+                                            let a = arr.lock().unwrap();
+                                            if let ObjectKind::Array(items) = &a.kind {
+                                                Some(
+                                                    items
+                                                        .iter()
+                                                        .map(|k| format!("{}", k))
+                                                        .collect(),
+                                                )
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some(keys) = ordered_keys {
+                                    keys.iter()
+                                        .filter(|k| !k.starts_with("__"))
+                                        .filter_map(|k| inner.properties.get(k).map(stringify))
+                                        .collect()
+                                } else {
+                                    inner
+                                        .properties
+                                        .iter()
+                                        .filter(|(k, _)| !k.starts_with("__"))
+                                        .map(|(_, v)| stringify(v))
+                                        .collect()
+                                }
                             }
                         }
                         ObjectKind::TypedArray(ta) => {
                             let live = ta_live_length(ta);
-                            (0..live).map(|i| format!("{}", read_element(ta, i))).collect()
+                            (0..live)
+                                .map(|i| format!("{}", read_element(ta, i)))
+                                .collect()
                         }
                         _ => Vec::new(),
                     }
@@ -1520,12 +1645,14 @@ fn register_non_mutators(vm: &mut VM) {
                     let parts: Vec<String> = v
                         .iter()
                         .enumerate()
-                        .map(|(index, value)| if is_array_hole(&o, index) {
-                            String::new()
-                        } else {
-                            match value {
-                                Value::Null | Value::Undefined => String::new(),
-                                _ => format!("{}", value),
+                        .map(|(index, value)| {
+                            if is_array_hole(&o, index) {
+                                String::new()
+                            } else {
+                                match value {
+                                    Value::Null | Value::Undefined => String::new(),
+                                    _ => format!("{}", value),
+                                }
                             }
                         })
                         .collect();
@@ -1572,7 +1699,9 @@ fn register_non_mutators(vm: &mut VM) {
             let depth = args.get(1).map(|v| v.as_i32()).unwrap_or(1);
             fn flatten(out: &mut Vec<Value>, arr_obj: &Object, elems: &[Value], depth: i32) {
                 for (i, v) in elems.iter().enumerate() {
-                    if is_array_hole(arr_obj, i) { continue; }
+                    if is_array_hole(arr_obj, i) {
+                        continue;
+                    }
                     if depth > 0 {
                         if let Value::Object(o) = v {
                             let lock = o.lock().unwrap();
@@ -1624,20 +1753,35 @@ fn register_non_mutators(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let mut out = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { return make_array(Vec::new()); }
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        v.clone()
+                    } else {
+                        return make_array(Vec::new());
+                    }
                 };
-                if let Some(cmp) = compare_fn.filter(|v| !matches!(v, Value::Undefined | Value::Null)) {
+                if let Some(cmp) =
+                    compare_fn.filter(|v| !matches!(v, Value::Undefined | Value::Null))
+                {
                     let mut err: Option<Value> = None;
                     out.sort_by(|a, b| {
-                        if err.is_some() { return std::cmp::Ordering::Equal; }
+                        if err.is_some() {
+                            return std::cmp::Ordering::Equal;
+                        }
                         match ctx.try_invoke(&cmp, &[a.clone(), b.clone()]) {
                             Ok(v) => {
                                 let n = v.as_f64();
-                                if n < 0.0 { std::cmp::Ordering::Less }
-                                else if n > 0.0 { std::cmp::Ordering::Greater }
-                                else { std::cmp::Ordering::Equal }
+                                if n < 0.0 {
+                                    std::cmp::Ordering::Less
+                                } else if n > 0.0 {
+                                    std::cmp::Ordering::Greater
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                }
                             }
-                            Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
+                            Err(e) => {
+                                err = Some(e);
+                                std::cmp::Ordering::Equal
+                            }
                         }
                     });
                 } else {
@@ -1698,10 +1842,14 @@ fn iter_result(value: Value, done: bool) -> Value {
 pub(crate) fn make_array_iterator(materialized: Vec<Value>) -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Array(materialized);
-    obj.properties.insert("__type".into(), Value::String(Arc::from("ArrayIterator")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("ArrayIterator")));
     obj.properties.insert("__index".into(), Value::I32(0));
     if let Some(idx) = ARRAY_ITER_NEXT_IDX.get() {
-        obj.properties.insert("next".into(), receiver_host_fn_ref("ecma:array", "iterNext", *idx));
+        obj.properties.insert(
+            "next".into(),
+            receiver_host_fn_ref("ecma:array", "iterNext", *idx),
+        );
     }
     Value::Object(Arc::new(Mutex::new(obj)))
 }
@@ -1728,7 +1876,8 @@ fn register_iteration(vm: &mut VM) {
             iter_result(Value::Undefined, true)
         }),
     );
-    if let Some(idx) = vm.host_registry
+    if let Some(idx) = vm
+        .host_registry
         .get(&("ecma:array".to_string(), "iterNext".to_string()))
         .copied()
     {
@@ -1776,7 +1925,9 @@ fn register_iteration(vm: &mut VM) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
-                        let out: Vec<Value> = v.iter().enumerate()
+                        let out: Vec<Value> = v
+                            .iter()
+                            .enumerate()
                             .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
                             .collect();
                         return make_array_iterator(out);
@@ -1814,7 +1965,9 @@ fn register_iteration(vm: &mut VM) {
     //   - findIndex, findLastIndex: §23.1.3.12 — index of first/last match
     //   - flatMap: §23.1.3.15 — map + flatten one level
 
-    vm.register_host_fn("ecma:array", "forEach",
+    vm.register_host_fn(
+        "ecma:array",
+        "forEach",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1823,38 +1976,39 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 for (i, elem) in entries {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     invoke_callback(ctx, &callback, &invoke_args);
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "map",
+    vm.register_host_fn(
+        "ecma:array",
+        "map",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
                 let (length, entries) = {
                     let o = arr.lock().unwrap();
-                    let len = if let ObjectKind::Array(ref v) = o.kind { v.len() } else { 0 };
+                    let len = if let ObjectKind::Array(ref v) = o.kind {
+                        v.len()
+                    } else {
+                        0
+                    };
                     (len, present_array_entries(&o))
                 };
                 let mapped = make_holey_array(length);
                 if let Value::Object(mapped_obj) = &mapped {
                     let mut mapped_guard = mapped_obj.lock().unwrap();
-                    let clear_indices: Vec<usize> = entries.iter().map(|(index, _)| *index).collect();
+                    let clear_indices: Vec<usize> =
+                        entries.iter().map(|(index, _)| *index).collect();
                     if let ObjectKind::Array(ref mut values) = mapped_guard.kind {
                         for (index, elem) in entries {
-                            let invoke_args = vec![
-                                elem,
-                                Value::I32(index as i32),
-                                Value::Object(arr.clone()),
-                            ];
+                            let invoke_args =
+                                vec![elem, Value::I32(index as i32), Value::Object(arr.clone())];
                             values[index] = invoke_callback(ctx, &callback, &invoke_args);
                         }
                     }
@@ -1866,22 +2020,24 @@ fn register_iteration(vm: &mut VM) {
             }
             let snapshot = array_like_snapshot(&receiver);
             if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
-                let mapped: Vec<Value> = snapshot.iter().enumerate()
+                let mapped: Vec<Value> = snapshot
+                    .iter()
+                    .enumerate()
                     .map(|(i, elem)| {
-                        let invoke_args = vec![
-                            elem.clone(),
-                            Value::I32(i as i32),
-                            receiver.clone(),
-                        ];
+                        let invoke_args =
+                            vec![elem.clone(), Value::I32(i as i32), receiver.clone()];
                         invoke_callback(ctx, &callback, &invoke_args)
                     })
                     .collect();
                 return make_array(mapped);
             }
             make_array(Vec::new())
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "filter",
+    vm.register_host_fn(
+        "ecma:array",
+        "filter",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
@@ -1905,13 +2061,12 @@ fn register_iteration(vm: &mut VM) {
             }
             let snapshot = array_like_snapshot(&receiver);
             if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
-                let filtered: Vec<Value> = snapshot.iter().enumerate()
+                let filtered: Vec<Value> = snapshot
+                    .iter()
+                    .enumerate()
                     .filter_map(|(i, elem)| {
-                        let invoke_args = vec![
-                            elem.clone(),
-                            Value::I32(i as i32),
-                            receiver.clone(),
-                        ];
+                        let invoke_args =
+                            vec![elem.clone(), Value::I32(i as i32), receiver.clone()];
                         let keep = is_truthy(&invoke_callback(ctx, &callback, &invoke_args));
                         if keep { Some(elem.clone()) } else { None }
                     })
@@ -1919,12 +2074,16 @@ fn register_iteration(vm: &mut VM) {
                 return make_array(filtered);
             }
             make_array(Vec::new())
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "reduce",
+    vm.register_host_fn(
+        "ecma:array",
+        "reduce",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
+            let initial_provided =
+                args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
             let mut acc = if initial_provided {
                 args.get(2).cloned().unwrap_or(Value::Undefined)
             } else {
@@ -1935,7 +2094,9 @@ fn register_iteration(vm: &mut VM) {
                     let o = arr.lock().unwrap();
                     present_array_entries(&o)
                 };
-                let start_idx = if initial_provided { 0 } else {
+                let start_idx = if initial_provided {
+                    0
+                } else {
                     if entries.is_empty() {
                         // Spec: TypeError on empty array with no initial.
                         // MVP returns undefined; Phase B5 doesn't have
@@ -1956,12 +2117,16 @@ fn register_iteration(vm: &mut VM) {
                 }
             }
             acc
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "reduceRight",
+    vm.register_host_fn(
+        "ecma:array",
+        "reduceRight",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
+            let initial_provided =
+                args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
             let mut acc = if initial_provided {
                 args.get(2).cloned().unwrap_or(Value::Undefined)
             } else {
@@ -1973,12 +2138,24 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 if entries.is_empty() {
-                    return if initial_provided { acc } else { Value::Undefined };
+                    return if initial_provided {
+                        acc
+                    } else {
+                        Value::Undefined
+                    };
                 }
                 if !initial_provided {
-                    acc = entries.last().map(|(_, value)| value.clone()).unwrap_or(Value::Undefined);
+                    acc = entries
+                        .last()
+                        .map(|(_, value)| value.clone())
+                        .unwrap_or(Value::Undefined);
                 }
-                for (index, value) in entries.into_iter().rev().skip(if initial_provided { 0 } else { 1 }) {
+                for (index, value) in
+                    entries
+                        .into_iter()
+                        .rev()
+                        .skip(if initial_provided { 0 } else { 1 })
+                {
                     let invoke_args = vec![
                         acc,
                         value,
@@ -1989,9 +2166,12 @@ fn register_iteration(vm: &mut VM) {
                 }
             }
             acc
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "some",
+    vm.register_host_fn(
+        "ecma:array",
+        "some",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2000,20 +2180,19 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 for (i, elem) in entries {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::Bool(true);
                     }
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "every",
+    vm.register_host_fn(
+        "ecma:array",
+        "every",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2022,20 +2201,19 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 for (i, elem) in entries {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     if !is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::Bool(false);
                     }
                 }
             }
             Value::Bool(true) // spec: empty array → every returns true
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "find",
+    vm.register_host_fn(
+        "ecma:array",
+        "find",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2055,9 +2233,12 @@ fn register_iteration(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "findIndex",
+    vm.register_host_fn(
+        "ecma:array",
+        "findIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2066,20 +2247,19 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 for (i, elem) in entries {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(i as i32);
                     }
                 }
             }
             Value::I32(-1)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "findLast",
+    vm.register_host_fn(
+        "ecma:array",
+        "findLast",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2099,9 +2279,12 @@ fn register_iteration(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "findLastIndex",
+    vm.register_host_fn(
+        "ecma:array",
+        "findLastIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2110,20 +2293,19 @@ fn register_iteration(vm: &mut VM) {
                     present_array_entries(&o)
                 };
                 for (i, elem) in entries.into_iter().rev() {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(i as i32);
                     }
                 }
             }
             Value::I32(-1)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "flatMap",
+    vm.register_host_fn(
+        "ecma:array",
+        "flatMap",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2133,11 +2315,7 @@ fn register_iteration(vm: &mut VM) {
                 };
                 let mut out = Vec::with_capacity(entries.len());
                 for (i, elem) in entries {
-                    let invoke_args = vec![
-                        elem,
-                        Value::I32(i as i32),
-                        Value::Object(arr.clone()),
-                    ];
+                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
                     let r = invoke_callback(ctx, &callback, &invoke_args);
                     // Flatten one level: if the result is an Array, spread;
                     // otherwise append as single element.
@@ -2153,7 +2331,8 @@ fn register_iteration(vm: &mut VM) {
                 return make_array(out);
             }
             make_array(Vec::new())
-        }));
+        }),
+    );
 
     // ── ES2025 group / groupToMap ───────────────────────────────────
     //
@@ -2161,7 +2340,9 @@ fn register_iteration(vm: &mut VM) {
     // null-prototype Object with string keys; `groupToMap` returns a
     // Map keyed by any value.
 
-    vm.register_host_fn("ecma:array", "group",
+    vm.register_host_fn(
+        "ecma:array",
+        "group",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
@@ -2169,7 +2350,11 @@ fn register_iteration(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let snapshot: Vec<Value> = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        v.clone()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 for (i, elem) in snapshot.iter().enumerate() {
                     let invoke_args = vec![
@@ -2178,7 +2363,10 @@ fn register_iteration(vm: &mut VM) {
                         Value::Object(arr.clone()),
                     ];
                     let key = format!("{}", invoke_callback(ctx, &callback, &invoke_args));
-                    groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
+                    groups
+                        .entry(key)
+                        .or_insert_with(Vec::new)
+                        .push(elem.clone());
                 }
             }
             // Materialize as an ordinary object with array-valued properties.
@@ -2187,9 +2375,12 @@ fn register_iteration(vm: &mut VM) {
                 out.properties.insert(k, make_array(v));
             }
             Value::Object(Arc::new(Mutex::new(out)))
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:array", "groupToMap",
+    vm.register_host_fn(
+        "ecma:array",
+        "groupToMap",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
@@ -2197,7 +2388,11 @@ fn register_iteration(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let snapshot: Vec<Value> = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        v.clone()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 for (i, elem) in snapshot.iter().enumerate() {
                     let invoke_args = vec![
@@ -2206,7 +2401,10 @@ fn register_iteration(vm: &mut VM) {
                         Value::Object(arr.clone()),
                     ];
                     let key = invoke_callback(ctx, &callback, &invoke_args);
-                    groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
+                    groups
+                        .entry(key)
+                        .or_insert_with(Vec::new)
+                        .push(elem.clone());
                 }
             }
             // Build a JS Map with one entry per group.
@@ -2216,12 +2414,16 @@ fn register_iteration(vm: &mut VM) {
             }
             let mut obj = Object::new();
             obj.kind = ObjectKind::Map(map_im);
-            obj.properties.insert("size".into(), Value::I32(obj_map_len(&obj) as i32));
+            obj.properties
+                .insert("size".into(), Value::I32(obj_map_len(&obj) as i32));
             Value::Object(Arc::new(Mutex::new(obj)))
-        }));
+        }),
+    );
 
     // toSpliced — non-mutating splice returning a new array.
-    vm.register_host_fn("ecma:array", "toSpliced",
+    vm.register_host_fn(
+        "ecma:array",
+        "toSpliced",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -2230,7 +2432,11 @@ fn register_iteration(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let snapshot: Vec<Value> = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    if let ObjectKind::Array(ref v) = o.kind {
+                        v.clone()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 let len = snapshot.len();
                 let idx = if start < 0 {
@@ -2246,7 +2452,8 @@ fn register_iteration(vm: &mut VM) {
                 return make_array(out);
             }
             make_array(Vec::new())
-        }));
+        }),
+    );
 }
 
 /// JS truthy semantics — used by filter / some / every / find.
@@ -2259,11 +2466,18 @@ fn is_truthy(v: &Value) -> bool {
         Value::I64(n) => *n != 0,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::String(s) => !s.is_empty(),
-        Value::Object(_) | Value::Symbol(_) | Value::BigInt(_)
-            | Value::V128(_) | Value::WeakRef(_) => true,
+        Value::Object(_)
+        | Value::Symbol(_)
+        | Value::BigInt(_)
+        | Value::V128(_)
+        | Value::WeakRef(_) => true,
     }
 }
 
 fn obj_map_len(obj: &Object) -> usize {
-    if let ObjectKind::Map(ref m) = obj.kind { m.len() } else { 0 }
+    if let ObjectKind::Map(ref m) = obj.kind {
+        m.len()
+    } else {
+        0
+    }
 }

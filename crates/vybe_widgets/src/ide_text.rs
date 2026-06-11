@@ -3,9 +3,7 @@
 //! All public functions take **logical** coordinates and a scale factor.
 //! They convert to physical pixels internally.
 
-use cosmic_text::{
-    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, SwashCache,
-};
+use cosmic_text::{Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, SwashCache};
 use tiny_skia::{Pixmap, PixmapPaint, Transform};
 
 /// Draw a single line of sans-serif text.
@@ -39,8 +37,12 @@ pub fn draw_text_with_font(
     scale: f32,
 ) {
     let (family_str, size) = parse_font_prop(font_prop, default_size);
-    let family = if family_str.is_empty() { Family::SansSerif } else { Family::Name(&family_str) };
-    
+    let family = if family_str.is_empty() {
+        Family::SansSerif
+    } else {
+        Family::Name(&family_str)
+    };
+
     let metrics = Metrics::new(size, size * 1.3).scale(scale);
     let mut buf = Buffer::new(fs, metrics);
     buf.set_text(
@@ -62,7 +64,9 @@ fn parse_font_prop(font_prop: Option<&str>, default_size: f32) -> (String, f32) 
         if let Some(size_str) = parts.next() {
             let num: String = size_str.chars().filter(|c| c.is_ascii_digit()).collect();
             if let Ok(sz) = num.parse::<f32>() {
-                if sz > 0.0 { return (fam, sz); }
+                if sz > 0.0 {
+                    return (fam, sz);
+                }
             }
         }
         (fam, default_size)
@@ -77,9 +81,19 @@ pub fn measure_text(fs: &mut FontSystem, text: &str, font_size: f32, scale: f32)
 }
 
 /// Measure logical width of text, parsing an optional font string.
-pub fn measure_text_with_font(fs: &mut FontSystem, text: &str, font_prop: Option<&str>, default_size: f32, scale: f32) -> f32 {
+pub fn measure_text_with_font(
+    fs: &mut FontSystem,
+    text: &str,
+    font_prop: Option<&str>,
+    default_size: f32,
+    scale: f32,
+) -> f32 {
     let (family_str, size) = parse_font_prop(font_prop, default_size);
-    let family = if family_str.is_empty() { Family::SansSerif } else { Family::Name(&family_str) };
+    let family = if family_str.is_empty() {
+        Family::SansSerif
+    } else {
+        Family::Name(&family_str)
+    };
 
     let metrics = Metrics::new(size, size * 1.3).scale(scale);
     let mut buf = Buffer::new(fs, metrics);
@@ -91,7 +105,7 @@ pub fn measure_text_with_font(fs: &mut FontSystem, text: &str, font_prop: Option
         None,
     );
     buf.shape_until_scroll(fs, false);
-    
+
     let mut max_w = 0.0f32;
     for run in buf.layout_runs() {
         max_w = max_w.max(run.line_w);

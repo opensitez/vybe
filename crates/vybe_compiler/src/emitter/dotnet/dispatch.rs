@@ -590,9 +590,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.console_error" => {
-            crate::emitter::dotnet::core::console_adapter::emit_console_error(
-                chunks, current, line,
-            )
+            crate::emitter::dotnet::core::console_adapter::emit_console_error(chunks, current, line)
         }
         "dotnet.environment_username" => {
             crate::emitter::dotnet::core::environment_adapter::emit_environment_username(
@@ -832,16 +830,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.dataset_new" => {
-            crate::emitter::dotnet::core::datatable_adapter::emit_dataset_new(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.datarow_new" => {
-            crate::emitter::dotnet::core::datatable_adapter::emit_datarow_new(
-                &mut chunks[current], line,
-            )
-        }
+        "dotnet.dataset_new" => crate::emitter::dotnet::core::datatable_adapter::emit_dataset_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.datarow_new" => crate::emitter::dotnet::core::datatable_adapter::emit_datarow_new(
+            &mut chunks[current],
+            line,
+        ),
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.

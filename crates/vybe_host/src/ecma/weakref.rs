@@ -36,11 +36,12 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 const MODULE_WEAKREF: &str = "ecma:weakref";
 const MODULE_REGISTRY: &str = "ecma:finalizationregistry";
+const MODULE_REGISTRY_HYPHENATED: &str = "ecma:finalization-registry";
 
 const WEAKREF_TAG: &str = "__vybe_js_weakref";
 const WEAKREF_TARGET_PROP: &str = "__vybe_wr_target";
@@ -53,7 +54,8 @@ const REGISTRY_ENTRIES_PROP: &str = "__vybe_fr_entries";
 
 fn new_weakref(target: Value) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("WeakRef")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("WeakRef")));
     obj.properties.insert(WEAKREF_TAG.into(), Value::I32(1));
     obj.properties.insert(WEAKREF_TARGET_PROP.into(), target);
     Value::Object(Arc::new(Mutex::new(obj)))
@@ -61,10 +63,13 @@ fn new_weakref(target: Value) -> Value {
 
 fn new_finalization_registry(callback: Value) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(),
-        Value::String(Arc::from("FinalizationRegistry")));
+    obj.properties.insert(
+        "__type".into(),
+        Value::String(Arc::from("FinalizationRegistry")),
+    );
     obj.properties.insert(REGISTRY_TAG.into(), Value::I32(1));
-    obj.properties.insert(REGISTRY_CALLBACK_PROP.into(), callback);
+    obj.properties
+        .insert(REGISTRY_CALLBACK_PROP.into(), callback);
     // Entries: Array of `[target, heldValue, unregisterToken]` tuples.
     obj.properties.insert(
         REGISTRY_ENTRIES_PROP.into(),
@@ -105,133 +110,167 @@ pub fn register(vm: &mut VM) {
     // `new WeakRef(target)` — wraps target. ECMA-262 §26.1.1.1: target must
     // be an Object (or non-registered Symbol since ES2024). Throw TypeError
     // for primitives, null, and undefined.
-    vm.register_host_fn(MODULE_WEAKREF, "new", Box::new(|ctx, args| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        match &target {
-            Value::Object(_) | Value::Symbol(_) => {}
-            _ => {
-                ctx.throw_value(crate::ecma::error::new_error(
-                    "TypeError",
-                    "WeakRef target must be an object",
-                ));
-                return Value::Undefined;
+    vm.register_host_fn(
+        MODULE_WEAKREF,
+        "new",
+        Box::new(|ctx, args| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            match &target {
+                Value::Object(_) | Value::Symbol(_) => {}
+                _ => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "TypeError",
+                        "WeakRef target must be an object",
+                    ));
+                    return Value::Undefined;
+                }
             }
-        }
-        new_weakref(target)
-    }));
+            new_weakref(target)
+        }),
+    );
 
     // `wr.deref()` — returns the wrapped target, or `undefined` after
     // collection. Strong-ref stand-in always returns the target.
-    vm.register_host_fn(MODULE_WEAKREF, "deref", Box::new(|_ctx, args| {
-        let Some(wr) = args.first().and_then(is_weakref) else {
-            return Value::Undefined;
-        };
-        let lock = wr.lock().unwrap();
-        lock.properties.get(WEAKREF_TARGET_PROP).cloned().unwrap_or(Value::Undefined)
-    }));
+    vm.register_host_fn(
+        MODULE_WEAKREF,
+        "deref",
+        Box::new(|_ctx, args| {
+            let Some(wr) = args.first().and_then(is_weakref) else {
+                return Value::Undefined;
+            };
+            let lock = wr.lock().unwrap();
+            lock.properties
+                .get(WEAKREF_TARGET_PROP)
+                .cloned()
+                .unwrap_or(Value::Undefined)
+        }),
+    );
 
+    register_finalization_registry_module(vm, MODULE_REGISTRY);
+    register_finalization_registry_module(vm, MODULE_REGISTRY_HYPHENATED);
+}
+
+fn register_finalization_registry_module(vm: &mut VM, module: &'static str) {
     // ── FinalizationRegistry (§26.2) ─────────────────────────────
 
     // `new FinalizationRegistry(cleanupCallback)` — stores the
     // callback. With strong-ref backing the callback is never invoked,
     // but the constructor still has to stash it so user code that
     // checks `.constructor` / type doesn't fault.
-    vm.register_host_fn(MODULE_REGISTRY, "new", Box::new(|_ctx, args| {
-        let callback = args.first().cloned().unwrap_or(Value::Undefined);
-        new_finalization_registry(callback)
-    }));
+    vm.register_host_fn(
+        module,
+        "new",
+        Box::new(|_ctx, args| {
+            let callback = args.first().cloned().unwrap_or(Value::Undefined);
+            new_finalization_registry(callback)
+        }),
+    );
 
     // `registry.register(target, heldValue, [unregisterToken])` —
     // appends `[target, heldValue, token?]` to the entries Array.
-    vm.register_host_fn(MODULE_REGISTRY, "register", Box::new(|_ctx, args| {
-        let Some(registry) = args.first().and_then(is_registry) else {
-            return Value::Undefined;
-        };
-        let target = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let held = args.get(2).cloned().unwrap_or(Value::Undefined);
-        let token = args.get(3).cloned().unwrap_or(Value::Undefined);
+    vm.register_host_fn(
+        module,
+        "register",
+        Box::new(|_ctx, args| {
+            let Some(registry) = args.first().and_then(is_registry) else {
+                return Value::Undefined;
+            };
+            let target = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let held = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let token = args.get(3).cloned().unwrap_or(Value::Undefined);
 
-        let entry = Value::Object(Arc::new(Mutex::new(
-            Object::new_array(vec![target, held, token])
-        )));
+            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                target, held, token,
+            ]))));
 
-        let lock = registry.lock().unwrap();
-        if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
-            let entries = entries.clone();
-            drop(lock);
-            if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
-                items.push(entry);
+            let lock = registry.lock().unwrap();
+            if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
+                let entries = entries.clone();
+                drop(lock);
+                if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                    items.push(entry);
+                }
             }
-        }
-        Value::Undefined
-    }));
+            Value::Undefined
+        }),
+    );
 
     // `registry.registerWithToken(target, heldValue, unregisterToken)` — alias.
-    vm.register_host_fn(MODULE_REGISTRY, "registerWithToken", Box::new(|_ctx, args| {
-        let Some(registry) = args.first().and_then(is_registry) else {
-            return Value::Undefined;
-        };
-        let target = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let held = args.get(2).cloned().unwrap_or(Value::Undefined);
-        let token = args.get(3).cloned().unwrap_or(Value::Undefined);
-        let entry = Value::Object(Arc::new(Mutex::new(
-            Object::new_array(vec![target, held, token])
-        )));
-        let lock = registry.lock().unwrap();
-        if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
-            let entries = entries.clone();
-            drop(lock);
-            if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
-                items.push(entry);
+    vm.register_host_fn(
+        module,
+        "registerWithToken",
+        Box::new(|_ctx, args| {
+            let Some(registry) = args.first().and_then(is_registry) else {
+                return Value::Undefined;
+            };
+            let target = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let held = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let token = args.get(3).cloned().unwrap_or(Value::Undefined);
+            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                target, held, token,
+            ]))));
+            let lock = registry.lock().unwrap();
+            if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
+                let entries = entries.clone();
+                drop(lock);
+                if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                    items.push(entry);
+                }
             }
-        }
-        Value::Undefined
-    }));
+            Value::Undefined
+        }),
+    );
 
     // `registry.pendingCleanupCount()` — always 0 in sync tests.
-    vm.register_host_fn(MODULE_REGISTRY, "pendingCleanupCount", Box::new(|_ctx, _args| {
-        Value::I32(0)
-    }));
+    vm.register_host_fn(
+        module,
+        "pendingCleanupCount",
+        Box::new(|_ctx, _args| Value::I32(0)),
+    );
 
     // `registry.unregister(unregisterToken)` — removes every entry
     // whose `unregisterToken` SameValue-matches the argument. Returns
     // `true` if at least one entry was removed (per spec §26.2.3.3).
-    vm.register_host_fn(MODULE_REGISTRY, "unregister", Box::new(|_ctx, args| {
-        let Some(registry) = args.first().and_then(is_registry) else {
-            return Value::Bool(false);
-        };
-        let token = args.get(1).cloned().unwrap_or(Value::Undefined);
-        if matches!(token, Value::Undefined | Value::Null) {
-            return Value::Bool(false);
-        }
+    vm.register_host_fn(
+        module,
+        "unregister",
+        Box::new(|_ctx, args| {
+            let Some(registry) = args.first().and_then(is_registry) else {
+                return Value::Bool(false);
+            };
+            let token = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if matches!(token, Value::Undefined | Value::Null) {
+                return Value::Bool(false);
+            }
 
-        let lock = registry.lock().unwrap();
-        let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) else {
-            return Value::Bool(false);
-        };
-        let entries = entries.clone();
-        drop(lock);
+            let lock = registry.lock().unwrap();
+            let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) else {
+                return Value::Bool(false);
+            };
+            let entries = entries.clone();
+            drop(lock);
 
-        let mut removed = false;
-        if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
-            let before = items.len();
-            items.retain(|entry| {
-                if let Value::Object(t) = entry {
-                    let t = t.lock().unwrap();
-                    if let ObjectKind::Array(ref tuple) = t.kind {
-                        if let Some(stored_token) = tuple.get(2) {
-                            if same_value(stored_token, &token) {
-                                return false;
+            let mut removed = false;
+            if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                let before = items.len();
+                items.retain(|entry| {
+                    if let Value::Object(t) = entry {
+                        let t = t.lock().unwrap();
+                        if let ObjectKind::Array(ref tuple) = t.kind {
+                            if let Some(stored_token) = tuple.get(2) {
+                                if same_value(stored_token, &token) {
+                                    return false;
+                                }
                             }
                         }
                     }
-                }
-                true
-            });
-            removed = items.len() < before;
-        }
-        Value::Bool(removed)
-    }));
+                    true
+                });
+                removed = items.len() < before;
+            }
+            Value::Bool(removed)
+        }),
+    );
 }
 
 // ── SameValue (ECMA-262 §7.2.11) ─────────────────────────────────
@@ -270,29 +309,46 @@ fn same_value(a: &Value, b: &Value) -> bool {
 // found as an own property (which it never is — host fns live in the
 // type registry, not on the object itself).
 
-pub fn dispatch_weakref_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+pub fn dispatch_weakref_method(
+    obj: Arc<Mutex<Object>>,
+    method: &str,
+    args: &[Value],
+) -> Option<Value> {
     let wr = Value::Object(obj);
     match method {
         "deref" => {
-            let Some(arc) = is_weakref(&wr) else { return None };
+            let Some(arc) = is_weakref(&wr) else {
+                return None;
+            };
             let lock = arc.lock().unwrap();
-            Some(lock.properties.get(WEAKREF_TARGET_PROP).cloned().unwrap_or(Value::Undefined))
+            Some(
+                lock.properties
+                    .get(WEAKREF_TARGET_PROP)
+                    .cloned()
+                    .unwrap_or(Value::Undefined),
+            )
         }
         _ => None,
     }
 }
 
-pub fn dispatch_registry_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+pub fn dispatch_registry_method(
+    obj: Arc<Mutex<Object>>,
+    method: &str,
+    args: &[Value],
+) -> Option<Value> {
     let reg = Value::Object(obj.clone());
     match method {
         "register" => {
-            let Some(registry) = is_registry(&reg) else { return None };
+            let Some(registry) = is_registry(&reg) else {
+                return None;
+            };
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let held = args.get(1).cloned().unwrap_or(Value::Undefined);
             let token = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let entry = Value::Object(Arc::new(Mutex::new(
-                Object::new_array(vec![target, held, token])
-            )));
+            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                target, held, token,
+            ]))));
             let lock = registry.lock().unwrap();
             if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
                 let entries = entries.clone();
@@ -304,7 +360,9 @@ pub fn dispatch_registry_method(obj: Arc<Mutex<Object>>, method: &str, args: &[V
             Some(Value::Undefined)
         }
         "unregister" => {
-            let Some(registry) = is_registry(&reg) else { return None };
+            let Some(registry) = is_registry(&reg) else {
+                return None;
+            };
             let token = args.first().cloned().unwrap_or(Value::Undefined);
             if matches!(token, Value::Undefined | Value::Null) {
                 return Some(Value::Bool(false));

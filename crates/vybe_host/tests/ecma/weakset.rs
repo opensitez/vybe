@@ -53,8 +53,14 @@ fn add_returns_the_weakset_itself() {
     // ECMA-262: WeakSet.prototype.add returns the WeakSet (chainable).
     let ws = invoke("new", vec![]);
     let result = invoke("add", vec![ws.clone(), obj()]);
-    let ws_ptr  = match &ws     { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let res_ptr = match &result { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let ws_ptr = match &ws {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let res_ptr = match &result {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(ws_ptr, res_ptr);
 }
 
@@ -114,6 +120,9 @@ fn adding_same_object_twice_is_idempotent() {
     invoke("add", vec![ws.clone(), o.clone()]);
     invoke("add", vec![ws.clone(), o.clone()]);
     // Still present, and deleting once removes it.
-    assert_eq!(invoke("delete", vec![ws.clone(), o.clone()]), Value::Bool(true));
+    assert_eq!(
+        invoke("delete", vec![ws.clone(), o.clone()]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("has", vec![ws, o]), Value::Bool(false));
 }

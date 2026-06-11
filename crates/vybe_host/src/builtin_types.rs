@@ -2,12 +2,14 @@
 //! Each type gets a vtable with methods resolved via the host function registry.
 //! This replaces the legacy type_methods table with proper WASM GC-style dispatch.
 
-use vybe_bytecode::{VM, TypeDef, Method, Value};
+use vybe_bytecode::{Method, TypeDef, VM, Value};
 
 pub fn register_all(vm: &mut VM) {
     // Helper: look up host fn index by (module, name)
     let h = |vm: &VM, module: &str, name: &str| -> Option<usize> {
-        vm.host_registry.get(&(module.to_string(), name.to_string())).copied()
+        vm.host_registry
+            .get(&(module.to_string(), name.to_string()))
+            .copied()
     };
 
     // --- Object (type 0, already created) ---
@@ -173,8 +175,12 @@ pub fn register_all(vm: &mut VM) {
     };
 
     // Also register "ArrayList" and "Array" as aliases for List
-    let _ = vm.type_registry.register(TypeDef::new("ArrayList").with_parent(list_id));
-    let _ = vm.type_registry.register(TypeDef::new("Array").with_parent(list_id));
+    let _ = vm
+        .type_registry
+        .register(TypeDef::new("ArrayList").with_parent(list_id));
+    let _ = vm
+        .type_registry
+        .register(TypeDef::new("Array").with_parent(list_id));
 
     // --- Dictionary (.NET adapter for ECMA-262 §24.1 Map) ---
     //
@@ -187,20 +193,20 @@ pub fn register_all(vm: &mut VM) {
     let dict_id = {
         let mut t = TypeDef::new("Dictionary");
         for (method, fname) in &[
-            ("add",            "set"),     // Dictionary.Add(k, v)
-            ("item",           "get"),     // Dictionary.Item(k)
-            ("containskey",    "has"),     // Dictionary.ContainsKey(k)
-            ("containsvalue",  "containsValue"), // .NET-only linear scan
-            ("remove",         "delete"),  // Dictionary.Remove(k)
-            ("keys",           "keys"),
-            ("values",         "values"),
-            ("clear",          "clear"),
-            ("count",          "size"),    // .NET .Count maps to ECMA size
-            ("trygetvalue",    "get"),     // 1-arg form (no `out` param)
+            ("add", "set"),                     // Dictionary.Add(k, v)
+            ("item", "get"),                    // Dictionary.Item(k)
+            ("containskey", "has"),             // Dictionary.ContainsKey(k)
+            ("containsvalue", "containsValue"), // .NET-only linear scan
+            ("remove", "delete"),               // Dictionary.Remove(k)
+            ("keys", "keys"),
+            ("values", "values"),
+            ("clear", "clear"),
+            ("count", "size"),      // .NET .Count maps to ECMA size
+            ("trygetvalue", "get"), // 1-arg form (no `out` param)
             // ConcurrentDictionary aliases — same shape, same primitives.
-            ("tryadd",         "set"),
-            ("addorupdate",    "set"),
-            ("getoradd",       "get"),
+            ("tryadd", "set"),
+            ("addorupdate", "set"),
+            ("getoradd", "get"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -209,9 +215,15 @@ pub fn register_all(vm: &mut VM) {
         t.parent = Some(0);
         vm.type_registry.register(t)
     };
-    let _ = vm.type_registry.register(TypeDef::new("Hashtable").with_parent(dict_id));
-    let _ = vm.type_registry.register(TypeDef::new("ConcurrentDictionary").with_parent(dict_id));
-    let _ = vm.type_registry.register(TypeDef::new("SortedList").with_parent(dict_id));
+    let _ = vm
+        .type_registry
+        .register(TypeDef::new("Hashtable").with_parent(dict_id));
+    let _ = vm
+        .type_registry
+        .register(TypeDef::new("ConcurrentDictionary").with_parent(dict_id));
+    let _ = vm
+        .type_registry
+        .register(TypeDef::new("SortedList").with_parent(dict_id));
 
     // --- Queue ---
     //
@@ -225,13 +237,13 @@ pub fn register_all(vm: &mut VM) {
         // `ecma:array.*` directly; no `vybe:types` involvement.
         // `peek` looks at the front (`first`), `clear` empties.
         for (method, fname) in &[
-            ("enqueue",   "push"),
-            ("dequeue",   "shift"),
-            ("peek",      "first"),     // FIFO: front
-            ("count",     "length"),
-            ("clear",     "clear"),
-            ("contains",  "includes"),
-            ("toarray",   "slice"),
+            ("enqueue", "push"),
+            ("dequeue", "shift"),
+            ("peek", "first"), // FIFO: front
+            ("count", "length"),
+            ("clear", "clear"),
+            ("contains", "includes"),
+            ("toarray", "slice"),
         ] {
             if let Some(idx) = h(vm, "ecma:array", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -251,13 +263,13 @@ pub fn register_all(vm: &mut VM) {
         // `ecma:array.*` directly; no `vybe:types` involvement.
         // `peek` looks at the end (`last`), `clear` empties.
         for (method, fname) in &[
-            ("push",      "push"),
-            ("pop",       "pop"),
-            ("peek",      "last"),      // LIFO: top
-            ("count",     "length"),
-            ("clear",     "clear"),
-            ("contains",  "includes"),
-            ("toarray",   "slice"),
+            ("push", "push"),
+            ("pop", "pop"),
+            ("peek", "last"), // LIFO: top
+            ("count", "length"),
+            ("clear", "clear"),
+            ("contains", "includes"),
+            ("toarray", "slice"),
         ] {
             if let Some(idx) = h(vm, "ecma:array", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -310,7 +322,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("SqlConnection");
         for (method, fname) in &[
-            ("open", "[method]connection.open"), ("close", "[method]connection.close"),
+            ("open", "[method]connection.open"),
+            ("close", "[method]connection.close"),
             ("createcommand", "[method]connection.create-command"),
             ("begintransaction", "[method]connection.begin-transaction"),
             ("getschema", "[method]connection.get-schema"),
@@ -415,7 +428,8 @@ pub fn register_all(vm: &mut VM) {
             t.methods.insert("stop".into(), Method::HostFn(idx));
         }
         if let Some(idx) = h(vm, "wasi:clocks", "stopwatchElapsed") {
-            t.methods.insert("elapsedmilliseconds".into(), Method::HostFn(idx));
+            t.methods
+                .insert("elapsedmilliseconds".into(), Method::HostFn(idx));
             t.methods.insert("elapsed".into(), Method::HostFn(idx));
         }
         if let Some(idx) = h(vm, "wasi:clocks", "stopwatchReset") {
@@ -513,9 +527,15 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Map");
         for (method, fname) in &[
-            ("set", "set"), ("get", "get"), ("has", "has"),
-            ("delete", "delete"), ("keys", "keys"), ("values", "values"),
-            ("clear", "clear"), ("entries", "entries"), ("forEach", "forEach"),
+            ("set", "set"),
+            ("get", "get"),
+            ("has", "has"),
+            ("delete", "delete"),
+            ("keys", "keys"),
+            ("values", "values"),
+            ("clear", "clear"),
+            ("entries", "entries"),
+            ("forEach", "forEach"),
             ("iterator", "entries"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
@@ -540,9 +560,15 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Set");
         for (method, fname) in &[
-            ("add", "add"), ("has", "has"), ("delete", "delete"),
-            ("values", "values"), ("keys", "values"), ("clear", "clear"),
-            ("entries", "entries"), ("forEach", "forEach"), ("iterator", "values"),
+            ("add", "add"),
+            ("has", "has"),
+            ("delete", "delete"),
+            ("values", "values"),
+            ("keys", "values"),
+            ("clear", "clear"),
+            ("entries", "entries"),
+            ("forEach", "forEach"),
+            ("iterator", "values"),
         ] {
             if let Some(idx) = h(vm, "ecma:set", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -564,7 +590,10 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("WeakMap");
         for (method, fname) in &[
-            ("set", "set"), ("get", "get"), ("has", "has"), ("delete", "delete"),
+            ("set", "set"),
+            ("get", "get"),
+            ("has", "has"),
+            ("delete", "delete"),
         ] {
             if let Some(idx) = h(vm, "ecma:weakmap", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -577,9 +606,7 @@ pub fn register_all(vm: &mut VM) {
     // --- WeakSet (JS collection) ---
     {
         let mut t = TypeDef::new("WeakSet");
-        for (method, fname) in &[
-            ("add", "add"), ("has", "has"), ("delete", "delete"),
-        ] {
+        for (method, fname) in &[("add", "add"), ("has", "has"), ("delete", "delete")] {
             if let Some(idx) = h(vm, "ecma:weakset", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
@@ -594,9 +621,7 @@ pub fn register_all(vm: &mut VM) {
     // doesn't expose weak refs); `deref()` always returns the target.
     {
         let mut t = TypeDef::new("WeakRef");
-        for (method, fname) in &[
-            ("deref", "deref"),
-        ] {
+        for (method, fname) in &[("deref", "deref")] {
             if let Some(idx) = h(vm, "ecma:weakref", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
@@ -611,9 +636,7 @@ pub fn register_all(vm: &mut VM) {
     // the cleanup callback never fires — API surface only.
     {
         let mut t = TypeDef::new("FinalizationRegistry");
-        for (method, fname) in &[
-            ("register", "register"), ("unregister", "unregister"),
-        ] {
+        for (method, fname) in &[("register", "register"), ("unregister", "unregister")] {
             if let Some(idx) = h(vm, "ecma:finalizationregistry", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
@@ -630,9 +653,7 @@ pub fn register_all(vm: &mut VM) {
     // caching can come later).
     {
         let mut t = TypeDef::new("RegExp");
-        for (method, fname) in &[
-            ("test", "test"), ("exec", "exec"), ("toString", "toString"),
-        ] {
+        for (method, fname) in &[("test", "test"), ("exec", "exec"), ("toString", "toString")] {
             if let Some(idx) = h(vm, "ecma:regexp", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
@@ -652,16 +673,47 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Date");
         for method in &[
-            "getFullYear", "getYear", "getMonth", "getDate", "getDay",
-            "getHours", "getMinutes", "getSeconds", "getMilliseconds",
-            "getUTCFullYear", "getUTCMonth", "getUTCDate", "getUTCDay",
-            "getUTCHours", "getUTCMinutes", "getUTCSeconds", "getUTCMilliseconds",
-            "getTime", "getTimezoneOffset", "valueOf",
-            "setTime", "setFullYear", "setMonth", "setDate",
-            "setHours", "setMinutes", "setSeconds", "setMilliseconds",
-            "setUTCFullYear", "setUTCMonth", "setUTCDate",
-            "setUTCHours", "setUTCMinutes", "setUTCSeconds", "setUTCMilliseconds",
-            "toISOString", "toString", "toUTCString", "toDateString", "toTimeString", "toJSON",
+            "getFullYear",
+            "getYear",
+            "getMonth",
+            "getDate",
+            "getDay",
+            "getHours",
+            "getMinutes",
+            "getSeconds",
+            "getMilliseconds",
+            "getUTCFullYear",
+            "getUTCMonth",
+            "getUTCDate",
+            "getUTCDay",
+            "getUTCHours",
+            "getUTCMinutes",
+            "getUTCSeconds",
+            "getUTCMilliseconds",
+            "getTime",
+            "getTimezoneOffset",
+            "valueOf",
+            "setTime",
+            "setFullYear",
+            "setMonth",
+            "setDate",
+            "setHours",
+            "setMinutes",
+            "setSeconds",
+            "setMilliseconds",
+            "setUTCFullYear",
+            "setUTCMonth",
+            "setUTCDate",
+            "setUTCHours",
+            "setUTCMinutes",
+            "setUTCSeconds",
+            "setUTCMilliseconds",
+            "toISOString",
+            "toString",
+            "toUTCString",
+            "toDateString",
+            "toTimeString",
+            "toJSON",
         ] {
             if let Some(idx) = h(vm, "ecma:date", method) {
                 t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
@@ -680,12 +732,27 @@ pub fn register_all(vm: &mut VM) {
     for type_name in &["DateTime", "DateTimeImmutable"] {
         let mut t = TypeDef::new(type_name);
         for method in &[
-            "getFullYear", "getMonth", "getDate", "getDay",
-            "getHours", "getMinutes", "getSeconds", "getMilliseconds",
-            "getTime", "getTimezoneOffset", "valueOf",
-            "setTime", "setFullYear", "setMonth", "setDate",
-            "setHours", "setMinutes", "setSeconds", "setMilliseconds",
-            "toISOString", "toString",
+            "getFullYear",
+            "getMonth",
+            "getDate",
+            "getDay",
+            "getHours",
+            "getMinutes",
+            "getSeconds",
+            "getMilliseconds",
+            "getTime",
+            "getTimezoneOffset",
+            "valueOf",
+            "setTime",
+            "setFullYear",
+            "setMonth",
+            "setDate",
+            "setHours",
+            "setMinutes",
+            "setSeconds",
+            "setMilliseconds",
+            "toISOString",
+            "toString",
         ] {
             if let Some(idx) = h(vm, "ecma:date", method) {
                 t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
@@ -704,7 +771,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Collator");
         for (method, fname) in &[
-            ("compare", "compare"), ("resolvedOptions", "resolvedOptions"),
+            ("compare", "compare"),
+            ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/collator", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -716,7 +784,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("NumberFormat");
         for (method, fname) in &[
-            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("format", "format"),
+            ("formatToParts", "formatToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/numberformat", fname) {
@@ -729,7 +798,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("DateTimeFormat");
         for (method, fname) in &[
-            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("format", "format"),
+            ("formatToParts", "formatToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/datetimeformat", fname) {
@@ -742,7 +812,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("ListFormat");
         for (method, fname) in &[
-            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("format", "format"),
+            ("formatToParts", "formatToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/listformat", fname) {
@@ -755,7 +826,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("PluralRules");
         for (method, fname) in &[
-            ("select", "select"), ("selectRange", "selectRange"),
+            ("select", "select"),
+            ("selectRange", "selectRange"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/pluralrules", fname) {
@@ -768,7 +840,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("RelativeTimeFormat");
         for (method, fname) in &[
-            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("format", "format"),
+            ("formatToParts", "formatToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/relativetimeformat", fname) {
@@ -781,7 +854,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Segmenter");
         for (method, fname) in &[
-            ("segment", "segment"), ("resolvedOptions", "resolvedOptions"),
+            ("segment", "segment"),
+            ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/segmenter", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -793,7 +867,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Locale");
         for (method, fname) in &[
-            ("toString", "toString"), ("maximize", "maximize"),
+            ("toString", "toString"),
+            ("maximize", "maximize"),
             ("minimize", "minimize"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/locale", fname) {
@@ -805,9 +880,7 @@ pub fn register_all(vm: &mut VM) {
     }
     {
         let mut t = TypeDef::new("DisplayNames");
-        for (method, fname) in &[
-            ("of", "of"), ("resolvedOptions", "resolvedOptions"),
-        ] {
+        for (method, fname) in &[("of", "of"), ("resolvedOptions", "resolvedOptions")] {
             if let Some(idx) = h(vm, "ecma:intl/displaynames", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
@@ -818,7 +891,8 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("DurationFormat");
         for (method, fname) in &[
-            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("format", "format"),
+            ("formatToParts", "formatToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = h(vm, "ecma:intl/durationformat", fname) {
@@ -885,18 +959,50 @@ pub fn register_all(vm: &mut VM) {
 
     // Register all concrete control types as subtypes of Control
     let control_type_names = [
-        "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
-        "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
-        "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
-        "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
-        "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
-        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
-        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
-        "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
+        "Button",
+        "Label",
+        "TextBox",
+        "CheckBox",
+        "RadioButton",
+        "ComboBox",
+        "ListBox",
+        "Panel",
+        "GroupBox",
+        "TabControl",
+        "TabPage",
+        "DataGridView",
+        "ProgressBar",
+        "TrackBar",
+        "NumericUpDown",
+        "DateTimePicker",
+        "RichTextBox",
+        "PictureBox",
+        "MenuStrip",
+        "ToolStrip",
+        "StatusStrip",
+        "SplitContainer",
+        "FlowLayoutPanel",
+        "TableLayoutPanel",
+        "LinkLabel",
+        "MaskedTextBox",
+        "ListView",
+        "WebBrowser",
+        "MonthCalendar",
+        "ContextMenuStrip",
+        "Timer",
+        "BindingSource",
+        "DataSet",
+        "ImageList",
+        "ToolTip",
+        "NotifyIcon",
+        "ErrorProvider",
+        "HelpProvider",
+        "BackgroundWorker",
         "TreeView",
     ];
     for ct in &control_type_names {
-        vm.type_registry.register(TypeDef::new(ct).with_parent(control_id));
+        vm.type_registry
+            .register(TypeDef::new(ct).with_parent(control_id));
     }
     // Form is special — inherits from Control, adds its own methods
     {
@@ -958,15 +1064,47 @@ pub fn register_all(vm: &mut VM) {
 
     // Register GUI control constructors (new_Button, new_TextBox, etc.)
     let gui_ctors = [
-        "Button", "Label", "TextBox", "CheckBox", "RadioButton", "ComboBox",
-        "ListBox", "Panel", "GroupBox", "TabControl", "TabPage", "DataGridView",
-        "ProgressBar", "TrackBar", "NumericUpDown", "DateTimePicker", "RichTextBox",
-        "PictureBox", "MenuStrip", "ToolStrip", "StatusStrip", "SplitContainer",
-        "FlowLayoutPanel", "TableLayoutPanel", "LinkLabel", "MaskedTextBox",
-        "ListView", "WebBrowser", "MonthCalendar", "ContextMenuStrip",
-        "Timer", "BindingSource", "DataSet", "ImageList", "ToolTip",
-        "NotifyIcon", "ErrorProvider", "HelpProvider", "BackgroundWorker",
-        "Form", "TreeView",
+        "Button",
+        "Label",
+        "TextBox",
+        "CheckBox",
+        "RadioButton",
+        "ComboBox",
+        "ListBox",
+        "Panel",
+        "GroupBox",
+        "TabControl",
+        "TabPage",
+        "DataGridView",
+        "ProgressBar",
+        "TrackBar",
+        "NumericUpDown",
+        "DateTimePicker",
+        "RichTextBox",
+        "PictureBox",
+        "MenuStrip",
+        "ToolStrip",
+        "StatusStrip",
+        "SplitContainer",
+        "FlowLayoutPanel",
+        "TableLayoutPanel",
+        "LinkLabel",
+        "MaskedTextBox",
+        "ListView",
+        "WebBrowser",
+        "MonthCalendar",
+        "ContextMenuStrip",
+        "Timer",
+        "BindingSource",
+        "DataSet",
+        "ImageList",
+        "ToolTip",
+        "NotifyIcon",
+        "ErrorProvider",
+        "HelpProvider",
+        "BackgroundWorker",
+        "Form",
+        "TreeView",
     ];
     for ct in &gui_ctors {
         let fn_name = format!("new_{}", ct);
@@ -998,23 +1136,34 @@ pub fn register_all(vm: &mut VM) {
             let lower = format!("__tid_{}", typedef.name.to_lowercase());
             vm.globals.insert(lower, Value::I32(tid as i32));
             let preserved = format!("__tid_{}", typedef.name);
-            vm.globals.entry(preserved).or_insert(Value::I32(tid as i32));
+            vm.globals
+                .entry(preserved)
+                .or_insert(Value::I32(tid as i32));
         }
     }
 }
 
 fn register_new_globals_types(vm: &mut VM) {
     let h = |vm: &VM, module: &str, name: &str| -> Option<usize> {
-        vm.host_registry.get(&(module.to_string(), name.to_string())).copied()
+        vm.host_registry
+            .get(&(module.to_string(), name.to_string()))
+            .copied()
     };
 
     // ── Iterator (Stage-3) ─────────────────────────────────────────
     {
         let mut t = TypeDef::new("Iterator");
         for (method, fname) in &[
-            ("take", "take"), ("drop", "drop"), ("map", "map"), ("filter", "filter"),
-            ("reduce", "reduce"), ("forEach", "forEach"), ("some", "some"),
-            ("every", "every"), ("find", "find"), ("toArray", "toArray"),
+            ("take", "take"),
+            ("drop", "drop"),
+            ("map", "map"),
+            ("filter", "filter"),
+            ("reduce", "reduce"),
+            ("forEach", "forEach"),
+            ("some", "some"),
+            ("every", "every"),
+            ("find", "find"),
+            ("toArray", "toArray"),
             ("flatMap", "flatMap"),
         ] {
             if let Some(idx) = h(vm, "ecma:iterator", fname) {
@@ -1091,28 +1240,28 @@ fn register_new_globals_types(vm: &mut VM) {
         let mut t = TypeDef::new("Element");
         for (method, fname) in &[
             // Read API
-            ("querySelector",         "querySelector"),
-            ("querySelectorAll",      "querySelectorAll"),
-            ("matches",               "matches"),
-            ("closest",               "closest"),
-            ("getAttribute",          "getAttribute"),
-            ("hasAttribute",          "hasAttribute"),
-            ("getElementsByTagName",  "getElementsByTagName"),
-            ("getElementsByClassName","getElementsByClassName"),
+            ("querySelector", "querySelector"),
+            ("querySelectorAll", "querySelectorAll"),
+            ("matches", "matches"),
+            ("closest", "closest"),
+            ("getAttribute", "getAttribute"),
+            ("hasAttribute", "hasAttribute"),
+            ("getElementsByTagName", "getElementsByTagName"),
+            ("getElementsByClassName", "getElementsByClassName"),
             // Mutation API
-            ("setAttribute",          "setAttribute"),
-            ("removeAttribute",       "removeAttribute"),
-            ("appendChild",           "appendChild"),
-            ("removeChild",           "removeChild"),
-            ("insertBefore",          "insertBefore"),
-            ("replaceChild",          "replaceChild"),
-            ("cloneNode",             "cloneNode"),
+            ("setAttribute", "setAttribute"),
+            ("removeAttribute", "removeAttribute"),
+            ("appendChild", "appendChild"),
+            ("removeChild", "removeChild"),
+            ("insertBefore", "insertBefore"),
+            ("replaceChild", "replaceChild"),
+            ("cloneNode", "cloneNode"),
             // Namespace-aware (Phase 4)
-            ("getAttributeNS",        "getAttributeNS"),
-            ("hasAttributeNS",        "hasAttributeNS"),
-            ("setAttributeNS",        "setAttributeNS"),
-            ("removeAttributeNS",     "removeAttributeNS"),
-            ("getElementsByTagNameNS","getElementsByTagNameNS"),
+            ("getAttributeNS", "getAttributeNS"),
+            ("hasAttributeNS", "hasAttributeNS"),
+            ("setAttributeNS", "setAttributeNS"),
+            ("removeAttributeNS", "removeAttributeNS"),
+            ("getElementsByTagNameNS", "getElementsByTagNameNS"),
         ] {
             if let Some(idx) = h(vm, "web:dom-parser", fname) {
                 t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
@@ -1125,23 +1274,23 @@ fn register_new_globals_types(vm: &mut VM) {
         let mut t = TypeDef::new("Document");
         for (method, fname) in &[
             // Read API
-            ("querySelector",         "querySelector"),
-            ("querySelectorAll",      "querySelectorAll"),
-            ("getElementById",        "getElementById"),
-            ("getElementsByTagName",  "getElementsByTagName"),
-            ("getElementsByClassName","getElementsByClassName"),
+            ("querySelector", "querySelector"),
+            ("querySelectorAll", "querySelectorAll"),
+            ("getElementById", "getElementById"),
+            ("getElementsByTagName", "getElementsByTagName"),
+            ("getElementsByClassName", "getElementsByClassName"),
             // Mutation factories
-            ("createElement",         "createElement"),
-            ("createElementNS",       "createElementNS"),
-            ("createTextNode",        "createTextNode"),
-            ("createComment",         "createComment"),
-            ("createDocumentFragment","createDocumentFragment"),
-            ("appendChild",           "appendChild"),
-            ("removeChild",           "removeChild"),
-            ("insertBefore",          "insertBefore"),
-            ("replaceChild",          "replaceChild"),
-            ("cloneNode",             "cloneNode"),
-            ("getElementsByTagNameNS","getElementsByTagNameNS"),
+            ("createElement", "createElement"),
+            ("createElementNS", "createElementNS"),
+            ("createTextNode", "createTextNode"),
+            ("createComment", "createComment"),
+            ("createDocumentFragment", "createDocumentFragment"),
+            ("appendChild", "appendChild"),
+            ("removeChild", "removeChild"),
+            ("insertBefore", "insertBefore"),
+            ("replaceChild", "replaceChild"),
+            ("cloneNode", "cloneNode"),
+            ("getElementsByTagNameNS", "getElementsByTagNameNS"),
         ] {
             if let Some(idx) = h(vm, "web:dom-parser", fname) {
                 t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
@@ -1156,7 +1305,9 @@ fn register_new_globals_types(vm: &mut VM) {
     let text_id = vm.type_registry.register(TypeDef::new("Text"));
     let comment_id = vm.type_registry.register(TypeDef::new("Comment"));
     let cdata_id = vm.type_registry.register(TypeDef::new("CDATASection"));
-    let pi_id = vm.type_registry.register(TypeDef::new("ProcessingInstruction"));
+    let pi_id = vm
+        .type_registry
+        .register(TypeDef::new("ProcessingInstruction"));
     let attr_id = vm.type_registry.register(TypeDef::new("Attr"));
     let _ = vm.type_registry.register(TypeDef::new("DOMParser"));
     let _ = vm.type_registry.register(TypeDef::new("XMLSerializer"));
@@ -1179,73 +1330,149 @@ fn register_new_globals_types(vm: &mut VM) {
 fn register_enums(vm: &mut VM) {
     // DialogResult
     let id = vm.type_registry.register(TypeDef::new("DialogResult"));
-    for (name, val) in &[("none",0),("ok",1),("cancel",2),("abort",3),("retry",4),("ignore",5),("yes",6),("no",7)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("ok", 1),
+        ("cancel", 2),
+        ("abort", 3),
+        ("retry", 4),
+        ("ignore", 5),
+        ("yes", 6),
+        ("no", 7),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // MessageBoxButtons
     let id = vm.type_registry.register(TypeDef::new("MessageBoxButtons"));
-    for (name, val) in &[("ok",0),("okcancel",1),("abortretryignore",2),("yesnocancel",3),("yesno",4),("retrycancel",5)] {
+    for (name, val) in &[
+        ("ok", 0),
+        ("okcancel", 1),
+        ("abortretryignore", 2),
+        ("yesnocancel", 3),
+        ("yesno", 4),
+        ("retrycancel", 5),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // MessageBoxIcon
     let id = vm.type_registry.register(TypeDef::new("MessageBoxIcon"));
-    for (name, val) in &[("none",0),("error",16),("question",32),("warning",48),("information",64)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("error", 16),
+        ("question", 32),
+        ("warning", 48),
+        ("information", 64),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // Keys
     let id = vm.type_registry.register(TypeDef::new("Keys"));
     for (name, val) in &[
-        ("none",0),("back",8),("tab",9),("return",13),("enter",13),("escape",27),
-        ("space",32),("left",37),("up",38),("right",39),("down",40),
-        ("delete",46),("insert",45),("shift",16),("control",17),("alt",18),
-        ("f1",112),("f2",113),("f3",114),("f4",115),("f5",116),("f6",117),
-        ("f7",118),("f8",119),("f9",120),("f10",121),("f11",122),("f12",123),
+        ("none", 0),
+        ("back", 8),
+        ("tab", 9),
+        ("return", 13),
+        ("enter", 13),
+        ("escape", 27),
+        ("space", 32),
+        ("left", 37),
+        ("up", 38),
+        ("right", 39),
+        ("down", 40),
+        ("delete", 46),
+        ("insert", 45),
+        ("shift", 16),
+        ("control", 17),
+        ("alt", 18),
+        ("f1", 112),
+        ("f2", 113),
+        ("f3", 114),
+        ("f4", 115),
+        ("f5", 116),
+        ("f6", 117),
+        ("f7", 118),
+        ("f8", 119),
+        ("f9", 120),
+        ("f10", 121),
+        ("f11", 122),
+        ("f12", 123),
     ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // FormBorderStyle
     let id = vm.type_registry.register(TypeDef::new("FormBorderStyle"));
-    for (name, val) in &[("none",0),("fixedsingle",1),("fixeddialog",3),("sizable",4),("fixedtoolwindow",5),("sizabletoolwindow",6)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("fixedsingle", 1),
+        ("fixeddialog", 3),
+        ("sizable", 4),
+        ("fixedtoolwindow", 5),
+        ("sizabletoolwindow", 6),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // FormStartPosition
     let id = vm.type_registry.register(TypeDef::new("FormStartPosition"));
-    for (name, val) in &[("manual",0),("centerscreen",1),("windowsdefaultlocation",2),("windowsdefaultbounds",3),("centerparent",4)] {
+    for (name, val) in &[
+        ("manual", 0),
+        ("centerscreen", 1),
+        ("windowsdefaultlocation", 2),
+        ("windowsdefaultbounds", 3),
+        ("centerparent", 4),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // FormWindowState
     let id = vm.type_registry.register(TypeDef::new("FormWindowState"));
-    for (name, val) in &[("normal",0),("minimized",1),("maximized",2)] {
+    for (name, val) in &[("normal", 0), ("minimized", 1), ("maximized", 2)] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // DockStyle
     let id = vm.type_registry.register(TypeDef::new("DockStyle"));
-    for (name, val) in &[("none",0),("top",1),("bottom",2),("left",3),("right",4),("fill",5)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("top", 1),
+        ("bottom", 2),
+        ("left", 3),
+        ("right", 4),
+        ("fill", 5),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // AnchorStyles
     let id = vm.type_registry.register(TypeDef::new("AnchorStyles"));
-    for (name, val) in &[("none",0),("top",1),("bottom",2),("left",4),("right",8)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("top", 1),
+        ("bottom", 2),
+        ("left", 4),
+        ("right", 8),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // CloseReason
     let id = vm.type_registry.register(TypeDef::new("CloseReason"));
-    for (name, val) in &[("none",0),("windowsshutdown",1),("userclosing",3),("applicationexitcall",5)] {
+    for (name, val) in &[
+        ("none", 0),
+        ("windowsshutdown", 1),
+        ("userclosing", 3),
+        ("applicationexitcall", 5),
+    ] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
     // MouseButtons
     let id = vm.type_registry.register(TypeDef::new("MouseButtons"));
-    for (name, val) in &[("none",0),("left",1),("right",2),("middle",4)] {
+    for (name, val) in &[("none", 0), ("left", 1), ("right", 2), ("middle", 4)] {
         vm.type_registry.add_constant(id, name, *val);
     }
 
@@ -1266,13 +1493,26 @@ fn register_enums(vm: &mut VM) {
     let error_id = vm.type_registry.register(error_td);
 
     let exc_types_under_exception = [
-        "ValueError", "KeyError", "IndexError",
-        "RuntimeError", "StopIteration", "AttributeError",
-        "ZeroDivisionError", "FileNotFoundError", "ImportError",
-        "NotImplementedError", "OverflowError", "IOError", "OSError",
+        "ValueError",
+        "KeyError",
+        "IndexError",
+        "RuntimeError",
+        "StopIteration",
+        "AttributeError",
+        "ZeroDivisionError",
+        "FileNotFoundError",
+        "ImportError",
+        "NotImplementedError",
+        "OverflowError",
+        "IOError",
+        "OSError",
         // .NET exception types
-        "ArgumentException", "ArgumentNullException", "InvalidOperationException",
-        "NullReferenceException", "FormatException", "StackOverflowException",
+        "ArgumentException",
+        "ArgumentNullException",
+        "InvalidOperationException",
+        "NullReferenceException",
+        "FormatException",
+        "StackOverflowException",
     ];
     for name in &exc_types_under_exception {
         let mut td = TypeDef::new(name);
@@ -1286,7 +1526,13 @@ fn register_enums(vm: &mut VM) {
     // TypeError is also used by Python for type errors; keep it under
     // Error so JS `instanceof Error` works while still being catchable
     // as Exception (Error's parent) in cross-language code.
-    let js_error_types = ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "URIError"];
+    let js_error_types = [
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "URIError",
+    ];
     for name in &js_error_types {
         let mut td = TypeDef::new(name);
         td.parent = Some(error_id);

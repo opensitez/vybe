@@ -21,7 +21,11 @@ pub enum HandleEntry {
     /// An owned component resource (type_id + value).
     OwnedResource { type_id: u32, value: Value },
     /// A borrowed resource lent from another task (scope_task is the lending CMTask id).
-    BorrowedResource { type_id: u32, value: Value, scope_task: u32 },
+    BorrowedResource {
+        type_id: u32,
+        value: Value,
+        scope_task: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +45,10 @@ pub struct HandleTable {
 
 impl HandleTable {
     pub fn new() -> Self {
-        HandleTable { entries: HashMap::new(), next_id: 1 }
+        HandleTable {
+            entries: HashMap::new(),
+            next_id: 1,
+        }
     }
 
     /// Allocate a new handle and return its i32 index.

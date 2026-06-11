@@ -6419,10 +6419,9 @@ impl VM {
                 }
 
                 // -- CM3 / WASI 0.3 async (Track B) --
-
                 _ if op == Op::FUTURE_AWAIT => {
-                    use crate::value::ObjectKind;
                     use crate::event_loop::FuturePhase;
+                    use crate::value::ObjectKind;
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
                         let o = obj.lock().unwrap();
@@ -6440,7 +6439,9 @@ impl VM {
                             match phase {
                                 FuturePhase::Pending => {
                                     let fiber = self.save_fiber();
-                                    self.event_loop.borrow_mut().suspend_future(future_id, fiber);
+                                    self.event_loop
+                                        .borrow_mut()
+                                        .suspend_future(future_id, fiber);
                                     return Err(VMError::new(format!("__future__:{}", future_id)));
                                 }
                                 FuturePhase::Resolved => {
@@ -6472,14 +6473,19 @@ impl VM {
                             let has_item = self.event_loop.borrow().stream_has_item(stream_id);
                             let is_eof = self.event_loop.borrow().stream_is_eof(stream_id);
                             if has_item {
-                                let item = self.event_loop.borrow_mut().stream_pop(stream_id)
+                                let item = self
+                                    .event_loop
+                                    .borrow_mut()
+                                    .stream_pop(stream_id)
                                     .unwrap_or(Value::Null);
                                 self.push(item)?;
                             } else if is_eof {
                                 self.push(Value::Null)?;
                             } else {
                                 let fiber = self.save_fiber();
-                                self.event_loop.borrow_mut().suspend_stream_reader(stream_id, fiber);
+                                self.event_loop
+                                    .borrow_mut()
+                                    .suspend_stream_reader(stream_id, fiber);
                                 return Err(VMError::new(format!("__stream_read__:{}", stream_id)));
                             }
                         } else {
@@ -6502,7 +6508,8 @@ impl VM {
                             drop(o);
                             let mut el = self.event_loop.borrow_mut();
                             if let Some(fiber) = el.stream_push(stream_id, item) {
-                                el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                                el.microtasks
+                                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                             }
                         }
                     }
@@ -6518,21 +6525,23 @@ impl VM {
                             drop(o);
                             let mut el = self.event_loop.borrow_mut();
                             if let Some(fiber) = el.stream_close(stream_id) {
-                                el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                                el.microtasks
+                                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                             }
                         }
                     }
                 }
 
                 // ── CM3 Canonical ABI — Track A ─────────────────────────────────
-
                 _ if op == Op::TASK_RETURN => {
                     // canon task.return — pop result, mark active task as Returned.
                     // A second task.return on the same task is a trap per spec.
                     let result = self.pop();
                     if let Some(task) = self.cm_tasks.last_mut() {
                         if !task.mark_returned() {
-                            return Err(VMError::new("task.return called twice on same task (trap)"));
+                            return Err(VMError::new(
+                                "task.return called twice on same task (trap)",
+                            ));
                         }
                     }
                     // Push the result back — the function body may continue running.
@@ -6549,8 +6558,10 @@ impl VM {
                 _ if op == Op::SUBTASK_CANCEL => {
                     // canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
                     let handle = self.pop().as_i32() as u32;
-                    let fid = if let Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) =
-                        self.handle_table.get(handle)
+                    let fid = if let Some(crate::handle_table::HandleEntry::Subtask {
+                        future_id,
+                        ..
+                    }) = self.handle_table.get(handle)
                     {
                         Some(*future_id)
                     } else {
@@ -6558,8 +6569,11 @@ impl VM {
                     };
                     if let Some(fid) = fid {
                         let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.reject_future(fid, Value::String(Arc::from("cancelled"))) {
-                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        if let Some(fiber) =
+                            el.reject_future(fid, Value::String(Arc::from("cancelled")))
+                        {
+                            el.microtasks
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
                 }
@@ -6608,7 +6622,8 @@ impl VM {
                     let set_handle = self.pop().as_i32() as u32;
                     let ready = {
                         let el = self.event_loop.borrow();
-                        self.waitable_sets.get(set_handle)
+                        self.waitable_sets
+                            .get(set_handle)
                             .and_then(|set| set.poll_ready(&el))
                     };
                     let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
@@ -6627,7 +6642,8 @@ impl VM {
                     let set_handle = self.pop().as_i32() as u32;
                     let ready = {
                         let el = self.event_loop.borrow();
-                        self.waitable_sets.get(set_handle)
+                        self.waitable_sets
+                            .get(set_handle)
                             .and_then(|set| set.poll_ready(&el))
                     };
                     let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
@@ -6643,9 +6659,11 @@ impl VM {
                     // canon stream.new — create a stream; push readable_handle and writable_handle (i32).
                     let stream_id = self.event_loop.borrow_mut().create_stream();
                     let rd = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id));
+                        crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id),
+                    );
                     let wr = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::WritableStreamEnd(stream_id));
+                        crate::handle_table::HandleEntry::WritableStreamEnd(stream_id),
+                    );
                     self.push(Value::I32(rd as i32))?;
                     self.push(Value::I32(wr as i32))?;
                 }
@@ -6659,7 +6677,8 @@ impl VM {
                         // Close the stream so waiting writers don't block forever.
                         let mut el = self.event_loop.borrow_mut();
                         if let Some(fiber) = el.stream_close(sid) {
-                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                            el.microtasks
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
                 }
@@ -6673,7 +6692,8 @@ impl VM {
                         // Closing the write end signals EOF to the reader.
                         let mut el = self.event_loop.borrow_mut();
                         if let Some(fiber) = el.stream_close(sid) {
-                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                            el.microtasks
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
                 }
@@ -6682,9 +6702,11 @@ impl VM {
                     // canon future.new — create a future; push readable_handle and writable_handle (i32).
                     let future_id = self.event_loop.borrow_mut().create_future();
                     let rd = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::ReadableFutureEnd(future_id));
+                        crate::handle_table::HandleEntry::ReadableFutureEnd(future_id),
+                    );
                     let wr = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::WritableFutureEnd(future_id));
+                        crate::handle_table::HandleEntry::WritableFutureEnd(future_id),
+                    );
                     self.push(Value::I32(rd as i32))?;
                     self.push(Value::I32(wr as i32))?;
                 }
@@ -6703,8 +6725,11 @@ impl VM {
                     {
                         // Dropping the write end without resolving rejects the future.
                         let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.reject_future(fid, Value::String(Arc::from("future dropped"))) {
-                            el.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        if let Some(fiber) =
+                            el.reject_future(fid, Value::String(Arc::from("future dropped")))
+                        {
+                            el.microtasks
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
                 }
@@ -6720,7 +6745,11 @@ impl VM {
                 _ if op == Op::CONTEXT_GET => {
                     // canon context.get — pops index_i32, pushes context slot value.
                     let index = self.pop().as_i32() as usize;
-                    let val = self.context_slots.get(index).cloned().unwrap_or(Value::Undefined);
+                    let val = self
+                        .context_slots
+                        .get(index)
+                        .cloned()
+                        .unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
 

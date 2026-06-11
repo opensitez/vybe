@@ -3,9 +3,12 @@
 //! Like WinForms FlowLayoutPanel: children are placed sequentially; when a child
 //! would overflow the current row it wraps to the next row.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 /// Flow direction for child arrangement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,11 +55,26 @@ impl FlowLayoutPanel {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_direction(mut self, dir: FlowDirection) -> Self { self.flow_direction = dir; self }
-    pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
-    pub fn with_padding(mut self, padding: f32) -> Self { self.padding = padding; self }
-    pub fn with_wrap(mut self, wrap: bool) -> Self { self.wrap_contents = wrap; self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    pub fn with_direction(mut self, dir: FlowDirection) -> Self {
+        self.flow_direction = dir;
+        self
+    }
+    pub fn with_spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+    pub fn with_padding(mut self, padding: f32) -> Self {
+        self.padding = padding;
+        self
+    }
+    pub fn with_wrap(mut self, wrap: bool) -> Self {
+        self.wrap_contents = wrap;
+        self
+    }
 
     /// Add a child widget. Triggers relayout.
     pub fn add(&mut self, widget: Box<dyn PanelWidget>) {
@@ -64,9 +82,15 @@ impl FlowLayoutPanel {
         self.relayout();
     }
 
-    pub fn child(&self, index: usize) -> &dyn PanelWidget { &*self.children[index] }
-    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget { &mut *self.children[index] }
-    pub fn child_count(&self) -> usize { self.children.len() }
+    pub fn child(&self, index: usize) -> &dyn PanelWidget {
+        &*self.children[index]
+    }
+    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget {
+        &mut *self.children[index]
+    }
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
 
     /// Remove a child by index. Triggers relayout.
     pub fn remove(&mut self, index: usize) -> Box<dyn PanelWidget> {
@@ -78,7 +102,9 @@ impl FlowLayoutPanel {
     /// Arrange children according to flow direction.
     fn relayout(&mut self) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         match self.flow_direction {
             FlowDirection::LeftToRight => self.layout_left_to_right(),
@@ -173,19 +199,27 @@ impl FlowLayoutPanel {
 }
 
 impl PanelWidget for FlowLayoutPanel {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;
         self.height = rect.h;
         self.relayout();
     }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         for child in &mut self.children {
             child.render(ctx);

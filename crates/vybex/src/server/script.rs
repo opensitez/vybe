@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::response_stream::{bytes_response, build_response, BoxBody};
+use super::response_stream::{BoxBody, build_response, bytes_response};
 use bytes::Bytes;
 use http::Response;
 use indexmap::IndexMap;
@@ -27,8 +27,9 @@ const PHP_SESSION_STARTED_GLOBAL: &str = "__php_session_started";
 const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
 const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
 
-static PHP_SESSION_STORE: std::sync::LazyLock<dashmap::DashMap<String, IndexMap<String, vybe_bytecode::Value>>> =
-    std::sync::LazyLock::new(dashmap::DashMap::new);
+static PHP_SESSION_STORE: std::sync::LazyLock<
+    dashmap::DashMap<String, IndexMap<String, vybe_bytecode::Value>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
 
 pub async fn serve(
     script_path: PathBuf,
@@ -165,30 +166,34 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     // how PHP's real `sapi_module->ub_write` is swapped per SAPI. The
     // default stderr path stays for anything that reaches the fn with no
     // context (e.g., inside a callback on a bare thread).
-    vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx, args| {
-        // PHP echo emits one call per argument with arity 1, so we don't
-        // join with spaces here — each call writes its single arg verbatim.
-        // Semantics: "no newline, no joining" matches real PHP `echo`.
-        let mut buf = Vec::<u8>::new();
-        for a in args {
-            match a {
-                vybe_bytecode::Value::String(s) => buf.extend_from_slice(s.as_bytes()),
-                other => buf.extend_from_slice(format!("{}", other).as_bytes()),
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(|_ctx, args| {
+            // PHP echo emits one call per argument with arity 1, so we don't
+            // join with spaces here — each call writes its single arg verbatim.
+            // Semantics: "no newline, no joining" matches real PHP `echo`.
+            let mut buf = Vec::<u8>::new();
+            for a in args {
+                match a {
+                    vybe_bytecode::Value::String(s) => buf.extend_from_slice(s.as_bytes()),
+                    other => buf.extend_from_slice(format!("{}", other).as_bytes()),
+                }
             }
-        }
-        match vybe_host::with_context(|c| {
-            c.response.lock().unwrap().write_bytes(buf.clone());
-        }) {
-            Some(()) => {} // wrote to response
-            None => {
-                // CLI fallback — mirrors original console::register behavior
-                // (println per log call).
-                let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-                println!("{}", parts.join(" "));
+            match vybe_host::with_context(|c| {
+                c.response.lock().unwrap().write_bytes(buf.clone());
+            }) {
+                Some(()) => {} // wrote to response
+                None => {
+                    // CLI fallback — mirrors original console::register behavior
+                    // (println per log call).
+                    let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
+                    println!("{}", parts.join(" "));
+                }
             }
-        }
-        vybe_bytecode::Value::Null
-    }));
+            vybe_bytecode::Value::Null
+        }),
+    );
 
     let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
     if let Err(e) = runtime_compiler.compile_and_run_bundle(&bundle) {
@@ -225,8 +230,8 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
     use indexmap::IndexMap;
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
-    use vybe_bytecode::value::{Object, ObjectKind};
     use vybe_bytecode::Value;
+    use vybe_bytecode::value::{Object, ObjectKind};
 
     let server = make_string_map_value(ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let env = make_string_map_value(std::env::vars());
@@ -236,12 +241,15 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
         .collect();
     let get = make_string_map_value(get_pairs);
 
-    let cookie_header = ctx.headers.iter()
+    let cookie_header = ctx
+        .headers
+        .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("cookie"))
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
     let cookie_pairs = parse_cookie_header(cookie_header);
-    let session_cookie = cookie_pairs.iter()
+    let session_cookie = cookie_pairs
+        .iter()
         .find(|(name, value)| name == PHP_SESSION_COOKIE_NAME && !value.is_empty())
         .map(|(_, value)| value.clone());
     let cookies = make_string_map_value(cookie_pairs);
@@ -251,23 +259,36 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
     let session = make_map_value(
         PHP_SESSION_STORE
             .get(&session_id)
-            .map(|entry| entry.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>())
+            .map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default(),
     );
 
-    let content_type = ctx.headers.iter()
+    let content_type = ctx
+        .headers
+        .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("content-type"))
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
     let body = ctx.body.lock().unwrap().read_all();
-    let (post_pairs, file_pairs) = if content_type.to_ascii_lowercase().starts_with("application/x-www-form-urlencoded") {
+    let (post_pairs, file_pairs) = if content_type
+        .to_ascii_lowercase()
+        .starts_with("application/x-www-form-urlencoded")
+    {
         (
             form_urlencoded::parse(&body)
                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
                 .collect(),
             Vec::new(),
         )
-    } else if content_type.to_ascii_lowercase().starts_with("multipart/form-data") {
+    } else if content_type
+        .to_ascii_lowercase()
+        .starts_with("multipart/form-data")
+    {
         parse_multipart_form(&body, content_type)
     } else {
         (Vec::new(), Vec::new())
@@ -291,18 +312,14 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
         PHP_SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
     );
-    vm.globals.insert(
-        PHP_SESSION_STARTED_GLOBAL.to_string(),
-        Value::Bool(false),
-    );
+    vm.globals
+        .insert(PHP_SESSION_STARTED_GLOBAL.to_string(), Value::Bool(false));
     vm.globals.insert(
         PHP_SESSION_NEEDS_COOKIE_GLOBAL.to_string(),
         Value::Bool(session_cookie.is_none()),
     );
-    vm.globals.insert(
-        PHP_SESSION_DESTROYED_GLOBAL.to_string(),
-        Value::Bool(false),
-    );
+    vm.globals
+        .insert(PHP_SESSION_DESTROYED_GLOBAL.to_string(), Value::Bool(false));
     let mut request_im: IndexMap<Value, Value> = IndexMap::new();
     for key in ["$_GET", "$_POST", "$_COOKIE"] {
         if let Some(Value::Object(obj)) = vm.globals.get(key) {
@@ -322,11 +339,13 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
     );
 }
 
-fn make_map_value(pairs: impl IntoIterator<Item = (String, vybe_bytecode::Value)>) -> vybe_bytecode::Value {
+fn make_map_value(
+    pairs: impl IntoIterator<Item = (String, vybe_bytecode::Value)>,
+) -> vybe_bytecode::Value {
     use indexmap::IndexMap;
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
-    use vybe_bytecode::value::{Object, ObjectKind};
     use vybe_bytecode::Value;
+    use vybe_bytecode::value::{Object, ObjectKind};
 
     let mut im = IndexMap::new();
     for (k, v) in pairs {
@@ -337,8 +356,15 @@ fn make_map_value(pairs: impl IntoIterator<Item = (String, vybe_bytecode::Value)
     Value::Object(StdArc::new(StdMutex::new(obj)))
 }
 
-fn make_string_map_value(pairs: impl IntoIterator<Item = (String, String)>) -> vybe_bytecode::Value {
-    make_map_value(pairs.into_iter().map(|(k, v)| (k, vybe_bytecode::Value::String(std::sync::Arc::from(v.as_str())))))
+fn make_string_map_value(
+    pairs: impl IntoIterator<Item = (String, String)>,
+) -> vybe_bytecode::Value {
+    make_map_value(pairs.into_iter().map(|(k, v)| {
+        (
+            k,
+            vybe_bytecode::Value::String(std::sync::Arc::from(v.as_str())),
+        )
+    }))
 }
 
 fn persist_superglobals(vm: &vybe_bytecode::VM, _ctx: &Arc<RequestContext>) {
@@ -388,10 +414,15 @@ fn parse_cookie_header(header: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for part in header.split(';') {
         let part = part.trim();
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         match part.split_once('=') {
             Some((n, v)) => {
-                let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+                let v = v
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(v);
                 let decoded = percent_encoding::percent_decode_str(v)
                     .decode_utf8_lossy()
                     .into_owned();
@@ -403,7 +434,10 @@ fn parse_cookie_header(header: &str) -> Vec<(String, String)> {
     out
 }
 
-fn parse_multipart_form(body: &[u8], content_type: &str) -> (Vec<(String, String)>, Vec<(String, vybe_bytecode::Value)>) {
+fn parse_multipart_form(
+    body: &[u8],
+    content_type: &str,
+) -> (Vec<(String, String)>, Vec<(String, vybe_bytecode::Value)>) {
     use vybe_bytecode::Value;
 
     let Some(boundary) = extract_multipart_boundary(content_type) else {
@@ -454,19 +488,31 @@ fn parse_multipart_form(body: &[u8], content_type: &str) -> (Vec<(String, String
                 field_name = extract_disposition_param(line, "name");
                 file_name = extract_disposition_param(line, "filename");
             } else if lower.starts_with("content-type:") {
-                file_type = line.split_once(':')
+                file_type = line
+                    .split_once(':')
                     .map(|(_, value)| value.trim().to_string())
                     .unwrap_or_default();
             }
         }
 
-        let Some(name) = field_name else { continue; };
+        let Some(name) = field_name else {
+            continue;
+        };
         if let Some(filename) = file_name {
             let (tmp_name, error_code) = write_upload_tempfile(data);
             let upload = make_map_value(vec![
-                ("name".to_string(), Value::String(std::sync::Arc::from(filename.as_str()))),
-                ("type".to_string(), Value::String(std::sync::Arc::from(file_type.as_str()))),
-                ("tmp_name".to_string(), Value::String(std::sync::Arc::from(tmp_name.as_str()))),
+                (
+                    "name".to_string(),
+                    Value::String(std::sync::Arc::from(filename.as_str())),
+                ),
+                (
+                    "type".to_string(),
+                    Value::String(std::sync::Arc::from(file_type.as_str())),
+                ),
+                (
+                    "tmp_name".to_string(),
+                    Value::String(std::sync::Arc::from(tmp_name.as_str())),
+                ),
                 ("error".to_string(), Value::F64(error_code as f64)),
                 ("size".to_string(), Value::F64(data.len() as f64)),
             ]);
@@ -517,7 +563,8 @@ fn end_with_text(ctx: &RequestContext, status: u16, body: &str) {
     let mut r = ctx.response.lock().unwrap();
     if !r.headers_sent {
         r.status = status;
-        r.headers.retain(|(n, _)| !n.eq_ignore_ascii_case("content-type"));
+        r.headers
+            .retain(|(n, _)| !n.eq_ignore_ascii_case("content-type"));
         r.headers.push((
             "Content-Type".to_string(),
             "text/plain; charset=utf-8".to_string(),
@@ -537,18 +584,15 @@ pub fn not_implemented(body: &str) -> Response<BoxBody> {
 
 // Silence unused import on Bytes in the signature-only path.
 #[allow(dead_code)]
-fn _bytes_shim() -> Bytes { Bytes::new() }
+fn _bytes_shim() -> Bytes {
+    Bytes::new()
+}
 
 #[cfg(test)]
 mod tests {
     use super::{
-        inject_superglobals,
-        parse_cookie_header,
-        persist_superglobals,
-        PHP_SESSION_COOKIE_NAME,
-        PHP_SESSION_ID_GLOBAL,
-        PHP_SESSION_STARTED_GLOBAL,
-        PHP_SESSION_STORE,
+        PHP_SESSION_COOKIE_NAME, PHP_SESSION_ID_GLOBAL, PHP_SESSION_STARTED_GLOBAL,
+        PHP_SESSION_STORE, inject_superglobals, parse_cookie_header, persist_superglobals,
     };
     use bytes::Bytes;
     use http::Request;
@@ -560,8 +604,9 @@ mod tests {
     use vybe_bytecode::{HostContext, VM, Value};
     fn compile_php(src: &str) -> Vec<vybe_bytecode::Chunk> {
         let module = vybe_compiler::languages::php::parse(src).expect("parse php");
-        let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
-            .expect("parse php profile");
+        let profile =
+            vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
+                .expect("parse php profile");
         vybe_compiler::compiler::Compiler::with_profile(profile)
             .compile(&module)
             .expect("compile php")
@@ -620,17 +665,28 @@ mod tests {
         }
     }
 
-    fn run_php_request_vm(src: &str, ctx: Arc<vybe_host::RequestContext>) -> (Vec<String>, Arc<vybe_host::RequestContext>, VM) {
+    fn run_php_request_vm(
+        src: &str,
+        ctx: Arc<vybe_host::RequestContext>,
+    ) -> (Vec<String>, Arc<vybe_host::RequestContext>, VM) {
         let chunks = compile_php(src);
         let mut vm = VM::new();
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&output);
         vybe_host::register_all(&mut vm);
-        vm.register_host_fn("wasi:logging/logging", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let line = args.iter().map(value_as_string).collect::<Vec<_>>().join(" ");
-            out.lock().expect("lock output").push(line);
-            Value::Null
-        }));
+        vm.register_host_fn(
+            "wasi:logging/logging",
+            "log",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let line = args
+                    .iter()
+                    .map(value_as_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.lock().expect("lock output").push(line);
+                Value::Null
+            }),
+        );
         vybe_host::setup_namespaces(&mut vm);
         inject_superglobals(&mut vm, &ctx);
         let _guard = vybe_host::install_context(Arc::clone(&ctx));
@@ -638,7 +694,10 @@ mod tests {
         (output.lock().expect("lock output").clone(), ctx, vm)
     }
 
-    fn run_php_request(src: &str, ctx: Arc<vybe_host::RequestContext>) -> (Vec<String>, Arc<vybe_host::RequestContext>) {
+    fn run_php_request(
+        src: &str,
+        ctx: Arc<vybe_host::RequestContext>,
+    ) -> (Vec<String>, Arc<vybe_host::RequestContext>) {
         let (output, ctx, vm) = run_php_request_vm(src, ctx);
         persist_superglobals(&vm, &ctx);
         (output, ctx)
@@ -656,17 +715,50 @@ mod tests {
         inject_superglobals(&mut vm, &ctx);
 
         let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
-        assert_eq!(value_as_string(map_value(&server, "PHP_SELF")), "/index.php");
-    assert_eq!(value_as_string(map_value(&server, "SCRIPT_NAME")), "/index.php");
-    assert_eq!(value_as_string(map_value(&server, "SCRIPT_FILENAME")), "/tmp/index.php");
-    assert_eq!(value_as_string(map_value(&server, "PATH_TRANSLATED")), "/tmp/index.php");
-    assert_eq!(value_as_string(map_value(&server, "DOCUMENT_URI")), "/index.php");
-    assert_eq!(value_as_string(map_value(&server, "SCRIPT_URL")), "/index.php");
-    assert_eq!(value_as_string(map_value(&server, "SCRIPT_URI")), "http://localhost:8080/index.php?foo=bar");
-    assert_eq!(value_as_string(map_value(&server, "HTTP_HOST")), "localhost:8080");
-    assert_eq!(value_as_string(map_value(&server, "REQUEST_SCHEME")), "http");
-    assert_eq!(value_as_string(map_value(&server, "SERVER_ADDR")), "127.0.0.1");
-    assert_eq!(value_as_string(map_value(&server, "REMOTE_HOST")), "127.0.0.1");
+        assert_eq!(
+            value_as_string(map_value(&server, "PHP_SELF")),
+            "/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SCRIPT_NAME")),
+            "/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SCRIPT_FILENAME")),
+            "/tmp/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "PATH_TRANSLATED")),
+            "/tmp/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "DOCUMENT_URI")),
+            "/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SCRIPT_URL")),
+            "/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SCRIPT_URI")),
+            "http://localhost:8080/index.php?foo=bar"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "HTTP_HOST")),
+            "localhost:8080"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "REQUEST_SCHEME")),
+            "http"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SERVER_ADDR")),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "REMOTE_HOST")),
+            "127.0.0.1"
+        );
         assert!(!value_as_string(map_value(&server, "REQUEST_TIME")).is_empty());
         assert!(!value_as_string(map_value(&server, "REQUEST_TIME_FLOAT")).is_empty());
 
@@ -699,9 +791,18 @@ mod tests {
         inject_superglobals(&mut vm, &built.ctx);
 
         let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
-        assert_eq!(value_as_string(map_value(&server, "REQUEST_URI")), "http://localhost:8080/genie/");
-        assert_eq!(value_as_string(map_value(&server, "SCRIPT_NAME")), "/genie/index.php");
-        assert_eq!(value_as_string(map_value(&server, "PHP_SELF")), "/genie/index.php");
+        assert_eq!(
+            value_as_string(map_value(&server, "REQUEST_URI")),
+            "http://localhost:8080/genie/"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "SCRIPT_NAME")),
+            "/genie/index.php"
+        );
+        assert_eq!(
+            value_as_string(map_value(&server, "PHP_SELF")),
+            "/genie/index.php"
+        );
     }
 
     #[test]
@@ -715,7 +816,10 @@ mod tests {
             "http://localhost:8080/upload.php",
             &[
                 ("Host", "localhost:8080"),
-                ("Content-Type", &format!("multipart/form-data; boundary={boundary}")),
+                (
+                    "Content-Type",
+                    &format!("multipart/form-data; boundary={boundary}"),
+                ),
             ],
             body.as_bytes(),
         );
@@ -732,7 +836,10 @@ mod tests {
         assert_eq!(value_as_string(map_value(&upload, "size")), "5");
         let tmp_name = value_as_string(map_value(&upload, "tmp_name"));
         assert!(!tmp_name.is_empty(), "tmp_name should not be empty");
-        assert!(std::fs::metadata(tmp_name).is_ok(), "uploaded tmp file should exist");
+        assert!(
+            std::fs::metadata(tmp_name).is_ok(),
+            "uploaded tmp file should exist"
+        );
     }
 
     #[test]
@@ -771,12 +878,17 @@ mod tests {
             .map(|(_, value)| value)
             .expect("session id from cookie");
         assert_eq!(
-            first_vm.globals.get(PHP_SESSION_ID_GLOBAL).map(value_as_string),
+            first_vm
+                .globals
+                .get(PHP_SESSION_ID_GLOBAL)
+                .map(value_as_string),
             Some(session_id.clone())
         );
         persist_superglobals(&first_vm, &first_ctx);
         {
-            let persisted = PHP_SESSION_STORE.get(&session_id).expect("persisted session");
+            let persisted = PHP_SESSION_STORE
+                .get(&session_id)
+                .expect("persisted session");
             assert_eq!(
                 persisted.get("user").map(value_as_string),
                 Some("alice".to_string())
@@ -877,10 +989,8 @@ mod tests {
             &[("Host", "localhost:8080")],
             b"",
         );
-        let (_out, ctx) = run_php_request(
-            r#"<?php header('Location: /login.php'); echo 'body';"#,
-            ctx,
-        );
+        let (_out, ctx) =
+            run_php_request(r#"<?php header('Location: /login.php'); echo 'body';"#, ctx);
         let response = ctx.response.lock().expect("lock response");
         assert_eq!(response.status, 302);
         assert!(response.headers.iter().any(|(name, value)| {
@@ -896,11 +1006,7 @@ mod tests {
             &[("Host", "localhost:8080")],
             b"",
         );
-        let (out, _ctx) = run_php_request(
-            r#"<?php echo 'before'; exit; echo 'after';"#,
-            ctx,
-        );
+        let (out, _ctx) = run_php_request(r#"<?php echo 'before'; exit; echo 'after';"#, ctx);
         assert_eq!(out, vec!["before".to_string()]);
     }
-
 }

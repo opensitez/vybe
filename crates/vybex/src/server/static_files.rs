@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use super::response_stream::{bytes_response, BoxBody};
+use super::response_stream::{BoxBody, bytes_response};
 use http::Response;
 
 pub async fn serve(path: &Path) -> Response<BoxBody> {

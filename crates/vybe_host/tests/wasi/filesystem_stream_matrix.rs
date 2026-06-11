@@ -45,13 +45,21 @@ fn s(text: &str) -> Value {
 }
 
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke("wasi:filesystem/types", "__test_open_root", vec![s(dir.to_str().unwrap())])
+    invoke(
+        "wasi:filesystem/types",
+        "__test_open_root",
+        vec![s(dir.to_str().unwrap())],
+    )
 }
 
 fn bytes_to_vec(value: &Value) -> Vec<u8> {
-    let Value::Object(object) = value else { return Vec::new() };
+    let Value::Object(object) = value else {
+        return Vec::new();
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(bytes) = &object.kind else { return Vec::new() };
+    let ObjectKind::Array(bytes) = &object.kind else {
+        return Vec::new();
+    };
     bytes
         .iter()
         .filter_map(|value| match value {
@@ -68,9 +76,18 @@ fn open_stream(offset: f64) -> Value {
     let root = open_test_root(&dir);
     let descriptor = types(
         "[method]descriptor.open-at",
-        vec![root, Value::I32(0), s("payload.bin"), Value::I32(0), Value::I32(0)],
+        vec![
+            root,
+            Value::I32(0),
+            s("payload.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
     );
-    types("[method]descriptor.read-via-stream", vec![descriptor, Value::F64(offset)])
+    types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(offset)],
+    )
 }
 
 macro_rules! read_case {
@@ -78,31 +95,107 @@ macro_rules! read_case {
         #[test]
         fn $name() {
             let stream = open_stream($offset);
-            let result = invoke("wasi:io/streams", $method, vec![stream, Value::F64($length)]);
+            let result = invoke(
+                "wasi:io/streams",
+                $method,
+                vec![stream, Value::F64($length)],
+            );
             assert_eq!(bytes_to_vec(&result), $expected);
         }
     };
 }
 
-read_case!(read_from_offset_zero_returns_first_byte, "[method]input-stream.read", 0.0, 1.0, b"a");
-read_case!(read_from_offset_one_returns_middle_slice, "[method]input-stream.read", 1.0, 2.0, b"bc");
-read_case!(read_from_offset_four_returns_remaining_suffix, "[method]input-stream.read", 4.0, 8.0, b"ef");
+read_case!(
+    read_from_offset_zero_returns_first_byte,
+    "[method]input-stream.read",
+    0.0,
+    1.0,
+    b"a"
+);
+read_case!(
+    read_from_offset_one_returns_middle_slice,
+    "[method]input-stream.read",
+    1.0,
+    2.0,
+    b"bc"
+);
+read_case!(
+    read_from_offset_four_returns_remaining_suffix,
+    "[method]input-stream.read",
+    4.0,
+    8.0,
+    b"ef"
+);
 
-read_case!(blocking_read_from_offset_zero_returns_first_byte, "[method]input-stream.blocking-read", 0.0, 1.0, b"a");
-read_case!(blocking_read_from_offset_two_returns_middle_slice, "[method]input-stream.blocking-read", 2.0, 2.0, b"cd");
-read_case!(blocking_read_from_offset_four_returns_remaining_suffix, "[method]input-stream.blocking-read", 4.0, 8.0, b"ef");
+read_case!(
+    blocking_read_from_offset_zero_returns_first_byte,
+    "[method]input-stream.blocking-read",
+    0.0,
+    1.0,
+    b"a"
+);
+read_case!(
+    blocking_read_from_offset_two_returns_middle_slice,
+    "[method]input-stream.blocking-read",
+    2.0,
+    2.0,
+    b"cd"
+);
+read_case!(
+    blocking_read_from_offset_four_returns_remaining_suffix,
+    "[method]input-stream.blocking-read",
+    4.0,
+    8.0,
+    b"ef"
+);
 
-read_case!(read_from_exact_end_returns_empty_array, "[method]input-stream.read", 6.0, 4.0, b"");
-read_case!(blocking_read_from_exact_end_returns_empty_array, "[method]input-stream.blocking-read", 6.0, 4.0, b"");
-read_case!(read_from_beyond_end_returns_empty_array, "[method]input-stream.read", 12.0, 4.0, b"");
-read_case!(blocking_read_from_beyond_end_returns_empty_array, "[method]input-stream.blocking-read", 12.0, 4.0, b"");
+read_case!(
+    read_from_exact_end_returns_empty_array,
+    "[method]input-stream.read",
+    6.0,
+    4.0,
+    b""
+);
+read_case!(
+    blocking_read_from_exact_end_returns_empty_array,
+    "[method]input-stream.blocking-read",
+    6.0,
+    4.0,
+    b""
+);
+read_case!(
+    read_from_beyond_end_returns_empty_array,
+    "[method]input-stream.read",
+    12.0,
+    4.0,
+    b""
+);
+read_case!(
+    blocking_read_from_beyond_end_returns_empty_array,
+    "[method]input-stream.blocking-read",
+    12.0,
+    4.0,
+    b""
+);
 
 #[test]
 fn sequential_reads_advance_stream_position() {
     let stream = open_stream(0.0);
-    let first = invoke("wasi:io/streams", "[method]input-stream.read", vec![stream.clone(), Value::F64(1.0)]);
-    let second = invoke("wasi:io/streams", "[method]input-stream.read", vec![stream.clone(), Value::F64(2.0)]);
-    let third = invoke("wasi:io/streams", "[method]input-stream.read", vec![stream, Value::F64(8.0)]);
+    let first = invoke(
+        "wasi:io/streams",
+        "[method]input-stream.read",
+        vec![stream.clone(), Value::F64(1.0)],
+    );
+    let second = invoke(
+        "wasi:io/streams",
+        "[method]input-stream.read",
+        vec![stream.clone(), Value::F64(2.0)],
+    );
+    let third = invoke(
+        "wasi:io/streams",
+        "[method]input-stream.read",
+        vec![stream, Value::F64(8.0)],
+    );
     assert_eq!(bytes_to_vec(&first), b"a");
     assert_eq!(bytes_to_vec(&second), b"bc");
     assert_eq!(bytes_to_vec(&third), b"def");

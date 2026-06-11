@@ -10,6 +10,18 @@ use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
+    invoke_result(name, args).expect("VM run failed")
+}
+
+fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::VMError> {
+    let (result, _) = invoke_result_with_exception(name, args);
+    result
+}
+
+fn invoke_result_with_exception(
+    name: &str,
+    args: Vec<Value>,
+) -> (Result<Value, vybe_bytecode::VMError>, Option<Value>) {
     let mut chunk = Chunk::new("<ecma-regexp-test>");
     let import_idx = chunk.add_import("ecma:regexp", name);
     let argc = args.len() as u8;
@@ -23,7 +35,9 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
 
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.run(vec![chunk]).expect("VM run failed")
+    let result = vm.run(vec![chunk]);
+    let exception = vm.last_exception.clone();
+    (result, exception)
 }
 
 fn s(text: &str) -> Value {
@@ -56,9 +70,20 @@ fn array_strings(value: &Value) -> Vec<String> {
 fn obj_prop(value: &Value, key: &str) -> Value {
     if let Value::Object(object) = value {
         let object = object.lock().unwrap();
-        return object.properties.get(key).cloned().unwrap_or(Value::Undefined);
+        return object
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined);
     }
     Value::Undefined
+}
+
+fn assert_throws_error_name(name: &str, args: Vec<Value>, expected_name: &str) {
+    let (result, exception) = invoke_result_with_exception(name, args);
+    result.expect_err("host call should throw");
+    let exception = exception.expect("host call should preserve thrown value");
+    assert_eq!(as_string(&obj_prop(&exception, "name")), expected_name);
 }
 
 // ── Constructor ──────────────────────────────────────────────────────
@@ -108,6 +133,11 @@ fn new_from_existing_regexp_inherits_source_and_flags() {
     assert_eq!(as_string(&obj_prop(&copied, "flags")), "i");
 }
 
+#[test]
+fn new_rejects_u_and_v_flags_together() {
+    assert_throws_error_name("new", vec![s("foo"), s("uv")], "SyntaxError");
+}
+
 // ── test ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -119,7 +149,10 @@ fn test_returns_true_when_pattern_matches() {
 #[test]
 fn test_returns_false_when_pattern_does_not_match() {
     let r = invoke("new", vec![s("xyz")]);
-    assert_eq!(invoke("test", vec![r, s("hello world")]), Value::Bool(false));
+    assert_eq!(
+        invoke("test", vec![r, s("hello world")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -129,11 +162,8 @@ fn test_with_case_insensitive_flag() {
 }
 
 #[test]
-fn test_invalid_pattern_returns_false() {
-    let r = invoke("new", vec![s("[")]);
-    // Invalid regex compiles to None; spec says SyntaxError on construct,
-    // but MVP swallows and returns Bool(false) rather than trapping.
-    assert_eq!(invoke("test", vec![r, s("anything")]), Value::Bool(false));
+fn new_rejects_invalid_pattern() {
+    assert_throws_error_name("new", vec![s("[")], "SyntaxError");
 }
 
 #[test]
@@ -234,7 +264,7 @@ fn match_returns_null_on_no_match() {
 
 #[test]
 fn match_all_returns_array_of_match_arrays() {
-    let r = invoke("new", vec![s("(\\w)(\\d)")]);
+    let r = invoke("new", vec![s("(\\w)(\\d)"), s("g")]);
     let result = invoke("matchAll", vec![s("a1 b2 c3"), r]);
     if let Value::Object(arr) = &result {
         let arr = arr.lock().unwrap();
@@ -251,6 +281,12 @@ fn match_all_returns_array_of_match_arrays() {
     } else {
         panic!("matchAll result should be Object");
     }
+}
+
+#[test]
+fn match_all_with_non_global_regexp_throws_type_error() {
+    let r = invoke("new", vec![s("(\\w)(\\d)")]);
+    assert_throws_error_name("matchAll", vec![s("a1 b2"), r], "TypeError");
 }
 
 // ── String.prototype.search ──────────────────────────────────────────
@@ -297,6 +333,21 @@ fn replace_supports_capture_group_refs() {
     );
 }
 
+#[test]
+fn replace_supports_named_capture_group_refs() {
+    let r = invoke(
+        "new",
+        vec![s("(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})")],
+    );
+    assert_eq!(
+        as_string(&invoke(
+            "replace",
+            vec![s("2024-06-15"), r, s("$<day>/$<month>/$<year>")]
+        )),
+        "15/06/2024"
+    );
+}
+
 // ── String.prototype.replaceAll ──────────────────────────────────────
 
 #[test]
@@ -324,7 +375,16 @@ fn split_with_limit_truncates_results() {
     let r = invoke("new", vec![s(",")]);
     assert_eq!(
         array_strings(&invoke("split", vec![s("a,b,c,d"), r, Value::I32(2)])),
-        vec!["a", "b,c,d"]
+        vec!["a", "b"]
+    );
+}
+
+#[test]
+fn split_with_regex_limit_counts_captures_and_truncates() {
+    let r = invoke("new", vec![s("([|,])")]);
+    assert_eq!(
+        array_strings(&invoke("split", vec![s("a|b,c"), r, Value::I32(3)])),
+        vec!["a", "|", "b"]
     );
 }
 
@@ -530,7 +590,7 @@ fn binary_emoji_matches_emoji_chars() {
 #[test]
 fn binary_emoji_rejects_plain_ascii() {
     assert!(!matches_u(r"\p{Emoji}", "a"));
-    assert!(!matches_u(r"\p{Emoji}", "!"));  // punctuation has Emoji=No (digits are Emoji=Yes for keycaps)
+    assert!(!matches_u(r"\p{Emoji}", "!")); // punctuation has Emoji=No (digits are Emoji=Yes for keycaps)
 }
 
 #[test]

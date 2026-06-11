@@ -62,14 +62,14 @@ impl Body for ChannelBody {
 ///
 /// If the script finishes without ever writing a byte (no headers message
 /// was ever sent), returns a default 200 empty HTML response.
-pub async fn build_response(
-    rx: std_mpsc::Receiver<ResponseMessage>,
-) -> Response<BoxBody> {
+pub async fn build_response(rx: std_mpsc::Receiver<ResponseMessage>) -> Response<BoxBody> {
     let (tokio_tx, mut tokio_rx) = tokio_mpsc::channel::<ResponseMessage>(16);
 
     tokio::task::spawn_blocking(move || {
         while let Ok(msg) = rx.recv() {
-            if tokio_tx.blocking_send(msg).is_err() { break; }
+            if tokio_tx.blocking_send(msg).is_err() {
+                break;
+            }
         }
     });
 
@@ -108,13 +108,16 @@ pub fn bytes_response(status: u16, content_type: &str, body: Vec<u8>) -> Respons
         .unwrap();
     resp.headers_mut().insert(
         http::header::CONTENT_TYPE,
-        HeaderValue::from_str(content_type).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     resp
 }
 
 fn default_empty_response() -> Response<BoxBody> {
-    let empty = Full::new(Bytes::new()).map_err(|never| match never {}).boxed();
+    let empty = Full::new(Bytes::new())
+        .map_err(|never| match never {})
+        .boxed();
     let mut resp = Response::builder().status(200).body(empty).unwrap();
     resp.headers_mut().insert(
         http::header::CONTENT_TYPE,
@@ -133,8 +136,12 @@ fn error_body(status: u16, message: &str) -> Response<BoxBody> {
 
 fn apply_headers(dst: &mut HeaderMap, src: &[(String, String)]) {
     for (n, v) in src {
-        let Ok(name) = HeaderName::try_from(n.as_str()) else { continue; };
-        let Ok(value) = HeaderValue::from_str(v) else { continue; };
+        let Ok(name) = HeaderName::try_from(n.as_str()) else {
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_str(v) else {
+            continue;
+        };
         dst.append(name, value);
     }
 }

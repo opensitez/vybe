@@ -25,7 +25,9 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 // ── Symbol() — uniqueness guarantee ──────────────────────────────────────────
 
@@ -57,7 +59,10 @@ fn symbol_with_description_is_still_unique() {
 fn symbol_for_same_key_returns_same_symbol() {
     let a = invoke("for", vec![s("shared")]);
     let b = invoke("for", vec![s("shared")]);
-    assert_eq!(a, b, "Symbol.for() must return the same symbol for the same key");
+    assert_eq!(
+        a, b,
+        "Symbol.for() must return the same symbol for the same key"
+    );
 }
 
 #[test]
@@ -84,37 +89,58 @@ fn key_for_on_local_symbol_returns_undefined() {
 
 #[test]
 fn well_known_iterator_symbol_is_defined() {
-    assert!(!matches!(invoke("iterator", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("iterator", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_async_iterator_symbol_is_defined() {
-    assert!(!matches!(invoke("asyncIterator", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("asyncIterator", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_to_primitive_symbol_is_defined() {
-    assert!(!matches!(invoke("toPrimitive", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("toPrimitive", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_has_instance_symbol_is_defined() {
-    assert!(!matches!(invoke("hasInstance", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("hasInstance", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_to_string_tag_symbol_is_defined() {
-    assert!(!matches!(invoke("toStringTag", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("toStringTag", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_species_symbol_is_defined() {
-    assert!(!matches!(invoke("species", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("species", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
 fn well_known_match_symbol_is_defined() {
-    assert!(!matches!(invoke("match", vec![]), Value::Null | Value::Undefined));
+    assert!(!matches!(
+        invoke("match", vec![]),
+        Value::Null | Value::Undefined
+    ));
 }
 
 #[test]
@@ -203,12 +229,18 @@ fn value_of_returns_the_symbol_itself() {
 fn is_concat_spreadable_symbol_is_defined() {
     // ECMA-262 §20.4.2.3: Symbol.isConcatSpreadable is a well-known Symbol.
     let sym = invoke("isConcatSpreadable", vec![]);
-    assert!(matches!(sym, Value::String(_) | Value::I32(_) | Value::Object(_)));
+    assert!(matches!(
+        sym,
+        Value::String(_) | Value::I32(_) | Value::Object(_)
+    ));
 }
 
 #[test]
 fn unscopables_symbol_is_defined() {
     // ECMA-262 §20.4.2.13: Symbol.unscopables is a well-known Symbol.
     let sym = invoke("unscopables", vec![]);
-    assert!(matches!(sym, Value::String(_) | Value::I32(_) | Value::Object(_)));
+    assert!(matches!(
+        sym,
+        Value::String(_) | Value::I32(_) | Value::Object(_)
+    ));
 }

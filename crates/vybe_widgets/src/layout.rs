@@ -6,10 +6,10 @@
 //! - `RenderContext` — bundle of rendering resources
 //! - `PanelWidget` trait — implemented by all toolkit panels and containers
 
-use cosmic_text::{FontSystem, SwashCache, Attrs, Buffer, Color, Family, Metrics, Shaping};
-use tiny_skia::{Pixmap, PixmapPaint, Transform, ColorU8};
-use winit::window::CursorIcon;
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tiny_skia::{ColorU8, Pixmap, PixmapPaint, Transform};
+use winit::window::CursorIcon;
 
 // ── WidgetId ───────────────────────────────────────────────────────────
 
@@ -32,11 +32,15 @@ impl WidgetId {
     }
 
     /// Whether this is the null id.
-    pub fn is_none(self) -> bool { self.0 == 0 }
+    pub fn is_none(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl Default for WidgetId {
-    fn default() -> Self { Self::NONE }
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 // ── LayoutRect ─────────────────────────────────────────────────────────
@@ -56,7 +60,12 @@ impl LayoutRect {
     }
 
     pub fn zero() -> Self {
-        Self { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        }
     }
 
     /// Test whether a point lies inside this rectangle.
@@ -65,10 +74,14 @@ impl LayoutRect {
     }
 
     /// Right edge x coordinate.
-    pub fn right(&self) -> f32 { self.x + self.w }
+    pub fn right(&self) -> f32 {
+        self.x + self.w
+    }
 
     /// Bottom edge y coordinate.
-    pub fn bottom(&self) -> f32 { self.y + self.h }
+    pub fn bottom(&self) -> f32 {
+        self.y + self.h
+    }
 
     /// Take a sub-rect from the left edge, shrinking `self`.
     pub fn take_left(&mut self, width: f32) -> LayoutRect {
@@ -158,22 +171,40 @@ impl<'a> RenderContext<'a> {
     pub fn draw_text(&mut self, text: &str, x: f32, y: f32, r: u8, g: u8, b: u8, a: u8) {
         let col = Color::rgba(r, g, b, a);
         let mut lab = Buffer::new(self.font_system, Metrics::new(14.0, 20.0).scale(self.scale));
-        lab.set_text(self.font_system, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+        lab.set_text(
+            self.font_system,
+            text,
+            &Attrs::new().family(Family::Monospace).color(col),
+            Shaping::Advanced,
+            None,
+        );
         lab.shape_until_scroll(self.font_system, false);
         for run in lab.layout_runs() {
             for g in run.glyphs {
                 let pg = g.physical((x, y + run.line_y), 1.0);
                 if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
-                    if let Some(mut p) = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)) {
+                    if let Some(mut p) =
+                        Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
+                    {
                         let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
                         for (idx, &al) in img.data.iter().enumerate() {
                             let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
                             p.pixels_mut()[idx] = ColorU8::from_rgba(
-                                (cr as f32 * af) as u8, (cg as f32 * af) as u8,
-                                (cb as f32 * af) as u8, (255.0 * af) as u8,
-                            ).premultiply();
+                                (cr as f32 * af) as u8,
+                                (cg as f32 * af) as u8,
+                                (cb as f32 * af) as u8,
+                                (255.0 * af) as u8,
+                            )
+                            .premultiply();
                         }
-                        self.pixmap.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                        self.pixmap.draw_pixmap(
+                            pg.x + img.placement.left,
+                            pg.y - img.placement.top,
+                            p.as_ref(),
+                            &PixmapPaint::default(),
+                            Transform::identity(),
+                            None,
+                        );
                     }
                 }
             }
@@ -181,25 +212,56 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Draw monospace UI text with a custom font size at physical pixel coordinates.
-    pub fn draw_text_sized(&mut self, text: &str, x: f32, y: f32, font_size: f32, r: u8, g: u8, b: u8, a: u8) {
+    pub fn draw_text_sized(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    ) {
         let col = Color::rgba(r, g, b, a);
-        let mut lab = Buffer::new(self.font_system, Metrics::new(font_size, font_size * 1.5).scale(self.scale));
-        lab.set_text(self.font_system, text, &Attrs::new().family(Family::Monospace).color(col), Shaping::Advanced, None);
+        let mut lab = Buffer::new(
+            self.font_system,
+            Metrics::new(font_size, font_size * 1.5).scale(self.scale),
+        );
+        lab.set_text(
+            self.font_system,
+            text,
+            &Attrs::new().family(Family::Monospace).color(col),
+            Shaping::Advanced,
+            None,
+        );
         lab.shape_until_scroll(self.font_system, false);
         for run in lab.layout_runs() {
             for g in run.glyphs {
                 let pg = g.physical((x, y + run.line_y), 1.0);
                 if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
-                    if let Some(mut p) = Pixmap::new(img.placement.width.max(1), img.placement.height.max(1)) {
+                    if let Some(mut p) =
+                        Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
+                    {
                         let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
                         for (idx, &al) in img.data.iter().enumerate() {
                             let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
                             p.pixels_mut()[idx] = ColorU8::from_rgba(
-                                (cr as f32 * af) as u8, (cg as f32 * af) as u8,
-                                (cb as f32 * af) as u8, (255.0 * af) as u8,
-                            ).premultiply();
+                                (cr as f32 * af) as u8,
+                                (cg as f32 * af) as u8,
+                                (cb as f32 * af) as u8,
+                                (255.0 * af) as u8,
+                            )
+                            .premultiply();
                         }
-                        self.pixmap.draw_pixmap(pg.x + img.placement.left, pg.y - img.placement.top, p.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                        self.pixmap.draw_pixmap(
+                            pg.x + img.placement.left,
+                            pg.y - img.placement.top,
+                            p.as_ref(),
+                            &PixmapPaint::default(),
+                            Transform::identity(),
+                            None,
+                        );
                     }
                 }
             }
@@ -319,19 +381,31 @@ impl Anchor {
     pub const TOP_LEFT: Anchor = Anchor(1 | 4);
     pub const ALL: Anchor = Anchor(1 | 2 | 4 | 8);
 
-    pub fn has_top(self) -> bool { self.0 & 1 != 0 }
-    pub fn has_bottom(self) -> bool { self.0 & 2 != 0 }
-    pub fn has_left(self) -> bool { self.0 & 4 != 0 }
-    pub fn has_right(self) -> bool { self.0 & 8 != 0 }
+    pub fn has_top(self) -> bool {
+        self.0 & 1 != 0
+    }
+    pub fn has_bottom(self) -> bool {
+        self.0 & 2 != 0
+    }
+    pub fn has_left(self) -> bool {
+        self.0 & 4 != 0
+    }
+    pub fn has_right(self) -> bool {
+        self.0 & 8 != 0
+    }
 }
 
 impl std::ops::BitOr for Anchor {
     type Output = Anchor;
-    fn bitor(self, rhs: Anchor) -> Anchor { Anchor(self.0 | rhs.0) }
+    fn bitor(self, rhs: Anchor) -> Anchor {
+        Anchor(self.0 | rhs.0)
+    }
 }
 
 impl Default for Anchor {
-    fn default() -> Self { Anchor::TOP_LEFT }
+    fn default() -> Self {
+        Anchor::TOP_LEFT
+    }
 }
 
 /// Stored state for anchor layout: the widget's position relative to its parent
@@ -348,7 +422,13 @@ pub struct AnchorLayout {
 
 impl AnchorLayout {
     /// Compute where the widget should be placed given the new parent size.
-    pub fn resolve(&self, new_parent_w: f32, new_parent_h: f32, parent_x: f32, parent_y: f32) -> LayoutRect {
+    pub fn resolve(
+        &self,
+        new_parent_w: f32,
+        new_parent_h: f32,
+        parent_x: f32,
+        parent_y: f32,
+    ) -> LayoutRect {
         let ir = self.initial_rect;
         let (pw, ph) = self.parent_size;
         if pw <= 0.0 || ph <= 0.0 {
@@ -400,7 +480,9 @@ pub fn apply_anchor_layouts(
     parent_rect: LayoutRect,
 ) {
     for (al, w) in layouts.iter().zip(widgets.iter_mut()) {
-        if al.anchor == Anchor::NONE { continue; }
+        if al.anchor == Anchor::NONE {
+            continue;
+        }
         let new_rect = al.resolve(parent_rect.w, parent_rect.h, parent_rect.x, parent_rect.y);
         w.set_rect(new_rect);
     }
@@ -539,7 +621,9 @@ pub trait PanelWidget: Send + Sync {
     /// need updating; widgets the host bridge needs to look up
     /// (currently just `Canvas`) override this to return
     /// `Some(self as &mut dyn Any)`.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { None }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 
     /// Handle a mouse event. Returns `true` if the event was consumed.
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool;
@@ -549,44 +633,64 @@ pub trait PanelWidget: Send + Sync {
 
     /// Handle a scroll event at (x, y) with the given delta.
     /// Returns `true` if the event was consumed.
-    fn handle_scroll(&mut self, _delta: f32, _x: f32, _y: f32) -> bool { false }
+    fn handle_scroll(&mut self, _delta: f32, _x: f32, _y: f32) -> bool {
+        false
+    }
 
     /// Return the desired cursor icon for the given position.
-    fn cursor_at(&self, _x: f32, _y: f32) -> CursorIcon { CursorIcon::Default }
+    fn cursor_at(&self, _x: f32, _y: f32) -> CursorIcon {
+        CursorIcon::Default
+    }
 
     /// Drain any pending events from this widget (and its children).
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { Vec::new() }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        Vec::new()
+    }
 
     /// Whether this widget wants keyboard focus.
-    fn focusable(&self) -> bool { false }
+    fn focusable(&self) -> bool {
+        false
+    }
 
     /// Widget name (used by FocusManager for identification).
-    fn name(&self) -> &str { "" }
+    fn name(&self) -> &str {
+        ""
+    }
 
     /// Notify the widget that it gained or lost focus.
     fn set_focused(&mut self, _focused: bool) {}
 
     /// Whether the mouse is currently hovering over this widget.
-    fn hovered(&self) -> bool { false }
+    fn hovered(&self) -> bool {
+        false
+    }
 
     /// Notify the widget that the mouse entered or left it.
     fn set_hovered(&mut self, _hovered: bool) {}
 
     /// Unique identifier for this widget instance.
-    fn widget_id(&self) -> WidgetId { WidgetId::NONE }
+    fn widget_id(&self) -> WidgetId {
+        WidgetId::NONE
+    }
 
     /// Handle a command sent from the host application.
     /// Returns a `CommandValue` for queries (`GetText`, `GetValue`), or `CommandValue::None`.
-    fn handle_command(&mut self, _cmd: &WidgetCommand) -> CommandValue { CommandValue::None }
+    fn handle_command(&mut self, _cmd: &WidgetCommand) -> CommandValue {
+        CommandValue::None
+    }
 
     /// Get the tooltip text for this widget. Empty string means no tooltip.
-    fn tooltip(&self) -> &str { "" }
+    fn tooltip(&self) -> &str {
+        ""
+    }
 
     /// Set the tooltip text for this widget.
     fn set_tooltip(&mut self, _tooltip: &str) {}
 
     /// Get the anchor setting for this widget. Default: top-left (no resize).
-    fn anchor(&self) -> Anchor { Anchor::TOP_LEFT }
+    fn anchor(&self) -> Anchor {
+        Anchor::TOP_LEFT
+    }
 
     /// Set the anchor edges for this widget.
     fn set_anchor(&mut self, _anchor: Anchor) {}
@@ -600,15 +704,27 @@ pub struct NullWidget {
 }
 
 impl NullWidget {
-    pub fn new() -> Self { Self { rect: LayoutRect::zero() } }
+    pub fn new() -> Self {
+        Self {
+            rect: LayoutRect::zero(),
+        }
+    }
 }
 
 impl PanelWidget for NullWidget {
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
     fn render(&mut self, _ctx: &mut RenderContext) {}
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 }
 
 // ── FocusManager ───────────────────────────────────────────────────────
@@ -632,20 +748,32 @@ pub struct FocusManager {
 
 impl FocusManager {
     pub fn new() -> Self {
-        Self { focused: None, hovered: None, tooltip_state: None, frame_counter: 0, tooltip_delay_frames: 45 }
+        Self {
+            focused: None,
+            hovered: None,
+            tooltip_state: None,
+            frame_counter: 0,
+            tooltip_delay_frames: 45,
+        }
     }
 
     /// The currently focused widget index.
-    pub fn focused(&self) -> Option<usize> { self.focused }
+    pub fn focused(&self) -> Option<usize> {
+        self.focused
+    }
 
     /// Set the focused widget index directly.
-    pub fn set_focused(&mut self, idx: Option<usize>) { self.focused = idx; }
+    pub fn set_focused(&mut self, idx: Option<usize>) {
+        self.focused = idx;
+    }
 
     /// Focus the next focusable widget (Tab key).
     /// `count` is the total number of widgets.
     pub fn focus_next(&mut self, widgets: &mut [Box<dyn PanelWidget>]) {
         let len = widgets.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let start = self.focused.map(|i| i + 1).unwrap_or(0);
         for offset in 0..len {
             let idx = (start + offset) % len;
@@ -659,7 +787,9 @@ impl FocusManager {
     /// Focus the previous focusable widget (Shift+Tab key).
     pub fn focus_prev(&mut self, widgets: &mut [Box<dyn PanelWidget>]) {
         let len = widgets.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let start = self.focused.unwrap_or(0).wrapping_sub(1);
         for offset in 0..len {
             let idx = (start.wrapping_sub(offset)) % len;
@@ -708,7 +838,11 @@ impl FocusManager {
 
     /// Handle a mouse event: update focus on click, update hover, then delegate.
     /// Returns `true` if the event was consumed.
-    pub fn handle_mouse(&mut self, widgets: &mut [Box<dyn PanelWidget>], event: &MouseEvent) -> bool {
+    pub fn handle_mouse(
+        &mut self,
+        widgets: &mut [Box<dyn PanelWidget>],
+        event: &MouseEvent,
+    ) -> bool {
         if matches!(event.kind, MouseEventKind::Press(_)) {
             self.focus_at(widgets, event.x, event.y);
         }
@@ -793,12 +927,22 @@ impl FocusManager {
 
     /// Render the tooltip for the currently hovered widget after the delay has elapsed.
     fn render_tooltip(&self, widgets: &[Box<dyn PanelWidget>], ctx: &mut RenderContext) {
-        let Some(idx) = self.hovered else { return; };
-        let Some((start_frame, mx, my)) = self.tooltip_state else { return; };
-        if self.frame_counter.saturating_sub(start_frame) < self.tooltip_delay_frames { return; }
-        if idx >= widgets.len() { return; }
+        let Some(idx) = self.hovered else {
+            return;
+        };
+        let Some((start_frame, mx, my)) = self.tooltip_state else {
+            return;
+        };
+        if self.frame_counter.saturating_sub(start_frame) < self.tooltip_delay_frames {
+            return;
+        }
+        if idx >= widgets.len() {
+            return;
+        }
         let tip = widgets[idx].tooltip();
-        if tip.is_empty() { return; }
+        if tip.is_empty() {
+            return;
+        }
 
         let font_size = 12.0_f32;
         let padding = 4.0_f32;
@@ -812,10 +956,13 @@ impl FocusManager {
         let ts = tiny_skia::Transform::from_scale(scale, scale);
 
         // Background
-        if let Some(rect) = tiny_skia::Rect::from_xywh(tx * scale, ty * scale, tip_w * scale, tip_h * scale) {
+        if let Some(rect) =
+            tiny_skia::Rect::from_xywh(tx * scale, ty * scale, tip_w * scale, tip_h * scale)
+        {
             let mut bg = tiny_skia::Paint::default();
             bg.set_color_rgba8(255, 255, 225, 240); // light yellow tooltip bg
-            ctx.pixmap.fill_rect(rect, &bg, tiny_skia::Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &bg, tiny_skia::Transform::identity(), None);
             // Border
             let mut border = tiny_skia::Paint::default();
             border.set_color_rgba8(100, 100, 100, 200);
@@ -828,9 +975,15 @@ impl FocusManager {
 
         // Text
         super::ide_text::draw_text(
-            ctx.pixmap, ctx.font_system, ctx.swash_cache,
-            tip, tx + padding, ty + padding - 1.0, font_size,
-            cosmic_text::Color::rgba(20, 20, 20, 255), scale,
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            tip,
+            tx + padding,
+            ty + padding - 1.0,
+            font_size,
+            cosmic_text::Color::rgba(20, 20, 20, 255),
+            scale,
         );
     }
 
@@ -875,7 +1028,12 @@ impl FocusManager {
 
     /// Send a command to the first widget whose `name()` matches.
     /// Returns the command result, or `CommandValue::None` if no widget matched.
-    pub fn send_command(&mut self, widgets: &mut [Box<dyn PanelWidget>], name: &str, cmd: &WidgetCommand) -> CommandValue {
+    pub fn send_command(
+        &mut self,
+        widgets: &mut [Box<dyn PanelWidget>],
+        name: &str,
+        cmd: &WidgetCommand,
+    ) -> CommandValue {
         for w in widgets.iter_mut() {
             if w.name() == name {
                 return w.handle_command(cmd);
@@ -886,7 +1044,12 @@ impl FocusManager {
 
     /// Send a command to the widget with the given `WidgetId`.
     /// Returns the command result, or `CommandValue::None` if no widget matched.
-    pub fn send_command_by_id(&mut self, widgets: &mut [Box<dyn PanelWidget>], id: WidgetId, cmd: &WidgetCommand) -> CommandValue {
+    pub fn send_command_by_id(
+        &mut self,
+        widgets: &mut [Box<dyn PanelWidget>],
+        id: WidgetId,
+        cmd: &WidgetCommand,
+    ) -> CommandValue {
         for w in widgets.iter_mut() {
             if w.widget_id() == id {
                 return w.handle_command(cmd);
@@ -897,7 +1060,11 @@ impl FocusManager {
 
     /// Broadcast a command to all widgets.
     /// Returns a `Vec` of `(WidgetId, CommandValue)` from widgets that returned a non-None value.
-    pub fn broadcast_command(&mut self, widgets: &mut [Box<dyn PanelWidget>], cmd: &WidgetCommand) -> Vec<(WidgetId, CommandValue)> {
+    pub fn broadcast_command(
+        &mut self,
+        widgets: &mut [Box<dyn PanelWidget>],
+        cmd: &WidgetCommand,
+    ) -> Vec<(WidgetId, CommandValue)> {
         let mut results = Vec::new();
         for w in widgets.iter_mut() {
             let val = w.handle_command(cmd);
@@ -911,7 +1078,9 @@ impl FocusManager {
     // ── internal ──
 
     fn apply_focus(&mut self, widgets: &mut [Box<dyn PanelWidget>], new: Option<usize>) {
-        if self.focused == new { return; }
+        if self.focused == new {
+            return;
+        }
         if let Some(old) = self.focused {
             if old < widgets.len() {
                 widgets[old].set_focused(false);
@@ -939,7 +1108,9 @@ impl FocusManager {
         // top edge
         for dy in 0..thickness {
             let y = py + dy;
-            if y < 0 || y >= h { continue; }
+            if y < 0 || y >= h {
+                continue;
+            }
             for x in px..(px + pw).min(w) {
                 if x >= 0 {
                     pix.pixels_mut()[(y * w + x) as usize] = color;
@@ -949,7 +1120,9 @@ impl FocusManager {
         // bottom edge
         for dy in 0..thickness {
             let y = py + ph - 1 - dy;
-            if y < 0 || y >= h { continue; }
+            if y < 0 || y >= h {
+                continue;
+            }
             for x in px..(px + pw).min(w) {
                 if x >= 0 {
                     pix.pixels_mut()[(y * w + x) as usize] = color;
@@ -959,7 +1132,9 @@ impl FocusManager {
         // left edge
         for dx in 0..thickness {
             let x = px + dx;
-            if x < 0 || x >= w { continue; }
+            if x < 0 || x >= w {
+                continue;
+            }
             for y in py..(py + ph).min(h) {
                 if y >= 0 {
                     pix.pixels_mut()[(y * w + x) as usize] = color;
@@ -969,7 +1144,9 @@ impl FocusManager {
         // right edge
         for dx in 0..thickness {
             let x = px + pw - 1 - dx;
-            if x < 0 || x >= w { continue; }
+            if x < 0 || x >= w {
+                continue;
+            }
             for y in py..(py + ph).min(h) {
                 if y >= 0 {
                     pix.pixels_mut()[(y * w + x) as usize] = color;

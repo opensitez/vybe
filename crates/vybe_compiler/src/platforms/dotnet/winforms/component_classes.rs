@@ -59,9 +59,23 @@ fn class_to_export(class: &DotnetClass) -> DotnetClassExport {
 fn dotnet_interface_for_class(class: &DotnetClass) -> &'static str {
     match class.name {
         "Object" | "MarshalByRefObject" | "Component" => "dotnet.System",
-        _ if matches!(class.name, "Graphics" | "Pen" | "Brush" | "SolidBrush" | "HatchBrush"
-            | "LinearGradientBrush" | "Point" | "Size" | "SizeF" | "Font" | "Color") =>
-            "dotnet.System.Drawing",
+        _ if matches!(
+            class.name,
+            "Graphics"
+                | "Pen"
+                | "Brush"
+                | "SolidBrush"
+                | "HatchBrush"
+                | "LinearGradientBrush"
+                | "Point"
+                | "Size"
+                | "SizeF"
+                | "Font"
+                | "Color"
+        ) =>
+        {
+            "dotnet.System.Drawing"
+        }
         _ => "dotnet.System.Windows.Forms",
     }
 }

@@ -3,9 +3,12 @@
 //! Each child is given its full requested width (vertical) or height (horizontal),
 //! stacking sequentially. Unlike FlowLayoutPanel, StackPanel does not wrap.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 /// Orientation for StackPanel layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,12 +47,25 @@ impl StackPanel {
         }
     }
 
-    pub fn vertical() -> Self { Self::new(Orientation::Vertical) }
-    pub fn horizontal() -> Self { Self::new(Orientation::Horizontal) }
+    pub fn vertical() -> Self {
+        Self::new(Orientation::Vertical)
+    }
+    pub fn horizontal() -> Self {
+        Self::new(Orientation::Horizontal)
+    }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
-    pub fn with_padding(mut self, padding: f32) -> Self { self.padding = padding; self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    pub fn with_spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+    pub fn with_padding(mut self, padding: f32) -> Self {
+        self.padding = padding;
+        self
+    }
     pub fn with_background(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
         self.colors.background = (r, g, b, a);
         self
@@ -61,9 +77,15 @@ impl StackPanel {
         self.relayout();
     }
 
-    pub fn child(&self, index: usize) -> &dyn PanelWidget { &*self.children[index] }
-    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget { &mut *self.children[index] }
-    pub fn child_count(&self) -> usize { self.children.len() }
+    pub fn child(&self, index: usize) -> &dyn PanelWidget {
+        &*self.children[index]
+    }
+    pub fn child_mut(&mut self, index: usize) -> &mut dyn PanelWidget {
+        &mut *self.children[index]
+    }
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
 
     pub fn remove(&mut self, index: usize) -> Box<dyn PanelWidget> {
         let w = self.children.remove(index);
@@ -73,7 +95,9 @@ impl StackPanel {
 
     fn relayout(&mut self) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         match self.orientation {
             Orientation::Vertical => {
@@ -101,19 +125,27 @@ impl StackPanel {
 }
 
 impl PanelWidget for StackPanel {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.relayout();
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Background (optional — only if alpha > 0)
         let (br, bg, bb, ba) = self.colors.background;

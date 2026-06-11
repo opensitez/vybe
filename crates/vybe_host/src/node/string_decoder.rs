@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -19,11 +19,14 @@ fn extract_bytes(buf: &Value) -> Vec<u8> {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
             match &obj.kind {
-                ObjectKind::Array(elems) => elems.iter().map(|v| match v {
-                    Value::I32(n) => *n as u8,
-                    Value::F64(f) => *f as u8,
-                    _ => 0,
-                }).collect(),
+                ObjectKind::Array(elems) => elems
+                    .iter()
+                    .map(|v| match v {
+                        Value::I32(n) => *n as u8,
+                        Value::F64(f) => *f as u8,
+                        _ => 0,
+                    })
+                    .collect(),
                 _ => vec![],
             }
         }
@@ -37,11 +40,14 @@ fn get_buf_bytes(decoder: &Value) -> Vec<u8> {
         if let Some(Value::Object(buf)) = obj.properties.get("__buf") {
             let buf = buf.lock().unwrap();
             if let ObjectKind::Array(elems) = &buf.kind {
-                return elems.iter().map(|v| match v {
-                    Value::I32(n) => *n as u8,
-                    Value::F64(f) => *f as u8,
-                    _ => 0,
-                }).collect();
+                return elems
+                    .iter()
+                    .map(|v| match v {
+                        Value::I32(n) => *n as u8,
+                        Value::F64(f) => *f as u8,
+                        _ => 0,
+                    })
+                    .collect();
             }
         }
     }
@@ -74,11 +80,25 @@ fn get_encoding(decoder: &Value) -> String {
 
 /// How many continuation bytes does a UTF-8 lead byte expect?
 fn utf8_continuation_bytes_needed(lead: u8) -> usize {
-    if lead & 0x80 == 0 { 0 }          // 0xxxxxxx
-    else if lead & 0xE0 == 0xC0 { 1 }  // 110xxxxx
-    else if lead & 0xF0 == 0xE0 { 2 }  // 1110xxxx
-    else if lead & 0xF8 == 0xF0 { 3 }  // 11110xxx
-    else { 0 }
+    if lead & 0x80 == 0 {
+        0
+    }
+    // 0xxxxxxx
+    else if lead & 0xE0 == 0xC0 {
+        1
+    }
+    // 110xxxxx
+    else if lead & 0xF0 == 0xE0 {
+        2
+    }
+    // 1110xxxx
+    else if lead & 0xF8 == 0xF0 {
+        3
+    }
+    // 11110xxx
+    else {
+        0
+    }
 }
 
 fn decode_utf8_partial(bytes: &[u8]) -> (String, Vec<u8>) {
@@ -108,7 +128,10 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
     match encoding {
         "utf-8" | "utf8" => decode_utf8_partial(all_bytes),
         "latin1" | "binary" => {
-            let s: String = all_bytes.iter().map(|&b| char::from_u32(b as u32).unwrap_or('\u{FFFD}')).collect();
+            let s: String = all_bytes
+                .iter()
+                .map(|&b| char::from_u32(b as u32).unwrap_or('\u{FFFD}'))
+                .collect();
             (s, vec![])
         }
         "hex" => {
@@ -117,16 +140,33 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
         }
         "base64" => {
             use std::fmt::Write as FmtWrite;
-            const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const TABLE: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let mut out = String::new();
             for chunk in all_bytes.chunks(3) {
                 let b0 = chunk[0] as usize;
-                let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-                let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+                let b1 = if chunk.len() > 1 {
+                    chunk[1] as usize
+                } else {
+                    0
+                };
+                let b2 = if chunk.len() > 2 {
+                    chunk[2] as usize
+                } else {
+                    0
+                };
                 out.push(TABLE[(b0 >> 2)] as char);
                 out.push(TABLE[((b0 & 3) << 4) | (b1 >> 4)] as char);
-                if chunk.len() > 1 { out.push(TABLE[((b1 & 0xF) << 2) | (b2 >> 6)] as char); } else { out.push('='); }
-                if chunk.len() > 2 { out.push(TABLE[b2 & 0x3F] as char); } else { out.push('='); }
+                if chunk.len() > 1 {
+                    out.push(TABLE[((b1 & 0xF) << 2) | (b2 >> 6)] as char);
+                } else {
+                    out.push('=');
+                }
+                if chunk.len() > 2 {
+                    out.push(TABLE[b2 & 0x3F] as char);
+                } else {
+                    out.push('=');
+                }
             }
             (out, vec![])
         }
@@ -135,7 +175,8 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
             (s, vec![])
         }
         "utf16le" | "ucs2" => {
-            let chars: Vec<u16> = all_bytes.chunks(2)
+            let chars: Vec<u16> = all_bytes
+                .chunks(2)
                 .filter(|c| c.len() == 2)
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
@@ -146,65 +187,80 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("node:string_decoder", "StringDecoder", Box::new(|_ctx, args| {
-        let enc_raw = match args.first() {
-            Some(Value::String(e)) => e.to_string(),
-            _ => "utf8".to_string(),
-        };
-        let enc_norm = match enc_raw.to_lowercase().as_str() {
-            "utf8" | "utf-8" => "utf-8",
-            "latin1" | "binary" | "iso-8859-1" => "latin1",
-            "hex" => "hex",
-            "base64" | "base64url" => "base64",
-            "ascii" => "ascii",
-            "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => "utf16le",
-            _ => "utf-8",
-        };
-        let mut obj = Object::new();
-        obj.properties.insert("encoding".into(), s(enc_norm));
-        let empty: Vec<Value> = vec![];
-        obj.properties.insert("__buf".into(), Value::Object(Arc::new(Mutex::new(Object {
-            kind: ObjectKind::Array(empty),
-            properties: HashMap::new(),
-            type_id: 0,
-            fields: Vec::new(),
-        }))));
-        Value::Object(Arc::new(Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "node:string_decoder",
+        "StringDecoder",
+        Box::new(|_ctx, args| {
+            let enc_raw = match args.first() {
+                Some(Value::String(e)) => e.to_string(),
+                _ => "utf8".to_string(),
+            };
+            let enc_norm = match enc_raw.to_lowercase().as_str() {
+                "utf8" | "utf-8" => "utf-8",
+                "latin1" | "binary" | "iso-8859-1" => "latin1",
+                "hex" => "hex",
+                "base64" | "base64url" => "base64",
+                "ascii" => "ascii",
+                "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => "utf16le",
+                _ => "utf-8",
+            };
+            let mut obj = Object::new();
+            obj.properties.insert("encoding".into(), s(enc_norm));
+            let empty: Vec<Value> = vec![];
+            obj.properties.insert(
+                "__buf".into(),
+                Value::Object(Arc::new(Mutex::new(Object {
+                    kind: ObjectKind::Array(empty),
+                    properties: HashMap::new(),
+                    type_id: 0,
+                    fields: Vec::new(),
+                }))),
+            );
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }),
+    );
 
-    vm.register_host_fn("node:string_decoder", "write", Box::new(|_ctx, args| {
-        let decoder = args.first().cloned().unwrap_or(Value::Undefined);
-        let buf_val = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let encoding = get_encoding(&decoder);
-        let mut bytes = get_buf_bytes(&decoder);
-        bytes.extend(extract_bytes(&buf_val));
-        let (out, remaining) = decode_bytes(&encoding, &bytes);
-        set_buf_bytes(&decoder, remaining);
-        s(&out)
-    }));
+    vm.register_host_fn(
+        "node:string_decoder",
+        "write",
+        Box::new(|_ctx, args| {
+            let decoder = args.first().cloned().unwrap_or(Value::Undefined);
+            let buf_val = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let encoding = get_encoding(&decoder);
+            let mut bytes = get_buf_bytes(&decoder);
+            bytes.extend(extract_bytes(&buf_val));
+            let (out, remaining) = decode_bytes(&encoding, &bytes);
+            set_buf_bytes(&decoder, remaining);
+            s(&out)
+        }),
+    );
 
-    vm.register_host_fn("node:string_decoder", "end", Box::new(|_ctx, args| {
-        let decoder = args.first().cloned().unwrap_or(Value::Undefined);
-        let buf_val = args.get(1).cloned();
-        let encoding = get_encoding(&decoder);
-        let mut bytes = get_buf_bytes(&decoder);
-        if let Some(buf) = buf_val {
-            bytes.extend(extract_bytes(&buf));
-        }
-        // Flush: for UTF-8, any remaining incomplete bytes → replacement char
-        let out = if encoding == "utf-8" || encoding == "utf8" {
-            let (mut decoded, leftover) = decode_bytes(&encoding, &bytes);
-            if !leftover.is_empty() {
-                decoded.push('\u{FFFD}');
+    vm.register_host_fn(
+        "node:string_decoder",
+        "end",
+        Box::new(|_ctx, args| {
+            let decoder = args.first().cloned().unwrap_or(Value::Undefined);
+            let buf_val = args.get(1).cloned();
+            let encoding = get_encoding(&decoder);
+            let mut bytes = get_buf_bytes(&decoder);
+            if let Some(buf) = buf_val {
+                bytes.extend(extract_bytes(&buf));
             }
-            decoded
-        } else {
-            let (decoded, _) = decode_bytes(&encoding, &bytes);
-            decoded
-        };
-        set_buf_bytes(&decoder, vec![]);
-        s(&out)
-    }));
+            // Flush: for UTF-8, any remaining incomplete bytes → replacement char
+            let out = if encoding == "utf-8" || encoding == "utf8" {
+                let (mut decoded, leftover) = decode_bytes(&encoding, &bytes);
+                if !leftover.is_empty() {
+                    decoded.push('\u{FFFD}');
+                }
+                decoded
+            } else {
+                let (decoded, _) = decode_bytes(&encoding, &bytes);
+                decoded
+            };
+            set_buf_bytes(&decoder, vec![]);
+            s(&out)
+        }),
+    );
 }
 
 #[allow(dead_code)]

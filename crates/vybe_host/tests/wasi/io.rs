@@ -24,7 +24,8 @@ fn call_import(module: &str, name: &str, pre_stack: Vec<Value>) -> Value {
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn len_of(value: &Value) -> usize {
@@ -49,7 +50,10 @@ fn element_at(value: &Value, index: usize) -> Value {
 
 fn bytes(values: &[u8]) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(
-        values.iter().map(|value| Value::I32(*value as i32)).collect()
+        values
+            .iter()
+            .map(|value| Value::I32(*value as i32))
+            .collect(),
     ))))
 }
 
@@ -57,7 +61,10 @@ fn bytes_to_vec(value: &Value) -> Vec<u8> {
     if let Value::Object(object) = value {
         let object = object.lock().unwrap();
         if let ObjectKind::Array(elements) = &object.kind {
-            return elements.iter().map(|value| value.as_i32().clamp(0, 255) as u8).collect();
+            return elements
+                .iter()
+                .map(|value| value.as_i32().clamp(0, 255) as u8)
+                .collect();
         }
     }
     Vec::new()
@@ -74,14 +81,47 @@ fn connected_tcp_streams() -> (Value, Value, Value, Value) {
     let family = Value::String(Arc::from("ipv4"));
 
     let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let listener = call_import("wasi:sockets/tcp-create-socket", "create-tcp-socket", vec![family.clone()]);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-bind", vec![listener.clone(), network.clone(), addr.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]).as_bool(), true);
+    let listener = call_import(
+        "wasi:sockets/tcp-create-socket",
+        "create-tcp-socket",
+        vec![family.clone()],
+    );
+    assert_eq!(
+        call_import(
+            "wasi:sockets/tcp",
+            "start-bind",
+            vec![listener.clone(), network.clone(), addr.clone()]
+        )
+        .as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]).as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]).as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]).as_bool(),
+        true
+    );
 
-    let client = call_import("wasi:sockets/tcp-create-socket", "create-tcp-socket", vec![family]);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-connect", vec![client.clone(), network, addr]).as_bool(), true);
+    let client = call_import(
+        "wasi:sockets/tcp-create-socket",
+        "create-tcp-socket",
+        vec![family],
+    );
+    assert_eq!(
+        call_import(
+            "wasi:sockets/tcp",
+            "start-connect",
+            vec![client.clone(), network, addr]
+        )
+        .as_bool(),
+        true
+    );
 
     let client_streams = call_import("wasi:sockets/tcp", "finish-connect", vec![client]);
     assert_eq!(len_of(&client_streams), 2);
@@ -99,7 +139,11 @@ fn connected_tcp_streams() -> (Value, Value, Value, Value) {
         }
         last
     };
-    assert_eq!(len_of(&accepted), 3, "listener should accept the connecting client");
+    assert_eq!(
+        len_of(&accepted),
+        3,
+        "listener should accept the connecting client"
+    );
 
     let server_in = element_at(&accepted, 1);
     let server_out = element_at(&accepted, 2);
@@ -112,26 +156,60 @@ fn wasi_io_streams_roundtrip_over_tcp_socket_resources() {
 
     let incoming_pollable = call_import("wasi:io/streams", "subscribe", vec![server_in.clone()]);
     let payload = bytes(b"ping");
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out.clone(), payload]), Value::Null));
+    assert!(matches!(
+        call_import(
+            "wasi:io/streams",
+            "write",
+            vec![client_out.clone(), payload]
+        ),
+        Value::Null
+    ));
 
-    let ready = call_import("wasi:io/poll", "poll", vec![Value::Object(Arc::new(Mutex::new(Object::new_array(vec![incoming_pollable]))))]);
+    let ready = call_import(
+        "wasi:io/poll",
+        "poll",
+        vec![Value::Object(Arc::new(Mutex::new(Object::new_array(
+            vec![incoming_pollable],
+        ))))],
+    );
     assert_eq!(bytes_to_vec(&ready), vec![0]);
 
-    let server_bytes = call_import("wasi:io/streams", "blocking-read", vec![server_in, Value::I64(4)]);
+    let server_bytes = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![server_in, Value::I64(4)],
+    );
     assert_eq!(bytes_to_vec(&server_bytes), b"ping");
 
     let reply = bytes(b"pong");
-    assert_eq!(call_import("wasi:io/streams", "check-write", vec![server_out.clone()]).as_i64(), 65536);
-    assert!(matches!(call_import("wasi:io/streams", "blocking-write-and-flush", vec![server_out, reply]), Value::Null));
+    assert_eq!(
+        call_import("wasi:io/streams", "check-write", vec![server_out.clone()]).as_i64(),
+        65536
+    );
+    assert!(matches!(
+        call_import(
+            "wasi:io/streams",
+            "blocking-write-and-flush",
+            vec![server_out, reply]
+        ),
+        Value::Null
+    ));
 
-    let client_bytes = call_import("wasi:io/streams", "blocking-read", vec![client_in, Value::I64(4)]);
+    let client_bytes = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![client_in, Value::I64(4)],
+    );
     assert_eq!(bytes_to_vec(&client_bytes), b"pong");
 }
 
 #[test]
 fn wasi_io_streams_check_write_returns_null_for_input_stream() {
     let (client_in, _, _, _) = connected_tcp_streams();
-    assert!(matches!(call_import("wasi:io/streams", "check-write", vec![client_in]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "check-write", vec![client_in]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -144,7 +222,11 @@ fn wasi_io_streams_read_zero_length_returns_empty_array() {
 #[test]
 fn wasi_io_streams_blocking_read_zero_length_returns_empty_array() {
     let (_, _, server_in, _) = connected_tcp_streams();
-    let result = call_import("wasi:io/streams", "blocking-read", vec![server_in, Value::I64(0)]);
+    let result = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![server_in, Value::I64(0)],
+    );
     assert_eq!(bytes_to_vec(&result), Vec::<u8>::new());
 }
 
@@ -153,21 +235,48 @@ fn wasi_io_poll_ready_transitions_after_write() {
     let (_, client_out, server_in, _) = connected_tcp_streams();
     let pollable = call_import("wasi:io/streams", "subscribe", vec![server_in.clone()]);
 
-    assert_eq!(call_import("wasi:io/poll", "ready", vec![pollable.clone()]), Value::Bool(false));
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]), Value::Null));
-    assert!(matches!(call_import("wasi:io/poll", "block", vec![pollable.clone()]), Value::Null));
-    assert_eq!(call_import("wasi:io/poll", "ready", vec![pollable]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:io/poll", "ready", vec![pollable.clone()]),
+        Value::Bool(false)
+    );
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]),
+        Value::Null
+    ));
+    assert!(matches!(
+        call_import("wasi:io/poll", "block", vec![pollable.clone()]),
+        Value::Null
+    ));
+    assert_eq!(
+        call_import("wasi:io/poll", "ready", vec![pollable]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn wasi_io_streams_skip_discards_requested_prefix() {
     let (_, client_out, server_in, _) = connected_tcp_streams();
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"pingpong")]), Value::Null));
+    assert!(matches!(
+        call_import(
+            "wasi:io/streams",
+            "write",
+            vec![client_out, bytes(b"pingpong")]
+        ),
+        Value::Null
+    ));
 
-    let skipped = call_import("wasi:io/streams", "skip", vec![server_in.clone(), Value::I64(4)]);
+    let skipped = call_import(
+        "wasi:io/streams",
+        "skip",
+        vec![server_in.clone(), Value::I64(4)],
+    );
     assert_eq!(skipped.as_i64(), 4);
 
-    let remaining = call_import("wasi:io/streams", "blocking-read", vec![server_in, Value::I64(8)]);
+    let remaining = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![server_in, Value::I64(8)],
+    );
     assert_eq!(bytes_to_vec(&remaining), b"pong");
 }
 
@@ -181,19 +290,38 @@ fn wasi_io_streams_skip_zero_length_returns_zero() {
 #[test]
 fn wasi_io_streams_blocking_skip_discards_requested_prefix() {
     let (_, client_out, server_in, _) = connected_tcp_streams();
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"abcdef")]), Value::Null));
+    assert!(matches!(
+        call_import(
+            "wasi:io/streams",
+            "write",
+            vec![client_out, bytes(b"abcdef")]
+        ),
+        Value::Null
+    ));
 
-    let skipped = call_import("wasi:io/streams", "blocking-skip", vec![server_in.clone(), Value::I64(2)]);
+    let skipped = call_import(
+        "wasi:io/streams",
+        "blocking-skip",
+        vec![server_in.clone(), Value::I64(2)],
+    );
     assert_eq!(skipped.as_i64(), 2);
 
-    let remaining = call_import("wasi:io/streams", "blocking-read", vec![server_in, Value::I64(8)]);
+    let remaining = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![server_in, Value::I64(8)],
+    );
     assert_eq!(bytes_to_vec(&remaining), b"cdef");
 }
 
 #[test]
 fn wasi_io_streams_blocking_skip_zero_length_returns_zero() {
     let (_, _, server_in, _) = connected_tcp_streams();
-    let skipped = call_import("wasi:io/streams", "blocking-skip", vec![server_in, Value::I64(0)]);
+    let skipped = call_import(
+        "wasi:io/streams",
+        "blocking-skip",
+        vec![server_in, Value::I64(0)],
+    );
     assert_eq!(skipped.as_i64(), 0);
 }
 
@@ -201,21 +329,38 @@ fn wasi_io_streams_blocking_skip_zero_length_returns_zero() {
 fn wasi_io_streams_write_zeroes_emits_requested_length() {
     let (client_in, _, _, server_out) = connected_tcp_streams();
 
-    assert!(matches!(call_import("wasi:io/streams", "write-zeroes", vec![server_out, Value::I64(3)]), Value::Null));
-    let bytes = call_import("wasi:io/streams", "blocking-read", vec![client_in, Value::I64(3)]);
+    assert!(matches!(
+        call_import(
+            "wasi:io/streams",
+            "write-zeroes",
+            vec![server_out, Value::I64(3)]
+        ),
+        Value::Null
+    ));
+    let bytes = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![client_in, Value::I64(3)],
+    );
     assert_eq!(bytes_to_vec(&bytes), vec![0, 0, 0]);
 }
 
 #[test]
 fn wasi_io_streams_flush_returns_null_for_output_stream() {
     let (_, _, _, server_out) = connected_tcp_streams();
-    assert!(matches!(call_import("wasi:io/streams", "flush", vec![server_out]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "flush", vec![server_out]),
+        Value::Null
+    ));
 }
 
 #[test]
 fn wasi_io_streams_blocking_flush_returns_null_for_output_stream() {
     let (_, _, _, server_out) = connected_tcp_streams();
-    assert!(matches!(call_import("wasi:io/streams", "blocking-flush", vec![server_out]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "blocking-flush", vec![server_out]),
+        Value::Null
+    ));
 }
 
 #[test]
@@ -223,10 +368,18 @@ fn wasi_io_streams_blocking_write_zeroes_and_flush_emits_requested_length() {
     let (client_in, _, _, server_out) = connected_tcp_streams();
 
     assert!(matches!(
-        call_import("wasi:io/streams", "blocking-write-zeroes-and-flush", vec![server_out, Value::I64(4)]),
+        call_import(
+            "wasi:io/streams",
+            "blocking-write-zeroes-and-flush",
+            vec![server_out, Value::I64(4)]
+        ),
         Value::Null
     ));
-    let bytes = call_import("wasi:io/streams", "blocking-read", vec![client_in, Value::I64(4)]);
+    let bytes = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![client_in, Value::I64(4)],
+    );
     assert_eq!(bytes_to_vec(&bytes), vec![0, 0, 0, 0]);
 }
 
@@ -235,12 +388,23 @@ fn wasi_io_streams_splice_moves_bytes_between_connections() {
     let (_, source_out, source_in, _) = connected_tcp_streams();
     let (target_in, _, _, target_out) = connected_tcp_streams();
 
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![source_out, bytes(b"copy")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![source_out, bytes(b"copy")]),
+        Value::Null
+    ));
 
-    let moved = call_import("wasi:io/streams", "splice", vec![target_out, source_in, Value::I64(4)]);
+    let moved = call_import(
+        "wasi:io/streams",
+        "splice",
+        vec![target_out, source_in, Value::I64(4)],
+    );
     assert_eq!(moved.as_i64(), 4);
 
-    let copied = call_import("wasi:io/streams", "blocking-read", vec![target_in, Value::I64(4)]);
+    let copied = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![target_in, Value::I64(4)],
+    );
     assert_eq!(bytes_to_vec(&copied), b"copy");
 }
 
@@ -249,12 +413,23 @@ fn wasi_io_streams_blocking_splice_moves_bytes_between_connections() {
     let (_, source_out, source_in, _) = connected_tcp_streams();
     let (target_in, _, _, target_out) = connected_tcp_streams();
 
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![source_out, bytes(b"pipe")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![source_out, bytes(b"pipe")]),
+        Value::Null
+    ));
 
-    let moved = call_import("wasi:io/streams", "blocking-splice", vec![target_out, source_in, Value::I64(4)]);
+    let moved = call_import(
+        "wasi:io/streams",
+        "blocking-splice",
+        vec![target_out, source_in, Value::I64(4)],
+    );
     assert_eq!(moved.as_i64(), 4);
 
-    let copied = call_import("wasi:io/streams", "blocking-read", vec![target_in, Value::I64(4)]);
+    let copied = call_import(
+        "wasi:io/streams",
+        "blocking-read",
+        vec![target_in, Value::I64(4)],
+    );
     assert_eq!(bytes_to_vec(&copied), b"pipe");
 }
 
@@ -272,11 +447,16 @@ fn wasi_io_poll_marks_only_ready_pollables() {
     let first_pollable = call_import("wasi:io/streams", "subscribe", vec![first_in]);
     let second_pollable = call_import("wasi:io/streams", "subscribe", vec![second_in]);
 
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![second_out, bytes(b"go")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![second_out, bytes(b"go")]),
+        Value::Null
+    ));
     let ready = call_import(
         "wasi:io/poll",
         "poll",
-        vec![Value::Object(Arc::new(Mutex::new(Object::new_array(vec![first_pollable, second_pollable]))))],
+        vec![Value::Object(Arc::new(Mutex::new(Object::new_array(
+            vec![first_pollable, second_pollable],
+        ))))],
     );
     assert_eq!(bytes_to_vec(&ready), vec![1]);
 
@@ -326,5 +506,8 @@ fn proposal_io_streams_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi:io/streams", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing io streams imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing io streams imports: {missing:?}"
+    );
 }

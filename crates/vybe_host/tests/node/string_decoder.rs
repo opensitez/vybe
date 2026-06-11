@@ -77,7 +77,11 @@ fn string_decoder_has_encoding_property() {
     match &decoder {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            let enc = obj.properties.get("encoding").cloned().unwrap_or(Value::Undefined);
+            let enc = obj
+                .properties
+                .get("encoding")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(as_str(&enc), "utf-8");
         }
         _ => panic!("expected object"),
@@ -109,7 +113,11 @@ fn write_split_multibyte_utf8_first_byte_returns_empty() {
     let decoder = new_decoder("utf8");
     let first_byte = bytes_buf(&[0xC3]);
     let result = call_sd("write", vec![decoder, first_byte]);
-    assert_eq!(as_str(&result), "", "incomplete multibyte must not be emitted");
+    assert_eq!(
+        as_str(&result),
+        "",
+        "incomplete multibyte must not be emitted"
+    );
 }
 
 #[test]
@@ -205,5 +213,8 @@ fn proposal_node_string_decoder_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:string_decoder imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:string_decoder imports: {missing:?}"
+    );
 }

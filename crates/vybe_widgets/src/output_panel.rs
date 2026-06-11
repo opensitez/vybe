@@ -3,10 +3,10 @@
 //! Renders a tab bar (Output | Problems), content area with scrollable lines,
 //! and close/clear buttons. Emits events for tab switching, close, and item clicks.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
-use crate::layout::*;
 use crate::ide_text;
+use crate::layout::*;
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 /// Diagnostic severity for the Problems panel.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,18 +93,28 @@ impl OutputPanel {
         }
     }
 
-    pub fn active_tab(&self) -> OutputTab { self.active_tab }
+    pub fn active_tab(&self) -> OutputTab {
+        self.active_tab
+    }
 
-    pub fn set_visible(&mut self, v: bool) { self.visible = v; }
-    pub fn visible(&self) -> bool { self.visible }
+    pub fn set_visible(&mut self, v: bool) {
+        self.visible = v;
+    }
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
 
     pub fn clear_output(&mut self) {
         self.output_lines.clear();
         self.scroll_y = 0.0;
     }
 
-    pub fn scroll_y(&self) -> f32 { self.scroll_y }
-    pub fn set_scroll_y(&mut self, y: f32) { self.scroll_y = y; }
+    pub fn scroll_y(&self) -> f32 {
+        self.scroll_y
+    }
+    pub fn set_scroll_y(&mut self, y: f32) {
+        self.scroll_y = y;
+    }
 
     /// Scroll to the last line of the active tab's content.
     pub fn scroll_to_bottom(&mut self) {
@@ -125,7 +135,9 @@ impl OutputPanel {
                     "close" => result.push(OutputPanelEvent::Close),
                     "clear" => result.push(OutputPanelEvent::ClearOutput),
                     "tab_output" => result.push(OutputPanelEvent::TabChanged(OutputTab::Output)),
-                    "tab_problems" => result.push(OutputPanelEvent::TabChanged(OutputTab::Problems)),
+                    "tab_problems" => {
+                        result.push(OutputPanelEvent::TabChanged(OutputTab::Problems))
+                    }
                     _ if s.starts_with("problem_") => {
                         if let Ok(idx) = s[8..].parse::<usize>() {
                             result.push(OutputPanelEvent::ProblemClicked(idx));
@@ -143,27 +155,47 @@ impl OutputPanel {
 }
 
 impl PanelWidget for OutputPanel {
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         let s = ctx.scale;
         let mut paint = Paint::default();
 
         // Background
         let (r, g, b, a) = self.bg_color;
         paint.set_color_rgba8(r, g, b, a);
-        if let Some(rect) = Rect::from_xywh(self.rect.x * s, self.rect.y * s, self.rect.w * s, self.rect.h * s) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        if let Some(rect) = Rect::from_xywh(
+            self.rect.x * s,
+            self.rect.y * s,
+            self.rect.w * s,
+            self.rect.h * s,
+        ) {
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
 
         // Header bar
         let (r, g, b, a) = self.header_bg;
         paint.set_color_rgba8(r, g, b, a);
-        if let Some(rect) = Rect::from_xywh(self.rect.x * s, self.rect.y * s, self.rect.w * s, Self::HEADER_H * s) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        if let Some(rect) = Rect::from_xywh(
+            self.rect.x * s,
+            self.rect.y * s,
+            self.rect.w * s,
+            Self::HEADER_H * s,
+        ) {
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
 
         // Tab buttons: Output | Problems
@@ -174,14 +206,30 @@ impl PanelWidget for OutputPanel {
         } else {
             CosmicColor::rgba(120, 120, 120, 255)
         };
-        ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Output", output_tab_x, tab_y, 13.0, output_col, s);
+        ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Output",
+            output_tab_x,
+            tab_y,
+            13.0,
+            output_col,
+            s,
+        );
 
         // Active underline for Output
         if self.active_tab == OutputTab::Output {
             let (ar, ag, ab, _) = self.accent_color;
             paint.set_color_rgba8(ar, ag, ab, 255);
-            if let Some(rect) = Rect::from_xywh(output_tab_x * s, (self.rect.y + 22.0) * s, 50.0 * s, 2.0 * s) {
-                ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            if let Some(rect) = Rect::from_xywh(
+                output_tab_x * s,
+                (self.rect.y + 22.0) * s,
+                50.0 * s,
+                2.0 * s,
+            ) {
+                ctx.pixmap
+                    .fill_rect(rect, &paint, Transform::identity(), None);
             }
         }
 
@@ -192,31 +240,69 @@ impl PanelWidget for OutputPanel {
         } else {
             CosmicColor::rgba(120, 120, 120, 255)
         };
-        ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &problems_label, problems_tab_x, tab_y, 13.0, problems_col, s);
+        ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &problems_label,
+            problems_tab_x,
+            tab_y,
+            13.0,
+            problems_col,
+            s,
+        );
 
         if self.active_tab == OutputTab::Problems {
             let (ar, ag, ab, _) = self.accent_color;
             paint.set_color_rgba8(ar, ag, ab, 255);
-            if let Some(rect) = Rect::from_xywh(problems_tab_x * s, (self.rect.y + 22.0) * s, 100.0 * s, 2.0 * s) {
-                ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            if let Some(rect) = Rect::from_xywh(
+                problems_tab_x * s,
+                (self.rect.y + 22.0) * s,
+                100.0 * s,
+                2.0 * s,
+            ) {
+                ctx.pixmap
+                    .fill_rect(rect, &paint, Transform::identity(), None);
             }
         }
 
         // Close button (×)
         let close_x = self.rect.x + self.rect.w - 24.0;
-        ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "×", close_x, tab_y, 13.0, CosmicColor::rgba(150, 150, 150, 255), s);
+        ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "×",
+            close_x,
+            tab_y,
+            13.0,
+            CosmicColor::rgba(150, 150, 150, 255),
+            s,
+        );
 
         // Clear button (only for Output tab)
         if self.active_tab == OutputTab::Output {
             let clear_x = self.rect.x + self.rect.w - 80.0;
-            ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Clear", clear_x, tab_y, 13.0, CosmicColor::rgba(120, 120, 120, 255), s);
+            ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                "Clear",
+                clear_x,
+                tab_y,
+                13.0,
+                CosmicColor::rgba(120, 120, 120, 255),
+                s,
+            );
         }
 
         // Separator line at top
         let mut sep = Paint::default();
         sep.set_color_rgba8(60, 60, 70, 255);
-        if let Some(rect) = Rect::from_xywh(self.rect.x * s, self.rect.y * s, self.rect.w * s, 1.0) {
-            ctx.pixmap.fill_rect(rect, &sep, Transform::identity(), None);
+        if let Some(rect) = Rect::from_xywh(self.rect.x * s, self.rect.y * s, self.rect.w * s, 1.0)
+        {
+            ctx.pixmap
+                .fill_rect(rect, &sep, Transform::identity(), None);
         }
 
         // Content area
@@ -227,7 +313,13 @@ impl PanelWidget for OutputPanel {
         match self.active_tab {
             OutputTab::Output => {
                 let skip = (self.scroll_y / Self::LINE_H).max(0.0) as usize;
-                for (i, line) in self.output_lines.iter().skip(skip).take(visible_lines + 1).enumerate() {
+                for (i, line) in self
+                    .output_lines
+                    .iter()
+                    .skip(skip)
+                    .take(visible_lines + 1)
+                    .enumerate()
+                {
                     let ly = content_y + i as f32 * Self::LINE_H - (self.scroll_y % Self::LINE_H);
                     if ly >= content_y && ly < self.rect.y + self.rect.h {
                         let col = if line.starts_with("ERR:") || line.starts_with("Save error") {
@@ -237,33 +329,106 @@ impl PanelWidget for OutputPanel {
                         } else {
                             CosmicColor::rgba(180, 180, 180, 255)
                         };
-                        let display = if line.len() > 120 { &line[..120] } else { line.as_str() };
-                        ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, display, self.rect.x + 10.0, ly + 2.0, 13.0, col, s);
+                        let display = if line.len() > 120 {
+                            &line[..120]
+                        } else {
+                            line.as_str()
+                        };
+                        ide_text::draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            display,
+                            self.rect.x + 10.0,
+                            ly + 2.0,
+                            13.0,
+                            col,
+                            s,
+                        );
                     }
                 }
             }
             OutputTab::Problems => {
                 if self.problems.is_empty() {
-                    ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "No problems detected.", self.rect.x + 10.0, content_y + 4.0, 13.0, CosmicColor::rgba(100, 200, 100, 255), s);
+                    ide_text::draw_text(
+                        ctx.pixmap,
+                        ctx.font_system,
+                        ctx.swash_cache,
+                        "No problems detected.",
+                        self.rect.x + 10.0,
+                        content_y + 4.0,
+                        13.0,
+                        CosmicColor::rgba(100, 200, 100, 255),
+                        s,
+                    );
                 } else {
                     let skip = (self.scroll_y / Self::LINE_H).max(0.0) as usize;
-                    for (i, prob) in self.problems.iter().skip(skip).take(visible_lines + 1).enumerate() {
-                        let ly = content_y + i as f32 * Self::LINE_H - (self.scroll_y % Self::LINE_H);
+                    for (i, prob) in self
+                        .problems
+                        .iter()
+                        .skip(skip)
+                        .take(visible_lines + 1)
+                        .enumerate()
+                    {
+                        let ly =
+                            content_y + i as f32 * Self::LINE_H - (self.scroll_y % Self::LINE_H);
                         if ly >= content_y && ly < self.rect.y + self.rect.h {
                             let (icon, icon_col) = match prob.severity {
-                                ProblemSeverity::Error => ("●", CosmicColor::rgba(255, 80, 80, 255)),
-                                ProblemSeverity::Warning => ("▲", CosmicColor::rgba(255, 200, 50, 255)),
-                                ProblemSeverity::Info => ("ℹ", CosmicColor::rgba(80, 160, 255, 255)),
-                                ProblemSeverity::Hint => ("…", CosmicColor::rgba(140, 140, 140, 255)),
+                                ProblemSeverity::Error => {
+                                    ("●", CosmicColor::rgba(255, 80, 80, 255))
+                                }
+                                ProblemSeverity::Warning => {
+                                    ("▲", CosmicColor::rgba(255, 200, 50, 255))
+                                }
+                                ProblemSeverity::Info => {
+                                    ("ℹ", CosmicColor::rgba(80, 160, 255, 255))
+                                }
+                                ProblemSeverity::Hint => {
+                                    ("…", CosmicColor::rgba(140, 140, 140, 255))
+                                }
                             };
                             // Icon
-                            ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, icon, self.rect.x + 10.0, ly + 2.0, 13.0, icon_col, s);
+                            ide_text::draw_text(
+                                ctx.pixmap,
+                                ctx.font_system,
+                                ctx.swash_cache,
+                                icon,
+                                self.rect.x + 10.0,
+                                ly + 2.0,
+                                13.0,
+                                icon_col,
+                                s,
+                            );
                             // File:line
                             let loc = format!("{}:{}", prob.file, prob.line);
-                            ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &loc, self.rect.x + 24.0, ly + 2.0, 13.0, CosmicColor::rgba(130, 180, 230, 255), s);
+                            ide_text::draw_text(
+                                ctx.pixmap,
+                                ctx.font_system,
+                                ctx.swash_cache,
+                                &loc,
+                                self.rect.x + 24.0,
+                                ly + 2.0,
+                                13.0,
+                                CosmicColor::rgba(130, 180, 230, 255),
+                                s,
+                            );
                             // Message
-                            let msg = if prob.message.len() > 100 { &prob.message[..100] } else { prob.message.as_str() };
-                            ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, msg, self.rect.x + 200.0, ly + 2.0, 13.0, CosmicColor::rgba(200, 200, 200, 255), s);
+                            let msg = if prob.message.len() > 100 {
+                                &prob.message[..100]
+                            } else {
+                                prob.message.as_str()
+                            };
+                            ide_text::draw_text(
+                                ctx.pixmap,
+                                ctx.font_system,
+                                ctx.swash_cache,
+                                msg,
+                                self.rect.x + 200.0,
+                                ly + 2.0,
+                                13.0,
+                                CosmicColor::rgba(200, 200, 200, 255),
+                                s,
+                            );
                         }
                     }
                 }
@@ -272,8 +437,12 @@ impl PanelWidget for OutputPanel {
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.visible { return false; }
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.visible {
+            return false;
+        }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
 
         match event.kind {
             MouseEventKind::Press(MouseButton::Left) => {
@@ -285,13 +454,18 @@ impl PanelWidget for OutputPanel {
 
                     // Close button
                     if rel_x > self.rect.w - 24.0 {
-                        self.pending_events.push(WidgetEvent::Action("close".into()));
+                        self.pending_events
+                            .push(WidgetEvent::Action("close".into()));
                         return true;
                     }
 
                     // Clear button (Output tab only)
-                    if self.active_tab == OutputTab::Output && rel_x > self.rect.w - 80.0 && rel_x < self.rect.w - 30.0 {
-                        self.pending_events.push(WidgetEvent::Action("clear".into()));
+                    if self.active_tab == OutputTab::Output
+                        && rel_x > self.rect.w - 80.0
+                        && rel_x < self.rect.w - 30.0
+                    {
+                        self.pending_events
+                            .push(WidgetEvent::Action("clear".into()));
                         return true;
                     }
 
@@ -299,13 +473,15 @@ impl PanelWidget for OutputPanel {
                     if rel_x >= 10.0 && rel_x < 70.0 {
                         self.active_tab = OutputTab::Output;
                         self.scroll_y = 0.0;
-                        self.pending_events.push(WidgetEvent::Action("tab_output".into()));
+                        self.pending_events
+                            .push(WidgetEvent::Action("tab_output".into()));
                         return true;
                     }
                     if rel_x >= 80.0 && rel_x < 200.0 {
                         self.active_tab = OutputTab::Problems;
                         self.scroll_y = 0.0;
-                        self.pending_events.push(WidgetEvent::Action("tab_problems".into()));
+                        self.pending_events
+                            .push(WidgetEvent::Action("tab_problems".into()));
                         return true;
                     }
                     return true;
@@ -315,9 +491,11 @@ impl PanelWidget for OutputPanel {
                 if self.active_tab == OutputTab::Problems && rel_y >= Self::HEADER_H {
                     let content_rel_y = rel_y - Self::HEADER_H;
                     let clicked_idx = (self.scroll_y / Self::LINE_H).max(0.0) as usize
-                        + ((content_rel_y + (self.scroll_y % Self::LINE_H)) / Self::LINE_H) as usize;
+                        + ((content_rel_y + (self.scroll_y % Self::LINE_H)) / Self::LINE_H)
+                            as usize;
                     if clicked_idx < self.problems.len() {
-                        self.pending_events.push(WidgetEvent::Action(format!("problem_{}", clicked_idx)));
+                        self.pending_events
+                            .push(WidgetEvent::Action(format!("problem_{}", clicked_idx)));
                     }
                     return true;
                 }
@@ -328,16 +506,21 @@ impl PanelWidget for OutputPanel {
         }
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn handle_scroll(&mut self, delta: f32, _x: f32, _y: f32) -> bool {
-        if !self.visible { return false; }
+        if !self.visible {
+            return false;
+        }
         self.scroll_y = (self.scroll_y - delta).max(0.0);
         let total_lines = match self.active_tab {
             OutputTab::Output => self.output_lines.len(),
             OutputTab::Problems => self.problems.len(),
         };
-        let max_scroll = (total_lines as f32 * Self::LINE_H - (self.rect.h - Self::HEADER_H)).max(0.0);
+        let max_scroll =
+            (total_lines as f32 * Self::LINE_H - (self.rect.h - Self::HEADER_H)).max(0.0);
         self.scroll_y = self.scroll_y.min(max_scroll);
         true
     }

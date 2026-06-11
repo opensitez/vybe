@@ -283,5 +283,8 @@ fn proposal_node_assert_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:assert imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:assert imports: {missing:?}"
+    );
 }

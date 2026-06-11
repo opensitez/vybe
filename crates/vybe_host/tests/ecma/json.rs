@@ -10,6 +10,18 @@ use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
+    invoke_result(name, args).expect("VM run failed")
+}
+
+fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::VMError> {
+    let (result, _) = invoke_result_with_exception(name, args);
+    result
+}
+
+fn invoke_result_with_exception(
+    name: &str,
+    args: Vec<Value>,
+) -> (Result<Value, vybe_bytecode::VMError>, Option<Value>) {
     let mut chunk = Chunk::new("<ecma-json-test>");
     let import_idx = chunk.add_import("ecma:json", name);
     let argc = args.len() as u8;
@@ -22,14 +34,20 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.run(vec![chunk]).expect("VM run failed")
+    let result = vm.run(vec![chunk]);
+    let exception = vm.last_exception.clone();
+    (result, exception)
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
-    for (k, v) in pairs { o.properties.insert(k.to_string(), v); }
+    for (k, v) in pairs {
+        o.properties.insert(k.to_string(), v);
+    }
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -38,7 +56,29 @@ fn arr(values: Vec<Value>) -> Value {
 }
 
 fn as_str(v: &Value) -> &str {
-    match v { Value::String(s) => s.as_ref(), _ => panic!("expected string, got {:?}", v) }
+    match v {
+        Value::String(s) => s.as_ref(),
+        _ => panic!("expected string, got {:?}", v),
+    }
+}
+
+fn obj_prop(value: &Value, key: &str) -> Value {
+    if let Value::Object(object) = value {
+        let object = object.lock().unwrap();
+        return object
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined);
+    }
+    Value::Undefined
+}
+
+fn assert_throws_error_name(name: &str, args: Vec<Value>, expected_name: &str) {
+    let (result, exception) = invoke_result_with_exception(name, args);
+    result.expect_err("host call should throw");
+    let exception = exception.expect("host call should preserve thrown value");
+    assert_eq!(format!("{}", obj_prop(&exception, "name")), expected_name);
 }
 
 // ── JSON.stringify — special value handling ───────────────────────────────────
@@ -51,12 +91,18 @@ fn stringify_null_produces_the_string_null() {
 #[test]
 fn stringify_nan_becomes_null_per_spec() {
     // JSON has no NaN; the spec mandates encoding it as null.
-    assert_eq!(as_str(&invoke("stringify", vec![Value::F64(f64::NAN)])), "null");
+    assert_eq!(
+        as_str(&invoke("stringify", vec![Value::F64(f64::NAN)])),
+        "null"
+    );
 }
 
 #[test]
 fn stringify_infinity_becomes_null_per_spec() {
-    assert_eq!(as_str(&invoke("stringify", vec![Value::F64(f64::INFINITY)])), "null");
+    assert_eq!(
+        as_str(&invoke("stringify", vec![Value::F64(f64::INFINITY)])),
+        "null"
+    );
 }
 
 #[test]
@@ -68,8 +114,14 @@ fn stringify_undefined_is_not_serializable_returns_undefined() {
 
 #[test]
 fn stringify_boolean_true_and_false() {
-    assert_eq!(as_str(&invoke("stringify", vec![Value::Bool(true)])), "true");
-    assert_eq!(as_str(&invoke("stringify", vec![Value::Bool(false)])), "false");
+    assert_eq!(
+        as_str(&invoke("stringify", vec![Value::Bool(true)])),
+        "true"
+    );
+    assert_eq!(
+        as_str(&invoke("stringify", vec![Value::Bool(false)])),
+        "false"
+    );
 }
 
 #[test]
@@ -105,7 +157,10 @@ fn stringify_empty_array_produces_brackets() {
 #[test]
 fn stringify_array_with_null_element_keeps_null_not_omits() {
     // In arrays, undefined/null elements → "null" (unlike object properties which are omitted).
-    let result = invoke("stringify", vec![arr(vec![Value::I32(1), Value::Null, Value::I32(3)])]);
+    let result = invoke(
+        "stringify",
+        vec![arr(vec![Value::I32(1), Value::Null, Value::I32(3)])],
+    );
     assert_eq!(as_str(&result), "[1,null,3]");
 }
 
@@ -136,7 +191,7 @@ fn parse_integer_returns_numeric_value() {
     let result = invoke("parse", vec![s("42")]);
     assert!(
         matches!(result, Value::I32(42) | Value::I64(42))
-        || matches!(result, Value::F64(f) if (f - 42.0).abs() < 0.001)
+            || matches!(result, Value::F64(f) if (f - 42.0).abs() < 0.001)
     );
 }
 
@@ -167,14 +222,33 @@ fn parse_array_returns_array_object() {
 fn parse_object_with_property_accessible_by_key() {
     let result = invoke("parse", vec![s("{\"x\":7}")]);
     if let Value::Object(o) = &result {
-        let val = o.lock().unwrap().properties.get("x").cloned().unwrap_or(Value::Undefined);
+        let val = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("x")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         assert!(
-            matches!(val, Value::I32(7))
-            || matches!(val, Value::F64(f) if (f - 7.0).abs() < 0.001)
+            matches!(val, Value::I32(7)) || matches!(val, Value::F64(f) if (f - 7.0).abs() < 0.001)
         );
     } else {
         panic!("expected object from parse");
     }
+}
+
+#[test]
+fn parse_invalid_json_throws_syntax_error() {
+    assert_throws_error_name("parse", vec![s("{bad json}")], "SyntaxError");
+}
+
+#[test]
+fn parse_with_reviver_invalid_json_throws_syntax_error() {
+    assert_throws_error_name(
+        "parseWithReviver",
+        vec![s("{bad json}"), Value::Null],
+        "SyntaxError",
+    );
 }
 
 // ── Round-trip ────────────────────────────────────────────────────────────────
@@ -186,7 +260,7 @@ fn stringify_then_parse_integer_round_trips() {
     let restored = invoke("parse", vec![json]);
     assert!(
         matches!(restored, Value::I32(123))
-        || matches!(restored, Value::F64(f) if (f - 123.0).abs() < 0.001)
+            || matches!(restored, Value::F64(f) if (f - 123.0).abs() < 0.001)
     );
 }
 
@@ -200,6 +274,18 @@ fn stringify_then_parse_nested_object_preserves_structure() {
     assert!(matches!(restored, Value::Object(_)));
 }
 
+#[test]
+fn stringify_circular_object_throws_type_error() {
+    let object = Arc::new(Mutex::new(Object::new()));
+    {
+        let mut guard = object.lock().unwrap();
+        guard
+            .properties
+            .insert("self".to_string(), Value::Object(object.clone()));
+    }
+    assert_throws_error_name("stringify", vec![Value::Object(object)], "TypeError");
+}
+
 // ── JSON.stringify with array replacer ───────────────────────────────────────
 
 #[test]
@@ -207,10 +293,20 @@ fn stringify_array_replacer_filters_to_listed_keys() {
     // ECMA-262 §25.5.2.1: if replacer is an Array, only listed keys are included.
     use std::sync::{Arc, Mutex};
     use vybe_bytecode::value::Object;
-    let o = obj(vec![("a", Value::I32(1)), ("b", Value::I32(2)), ("c", Value::I32(3))]);
-    let replacer = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![s("a"), s("c")]))));
+    let o = obj(vec![
+        ("a", Value::I32(1)),
+        ("b", Value::I32(2)),
+        ("c", Value::I32(3)),
+    ]);
+    let replacer = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+        s("a"),
+        s("c"),
+    ]))));
     let json = invoke("stringifyWithReplacer", vec![o, replacer]);
-    let text = match &json { Value::String(s) => s.as_ref().to_string(), _ => "".to_string() };
+    let text = match &json {
+        Value::String(s) => s.as_ref().to_string(),
+        _ => "".to_string(),
+    };
     assert!(text.contains("\"a\""), "should include key a");
     assert!(!text.contains("\"b\""), "should exclude key b");
 }
@@ -225,7 +321,8 @@ fn parse_with_reviver_transforms_each_value() {
     use vybe_bytecode::value::Object;
     let reviver = {
         let mut o = Object::new();
-        o.properties.insert("__reviver_double_numbers".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__reviver_double_numbers".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("parseWithReviver", vec![s("{\"x\":5}"), reviver]);
@@ -260,7 +357,10 @@ fn is_raw_json_false_for_plain_objects() {
 #[test]
 fn is_raw_json_false_for_primitives() {
     assert_eq!(invoke("isRawJSON", vec![s("42")]), Value::Bool(false));
-    assert_eq!(invoke("isRawJSON", vec![Value::I32(42)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isRawJSON", vec![Value::I32(42)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -271,7 +371,9 @@ fn stringify_raw_json_embeds_number_without_quotes() {
     // The raw object itself serializes to the embedded literal (no quotes).
     let text = invoke("stringify", vec![raw]);
     match &text {
-        Value::String(s) => assert!(s.contains("9007199254740993") || s.as_ref() == "9007199254740993"),
+        Value::String(s) => {
+            assert!(s.contains("9007199254740993") || s.as_ref() == "9007199254740993")
+        }
         Value::Undefined => {}
         other => panic!("unexpected: {:?}", other),
     }

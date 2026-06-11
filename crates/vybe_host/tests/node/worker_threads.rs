@@ -150,8 +150,14 @@ fn message_channel_port1_and_port2_are_distinct() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
     let port2 = prop(&channel, "port2");
-    let p1_ptr = match &port1 { Value::Object(arc) => std::sync::Arc::as_ptr(arc) as usize, _ => 0 };
-    let p2_ptr = match &port2 { Value::Object(arc) => std::sync::Arc::as_ptr(arc) as usize, _ => 1 };
+    let p1_ptr = match &port1 {
+        Value::Object(arc) => std::sync::Arc::as_ptr(arc) as usize,
+        _ => 0,
+    };
+    let p2_ptr = match &port2 {
+        Value::Object(arc) => std::sync::Arc::as_ptr(arc) as usize,
+        _ => 1,
+    };
     assert_ne!(p1_ptr, p2_ptr, "port1 and port2 must be distinct objects");
 }
 
@@ -161,7 +167,10 @@ fn message_channel_port1_and_port2_are_distinct() {
 fn message_port_has_post_message_method() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
-    assert!(has_method(&port1, "postMessage"), "MessagePort.postMessage must exist");
+    assert!(
+        has_method(&port1, "postMessage"),
+        "MessagePort.postMessage must exist"
+    );
 }
 
 #[test]
@@ -196,7 +205,10 @@ fn message_port_has_unref_method() {
 fn message_port_has_has_ref_method() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
-    assert!(has_method(&port1, "hasRef"), "MessagePort.hasRef must exist");
+    assert!(
+        has_method(&port1, "hasRef"),
+        "MessagePort.hasRef must exist"
+    );
 }
 
 // ── MessagePort EventEmitter ──────────────────────────────────────────────────
@@ -205,7 +217,10 @@ fn message_port_has_has_ref_method() {
 fn message_port_has_on_method() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
-    assert!(has_method(&port1, "on"), "MessagePort.on (EventEmitter) must exist");
+    assert!(
+        has_method(&port1, "on"),
+        "MessagePort.on (EventEmitter) must exist"
+    );
 }
 
 #[test]
@@ -233,14 +248,20 @@ fn message_port_has_emit_method() {
 fn message_port_has_remove_listener_method() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
-    assert!(has_method(&port1, "removeListener"), "MessagePort.removeListener must exist");
+    assert!(
+        has_method(&port1, "removeListener"),
+        "MessagePort.removeListener must exist"
+    );
 }
 
 #[test]
 fn message_port_has_remove_all_listeners_method() {
     let channel = call_wt("MessageChannel", vec![]);
     let port1 = prop(&channel, "port1");
-    assert!(has_method(&port1, "removeAllListeners"), "MessagePort.removeAllListeners must exist");
+    assert!(
+        has_method(&port1, "removeAllListeners"),
+        "MessagePort.removeAllListeners must exist"
+    );
 }
 
 // ── receiveMessageOnPort ──────────────────────────────────────────────────────
@@ -258,7 +279,10 @@ fn receive_message_on_port_with_empty_port_returns_undefined() {
 #[test]
 fn worker_constructor_returns_object() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(matches!(worker, Value::Object(_)), "Worker() must return an object");
+    assert!(
+        matches!(worker, Value::Object(_)),
+        "Worker() must return an object"
+    );
 }
 
 #[test]
@@ -267,7 +291,8 @@ fn worker_has_thread_id_property() {
     let tid = prop(&worker, "threadId");
     assert!(
         matches!(tid, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "Worker.threadId must be numeric, got {:?}", tid
+        "Worker.threadId must be numeric, got {:?}",
+        tid
     );
 }
 
@@ -291,13 +316,19 @@ fn worker_has_stdout_stderr_stdin() {
 #[test]
 fn worker_has_post_message_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "postMessage"), "Worker.postMessage must exist");
+    assert!(
+        has_method(&worker, "postMessage"),
+        "Worker.postMessage must exist"
+    );
 }
 
 #[test]
 fn worker_has_terminate_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "terminate"), "Worker.terminate must exist");
+    assert!(
+        has_method(&worker, "terminate"),
+        "Worker.terminate must exist"
+    );
 }
 
 #[test]
@@ -310,7 +341,10 @@ fn worker_has_ref_and_unref_methods() {
 #[test]
 fn worker_has_get_heap_snapshot_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "getHeapSnapshot"), "Worker.getHeapSnapshot must exist");
+    assert!(
+        has_method(&worker, "getHeapSnapshot"),
+        "Worker.getHeapSnapshot must exist"
+    );
 }
 
 // ── Worker EventEmitter ───────────────────────────────────────────────────────
@@ -318,7 +352,10 @@ fn worker_has_get_heap_snapshot_method() {
 #[test]
 fn worker_has_on_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "on"), "Worker.on (EventEmitter) must exist");
+    assert!(
+        has_method(&worker, "on"),
+        "Worker.on (EventEmitter) must exist"
+    );
 }
 
 #[test]
@@ -342,19 +379,28 @@ fn worker_has_emit_method() {
 #[test]
 fn worker_has_remove_listener_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "removeListener"), "Worker.removeListener must exist");
+    assert!(
+        has_method(&worker, "removeListener"),
+        "Worker.removeListener must exist"
+    );
 }
 
 #[test]
 fn worker_has_remove_all_listeners_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "removeAllListeners"), "Worker.removeAllListeners must exist");
+    assert!(
+        has_method(&worker, "removeAllListeners"),
+        "Worker.removeAllListeners must exist"
+    );
 }
 
 #[test]
 fn worker_has_listener_count_method() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
-    assert!(has_method(&worker, "listenerCount"), "Worker.listenerCount must exist");
+    assert!(
+        has_method(&worker, "listenerCount"),
+        "Worker.listenerCount must exist"
+    );
 }
 
 // ── BroadcastChannel ─────────────────────────────────────────────────────────
@@ -370,7 +416,9 @@ fn broadcast_channel_has_name_property() {
     let bc = call_wt("BroadcastChannel", vec![s("my-channel")]);
     let name = prop(&bc, "name");
     match name {
-        Value::String(n) => assert_eq!(n.as_ref(), "my-channel", "BroadcastChannel.name must match"),
+        Value::String(n) => {
+            assert_eq!(n.as_ref(), "my-channel", "BroadcastChannel.name must match")
+        }
         other => panic!("BroadcastChannel.name expected string, got {:?}", other),
     }
 }
@@ -378,13 +426,19 @@ fn broadcast_channel_has_name_property() {
 #[test]
 fn broadcast_channel_has_post_message_method() {
     let bc = call_wt("BroadcastChannel", vec![s("ch")]);
-    assert!(has_method(&bc, "postMessage"), "BroadcastChannel.postMessage must exist");
+    assert!(
+        has_method(&bc, "postMessage"),
+        "BroadcastChannel.postMessage must exist"
+    );
 }
 
 #[test]
 fn broadcast_channel_has_close_method() {
     let bc = call_wt("BroadcastChannel", vec![s("ch")]);
-    assert!(has_method(&bc, "close"), "BroadcastChannel.close must exist");
+    assert!(
+        has_method(&bc, "close"),
+        "BroadcastChannel.close must exist"
+    );
 }
 
 #[test]
@@ -394,7 +448,8 @@ fn broadcast_channel_has_on_message_handler() {
     let onmessage = prop(&bc, "onmessage");
     assert!(
         matches!(onmessage, Value::Null | Value::Undefined | Value::Object(_)),
-        "BroadcastChannel.onmessage should exist as null/fn, got {:?}", onmessage
+        "BroadcastChannel.onmessage should exist as null/fn, got {:?}",
+        onmessage
     );
 }
 
@@ -421,7 +476,8 @@ fn is_marked_as_untransferable_returns_bool() {
     let result = call_wt("isMarkedAsUntransferable", vec![obj]);
     assert!(
         matches!(result, Value::Bool(_)),
-        "isMarkedAsUntransferable must return bool, got {:?}", result
+        "isMarkedAsUntransferable must return bool, got {:?}",
+        result
     );
 }
 
@@ -440,7 +496,8 @@ fn get_environment_data_returns_previously_set_value() {
     // May return the value or undefined if cross-thread isolation prevents it
     assert!(
         matches!(result, Value::String(_) | Value::Null | Value::Undefined),
-        "getEnvironmentData must return string or null/undefined, got {:?}", result
+        "getEnvironmentData must return string or null/undefined, got {:?}",
+        result
     );
 }
 
@@ -449,7 +506,10 @@ fn get_environment_data_returns_previously_set_value() {
 #[test]
 fn move_message_port_to_context_exists() {
     // Just verify the function is registered; calling it requires a real context object.
-    assert!(has_import("moveMessagePortToContext"), "moveMessagePortToContext must be registered");
+    assert!(
+        has_import("moveMessagePortToContext"),
+        "moveMessagePortToContext must be registered"
+    );
 }
 
 // ── Worker — exitCode / resourceLimits properties ────────────────────────────
@@ -459,8 +519,12 @@ fn worker_has_exit_code_property() {
     let worker = call_wt("Worker", vec![s("./worker.js")]);
     let ec = prop(&worker, "exitCode");
     assert!(
-        matches!(ec, Value::Null | Value::Undefined | Value::I32(_) | Value::F64(_)),
-        "Worker.exitCode must be null/undefined before exit, got {:?}", ec
+        matches!(
+            ec,
+            Value::Null | Value::Undefined | Value::I32(_) | Value::F64(_)
+        ),
+        "Worker.exitCode must be null/undefined before exit, got {:?}",
+        ec
     );
 }
 
@@ -470,7 +534,8 @@ fn worker_has_resource_limits_property() {
     let rl = prop(&worker, "resourceLimits");
     assert!(
         matches!(rl, Value::Object(_) | Value::Null | Value::Undefined),
-        "Worker.resourceLimits must be an object or undefined, got {:?}", rl
+        "Worker.resourceLimits must be an object or undefined, got {:?}",
+        rl
     );
 }
 
@@ -491,7 +556,8 @@ fn message_port_has_remove_event_listener_method() {
     let mc = call_wt("MessageChannel", vec![]);
     let port1 = prop(&mc, "port1");
     assert!(
-        has_method(&port1, "removeEventListener") || matches!(port1, Value::Undefined | Value::Null),
+        has_method(&port1, "removeEventListener")
+            || matches!(port1, Value::Undefined | Value::Null),
         "MessagePort.removeEventListener must exist (DOM-style alias)"
     );
 }
@@ -505,7 +571,8 @@ fn broadcast_channel_has_on_message_error_property() {
     let val = prop(&bc, "onmessageerror");
     assert!(
         matches!(val, Value::Null | Value::Undefined | Value::Object(_)),
-        "BroadcastChannel.onmessageerror must exist, got {:?}", val
+        "BroadcastChannel.onmessageerror must exist, got {:?}",
+        val
     );
 }
 
@@ -540,6 +607,8 @@ fn proposal_node_worker_threads_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:worker_threads imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:worker_threads imports: {missing:?}"
+    );
 }
-

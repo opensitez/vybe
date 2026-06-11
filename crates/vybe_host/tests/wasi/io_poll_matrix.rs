@@ -24,29 +24,44 @@ fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
 }
 
 fn len_of(value: &Value) -> usize {
-    let Value::Object(object) = value else { return 0 };
+    let Value::Object(object) = value else {
+        return 0;
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(elements) = &object.kind else { return 0 };
+    let ObjectKind::Array(elements) = &object.kind else {
+        return 0;
+    };
     elements.len()
 }
 
 fn element_at(value: &Value, index: usize) -> Value {
-    let Value::Object(object) = value else { return Value::Null };
+    let Value::Object(object) = value else {
+        return Value::Null;
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(elements) = &object.kind else { return Value::Null };
+    let ObjectKind::Array(elements) = &object.kind else {
+        return Value::Null;
+    };
     elements.get(index).cloned().unwrap_or(Value::Null)
 }
 
 fn bytes(values: &[u8]) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(
-        values.iter().map(|value| Value::I32(*value as i32)).collect(),
+        values
+            .iter()
+            .map(|value| Value::I32(*value as i32))
+            .collect(),
     ))))
 }
 
 fn indices(value: &Value) -> Vec<i32> {
-    let Value::Object(object) = value else { return Vec::new() };
+    let Value::Object(object) = value else {
+        return Vec::new();
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(elements) = &object.kind else { return Vec::new() };
+    let ObjectKind::Array(elements) = &object.kind else {
+        return Vec::new();
+    };
     elements.iter().map(Value::as_i32).collect()
 }
 
@@ -54,7 +69,9 @@ fn poll_list(values: Vec<Value>) -> Value {
     call_import(
         "wasi:io/poll",
         "poll",
-        vec![Value::Object(Arc::new(Mutex::new(Object::new_array(values))))],
+        vec![Value::Object(Arc::new(Mutex::new(Object::new_array(
+            values,
+        ))))],
     )
 }
 
@@ -69,14 +86,47 @@ fn connected_tcp_streams() -> (Value, Value, Value, Value) {
     let family = Value::String(Arc::from("ipv4"));
 
     let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let listener = call_import("wasi:sockets/tcp-create-socket", "create-tcp-socket", vec![family.clone()]);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-bind", vec![listener.clone(), network.clone(), addr.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]).as_bool(), true);
-    assert_eq!(call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]).as_bool(), true);
+    let listener = call_import(
+        "wasi:sockets/tcp-create-socket",
+        "create-tcp-socket",
+        vec![family.clone()],
+    );
+    assert_eq!(
+        call_import(
+            "wasi:sockets/tcp",
+            "start-bind",
+            vec![listener.clone(), network.clone(), addr.clone()]
+        )
+        .as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]).as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]).as_bool(),
+        true
+    );
+    assert_eq!(
+        call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]).as_bool(),
+        true
+    );
 
-    let client = call_import("wasi:sockets/tcp-create-socket", "create-tcp-socket", vec![family]);
-    assert_eq!(call_import("wasi:sockets/tcp", "start-connect", vec![client.clone(), network, addr]).as_bool(), true);
+    let client = call_import(
+        "wasi:sockets/tcp-create-socket",
+        "create-tcp-socket",
+        vec![family],
+    );
+    assert_eq!(
+        call_import(
+            "wasi:sockets/tcp",
+            "start-connect",
+            vec![client.clone(), network, addr]
+        )
+        .as_bool(),
+        true
+    );
 
     let client_streams = call_import("wasi:sockets/tcp", "finish-connect", vec![client]);
     let client_in = element_at(&client_streams, 0);
@@ -103,7 +153,10 @@ fn connected_tcp_streams() -> (Value, Value, Value, Value) {
 fn output_stream_pollable_is_ready_immediately() {
     let (_, _, _, server_out) = connected_tcp_streams();
     let pollable = call_import("wasi:io/streams", "subscribe", vec![server_out]);
-    assert_eq!(call_import("wasi:io/poll", "ready", vec![pollable]), Value::Bool(true));
+    assert_eq!(
+        call_import("wasi:io/poll", "ready", vec![pollable]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -132,7 +185,10 @@ fn duplicate_output_pollables_on_same_stream_both_report_ready() {
 fn input_stream_pollable_starts_not_ready_before_write() {
     let (_, _, server_in, _) = connected_tcp_streams();
     let pollable = call_import("wasi:io/streams", "subscribe", vec![server_in]);
-    assert_eq!(call_import("wasi:io/poll", "ready", vec![pollable]), Value::Bool(false));
+    assert_eq!(
+        call_import("wasi:io/poll", "ready", vec![pollable]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -146,7 +202,10 @@ fn poll_input_stream_returns_empty_before_write() {
 fn poll_input_stream_returns_index_after_write() {
     let (_, client_out, server_in, _) = connected_tcp_streams();
     let pollable = call_import("wasi:io/streams", "subscribe", vec![server_in]);
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]),
+        Value::Null
+    ));
     assert_eq!(indices(&poll_list(vec![pollable])), vec![0]);
 }
 
@@ -155,8 +214,14 @@ fn mixed_output_and_input_pollables_report_both_ready_indices_after_write() {
     let (_, client_out, server_in, server_out) = connected_tcp_streams();
     let input_pollable = call_import("wasi:io/streams", "subscribe", vec![server_in]);
     let output_pollable = call_import("wasi:io/streams", "subscribe", vec![server_out]);
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]), Value::Null));
-    assert_eq!(indices(&poll_list(vec![output_pollable, input_pollable])), vec![0, 1]);
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]),
+        Value::Null
+    ));
+    assert_eq!(
+        indices(&poll_list(vec![output_pollable, input_pollable])),
+        vec![0, 1]
+    );
 }
 
 #[test]
@@ -164,7 +229,10 @@ fn block_on_ready_output_pollable_returns_quickly() {
     let (_, _, _, server_out) = connected_tcp_streams();
     let pollable = call_import("wasi:io/streams", "subscribe", vec![server_out]);
     let start = Instant::now();
-    assert!(matches!(call_import("wasi:io/poll", "block", vec![pollable]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/poll", "block", vec![pollable]),
+        Value::Null
+    ));
     assert!(start.elapsed() < Duration::from_millis(50));
 }
 
@@ -173,6 +241,9 @@ fn duplicate_input_pollables_both_report_ready_after_write() {
     let (_, client_out, server_in, _) = connected_tcp_streams();
     let first = call_import("wasi:io/streams", "subscribe", vec![server_in.clone()]);
     let second = call_import("wasi:io/streams", "subscribe", vec![server_in]);
-    assert!(matches!(call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]), Value::Null));
+    assert!(matches!(
+        call_import("wasi:io/streams", "write", vec![client_out, bytes(b"xy")]),
+        Value::Null
+    ));
     assert_eq!(indices(&poll_list(vec![first, second])), vec![0, 1]);
 }

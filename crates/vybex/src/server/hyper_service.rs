@@ -34,7 +34,9 @@ pub struct ServeHandler {
 impl hyper::service::Service<Request<Incoming>> for ServeHandler {
     type Response = Response<BoxBody>;
     type Error = Infallible;
-    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response<BoxBody>, Infallible>> + Send>>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Response<BoxBody>, Infallible>> + Send>,
+    >;
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
         let config = Arc::clone(&self.config);
@@ -135,7 +137,8 @@ async fn handle(
         config.no_sandbox,
         config.timeout_secs,
         config.shutdown.clone(),
-    ).await
+    )
+    .await
 }
 
 #[derive(Debug)]

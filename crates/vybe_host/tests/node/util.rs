@@ -43,7 +43,8 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:util"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:util"), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -79,41 +80,62 @@ fn new_object(props: Vec<(&str, Value)>) -> Value {
 
 #[test]
 fn format_substitutes_string_placeholder() {
-    assert_eq!(as_string(&invoke("format", vec![s("hello %s"), s("world")])), "hello world");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("hello %s"), s("world")])),
+        "hello world"
+    );
 }
 
 #[test]
 fn format_substitutes_decimal_placeholder() {
-    assert_eq!(as_string(&invoke("format", vec![s("count: %d"), Value::I32(42)])), "count: 42");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("count: %d"), Value::I32(42)])),
+        "count: 42"
+    );
 }
 
 #[test]
 fn format_substitutes_integer_placeholder_truncates_floats() {
     // %i runs parseInt — float gets truncated.
-    assert_eq!(as_string(&invoke("format", vec![s("n=%i"), Value::F64(3.7)])), "n=3");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("n=%i"), Value::F64(3.7)])),
+        "n=3"
+    );
 }
 
 #[test]
 fn format_substitutes_float_placeholder() {
-    assert_eq!(as_string(&invoke("format", vec![s("pi=%f"), Value::F64(3.14)])), "pi=3.14");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("pi=%f"), Value::F64(3.14)])),
+        "pi=3.14"
+    );
 }
 
 #[test]
 fn format_substitutes_json_placeholder() {
     let obj = new_object(vec![("a", Value::I32(1))]);
-    assert_eq!(as_string(&invoke("format", vec![s("data=%j"), obj])), r#"data={"a":1}"#);
+    assert_eq!(
+        as_string(&invoke("format", vec![s("data=%j"), obj])),
+        r#"data={"a":1}"#
+    );
 }
 
 #[test]
 fn format_double_percent_emits_literal() {
-    assert_eq!(as_string(&invoke("format", vec![s("100%% off")])), "100% off");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("100%% off")])),
+        "100% off"
+    );
 }
 
 #[test]
 fn format_extra_args_get_appended_space_separated() {
     // Per Node spec: args without matching placeholders are space-appended.
     assert_eq!(
-        as_string(&invoke("format", vec![s("x=%d"), Value::I32(1), Value::I32(2), Value::I32(3)])),
+        as_string(&invoke(
+            "format",
+            vec![s("x=%d"), Value::I32(1), Value::I32(2), Value::I32(3)]
+        )),
         "x=1 2 3"
     );
 }
@@ -160,7 +182,10 @@ fn inspect_null_renders_as_null() {
 
 #[test]
 fn inspect_undefined_renders_as_undefined() {
-    assert_eq!(as_string(&invoke("inspect", vec![Value::Undefined])), "undefined");
+    assert_eq!(
+        as_string(&invoke("inspect", vec![Value::Undefined])),
+        "undefined"
+    );
 }
 
 #[test]
@@ -181,10 +206,22 @@ fn inspect_object_uses_braces() {
 
 #[test]
 fn is_deep_strict_equal_primitives() {
-    assert_eq!(invoke("isDeepStrictEqual", vec![Value::I32(1), Value::I32(1)]), Value::Bool(true));
-    assert_eq!(invoke("isDeepStrictEqual", vec![Value::I32(1), Value::I32(2)]), Value::Bool(false));
-    assert_eq!(invoke("isDeepStrictEqual", vec![s("a"), s("a")]), Value::Bool(true));
-    assert_eq!(invoke("isDeepStrictEqual", vec![s("a"), s("b")]), Value::Bool(false));
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![Value::I32(1), Value::I32(1)]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![Value::I32(1), Value::I32(2)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![s("a"), s("a")]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![s("a"), s("b")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -204,13 +241,19 @@ fn is_deep_strict_equal_nested_objects() {
     let outer_a = new_object(vec![("nested", inner_a)]);
     let inner_b = new_object(vec![("x", Value::I32(1))]);
     let outer_b = new_object(vec![("nested", inner_b)]);
-    assert_eq!(invoke("isDeepStrictEqual", vec![outer_a, outer_b]), Value::Bool(true));
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![outer_a, outer_b]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn is_deep_strict_equal_distinguishes_strict_types() {
     // Strict: 1 (number) is NOT deep-equal to "1" (string).
-    assert_eq!(invoke("isDeepStrictEqual", vec![Value::I32(1), s("1")]), Value::Bool(false));
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![Value::I32(1), s("1")]),
+        Value::Bool(false)
+    );
 }
 
 // ── stripVTControlCharacters — strip ANSI escape codes ───────────────
@@ -219,12 +262,18 @@ fn is_deep_strict_equal_distinguishes_strict_types() {
 fn strip_vt_control_characters_removes_color_escapes() {
     // \x1b[31m red, \x1b[0m reset — typical ANSI color sequence.
     let colored = s("\x1b[31merror\x1b[0m");
-    assert_eq!(as_string(&invoke("stripVTControlCharacters", vec![colored])), "error");
+    assert_eq!(
+        as_string(&invoke("stripVTControlCharacters", vec![colored])),
+        "error"
+    );
 }
 
 #[test]
 fn strip_vt_control_characters_passes_plain_text_through() {
-    assert_eq!(as_string(&invoke("stripVTControlCharacters", vec![s("plain")])), "plain");
+    assert_eq!(
+        as_string(&invoke("stripVTControlCharacters", vec![s("plain")])),
+        "plain"
+    );
 }
 
 // ── toUSVString — replace lone surrogates with U+FFFD ────────────────
@@ -243,14 +292,9 @@ fn to_usv_string_passes_well_formed_utf8_unchanged() {
 #[test]
 fn parse_args_extracts_string_option() {
     // parseArgs({ args: ["--name", "alice"], options: { name: { type: "string" } } })
-    let options = new_object(vec![
-        ("name", new_object(vec![("type", s("string"))])),
-    ]);
+    let options = new_object(vec![("name", new_object(vec![("type", s("string"))]))]);
     let args = new_array(vec![s("--name"), s("alice")]);
-    let config = new_object(vec![
-        ("args", args),
-        ("options", options),
-    ]);
+    let config = new_object(vec![("args", args), ("options", options)]);
     let result = invoke("parseArgs", vec![config]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
@@ -308,31 +352,35 @@ fn types_is_array_true_for_arrays() {
 
 #[test]
 fn types_is_array_false_for_non_arrays() {
-    assert_eq!(invoke("types.isArray", vec![s("not an array")]), Value::Bool(false));
-    assert_eq!(invoke("types.isArray", vec![Value::I32(42)]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isArray", vec![s("not an array")]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("types.isArray", vec![Value::I32(42)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_date_true_for_date_objects() {
     // Date objects in Vybe are stamped __type=Date by the wasi:clocks
     // ctor. Construct the equivalent shape here.
-    let date = new_object(vec![
-        ("__type", s("Date")),
-    ]);
+    let date = new_object(vec![("__type", s("Date"))]);
     assert_eq!(invoke("types.isDate", vec![date]), Value::Bool(true));
 }
 
 #[test]
 fn types_is_date_false_for_non_date() {
-    assert_eq!(invoke("types.isDate", vec![Value::I32(0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isDate", vec![Value::I32(0)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_reg_exp_true_for_regexp_objects() {
-    let re = new_object(vec![
-        ("__type", s("RegExp")),
-        ("source", s("foo")),
-    ]);
+    let re = new_object(vec![("__type", s("RegExp")), ("source", s("foo"))]);
     assert_eq!(invoke("types.isRegExp", vec![re]), Value::Bool(true));
 }
 
@@ -360,18 +408,13 @@ fn types_is_array_buffer_true_for_array_buffer() {
 
 #[test]
 fn types_is_native_error_true_for_error_objects() {
-    let err = new_object(vec![
-        ("__type", s("Error")),
-        ("message", s("oops")),
-    ]);
+    let err = new_object(vec![("__type", s("Error")), ("message", s("oops"))]);
     assert_eq!(invoke("types.isNativeError", vec![err]), Value::Bool(true));
 }
 
 #[test]
 fn types_is_promise_true_for_promise_objects() {
-    let p = new_object(vec![
-        ("__type", s("Promise")),
-    ]);
+    let p = new_object(vec![("__type", s("Promise"))]);
     assert_eq!(invoke("types.isPromise", vec![p]), Value::Bool(true));
 }
 
@@ -395,13 +438,19 @@ fn is_string_legacy() {
 #[test]
 fn is_number_legacy() {
     assert_eq!(invoke("isNumber", vec![Value::I32(42)]), Value::Bool(true));
-    assert_eq!(invoke("isNumber", vec![Value::F64(3.14)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isNumber", vec![Value::F64(3.14)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isNumber", vec![s("42")]), Value::Bool(false));
 }
 
 #[test]
 fn is_boolean_legacy() {
-    assert_eq!(invoke("isBoolean", vec![Value::Bool(true)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isBoolean", vec![Value::Bool(true)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isBoolean", vec![Value::I32(1)]), Value::Bool(false));
 }
 
@@ -413,15 +462,27 @@ fn is_null_legacy() {
 
 #[test]
 fn is_undefined_legacy() {
-    assert_eq!(invoke("isUndefined", vec![Value::Undefined]), Value::Bool(true));
+    assert_eq!(
+        invoke("isUndefined", vec![Value::Undefined]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isUndefined", vec![Value::Null]), Value::Bool(false));
 }
 
 #[test]
 fn is_null_or_undefined_legacy() {
-    assert_eq!(invoke("isNullOrUndefined", vec![Value::Null]), Value::Bool(true));
-    assert_eq!(invoke("isNullOrUndefined", vec![Value::Undefined]), Value::Bool(true));
-    assert_eq!(invoke("isNullOrUndefined", vec![Value::I32(0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isNullOrUndefined", vec![Value::Null]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isNullOrUndefined", vec![Value::Undefined]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isNullOrUndefined", vec![Value::I32(0)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -436,12 +497,24 @@ fn is_object_legacy() {
 #[test]
 fn is_primitive_legacy() {
     // Per Node: Number, String, Boolean, Symbol, undefined, null are primitives.
-    assert_eq!(invoke("isPrimitive", vec![Value::I32(42)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isPrimitive", vec![Value::I32(42)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isPrimitive", vec![s("hi")]), Value::Bool(true));
-    assert_eq!(invoke("isPrimitive", vec![Value::Bool(true)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isPrimitive", vec![Value::Bool(true)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isPrimitive", vec![Value::Null]), Value::Bool(true));
-    assert_eq!(invoke("isPrimitive", vec![Value::Undefined]), Value::Bool(true));
-    assert_eq!(invoke("isPrimitive", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("isPrimitive", vec![Value::Undefined]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isPrimitive", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 // ── formatWithOptions ────────────────────────────────────────────────
@@ -450,7 +523,10 @@ fn is_primitive_legacy() {
 fn format_with_options_substitutes_string_placeholder() {
     let opts = new_object(vec![]);
     assert_eq!(
-        as_string(&invoke("formatWithOptions", vec![opts, s("hi %s"), s("there")])),
+        as_string(&invoke(
+            "formatWithOptions",
+            vec![opts, s("hi %s"), s("there")]
+        )),
         "hi there"
     );
 }
@@ -467,23 +543,35 @@ fn format_with_options_colors_flag_does_not_crash() {
 
 #[test]
 fn types_is_shared_array_buffer_false_for_plain_object() {
-    assert_eq!(invoke("types.isSharedArrayBuffer", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isSharedArrayBuffer", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_any_array_buffer_true_for_array_buffer() {
     let buf = invoke_other("ecma:arraybuffer", "new", vec![Value::I32(4)]);
-    assert_eq!(invoke("types.isAnyArrayBuffer", vec![buf]), Value::Bool(true));
+    assert_eq!(
+        invoke("types.isAnyArrayBuffer", vec![buf]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn types_is_any_array_buffer_false_for_plain_object() {
-    assert_eq!(invoke("types.isAnyArrayBuffer", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isAnyArrayBuffer", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_data_view_false_for_plain_object() {
-    assert_eq!(invoke("types.isDataView", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isDataView", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -500,17 +588,26 @@ fn types_is_uint8_array_false_for_plain_array() {
 
 #[test]
 fn types_is_int32_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isInt32Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isInt32Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_float64_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isFloat64Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isFloat64Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_big_int64_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isBigInt64Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isBigInt64Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -547,55 +644,91 @@ fn types_is_set_iterator_false_for_set() {
 
 #[test]
 fn types_is_boolean_object_false_for_primitive_bool() {
-    assert_eq!(invoke("types.isBooleanObject", vec![Value::Bool(true)]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isBooleanObject", vec![Value::Bool(true)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_number_object_false_for_primitive_number() {
-    assert_eq!(invoke("types.isNumberObject", vec![Value::I32(42)]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isNumberObject", vec![Value::I32(42)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_string_object_false_for_primitive_string() {
-    assert_eq!(invoke("types.isStringObject", vec![s("hi")]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isStringObject", vec![s("hi")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_boxed_primitive_false_for_raw_primitives() {
-    assert_eq!(invoke("types.isBoxedPrimitive", vec![Value::I32(1)]), Value::Bool(false));
-    assert_eq!(invoke("types.isBoxedPrimitive", vec![s("x")]), Value::Bool(false));
-    assert_eq!(invoke("types.isBoxedPrimitive", vec![Value::Bool(true)]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isBoxedPrimitive", vec![Value::I32(1)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("types.isBoxedPrimitive", vec![s("x")]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("types.isBoxedPrimitive", vec![Value::Bool(true)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_async_function_false_for_plain_object() {
-    assert_eq!(invoke("types.isAsyncFunction", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isAsyncFunction", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_generator_function_false_for_plain_object() {
-    assert_eq!(invoke("types.isGeneratorFunction", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isGeneratorFunction", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_generator_object_false_for_plain_object() {
-    assert_eq!(invoke("types.isGeneratorObject", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isGeneratorObject", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_arguments_object_false_for_array() {
     let arr = new_array(vec![]);
-    assert_eq!(invoke("types.isArgumentsObject", vec![arr]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isArgumentsObject", vec![arr]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_proxy_false_for_plain_object() {
-    assert_eq!(invoke("types.isProxy", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isProxy", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_module_namespace_object_false_for_plain_object() {
-    assert_eq!(invoke("types.isModuleNamespaceObject", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isModuleNamespaceObject", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 // ── Legacy is* — remaining predicates ────────────────────────────────
@@ -603,13 +736,19 @@ fn types_is_module_namespace_object_false_for_plain_object() {
 #[test]
 fn is_symbol_legacy() {
     // Vybe has no Symbol value yet — primitives return false, non-symbol objects return false.
-    assert_eq!(invoke("isSymbol", vec![s("not a symbol")]), Value::Bool(false));
+    assert_eq!(
+        invoke("isSymbol", vec![s("not a symbol")]),
+        Value::Bool(false)
+    );
     assert_eq!(invoke("isSymbol", vec![Value::I32(0)]), Value::Bool(false));
 }
 
 #[test]
 fn is_function_legacy() {
-    assert_eq!(invoke("isFunction", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("isFunction", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
     assert_eq!(invoke("isFunction", vec![s("fn")]), Value::Bool(false));
 }
 
@@ -639,75 +778,120 @@ fn is_buffer_legacy() {
     // A Buffer in Vybe is an Array-backed object with __type=Buffer.
     let buf = new_object(vec![("__type", s("Buffer"))]);
     assert_eq!(invoke("isBuffer", vec![buf]), Value::Bool(true));
-    assert_eq!(invoke("isBuffer", vec![new_array(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("isBuffer", vec![new_array(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_int8_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isInt8Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isInt8Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_uint8_clamped_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isUint8ClampedArray", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isUint8ClampedArray", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_int16_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isInt16Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isInt16Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_uint16_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isUint16Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isUint16Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_uint32_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isUint32Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isUint32Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_float32_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isFloat32Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isFloat32Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_big_uint64_array_false_for_plain_object() {
-    assert_eq!(invoke("types.isBigUint64Array", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isBigUint64Array", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_symbol_object_false_for_primitive_string() {
-    assert_eq!(invoke("types.isSymbolObject", vec![s("sym")]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isSymbolObject", vec![s("sym")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_big_int_object_false_for_plain_object() {
-    assert_eq!(invoke("types.isBigIntObject", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isBigIntObject", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_external_false_for_plain_object() {
-    assert_eq!(invoke("types.isExternal", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isExternal", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_crypto_key_false_for_plain_object() {
-    assert_eq!(invoke("types.isCryptoKey", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isCryptoKey", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn types_is_key_object_false_for_plain_object() {
-    assert_eq!(invoke("types.isKeyObject", vec![new_object(vec![])]), Value::Bool(false));
+    assert_eq!(
+        invoke("types.isKeyObject", vec![new_object(vec![])]),
+        Value::Bool(false)
+    );
 }
 
 // ── inspect — additional shapes ───────────────────────────────────────
 
 #[test]
 fn inspect_bool_renders_without_quotes() {
-    assert_eq!(as_string(&invoke("inspect", vec![Value::Bool(true)])), "true");
-    assert_eq!(as_string(&invoke("inspect", vec![Value::Bool(false)])), "false");
+    assert_eq!(
+        as_string(&invoke("inspect", vec![Value::Bool(true)])),
+        "true"
+    );
+    assert_eq!(
+        as_string(&invoke("inspect", vec![Value::Bool(false)])),
+        "false"
+    );
 }
 
 #[test]
@@ -748,7 +932,10 @@ fn format_object_placeholder() {
     let obj = new_object(vec![("k", Value::I32(1))]);
     let result = as_string(&invoke("format", vec![s("%o"), obj]));
     // %o uses inspect — must contain the key
-    assert!(result.contains("k"), "format %o must inspect the object, got: {result}");
+    assert!(
+        result.contains("k"),
+        "format %o must inspect the object, got: {result}"
+    );
 }
 
 #[test]
@@ -769,7 +956,10 @@ fn format_undefined_arg_renders_as_undefined() {
 
 #[test]
 fn format_bool_arg_renders_as_string() {
-    assert_eq!(as_string(&invoke("format", vec![s("%s"), Value::Bool(true)])), "true");
+    assert_eq!(
+        as_string(&invoke("format", vec![s("%s"), Value::Bool(true)])),
+        "true"
+    );
 }
 
 // ── isDeepStrictEqual — additional cases ─────────────────────────────
@@ -786,7 +976,10 @@ fn is_deep_strict_equal_null_not_equal_undefined() {
 fn is_deep_strict_equal_object_not_equal_array() {
     let obj = new_object(vec![]);
     let arr = new_array(vec![]);
-    assert_eq!(invoke("isDeepStrictEqual", vec![obj, arr]), Value::Bool(false));
+    assert_eq!(
+        invoke("isDeepStrictEqual", vec![obj, arr]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -805,16 +998,17 @@ fn to_usv_string_empty_string_unchanged() {
 
 #[test]
 fn to_usv_string_unicode_string_unchanged() {
-    assert_eq!(as_string(&invoke("toUSVString", vec![s("héllo wörld")])), "héllo wörld");
+    assert_eq!(
+        as_string(&invoke("toUSVString", vec![s("héllo wörld")])),
+        "héllo wörld"
+    );
 }
 
 // ── parseArgs — additional cases ─────────────────────────────────────
 
 #[test]
 fn parse_args_boolean_option() {
-    let options = new_object(vec![
-        ("verbose", new_object(vec![("type", s("boolean"))])),
-    ]);
+    let options = new_object(vec![("verbose", new_object(vec![("type", s("boolean"))]))]);
     let args = new_array(vec![s("--verbose")]);
     let config = new_object(vec![("args", args), ("options", options)]);
     let result = invoke("parseArgs", vec![config]);
@@ -823,20 +1017,18 @@ fn parse_args_boolean_option() {
         let values = o.properties.get("values").expect("values key");
         if let Value::Object(v) = values {
             let vo = v.lock().unwrap();
-            assert_eq!(vo.properties.get("verbose").cloned(), Some(Value::Bool(true)));
+            assert_eq!(
+                vo.properties.get("verbose").cloned(),
+                Some(Value::Bool(true))
+            );
         }
     }
 }
 
 #[test]
 fn parse_args_missing_optional_flag_is_false() {
-    let options = new_object(vec![
-        ("flag", new_object(vec![("type", s("boolean"))])),
-    ]);
-    let config = new_object(vec![
-        ("args", new_array(vec![])),
-        ("options", options),
-    ]);
+    let options = new_object(vec![("flag", new_object(vec![("type", s("boolean"))]))]);
+    let config = new_object(vec![("args", new_array(vec![])), ("options", options)]);
     let result = invoke("parseArgs", vec![config]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
@@ -844,10 +1036,15 @@ fn parse_args_missing_optional_flag_is_false() {
         if let Value::Object(v) = values {
             let vo = v.lock().unwrap();
             // Absent boolean flag should be false or absent (not true).
-            let flag = vo.properties.get("flag").cloned().unwrap_or(Value::Undefined);
+            let flag = vo
+                .properties
+                .get("flag")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert!(
                 matches!(flag, Value::Bool(false) | Value::Undefined),
-                "absent boolean flag must be false or absent, got {:?}", flag
+                "absent boolean flag must be false or absent, got {:?}",
+                flag
             );
         }
     }
@@ -858,14 +1055,20 @@ fn parse_args_missing_optional_flag_is_false() {
 #[test]
 fn text_encoder_returns_object() {
     let enc = invoke("TextEncoder", vec![]);
-    assert!(matches!(enc, Value::Object(_)), "TextEncoder() must return an object");
+    assert!(
+        matches!(enc, Value::Object(_)),
+        "TextEncoder() must return an object"
+    );
 }
 
 #[test]
 fn text_encoder_encode_returns_uint8_array() {
     let enc = invoke("TextEncoder", vec![]);
     let encoded = invoke("textEncoderEncode", vec![enc, s("hello")]);
-    assert!(matches!(encoded, Value::Object(_)), "encode() must return a typed array / buffer");
+    assert!(
+        matches!(encoded, Value::Object(_)),
+        "encode() must return a typed array / buffer"
+    );
 }
 
 #[test]
@@ -878,7 +1081,10 @@ fn text_encoder_encoding_is_utf8() {
 #[test]
 fn text_decoder_returns_object() {
     let dec = invoke("TextDecoder", vec![]);
-    assert!(matches!(dec, Value::Object(_)), "TextDecoder() must return an object");
+    assert!(
+        matches!(dec, Value::Object(_)),
+        "TextDecoder() must return an object"
+    );
 }
 
 #[test]
@@ -918,7 +1124,10 @@ fn get_system_error_name_eacces() {
 #[test]
 fn get_system_error_map_returns_object() {
     let result = invoke("getSystemErrorMap", vec![]);
-    assert!(matches!(result, Value::Object(_)), "getSystemErrorMap() must return an object/Map");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "getSystemErrorMap() must return an object/Map"
+    );
 }
 
 // ── promisify ─────────────────────────────────────────────────────────
@@ -929,7 +1138,8 @@ fn promisify_returns_function_wrapper() {
     let result = invoke("promisify", vec![Value::Null]);
     assert!(
         matches!(result, Value::Object(_) | Value::Null | Value::Undefined),
-        "promisify(null) must not panic, got {:?}", result
+        "promisify(null) must not panic, got {:?}",
+        result
     );
 }
 
@@ -940,7 +1150,8 @@ fn callbackify_returns_wrapper_without_panic() {
     let result = invoke("callbackify", vec![Value::Null]);
     assert!(
         matches!(result, Value::Object(_) | Value::Null | Value::Undefined),
-        "callbackify(null) must not panic, got {:?}", result
+        "callbackify(null) must not panic, got {:?}",
+        result
     );
 }
 
@@ -951,7 +1162,8 @@ fn deprecate_returns_wrapped_function() {
     let result = invoke("deprecate", vec![Value::Null, s("use something else")]);
     assert!(
         matches!(result, Value::Object(_) | Value::Null | Value::Undefined),
-        "deprecate() must not panic, got {:?}", result
+        "deprecate() must not panic, got {:?}",
+        result
     );
 }
 
@@ -962,7 +1174,8 @@ fn debuglog_returns_function() {
     let result = invoke("debuglog", vec![s("http")]);
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined),
-        "debuglog() must return a callable, got {:?}", result
+        "debuglog() must return a callable, got {:?}",
+        result
     );
 }
 
@@ -976,7 +1189,8 @@ fn inherits_returns_undefined() {
     let result = invoke("inherits", vec![child_obj, parent_obj]);
     assert!(
         matches!(result, Value::Undefined | Value::Null | Value::Object(_)),
-        "inherits() must not panic, got {:?}", result
+        "inherits() must not panic, got {:?}",
+        result
     );
 }
 
@@ -987,7 +1201,8 @@ fn mime_type_returns_object() {
     let result = invoke("MIMEType", vec![s("text/html; charset=utf-8")]);
     assert!(
         matches!(result, Value::Object(_) | Value::Undefined | Value::Null),
-        "MIMEType() must not panic, got {:?}", result
+        "MIMEType() must not panic, got {:?}",
+        result
     );
 }
 
@@ -1025,7 +1240,11 @@ fn mime_type_essence_is_type_slash_subtype() {
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
         if let Some(Value::String(e)) = o.properties.get("essence") {
-            assert_eq!(e.as_ref(), "text/html", "MIMEType.essence must be type/subtype");
+            assert_eq!(
+                e.as_ref(),
+                "text/html",
+                "MIMEType.essence must be type/subtype"
+            );
         }
     }
     // TDD
@@ -1054,7 +1273,8 @@ fn style_text_returns_string() {
     let result = invoke("styleText", vec![s("red"), s("hello")]);
     assert!(
         matches!(result, Value::String(_) | Value::Undefined | Value::Null),
-        "styleText() must return a string or be unimplemented, got {:?}", result
+        "styleText() must return a string or be unimplemented, got {:?}",
+        result
     );
 }
 
@@ -1063,7 +1283,10 @@ fn style_text_plain_format_returns_unchanged_or_escaped() {
     // If bold is applied, the result must at least contain the original text.
     let result = invoke("styleText", vec![s("bold"), s("world")]);
     if let Value::String(s) = &result {
-        assert!(s.contains("world"), "styleText result must contain original text");
+        assert!(
+            s.contains("world"),
+            "styleText result must contain original text"
+        );
     }
     // TDD: passes silently if not yet implemented
 }

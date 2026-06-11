@@ -3,10 +3,10 @@
 //! Sections can hold text labels (e.g. line/col, language, build config).
 //! Each section can optionally have a click identifier for the host to handle.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
-use crate::layout::*;
 use crate::ide_text;
+use crate::layout::*;
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 /// A single section in the status bar.
 pub struct StatusSection {
@@ -43,8 +43,12 @@ impl StatusBarPanel {
         self.bg_color = (r, g, b, a);
     }
 
-    pub fn set_height(&mut self, h: f32) { self.height = h; }
-    pub fn height(&self) -> f32 { self.height }
+    pub fn set_height(&mut self, h: f32) {
+        self.height = h;
+    }
+    pub fn height(&self) -> f32 {
+        self.height
+    }
 
     pub fn add_section(&mut self, text: &str, width: f32, align_right: bool) {
         self.sections.push(StatusSection {
@@ -56,7 +60,13 @@ impl StatusBarPanel {
         });
     }
 
-    pub fn add_section_with_id(&mut self, text: &str, width: f32, align_right: bool, click_id: &str) {
+    pub fn add_section_with_id(
+        &mut self,
+        text: &str,
+        width: f32,
+        align_right: bool,
+        click_id: &str,
+    ) {
         self.sections.push(StatusSection {
             text: text.to_string(),
             width,
@@ -78,16 +88,24 @@ impl StatusBarPanel {
         }
     }
 
-    pub fn sections(&self) -> &[StatusSection] { &self.sections }
-    pub fn sections_mut(&mut self) -> &mut Vec<StatusSection> { &mut self.sections }
+    pub fn sections(&self) -> &[StatusSection] {
+        &self.sections
+    }
+    pub fn sections_mut(&mut self) -> &mut Vec<StatusSection> {
+        &mut self.sections
+    }
 
     /// Returns the `click_id` of the section at the given point, if any.
     pub fn hit_test_section(&self, x: f32, y: f32) -> Option<&str> {
-        if !self.rect.contains(x, y) { return None; }
+        if !self.rect.contains(x, y) {
+            return None;
+        }
 
         let mut lx = self.rect.x + 8.0;
         for sec in &self.sections {
-            if sec.align_right { continue; }
+            if sec.align_right {
+                continue;
+            }
             let sec_rect = LayoutRect::new(lx, self.rect.y, sec.width, self.height);
             if sec_rect.contains(x, y) {
                 return sec.click_id.as_deref();
@@ -97,7 +115,9 @@ impl StatusBarPanel {
 
         let mut rx = self.rect.right() - 8.0;
         for sec in self.sections.iter().rev() {
-            if !sec.align_right { continue; }
+            if !sec.align_right {
+                continue;
+            }
             rx -= sec.width;
             let sec_rect = LayoutRect::new(rx, self.rect.y, sec.width, self.height);
             if sec_rect.contains(x, y) {
@@ -115,8 +135,12 @@ impl PanelWidget for StatusBarPanel {
         self.rect = LayoutRect::new(rect.x, rect.y, rect.w, self.height);
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;
@@ -124,10 +148,13 @@ impl PanelWidget for StatusBarPanel {
         let (r, g, b, a) = self.bg_color;
         paint.set_color_rgba8(r, g, b, a);
         if let Some(rect) = Rect::from_xywh(
-            self.rect.x * s, self.rect.y * s,
-            self.rect.w * s, self.rect.h * s,
+            self.rect.x * s,
+            self.rect.y * s,
+            self.rect.w * s,
+            self.rect.h * s,
         ) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
 
         let text_y = self.rect.y + (self.height - 12.0) / 2.0;
@@ -135,11 +162,18 @@ impl PanelWidget for StatusBarPanel {
         // Left-aligned sections
         let mut lx = self.rect.x + 8.0;
         for sec in &self.sections {
-            if sec.align_right { continue; }
+            if sec.align_right {
+                continue;
+            }
             let (fr, fg, fb, fa) = sec.fg;
             ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                &sec.text, lx, text_y, 12.0,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &sec.text,
+                lx,
+                text_y,
+                12.0,
                 CosmicColor::rgba(fr, fg, fb, fa),
                 ctx.scale,
             );
@@ -149,12 +183,19 @@ impl PanelWidget for StatusBarPanel {
         // Right-aligned sections (drawn right to left)
         let mut rx = self.rect.right() - 8.0;
         for sec in self.sections.iter().rev() {
-            if !sec.align_right { continue; }
+            if !sec.align_right {
+                continue;
+            }
             rx -= sec.width;
             let (fr, fg, fb, fa) = sec.fg;
             ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                &sec.text, rx, text_y, 12.0,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &sec.text,
+                rx,
+                text_y,
+                12.0,
                 CosmicColor::rgba(fr, fg, fb, fa),
                 ctx.scale,
             );
@@ -163,10 +204,13 @@ impl PanelWidget for StatusBarPanel {
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(_) = &event.kind {
             if let Some(id) = self.hit_test_section(event.x, event.y) {
-                self.pending_events.push(WidgetEvent::StatusBarClick(id.to_string()));
+                self.pending_events
+                    .push(WidgetEvent::StatusBarClick(id.to_string()));
             }
             return true;
         }
@@ -177,5 +221,7 @@ impl PanelWidget for StatusBarPanel {
         std::mem::take(&mut self.pending_events)
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 }

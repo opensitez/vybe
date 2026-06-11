@@ -65,12 +65,16 @@ impl MessageBox {
 
     /// Show a warning message box with an OK button.
     pub fn warning(text: impl Into<String>, title: impl Into<String>) {
-        Self::new(text, title).with_level(MessageLevel::Warning).show();
+        Self::new(text, title)
+            .with_level(MessageLevel::Warning)
+            .show();
     }
 
     /// Show an error message box with an OK button.
     pub fn error(text: impl Into<String>, title: impl Into<String>) {
-        Self::new(text, title).with_level(MessageLevel::Error).show();
+        Self::new(text, title)
+            .with_level(MessageLevel::Error)
+            .show();
     }
 
     /// Show a yes/no question. Returns `Yes`, `No`, or `Dismissed`.
@@ -270,7 +274,10 @@ pub struct FolderDialog {
 
 impl FolderDialog {
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), starting_dir: None }
+        Self {
+            title: title.into(),
+            starting_dir: None,
+        }
     }
 
     pub fn with_starting_directory(mut self, dir: impl Into<PathBuf>) -> Self {

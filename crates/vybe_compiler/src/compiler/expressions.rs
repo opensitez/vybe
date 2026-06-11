@@ -1072,42 +1072,43 @@ impl Compiler {
                     _ => {
                         if self.is_js_profile() && matches!(op, UnaryOp::Typeof) {
                             if let ExprKind::Ident(name) = &inner.kind {
-                                let is_callable_global = matches!(
-                                    name.as_str(),
-                                    "eval"
-                                        | "parseInt"
-                                        | "parseFloat"
-                                        | "Function"
-                                        | "Object"
-                                        | "Boolean"
-                                        | "Number"
-                                        | "String"
-                                        | "Array"
-                                        | "Symbol"
-                                        | "BigInt"
-                                        | "Date"
-                                        | "RegExp"
-                                        | "Promise"
-                                        | "Proxy"
-                                        | "Map"
-                                        | "Set"
-                                        | "WeakMap"
-                                        | "WeakSet"
-                                        | "ArrayBuffer"
-                                        | "SharedArrayBuffer"
-                                        | "DataView"
-                                        | "Int8Array"
-                                        | "Uint8Array"
-                                        | "Uint8ClampedArray"
-                                        | "Int16Array"
-                                        | "Uint16Array"
-                                        | "Int32Array"
-                                        | "Uint32Array"
-                                        | "Float32Array"
-                                        | "Float64Array"
-                                        | "BigInt64Array"
-                                        | "BigUint64Array"
-                                ) || self.profile.lookup_builtin(name).is_some();
+                                let is_callable_global =
+                                    matches!(
+                                        name.as_str(),
+                                        "eval"
+                                            | "parseInt"
+                                            | "parseFloat"
+                                            | "Function"
+                                            | "Object"
+                                            | "Boolean"
+                                            | "Number"
+                                            | "String"
+                                            | "Array"
+                                            | "Symbol"
+                                            | "BigInt"
+                                            | "Date"
+                                            | "RegExp"
+                                            | "Promise"
+                                            | "Proxy"
+                                            | "Map"
+                                            | "Set"
+                                            | "WeakMap"
+                                            | "WeakSet"
+                                            | "ArrayBuffer"
+                                            | "SharedArrayBuffer"
+                                            | "DataView"
+                                            | "Int8Array"
+                                            | "Uint8Array"
+                                            | "Uint8ClampedArray"
+                                            | "Int16Array"
+                                            | "Uint16Array"
+                                            | "Int32Array"
+                                            | "Uint32Array"
+                                            | "Float32Array"
+                                            | "Float64Array"
+                                            | "BigInt64Array"
+                                            | "BigUint64Array"
+                                    ) || self.profile.lookup_builtin(name).is_some();
                                 if is_callable_global {
                                     self.emit_const(Value::String(Arc::from("function")));
                                     return Ok(());
@@ -4755,7 +4756,11 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, gen_slot);
                     self.emit_u8(Op::CALL_REF, 1);
                 } else {
-                    common::collections::emit_iter_values(&mut self.chunks, self.current, self.line);
+                    common::collections::emit_iter_values(
+                        &mut self.chunks,
+                        self.current,
+                        self.line,
+                    );
                 }
                 let iter_slot = self.define_local("__yield_star_iter");
                 let idx_slot = self.define_local("__yield_star_idx");

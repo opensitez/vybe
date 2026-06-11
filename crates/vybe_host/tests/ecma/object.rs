@@ -25,11 +25,15 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
-    for (k, v) in pairs { o.properties.insert(k.to_string(), v); }
+    for (k, v) in pairs {
+        o.properties.insert(k.to_string(), v);
+    }
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -37,7 +41,9 @@ fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
 }
 
-fn pair(k: Value, v: Value) -> Value { arr(vec![k, v]) }
+fn pair(k: Value, v: Value) -> Value {
+    arr(vec![k, v])
+}
 
 fn elems(v: &Value) -> Vec<Value> {
     match v {
@@ -102,9 +108,13 @@ fn keys_returns_empty_array_for_fresh_object() {
 fn keys_returns_only_own_enumerable_property_names() {
     let o = obj(vec![("a", Value::I32(1)), ("b", Value::I32(2))]);
     let keys = invoke("keys", vec![o]);
-    let key_strings: Vec<String> = elems(&keys).iter().map(|v| match v {
-        Value::String(s) => s.to_string(), _ => String::new(),
-    }).collect();
+    let key_strings: Vec<String> = elems(&keys)
+        .iter()
+        .map(|v| match v {
+            Value::String(s) => s.to_string(),
+            _ => String::new(),
+        })
+        .collect();
     assert!(key_strings.contains(&"a".to_string()));
     assert!(key_strings.contains(&"b".to_string()));
     assert_eq!(key_strings.len(), 2);
@@ -136,8 +146,14 @@ fn assign_copies_own_properties_to_target_and_returns_target() {
     let source = obj(vec![("a", Value::I32(1)), ("b", Value::I32(2))]);
     let result = invoke("assign", vec![target.clone(), source]);
     // Returns the target
-    let t_ptr = match &target { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let r_ptr = match &result { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let t_ptr = match &target {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let r_ptr = match &result {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(t_ptr, r_ptr);
     assert_eq!(invoke("get", vec![result, s("a")]), Value::I32(1));
 }
@@ -148,6 +164,33 @@ fn assign_later_source_overwrites_earlier_source_on_conflict() {
     let source = obj(vec![("x", Value::I32(2))]);
     invoke("assign", vec![target.clone(), source]);
     assert_eq!(invoke("get", vec![target, s("x")]), Value::I32(2));
+}
+
+#[test]
+fn assign_copies_enumerable_symbol_keys() {
+    let sym = Arc::<str>::from("k");
+    let source = {
+        let mut o = Object::new();
+        o.properties.insert("Symbol(k)".into(), Value::I32(42));
+        o.properties.insert(
+            "__sym_keys".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                Value::Symbol(sym.clone()),
+            ])))),
+        );
+        Value::Object(Arc::new(Mutex::new(o)))
+    };
+    let target = invoke("new", vec![]);
+    invoke("assign", vec![target.clone(), source]);
+
+    assert_eq!(
+        invoke("get", vec![target.clone(), Value::Symbol(sym)]),
+        Value::I32(42)
+    );
+    assert_eq!(
+        elems(&invoke("getOwnPropertySymbols", vec![target])).len(),
+        1
+    );
 }
 
 // ── Object.fromEntries ────────────────────────────────────────────────────────
@@ -182,9 +225,15 @@ fn is_frozen_false_before_freeze_true_after() {
 #[test]
 fn freeze_returns_the_same_object() {
     let o = invoke("new", vec![]);
-    let o_ptr = match &o { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
+    let o_ptr = match &o {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
     let result = invoke("freeze", vec![o]);
-    let r_ptr = match &result { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let r_ptr = match &result {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(o_ptr, r_ptr);
 }
 
@@ -228,7 +277,10 @@ fn object_is_positive_zero_not_same_as_negative_zero() {
 
 #[test]
 fn object_is_null_not_same_as_undefined() {
-    assert_eq!(invoke("is", vec![Value::Null, Value::Undefined]), Value::Bool(false));
+    assert_eq!(
+        invoke("is", vec![Value::Null, Value::Undefined]),
+        Value::Bool(false)
+    );
 }
 
 // ── hasOwn ────────────────────────────────────────────────────────────────────
@@ -236,7 +288,10 @@ fn object_is_null_not_same_as_undefined() {
 #[test]
 fn has_own_true_for_own_property_not_inherited() {
     let o = obj(vec![("own", Value::I32(1))]);
-    assert_eq!(invoke("hasOwn", vec![o.clone(), s("own")]), Value::Bool(true));
+    assert_eq!(
+        invoke("hasOwn", vec![o.clone(), s("own")]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("hasOwn", vec![o, s("toString")]), Value::Bool(false));
 }
 
@@ -246,9 +301,13 @@ fn has_own_true_for_own_property_not_inherited() {
 fn get_own_property_names_includes_all_string_keys() {
     let o = obj(vec![("a", Value::I32(1)), ("b", Value::I32(2))]);
     let names = invoke("getOwnPropertyNames", vec![o]);
-    let strs: Vec<String> = elems(&names).iter().map(|v| match v {
-        Value::String(s) => s.to_string(), _ => String::new(),
-    }).collect();
+    let strs: Vec<String> = elems(&names)
+        .iter()
+        .map(|v| match v {
+            Value::String(s) => s.to_string(),
+            _ => String::new(),
+        })
+        .collect();
     assert!(strs.contains(&"a".to_string()));
     assert!(strs.contains(&"b".to_string()));
 }
@@ -258,7 +317,10 @@ fn get_own_property_names_includes_all_string_keys() {
 #[test]
 fn define_property_adds_property_readable_via_descriptor() {
     let o = invoke("new", vec![]);
-    let desc = obj(vec![("value", Value::I32(42)), ("writable", Value::Bool(true))]);
+    let desc = obj(vec![
+        ("value", Value::I32(42)),
+        ("writable", Value::Bool(true)),
+    ]);
     invoke("defineProperty", vec![o.clone(), s("p"), desc]);
     let d = invoke("getOwnPropertyDescriptor", vec![o, s("p")]);
     assert!(matches!(d, Value::Object(_)));
@@ -297,8 +359,14 @@ fn create_with_proto_object_inherits_that_prototype() {
     let proto = obj(vec![("x", Value::I32(10))]);
     let child = invoke("create", vec![proto.clone()]);
     let child_proto = invoke("getPrototypeOf", vec![child]);
-    let p_ptr = match &proto { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let cp_ptr = match &child_proto { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let p_ptr = match &proto {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let cp_ptr = match &child_proto {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(p_ptr, cp_ptr);
 }
 
@@ -342,8 +410,20 @@ fn define_properties_adds_multiple_properties_at_once() {
     // ECMA-262 §20.1.2.3: Object.defineProperties(O, props) — bulk defineProperty.
     let o = invoke("new", vec![]);
     let props = obj(vec![
-        ("a", obj(vec![("value", Value::I32(1)), ("enumerable", Value::Bool(true))])),
-        ("b", obj(vec![("value", Value::I32(2)), ("enumerable", Value::Bool(true))])),
+        (
+            "a",
+            obj(vec![
+                ("value", Value::I32(1)),
+                ("enumerable", Value::Bool(true)),
+            ]),
+        ),
+        (
+            "b",
+            obj(vec![
+                ("value", Value::I32(2)),
+                ("enumerable", Value::Bool(true)),
+            ]),
+        ),
     ]);
     invoke("defineProperties", vec![o.clone(), props]);
     assert_eq!(invoke("get", vec![o.clone(), s("a")]), Value::I32(1));
@@ -377,12 +457,18 @@ fn own_property_descriptor_has_value_writable_enumerable_configurable() {
 
 #[test]
 fn object_is_same_string_values_are_equal() {
-    assert_eq!(invoke("is", vec![s("hello"), s("hello")]), Value::Bool(true));
+    assert_eq!(
+        invoke("is", vec![s("hello"), s("hello")]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn object_is_same_integer_values_are_equal() {
-    assert_eq!(invoke("is", vec![Value::I32(5), Value::I32(5)]), Value::Bool(true));
+    assert_eq!(
+        invoke("is", vec![Value::I32(5), Value::I32(5)]),
+        Value::Bool(true)
+    );
 }
 
 // ── Object.prototype.hasOwnProperty ──────────────────────────────────────────
@@ -399,11 +485,17 @@ fn has_own_property_false_for_missing_key() {
 fn group_by_partitions_array_into_keyed_groups() {
     // ECMA-262 ES2024: Object.groupBy(items, keyFn) groups items by keyFn return value.
     // We encode the key function via an object descriptor.
-    let items = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    let items = arr(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     let key_fn = {
         let mut o = Object::new();
         // Descriptor: items ≤ 2 go to "small", items > 2 go to "large".
-        o.properties.insert("__groupby_le2_small_large".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__groupby_le2_small_large".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("groupBy", vec![items, key_fn]);
@@ -423,7 +515,8 @@ fn to_string_tag_of_function_is_object_function() {
     // We represent a host function reference as an object with __callable marker.
     let fn_obj = {
         let mut o = Object::new();
-        o.properties.insert("__callable".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__callable".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let tag = invoke("toStringTag", vec![fn_obj]);
@@ -464,13 +557,19 @@ fn is_prototype_of_returns_false_when_not_in_chain() {
 fn property_is_enumerable_true_for_own_enumerable_property() {
     // ECMA-262 §20.1.3.5: propertyIsEnumerable returns true for own enumerable properties.
     let o = obj(vec![("x", Value::I32(1))]);
-    assert_eq!(invoke("propertyIsEnumerable", vec![o, s("x")]), Value::Bool(true));
+    assert_eq!(
+        invoke("propertyIsEnumerable", vec![o, s("x")]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn property_is_enumerable_false_for_missing_property() {
     let o = invoke("new", vec![]);
-    assert_eq!(invoke("propertyIsEnumerable", vec![o, s("nope")]), Value::Bool(false));
+    assert_eq!(
+        invoke("propertyIsEnumerable", vec![o, s("nope")]),
+        Value::Bool(false)
+    );
 }
 
 // ── Object.prototype.valueOf ──────────────────────────────────────────────────
@@ -480,8 +579,14 @@ fn value_of_on_plain_object_returns_the_object_itself() {
     // ECMA-262 §20.1.3.7: Object.prototype.valueOf returns `this` (the object itself).
     let o = invoke("new", vec![]);
     let val = invoke("valueOf", vec![o.clone()]);
-    let o_ptr = match &o { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let v_ptr = match &val { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let o_ptr = match &o {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let v_ptr = match &val {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(o_ptr, v_ptr);
 }
 
@@ -498,7 +603,10 @@ fn has_own_property_true_for_own_key() {
 #[test]
 fn has_own_property_false_for_absent_key() {
     let o = invoke("new", vec![]);
-    assert_eq!(invoke("hasOwnProperty", vec![o, s("missing")]), Value::Bool(false));
+    assert_eq!(
+        invoke("hasOwnProperty", vec![o, s("missing")]),
+        Value::Bool(false)
+    );
 }
 
 // ── Object.prototype.toString (ECMA-262 §20.1.3.6) ───────────────────────────

@@ -1,8 +1,11 @@
 //! Tab control — simple tabs header and content placeholder.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 pub struct Tabs {
     pub tabs: Vec<String>,
@@ -31,7 +34,10 @@ impl Tabs {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -61,7 +67,8 @@ impl Tabs {
                 let (r, g, b, a) = (240, 240, 240, 255);
                 paint.set_color_rgba8(r, g, b, a);
             }
-            if let Some(path) = rounded_rect_path(tx + 4.0, y + 4.0, tw - 8.0, header_h - 8.0, 3.0) {
+            if let Some(path) = rounded_rect_path(tx + 4.0, y + 4.0, tw - 8.0, header_h - 8.0, 3.0)
+            {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
             }
             // Tab border
@@ -69,7 +76,8 @@ impl Tabs {
             paint.set_color_rgba8(br, bg, bb, ba);
             let mut stroke = Stroke::default();
             stroke.width = 1.0;
-            if let Some(path) = rounded_rect_path(tx + 4.0, y + 4.0, tw - 8.0, header_h - 8.0, 3.0) {
+            if let Some(path) = rounded_rect_path(tx + 4.0, y + 4.0, tw - 8.0, header_h - 8.0, 3.0)
+            {
                 pixmap.stroke_path(&path, &paint, &stroke, ts, None);
             }
             // Label (simple mono placeholder using border color as no font engine here)
@@ -94,11 +102,15 @@ impl Tabs {
         }
     }
 
-    pub fn measure(&self) -> (f32, f32) { (self.width, self.height) }
+    pub fn measure(&self) -> (f32, f32) {
+        (self.width, self.height)
+    }
 
     pub fn click(&mut self, mx: f32, my: f32, x: f32, y: f32) -> bool {
         let header_h = 28.0;
-        if my < y || my > y + header_h { return false; }
+        if my < y || my > y + header_h {
+            return false;
+        }
         let tab_w = (self.width / self.tabs.len() as f32).max(60.0);
         let idx = ((mx - x) / tab_w).floor() as isize;
         if idx >= 0 && (idx as usize) < self.tabs.len() {
@@ -110,58 +122,103 @@ impl Tabs {
 }
 
 impl PanelWidget for Tabs {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw tab labels
         let tab_w = (r.w / self.tabs.len() as f32).max(60.0);
         for (i, label) in self.tabs.iter().enumerate() {
             let tx = r.x + i as f32 * tab_w + 8.0;
             let is_sel = i == self.selected;
-            let col = if is_sel { cosmic_text::Color::rgba(255, 255, 255, 255) } else { cosmic_text::Color::rgba(60, 60, 60, 255) };
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label, tx, r.y + 8.0, 12.0, col, ctx.scale);
+            let col = if is_sel {
+                cosmic_text::Color::rgba(255, 255, 255, 255)
+            } else {
+                cosmic_text::Color::rgba(60, 60, 60, 255)
+            };
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                label,
+                tx,
+                r.y + 8.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         let r = self.rect;
-        if !r.contains(event.x, event.y) { return false; }
+        if !r.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             let old = self.selected;
             if self.click(event.x, event.y, r.x, r.y) && self.selected != old {
-                self.pending_events.push(WidgetEvent::TabControlChanged(self.name.clone(), self.selected));
+                self.pending_events.push(WidgetEvent::TabControlChanged(
+                    self.name.clone(),
+                    self.selected,
+                ));
                 return true;
             }
         }
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetSelectedIndex(i) => {
                 if *i < self.tabs.len() && self.selected != *i {
                     self.selected = *i;
-                    self.pending_events.push(WidgetEvent::TabControlChanged(
-                        self.name.clone(),
-                        *i,
-                    ));
+                    self.pending_events
+                        .push(WidgetEvent::TabControlChanged(self.name.clone(), *i));
                 }
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected),
-            WidgetCommand::AddItem(s) => { self.tabs.push(s.clone()); CommandValue::None }
-            WidgetCommand::RemoveItem(i) => { if *i < self.tabs.len() { self.tabs.remove(*i); } CommandValue::None }
-            WidgetCommand::ClearItems => { self.tabs.clear(); self.selected = 0; CommandValue::None }
+            WidgetCommand::AddItem(s) => {
+                self.tabs.push(s.clone());
+                CommandValue::None
+            }
+            WidgetCommand::RemoveItem(i) => {
+                if *i < self.tabs.len() {
+                    self.tabs.remove(*i);
+                }
+                CommandValue::None
+            }
+            WidgetCommand::ClearItems => {
+                self.tabs.clear();
+                self.selected = 0;
+                CommandValue::None
+            }
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

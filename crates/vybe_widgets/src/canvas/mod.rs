@@ -54,13 +54,13 @@
 //! pixmap.save_png("out.png").unwrap();
 //! ```
 
-mod types;
 mod recording;
 mod tinyskia;
+mod types;
 
-pub use types::{Color, LineCap, LineJoin, Font, FontStyle, FontWeight, Image};
-pub use recording::{RecordingCanvas, DrawCmd};
+pub use recording::{DrawCmd, RecordingCanvas};
 pub use tinyskia::TinySkiaCanvas;
+pub use types::{Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
 
 /// HTML5-canvas-shaped immediate-mode drawing API.
 ///
@@ -134,12 +134,7 @@ pub trait Canvas {
 
     /// Add a cubic Bézier curve from the current point through
     /// `(cx1, cy1)` and `(cx2, cy2)` to `(x, y)`.
-    fn bezier_curve_to(
-        &mut self,
-        cx1: f32, cy1: f32,
-        cx2: f32, cy2: f32,
-        x: f32, y: f32,
-    );
+    fn bezier_curve_to(&mut self, cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32);
 
     /// Add an arc centred at `(x, y)` with radius `r`, sweeping from
     /// `start` to `end` radians. `ccw = true` reverses the sweep.
@@ -213,12 +208,7 @@ pub trait Canvas {
     fn scale(&mut self, sx: f32, sy: f32);
 
     /// Multiply the current transform by an arbitrary affine matrix.
-    fn transform(
-        &mut self,
-        m11: f32, m12: f32,
-        m21: f32, m22: f32,
-        dx: f32, dy: f32,
-    );
+    fn transform(&mut self, m11: f32, m12: f32, m21: f32, m22: f32, dx: f32, dy: f32);
 
     /// Reset the current transform to the identity.
     fn reset_transform(&mut self);

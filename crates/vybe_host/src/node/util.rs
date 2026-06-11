@@ -47,10 +47,16 @@ fn register_format(vm: &mut VM) {
     // `formatWithOptions(inspectOptions, fmt, ...args)` — same as
     // format but takes inspect options for `%o`/`%O`. MVP ignores
     // options and shifts args left by one before formatting.
-    vm.register_host_fn(MODULE, "formatWithOptions", Box::new(|ctx, args| {
-        if args.is_empty() { return Value::String(Arc::from("")); }
-        format_impl(ctx, &args[1..])
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "formatWithOptions",
+        Box::new(|ctx, args| {
+            if args.is_empty() {
+                return Value::String(Arc::from(""));
+            }
+            format_impl(ctx, &args[1..])
+        }),
+    );
 }
 
 /// Parse a Node `util.format` format string and substitute args.
@@ -82,7 +88,11 @@ fn format_impl(_ctx: &mut HostContext, args: &[Value]) -> Value {
         if bytes[i] == b'%' && i + 1 < bytes.len() {
             let spec = bytes[i + 1] as char;
             match spec {
-                '%' => { out.push('%'); i += 2; continue; }
+                '%' => {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
                 's' | 'd' | 'i' | 'f' | 'j' | 'o' | 'O' | 'c' => {
                     if let Some(arg) = extra.get(consumed) {
                         match spec {
@@ -142,7 +152,11 @@ fn format_i(v: &Value) -> String {
         Value::I32(n) => n.to_string(),
         Value::I64(n) => n.to_string(),
         Value::F64(n) => format!("{}", n.trunc() as i64),
-        Value::String(s) => s.trim().parse::<i64>().map(|n| n.to_string()).unwrap_or_else(|_| "NaN".into()),
+        Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| "NaN".into()),
         _ => "NaN".to_string(),
     }
 }
@@ -152,7 +166,11 @@ fn format_f(v: &Value) -> String {
         Value::F64(n) => format!("{}", n),
         Value::I32(n) => format!("{}", *n as f64),
         Value::I64(n) => format!("{}", *n as f64),
-        Value::String(s) => s.trim().parse::<f64>().map(|n| format!("{}", n)).unwrap_or_else(|_| "NaN".into()),
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .map(|n| format!("{}", n))
+            .unwrap_or_else(|_| "NaN".into()),
         _ => "NaN".to_string(),
     }
 }
@@ -164,10 +182,14 @@ fn format_j(v: &Value) -> String {
 // ── inspect ──────────────────────────────────────────────────────────
 
 fn register_inspect(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "inspect", Box::new(|_ctx, args| {
-        let v = args.first().cloned().unwrap_or(Value::Undefined);
-        Value::String(Arc::from(inspect_value(&v, false).as_str()))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "inspect",
+        Box::new(|_ctx, args| {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            Value::String(Arc::from(inspect_value(&v, false).as_str()))
+        }),
+    );
 }
 
 /// Render a Value as a Node `util.inspect`-style debug string.
@@ -202,14 +224,17 @@ fn inspect_inner(v: &Value, quote_strings: bool, depth: usize, max_depth: usize)
             }
         }
         Value::Object(obj) => {
-            if depth >= max_depth { return "[Object]".into(); }
+            if depth >= max_depth {
+                return "[Object]".into();
+            }
             let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::Array(elems) => {
                     if elems.is_empty() {
                         return "[]".into();
                     }
-                    let parts: Vec<String> = elems.iter()
+                    let parts: Vec<String> = elems
+                        .iter()
                         .map(|e| inspect_inner(e, true, depth + 1, max_depth))
                         .collect();
                     format!("[ {} ]", parts.join(", "))
@@ -218,10 +243,15 @@ fn inspect_inner(v: &Value, quote_strings: bool, depth: usize, max_depth: usize)
                     if m.is_empty() {
                         return "Map(0) {}".into();
                     }
-                    let parts: Vec<String> = m.iter()
-                        .map(|(k, v)| format!("{} => {}",
-                            inspect_inner(k, true, depth + 1, max_depth),
-                            inspect_inner(v, true, depth + 1, max_depth)))
+                    let parts: Vec<String> = m
+                        .iter()
+                        .map(|(k, v)| {
+                            format!(
+                                "{} => {}",
+                                inspect_inner(k, true, depth + 1, max_depth),
+                                inspect_inner(v, true, depth + 1, max_depth)
+                            )
+                        })
                         .collect();
                     format!("Map({}) {{ {} }}", m.len(), parts.join(", "))
                 }
@@ -229,20 +259,26 @@ fn inspect_inner(v: &Value, quote_strings: bool, depth: usize, max_depth: usize)
                     if s.is_empty() {
                         return "Set(0) {}".into();
                     }
-                    let parts: Vec<String> = s.iter()
+                    let parts: Vec<String> = s
+                        .iter()
                         .map(|v| inspect_inner(v, true, depth + 1, max_depth))
                         .collect();
                     format!("Set({}) {{ {} }}", s.len(), parts.join(", "))
                 }
                 _ => {
-                    let visible: Vec<(&String, &Value)> = o.properties.iter()
+                    let visible: Vec<(&String, &Value)> = o
+                        .properties
+                        .iter()
                         .filter(|(k, _)| !k.starts_with("__"))
                         .collect();
                     if visible.is_empty() {
                         return "{}".into();
                     }
-                    let parts: Vec<String> = visible.iter()
-                        .map(|(k, v)| format!("{}: {}", k, inspect_inner(v, true, depth + 1, max_depth)))
+                    let parts: Vec<String> = visible
+                        .iter()
+                        .map(|(k, v)| {
+                            format!("{}: {}", k, inspect_inner(v, true, depth + 1, max_depth))
+                        })
                         .collect();
                     format!("{{ {} }}", parts.join(", "))
                 }
@@ -255,11 +291,15 @@ fn inspect_inner(v: &Value, quote_strings: bool, depth: usize, max_depth: usize)
 // ── isDeepStrictEqual ────────────────────────────────────────────────
 
 fn register_deep_equal(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "isDeepStrictEqual", Box::new(|_ctx, args| {
-        let a = args.first().cloned().unwrap_or(Value::Undefined);
-        let b = args.get(1).cloned().unwrap_or(Value::Undefined);
-        Value::Bool(deep_strict_equal(&a, &b))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "isDeepStrictEqual",
+        Box::new(|_ctx, args| {
+            let a = args.first().cloned().unwrap_or(Value::Undefined);
+            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
+            Value::Bool(deep_strict_equal(&a, &b))
+        }),
+    );
 }
 
 fn deep_strict_equal(a: &Value, b: &Value) -> bool {
@@ -272,24 +312,37 @@ fn deep_strict_equal(a: &Value, b: &Value) -> bool {
         (Value::F64(x), Value::F64(y)) => x == y || (x.is_nan() && y.is_nan()),
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Object(x), Value::Object(y)) => {
-            if Arc::ptr_eq(x, y) { return true; }
+            if Arc::ptr_eq(x, y) {
+                return true;
+            }
             let xo = x.lock().unwrap();
             let yo = y.lock().unwrap();
             match (&xo.kind, &yo.kind) {
                 (ObjectKind::Array(xa), ObjectKind::Array(ya)) => {
-                    xa.len() == ya.len() && xa.iter().zip(ya.iter()).all(|(a, b)| deep_strict_equal(a, b))
+                    xa.len() == ya.len()
+                        && xa
+                            .iter()
+                            .zip(ya.iter())
+                            .all(|(a, b)| deep_strict_equal(a, b))
                 }
                 (ObjectKind::Map(xm), ObjectKind::Map(ym)) => {
-                    if xm.len() != ym.len() { return false; }
-                    xm.iter().all(|(k, v)| ym.get(k).map_or(false, |yv| deep_strict_equal(v, yv)))
+                    if xm.len() != ym.len() {
+                        return false;
+                    }
+                    xm.iter()
+                        .all(|(k, v)| ym.get(k).map_or(false, |yv| deep_strict_equal(v, yv)))
                 }
                 (ObjectKind::Set(xs), ObjectKind::Set(ys)) => {
                     xs.len() == ys.len() && xs.iter().all(|v| ys.contains(v))
                 }
                 _ => {
-                    if xo.properties.len() != yo.properties.len() { return false; }
+                    if xo.properties.len() != yo.properties.len() {
+                        return false;
+                    }
                     xo.properties.iter().all(|(k, v)| {
-                        yo.properties.get(k).map_or(false, |yv| deep_strict_equal(v, yv))
+                        yo.properties
+                            .get(k)
+                            .map_or(false, |yv| deep_strict_equal(v, yv))
                     })
                 }
             }
@@ -301,35 +354,39 @@ fn deep_strict_equal(a: &Value, b: &Value) -> bool {
 // ── stripVTControlCharacters ─────────────────────────────────────────
 
 fn register_strip_vt(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "stripVTControlCharacters", Box::new(|_ctx, args| {
-        let s = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::String(Arc::from("")),
-        };
-        let mut out = String::with_capacity(s.len());
-        let chars: Vec<char> = s.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            // ANSI escape: ESC ([) ... letter (the final byte is a letter).
-            if chars[i] == '\x1b' && i + 1 < chars.len() && chars[i + 1] == '[' {
-                let mut j = i + 2;
-                // Skip CSI parameter + intermediate bytes (digits, `;`, `?`, etc.).
-                while j < chars.len() && !chars[j].is_ascii_alphabetic() {
-                    j += 1;
+    vm.register_host_fn(
+        MODULE,
+        "stripVTControlCharacters",
+        Box::new(|_ctx, args| {
+            let s = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::String(Arc::from("")),
+            };
+            let mut out = String::with_capacity(s.len());
+            let chars: Vec<char> = s.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                // ANSI escape: ESC ([) ... letter (the final byte is a letter).
+                if chars[i] == '\x1b' && i + 1 < chars.len() && chars[i + 1] == '[' {
+                    let mut j = i + 2;
+                    // Skip CSI parameter + intermediate bytes (digits, `;`, `?`, etc.).
+                    while j < chars.len() && !chars[j].is_ascii_alphabetic() {
+                        j += 1;
+                    }
+                    // Skip the final byte (the letter terminator).
+                    if j < chars.len() {
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
                 }
-                // Skip the final byte (the letter terminator).
-                if j < chars.len() {
-                    j += 1;
-                }
-                i = j;
-                continue;
+                out.push(chars[i]);
+                i += 1;
             }
-            out.push(chars[i]);
-            i += 1;
-        }
-        Value::String(Arc::from(out.as_str()))
-    }));
+            Value::String(Arc::from(out.as_str()))
+        }),
+    );
 }
 
 // ── toUSVString ──────────────────────────────────────────────────────
@@ -340,14 +397,18 @@ fn register_strip_vt(vm: &mut VM) {
 // as `Value::String` anyway) — passthrough is correct.
 
 fn register_to_usv(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "toUSVString", Box::new(|_ctx, args| {
-        let s = match args.first() {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => Arc::from(format!("{}", other).as_str()),
-            None => Arc::from(""),
-        };
-        Value::String(s)
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toUSVString",
+        Box::new(|_ctx, args| {
+            let s = match args.first() {
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => Arc::from(format!("{}", other).as_str()),
+                None => Arc::from(""),
+            };
+            Value::String(s)
+        }),
+    );
 }
 
 // ── parseArgs (Node 18+) ─────────────────────────────────────────────
@@ -363,108 +424,131 @@ fn register_to_usv(vm: &mut VM) {
 // Returns { values, positionals, tokens? }.
 
 fn register_parse_args(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "parseArgs", Box::new(|_ctx, args| {
-        let cfg = match args.first() {
-            Some(Value::Object(c)) => c.clone(),
-            _ => return new_parse_args_result(Vec::new(), Vec::new()),
-        };
+    vm.register_host_fn(
+        MODULE,
+        "parseArgs",
+        Box::new(|_ctx, args| {
+            let cfg = match args.first() {
+                Some(Value::Object(c)) => c.clone(),
+                _ => return new_parse_args_result(Vec::new(), Vec::new()),
+            };
 
-        let cfg_lock = cfg.lock().unwrap();
-        let cli_args: Vec<String> = match cfg_lock.properties.get("args") {
-            Some(Value::Object(arr)) => {
-                let lo = arr.lock().unwrap();
-                if let ObjectKind::Array(elems) = &lo.kind {
-                    elems.iter().map(|v| match v {
-                        Value::String(s) => s.to_string(),
-                        other => format!("{}", other),
-                    }).collect()
-                } else { Vec::new() }
-            }
-            _ => Vec::new(),
-        };
-
-        // Collect option specs: name → (type, short?, multiple, default)
-        let mut option_specs: indexmap::IndexMap<String, OptionSpec> = indexmap::IndexMap::new();
-        if let Some(Value::Object(opts)) = cfg_lock.properties.get("options") {
-            let opts_lock = opts.lock().unwrap();
-            for (name, spec) in opts_lock.properties.iter() {
-                if name.starts_with("__") { continue; }
-                let mut s = OptionSpec::default();
-                if let Value::Object(o) = spec {
-                    let ol = o.lock().unwrap();
-                    if let Some(Value::String(t)) = ol.properties.get("type") {
-                        s.is_boolean = t.as_ref() == "boolean";
-                    }
-                    if let Some(Value::String(short)) = ol.properties.get("short") {
-                        s.short = Some(short.to_string());
-                    }
-                    if let Some(Value::Bool(m)) = ol.properties.get("multiple") {
-                        s.multiple = *m;
+            let cfg_lock = cfg.lock().unwrap();
+            let cli_args: Vec<String> = match cfg_lock.properties.get("args") {
+                Some(Value::Object(arr)) => {
+                    let lo = arr.lock().unwrap();
+                    if let ObjectKind::Array(elems) = &lo.kind {
+                        elems
+                            .iter()
+                            .map(|v| match v {
+                                Value::String(s) => s.to_string(),
+                                other => format!("{}", other),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
                     }
                 }
-                option_specs.insert(name.clone(), s);
+                _ => Vec::new(),
+            };
+
+            // Collect option specs: name → (type, short?, multiple, default)
+            let mut option_specs: indexmap::IndexMap<String, OptionSpec> =
+                indexmap::IndexMap::new();
+            if let Some(Value::Object(opts)) = cfg_lock.properties.get("options") {
+                let opts_lock = opts.lock().unwrap();
+                for (name, spec) in opts_lock.properties.iter() {
+                    if name.starts_with("__") {
+                        continue;
+                    }
+                    let mut s = OptionSpec::default();
+                    if let Value::Object(o) = spec {
+                        let ol = o.lock().unwrap();
+                        if let Some(Value::String(t)) = ol.properties.get("type") {
+                            s.is_boolean = t.as_ref() == "boolean";
+                        }
+                        if let Some(Value::String(short)) = ol.properties.get("short") {
+                            s.short = Some(short.to_string());
+                        }
+                        if let Some(Value::Bool(m)) = ol.properties.get("multiple") {
+                            s.multiple = *m;
+                        }
+                    }
+                    option_specs.insert(name.clone(), s);
+                }
             }
-        }
 
-        let allow_positionals = matches!(
-            cfg_lock.properties.get("allowPositionals"),
-            Some(Value::Bool(true))
-        );
-        drop(cfg_lock);
+            let allow_positionals = matches!(
+                cfg_lock.properties.get("allowPositionals"),
+                Some(Value::Bool(true))
+            );
+            drop(cfg_lock);
 
-        // Walk args
-        let mut values: indexmap::IndexMap<String, Value> = indexmap::IndexMap::new();
-        let mut positionals: Vec<Value> = Vec::new();
-        let mut i = 0;
-        while i < cli_args.len() {
-            let arg = &cli_args[i];
-            if let Some(rest) = arg.strip_prefix("--") {
-                // Long option: --name=value or --name value
-                let (name, inline_value) = match rest.find('=') {
-                    Some(eq) => (rest[..eq].to_string(), Some(rest[eq + 1..].to_string())),
-                    None => (rest.to_string(), None),
-                };
-                if let Some(spec) = option_specs.get(&name) {
-                    if spec.is_boolean {
-                        values.insert(name, Value::Bool(true));
-                        i += 1;
+            // Walk args
+            let mut values: indexmap::IndexMap<String, Value> = indexmap::IndexMap::new();
+            let mut positionals: Vec<Value> = Vec::new();
+            let mut i = 0;
+            while i < cli_args.len() {
+                let arg = &cli_args[i];
+                if let Some(rest) = arg.strip_prefix("--") {
+                    // Long option: --name=value or --name value
+                    let (name, inline_value) = match rest.find('=') {
+                        Some(eq) => (rest[..eq].to_string(), Some(rest[eq + 1..].to_string())),
+                        None => (rest.to_string(), None),
+                    };
+                    if let Some(spec) = option_specs.get(&name) {
+                        if spec.is_boolean {
+                            values.insert(name, Value::Bool(true));
+                            i += 1;
+                        } else {
+                            let v = inline_value
+                                .or_else(|| {
+                                    let next = cli_args.get(i + 1).cloned();
+                                    if next.is_some() {
+                                        i += 1;
+                                    }
+                                    next
+                                })
+                                .unwrap_or_default();
+                            values.insert(name, Value::String(Arc::from(v.as_str())));
+                            i += 1;
+                        }
                     } else {
-                        let v = inline_value.or_else(|| {
-                            let next = cli_args.get(i + 1).cloned();
-                            if next.is_some() { i += 1; }
-                            next
-                        }).unwrap_or_default();
-                        values.insert(name, Value::String(Arc::from(v.as_str())));
                         i += 1;
                     }
+                } else if let Some(short) = arg
+                    .strip_prefix('-')
+                    .filter(|s| !s.is_empty() && !s.starts_with('-'))
+                {
+                    // Short option (single-char form)
+                    let resolved = option_specs.iter().find_map(|(name, spec)| {
+                        if spec.short.as_deref() == Some(short) {
+                            Some((name.clone(), spec.clone()))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((name, spec)) = resolved {
+                        if spec.is_boolean {
+                            values.insert(name, Value::Bool(true));
+                        } else if let Some(next) = cli_args.get(i + 1).cloned() {
+                            values.insert(name, Value::String(Arc::from(next.as_str())));
+                            i += 1;
+                        }
+                    }
+                    i += 1;
+                } else if allow_positionals {
+                    positionals.push(Value::String(Arc::from(arg.as_str())));
+                    i += 1;
                 } else {
                     i += 1;
                 }
-            } else if let Some(short) = arg.strip_prefix('-').filter(|s| !s.is_empty() && !s.starts_with('-')) {
-                // Short option (single-char form)
-                let resolved = option_specs.iter().find_map(|(name, spec)| {
-                    if spec.short.as_deref() == Some(short) { Some((name.clone(), spec.clone())) } else { None }
-                });
-                if let Some((name, spec)) = resolved {
-                    if spec.is_boolean {
-                        values.insert(name, Value::Bool(true));
-                    } else if let Some(next) = cli_args.get(i + 1).cloned() {
-                        values.insert(name, Value::String(Arc::from(next.as_str())));
-                        i += 1;
-                    }
-                }
-                i += 1;
-            } else if allow_positionals {
-                positionals.push(Value::String(Arc::from(arg.as_str())));
-                i += 1;
-            } else {
-                i += 1;
             }
-        }
 
-        let values_vec: Vec<(String, Value)> = values.into_iter().collect();
-        new_parse_args_result(values_vec, positionals)
-    }));
+            let values_vec: Vec<(String, Value)> = values.into_iter().collect();
+            new_parse_args_result(values_vec, positionals)
+        }),
+    );
 }
 
 #[derive(Default, Clone)]
@@ -481,8 +565,14 @@ fn new_parse_args_result(values: Vec<(String, Value)>, positionals: Vec<Value>) 
     }
     let positionals_arr = Object::new_array(positionals);
     let mut result = Object::new();
-    result.properties.insert("values".into(), Value::Object(Arc::new(Mutex::new(values_obj))));
-    result.properties.insert("positionals".into(), Value::Object(Arc::new(Mutex::new(positionals_arr))));
+    result.properties.insert(
+        "values".into(),
+        Value::Object(Arc::new(Mutex::new(values_obj))),
+    );
+    result.properties.insert(
+        "positionals".into(),
+        Value::Object(Arc::new(Mutex::new(positionals_arr))),
+    );
     Value::Object(Arc::new(Mutex::new(result)))
 }
 
@@ -494,55 +584,93 @@ fn new_parse_args_result(values: Vec<(String, Value)>, positionals: Vec<Value>) 
 
 fn register_types(vm: &mut VM) {
     // Array / Map / Set
-    vm.register_host_fn(MODULE, "types.isArray", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+    vm.register_host_fn(
+        MODULE,
+        "types.isArray",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::Array(_))))
-    }));
-    vm.register_host_fn(MODULE, "types.isMap", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isMap",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::Map(_))))
-    }));
-    vm.register_host_fn(MODULE, "types.isSet", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isSet",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::Set(_))))
-    }));
+        }),
+    );
 
     // Buffers / DataView / TypedArrays — all use ObjectKind variants
-    vm.register_host_fn(MODULE, "types.isArrayBuffer", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+    vm.register_host_fn(
+        MODULE,
+        "types.isArrayBuffer",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::ArrayBuffer(_))))
-    }));
-    vm.register_host_fn(MODULE, "types.isSharedArrayBuffer", Box::new(|_ctx, args| {
-        // No separate ObjectKind for SharedArrayBuffer yet; ArrayBuffer
-        // covers both. Predicate returns true for any ArrayBuffer.
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isSharedArrayBuffer",
+        Box::new(|_ctx, args| {
+            // No separate ObjectKind for SharedArrayBuffer yet; ArrayBuffer
+            // covers both. Predicate returns true for any ArrayBuffer.
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::ArrayBuffer(_))))
-    }));
-    vm.register_host_fn(MODULE, "types.isAnyArrayBuffer", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isAnyArrayBuffer",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::ArrayBuffer(_))))
-    }));
-    vm.register_host_fn(MODULE, "types.isDataView", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "DataView"))
-    }));
-    vm.register_host_fn(MODULE, "types.isTypedArray", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isDataView",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "DataView"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isTypedArray",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::TypedArray(_))))
-    }));
+        }),
+    );
 
     // Specific typed arrays — distinguished by `__type` stamp
     for kind in &[
-        "Int8Array", "Uint8Array", "Uint8ClampedArray",
-        "Int16Array", "Uint16Array",
-        "Int32Array", "Uint32Array",
-        "Float32Array", "Float64Array",
-        "BigInt64Array", "BigUint64Array",
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+        "BigInt64Array",
+        "BigUint64Array",
     ] {
         let kind_name = kind.to_string();
         let predicate_name = format!("types.is{}", kind);
-        vm.register_host_fn(MODULE, &predicate_name, Box::new(move |_ctx, args| {
-            Value::Bool(is_typed_kind(args, &kind_name))
-        }));
+        vm.register_host_fn(
+            MODULE,
+            &predicate_name,
+            Box::new(move |_ctx, args| Value::Bool(is_typed_kind(args, &kind_name))),
+        );
     }
 
     // Date / RegExp / Promise / Error — recognized via __type stamp
@@ -554,9 +682,11 @@ fn register_types(vm: &mut VM) {
     ] {
         let tag = type_tag.to_string();
         let pred = predicate.to_string();
-        vm.register_host_fn(MODULE, &pred, Box::new(move |_ctx, args| {
-            Value::Bool(is_typed_kind(args, &tag))
-        }));
+        vm.register_host_fn(
+            MODULE,
+            &pred,
+            Box::new(move |_ctx, args| Value::Bool(is_typed_kind(args, &tag))),
+        );
     }
 
     // Function-shape predicates. Vybe's Function value-shape doesn't
@@ -565,32 +695,46 @@ fn register_types(vm: &mut VM) {
     // chunk, so for now these predicates check for a `__type` stamp
     // ("AsyncFunction" / "GeneratorFunction") that the JS class
     // normalizer can install on async/generator function objects.
-    vm.register_host_fn(MODULE, "types.isAsyncFunction", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "AsyncFunction"))
-    }));
-    vm.register_host_fn(MODULE, "types.isGeneratorFunction", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "GeneratorFunction"))
-    }));
-    vm.register_host_fn(MODULE, "types.isGeneratorObject", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "Generator"))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "types.isAsyncFunction",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "AsyncFunction"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isGeneratorFunction",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "GeneratorFunction"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isGeneratorObject",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "Generator"))),
+    );
 
     // Iterator predicates — Vybe represents iterators as ordinary objects
     // with __type stamps ("MapIterator", "SetIterator").
-    vm.register_host_fn(MODULE, "types.isMapIterator", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "MapIterator"))
-    }));
-    vm.register_host_fn(MODULE, "types.isSetIterator", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "SetIterator"))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "types.isMapIterator",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "MapIterator"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isSetIterator",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "SetIterator"))),
+    );
 
     // WeakMap / WeakSet
-    vm.register_host_fn(MODULE, "types.isWeakMap", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "WeakMap"))
-    }));
-    vm.register_host_fn(MODULE, "types.isWeakSet", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "WeakSet"))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "types.isWeakMap",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "WeakMap"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "types.isWeakSet",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "WeakSet"))),
+    );
 
     // Boxed primitives — Vybe doesn't box primitives by default; these
     // return false unless the value is explicitly boxed via `Object(x)`
@@ -598,21 +742,27 @@ fn register_types(vm: &mut VM) {
     for tag in &["Boolean", "Number", "String", "Symbol", "BigInt"] {
         let stamp = tag.to_string();
         let pred = format!("types.is{}Object", tag);
-        vm.register_host_fn(MODULE, &pred, Box::new(move |_ctx, args| {
-            Value::Bool(is_typed_kind(args, &stamp))
-        }));
+        vm.register_host_fn(
+            MODULE,
+            &pred,
+            Box::new(move |_ctx, args| Value::Bool(is_typed_kind(args, &stamp))),
+        );
     }
 
     // BoxedPrimitive — true if any of the boxed predicates would be true.
-    vm.register_host_fn(MODULE, "types.isBoxedPrimitive", Box::new(|_ctx, args| {
-        Value::Bool(
-            is_typed_kind(args, "Boolean") ||
-            is_typed_kind(args, "Number") ||
-            is_typed_kind(args, "String") ||
-            is_typed_kind(args, "Symbol") ||
-            is_typed_kind(args, "BigInt")
-        )
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "types.isBoxedPrimitive",
+        Box::new(|_ctx, args| {
+            Value::Bool(
+                is_typed_kind(args, "Boolean")
+                    || is_typed_kind(args, "Number")
+                    || is_typed_kind(args, "String")
+                    || is_typed_kind(args, "Symbol")
+                    || is_typed_kind(args, "BigInt"),
+            )
+        }),
+    );
 
     // Misc — currently no support for these in Vybe's type system, so
     // they always return false. Listed for spec completeness.
@@ -649,66 +799,126 @@ fn is_typed_kind(args: &[Value], tag: &str) -> bool {
 // do the same.
 
 fn register_legacy_predicates(vm: &mut VM) {
-    vm.register_host_fn(MODULE, "isArray", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
+    vm.register_host_fn(
+        MODULE,
+        "isArray",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o))
             if matches!(o.lock().unwrap().kind, ObjectKind::Array(_))))
-    }));
-    vm.register_host_fn(MODULE, "isString", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::String(_))))
-    }));
-    vm.register_host_fn(MODULE, "isNumber", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::I32(_) | Value::I64(_) | Value::F64(_))))
-    }));
-    vm.register_host_fn(MODULE, "isBoolean", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Bool(_))))
-    }));
-    vm.register_host_fn(MODULE, "isNull", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Null)))
-    }));
-    vm.register_host_fn(MODULE, "isUndefined", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Undefined)))
-    }));
-    vm.register_host_fn(MODULE, "isNullOrUndefined", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Null | Value::Undefined)))
-    }));
-    vm.register_host_fn(MODULE, "isObject", Box::new(|_ctx, args| {
-        // Per Node: `isObject(null)` returns false (matches `typeof null === "object"`
-        // but the legacy util.isObject excludes null per docs).
-        Value::Bool(matches!(args.first(), Some(Value::Object(_))))
-    }));
-    vm.register_host_fn(MODULE, "isPrimitive", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(),
-            Some(Value::Null | Value::Undefined | Value::Bool(_)
-                 | Value::I32(_) | Value::I64(_) | Value::F64(_)
-                 | Value::String(_) | Value::Symbol(_) | Value::BigInt(_))))
-    }));
-    vm.register_host_fn(MODULE, "isSymbol", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Symbol(_))))
-    }));
-    vm.register_host_fn(MODULE, "isFunction", Box::new(|_ctx, args| {
-        Value::Bool(matches!(args.first(), Some(Value::Object(o)) if {
-            matches!(o.lock().unwrap().kind, ObjectKind::Function(_))
-        }))
-    }));
-    vm.register_host_fn(MODULE, "isDate", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "Date"))
-    }));
-    vm.register_host_fn(MODULE, "isRegExp", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "RegExp"))
-    }));
-    vm.register_host_fn(MODULE, "isError", Box::new(|_ctx, args| {
-        Value::Bool(is_typed_kind(args, "Error"))
-    }));
-    vm.register_host_fn(MODULE, "isBuffer", Box::new(|_ctx, args| {
-        Value::Bool(match args.first() {
-            Some(Value::Object(o)) => {
-                let o = o.lock().unwrap();
-                matches!(o.kind, ObjectKind::ArrayBuffer(_))
-                    || o.properties.get("__type").map_or(false, |t| matches!(t, Value::String(s) if s.as_ref() == "Buffer"))
-            }
-            _ => false,
-        })
-    }));
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isString",
+        Box::new(|_ctx, args| Value::Bool(matches!(args.first(), Some(Value::String(_))))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isNumber",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(
+                args.first(),
+                Some(Value::I32(_) | Value::I64(_) | Value::F64(_))
+            ))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isBoolean",
+        Box::new(|_ctx, args| Value::Bool(matches!(args.first(), Some(Value::Bool(_))))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isNull",
+        Box::new(|_ctx, args| Value::Bool(matches!(args.first(), Some(Value::Null)))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isUndefined",
+        Box::new(|_ctx, args| Value::Bool(matches!(args.first(), Some(Value::Undefined)))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isNullOrUndefined",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Null | Value::Undefined)))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isObject",
+        Box::new(|_ctx, args| {
+            // Per Node: `isObject(null)` returns false (matches `typeof null === "object"`
+            // but the legacy util.isObject excludes null per docs).
+            Value::Bool(matches!(args.first(), Some(Value::Object(_))))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isPrimitive",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(
+                args.first(),
+                Some(
+                    Value::Null
+                        | Value::Undefined
+                        | Value::Bool(_)
+                        | Value::I32(_)
+                        | Value::I64(_)
+                        | Value::F64(_)
+                        | Value::String(_)
+                        | Value::Symbol(_)
+                        | Value::BigInt(_)
+                )
+            ))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isSymbol",
+        Box::new(|_ctx, args| Value::Bool(matches!(args.first(), Some(Value::Symbol(_))))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isFunction",
+        Box::new(|_ctx, args| {
+            Value::Bool(matches!(args.first(), Some(Value::Object(o)) if {
+                matches!(o.lock().unwrap().kind, ObjectKind::Function(_))
+            }))
+        }),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isDate",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "Date"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isRegExp",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "RegExp"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isError",
+        Box::new(|_ctx, args| Value::Bool(is_typed_kind(args, "Error"))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "isBuffer",
+        Box::new(|_ctx, args| {
+            Value::Bool(match args.first() {
+                Some(Value::Object(o)) => {
+                    let o = o.lock().unwrap();
+                    matches!(o.kind, ObjectKind::ArrayBuffer(_))
+                        || o.properties.get("__type").map_or(
+                            false,
+                            |t| matches!(t, Value::String(s) if s.as_ref() == "Buffer"),
+                        )
+                }
+                _ => false,
+            })
+        }),
+    );
 }
 
 // ── Local JSON stringify (for %j format spec) ────────────────────────
@@ -723,11 +933,20 @@ fn json_stringify(v: &Value) -> String {
         Value::I32(n) => n.to_string(),
         Value::I64(n) => n.to_string(),
         Value::F64(n) => {
-            if n.is_nan() || n.is_infinite() { "null".into() }
-            else if *n == (*n as i64) as f64 { format!("{}", *n as i64) }
-            else { format!("{}", n) }
+            if n.is_nan() || n.is_infinite() {
+                "null".into()
+            } else if *n == (*n as i64) as f64 {
+                format!("{}", *n as i64)
+            } else {
+                format!("{}", n)
+            }
         }
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")),
+        Value::String(s) => format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+        ),
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
@@ -736,15 +955,25 @@ fn json_stringify(v: &Value) -> String {
                     format!("[{}]", parts.join(","))
                 }
                 ObjectKind::Map(m) => {
-                    let parts: Vec<String> = m.iter()
-                        .map(|(k, v)| format!("\"{}\":{}",
-                            match k { Value::String(s) => s.to_string(), o => format!("{}", o) },
-                            json_stringify(v)))
+                    let parts: Vec<String> = m
+                        .iter()
+                        .map(|(k, v)| {
+                            format!(
+                                "\"{}\":{}",
+                                match k {
+                                    Value::String(s) => s.to_string(),
+                                    o => format!("{}", o),
+                                },
+                                json_stringify(v)
+                            )
+                        })
                         .collect();
                     format!("{{{}}}", parts.join(","))
                 }
                 _ => {
-                    let parts: Vec<String> = o.properties.iter()
+                    let parts: Vec<String> = o
+                        .properties
+                        .iter()
                         .filter(|(k, _)| !k.starts_with("__"))
                         .map(|(k, v)| format!("\"{}\":{}", k, json_stringify(v)))
                         .collect();
@@ -758,152 +987,273 @@ fn json_stringify(v: &Value) -> String {
 
 fn errno_name(code: i32) -> &'static str {
     match code {
-        1 => "EPERM", 2 => "ENOENT", 3 => "ESRCH", 4 => "EINTR", 5 => "EIO",
-        6 => "ENXIO", 7 => "E2BIG", 8 => "ENOEXEC", 9 => "EBADF", 10 => "ECHILD",
-        11 => "EAGAIN", 12 => "ENOMEM", 13 => "EACCES", 14 => "EFAULT",
-        16 => "EBUSY", 17 => "EEXIST", 19 => "ENODEV", 20 => "ENOTDIR",
-        21 => "EISDIR", 22 => "EINVAL", 23 => "ENFILE", 24 => "EMFILE",
-        25 => "ENOTTY", 27 => "EFBIG", 28 => "ENOSPC", 30 => "EROFS",
-        32 => "EPIPE", 33 => "EDOM", 34 => "ERANGE", 36 => "EDEADLK",
-        38 => "ENOSYS", 40 => "ELOOP", 41 => "ENOMSG", 61 => "ENODATA",
+        1 => "EPERM",
+        2 => "ENOENT",
+        3 => "ESRCH",
+        4 => "EINTR",
+        5 => "EIO",
+        6 => "ENXIO",
+        7 => "E2BIG",
+        8 => "ENOEXEC",
+        9 => "EBADF",
+        10 => "ECHILD",
+        11 => "EAGAIN",
+        12 => "ENOMEM",
+        13 => "EACCES",
+        14 => "EFAULT",
+        16 => "EBUSY",
+        17 => "EEXIST",
+        19 => "ENODEV",
+        20 => "ENOTDIR",
+        21 => "EISDIR",
+        22 => "EINVAL",
+        23 => "ENFILE",
+        24 => "EMFILE",
+        25 => "ENOTTY",
+        27 => "EFBIG",
+        28 => "ENOSPC",
+        30 => "EROFS",
+        32 => "EPIPE",
+        33 => "EDOM",
+        34 => "ERANGE",
+        36 => "EDEADLK",
+        38 => "ENOSYS",
+        40 => "ELOOP",
+        41 => "ENOMSG",
+        61 => "ENODATA",
         _ => "EUNKNOWN",
     }
 }
 
 fn register_extras(vm: &mut VM) {
     // ── TextEncoder / TextDecoder ──────────────────────────────────────
-    vm.register_host_fn(MODULE, "TextEncoder", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("encoding".into(), Value::String(Arc::from("utf-8")));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "TextEncoder",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            o.properties
+                .insert("encoding".into(), Value::String(Arc::from("utf-8")));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "textEncoderEncode", Box::new(|_ctx, args| {
-        // args: [encoder, string]
-        let text = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            _ => String::new(),
-        };
-        let bytes: Vec<Value> = text.as_bytes().iter().map(|&b| Value::I32(b as i32)).collect();
-        Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "textEncoderEncode",
+        Box::new(|_ctx, args| {
+            // args: [encoder, string]
+            let text = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => String::new(),
+            };
+            let bytes: Vec<Value> = text
+                .as_bytes()
+                .iter()
+                .map(|&b| Value::I32(b as i32))
+                .collect();
+            Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "textEncoderEncoding", Box::new(|_ctx, args| {
-        match args.first() {
-            Some(Value::Object(o)) => {
-                o.lock().unwrap().properties.get("encoding").cloned().unwrap_or(Value::String(Arc::from("utf-8")))
-            }
+    vm.register_host_fn(
+        MODULE,
+        "textEncoderEncoding",
+        Box::new(|_ctx, args| match args.first() {
+            Some(Value::Object(o)) => o
+                .lock()
+                .unwrap()
+                .properties
+                .get("encoding")
+                .cloned()
+                .unwrap_or(Value::String(Arc::from("utf-8"))),
             _ => Value::String(Arc::from("utf-8")),
-        }
-    }));
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "TextDecoder", Box::new(|_ctx, args| {
-        let enc = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            _ => "utf-8".to_string(),
-        };
-        let mut o = Object::new();
-        o.properties.insert("encoding".into(), Value::String(Arc::from(enc.as_str())));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "TextDecoder",
+        Box::new(|_ctx, args| {
+            let enc = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => "utf-8".to_string(),
+            };
+            let mut o = Object::new();
+            o.properties
+                .insert("encoding".into(), Value::String(Arc::from(enc.as_str())));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "textDecoderDecode", Box::new(|_ctx, args| {
-        let buf = args.get(1);
-        let bytes: Vec<u8> = match buf {
-            Some(Value::Object(obj)) => {
-                let obj = obj.lock().unwrap();
-                match &obj.kind {
-                    ObjectKind::Array(elems) => elems.iter().map(|v| match v {
-                        Value::I32(n) => *n as u8,
-                        Value::F64(f) => *f as u8,
-                        _ => 0,
-                    }).collect(),
-                    _ => vec![],
+    vm.register_host_fn(
+        MODULE,
+        "textDecoderDecode",
+        Box::new(|_ctx, args| {
+            let buf = args.get(1);
+            let bytes: Vec<u8> = match buf {
+                Some(Value::Object(obj)) => {
+                    let obj = obj.lock().unwrap();
+                    match &obj.kind {
+                        ObjectKind::Array(elems) => elems
+                            .iter()
+                            .map(|v| match v {
+                                Value::I32(n) => *n as u8,
+                                Value::F64(f) => *f as u8,
+                                _ => 0,
+                            })
+                            .collect(),
+                        _ => vec![],
+                    }
                 }
-            }
-            _ => vec![],
-        };
-        Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
-    }));
+                _ => vec![],
+            };
+            Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "textDecoderEncoding", Box::new(|_ctx, args| {
-        match args.first() {
-            Some(Value::Object(o)) => {
-                o.lock().unwrap().properties.get("encoding").cloned().unwrap_or(Value::String(Arc::from("utf-8")))
-            }
+    vm.register_host_fn(
+        MODULE,
+        "textDecoderEncoding",
+        Box::new(|_ctx, args| match args.first() {
+            Some(Value::Object(o)) => o
+                .lock()
+                .unwrap()
+                .properties
+                .get("encoding")
+                .cloned()
+                .unwrap_or(Value::String(Arc::from("utf-8"))),
             _ => Value::String(Arc::from("utf-8")),
-        }
-    }));
+        }),
+    );
 
     // ── getSystemErrorName / getSystemErrorMap ─────────────────────────
-    vm.register_host_fn(MODULE, "getSystemErrorName", Box::new(|_ctx, args| {
-        let code = match args.first() {
-            Some(Value::I32(n)) => *n,
-            Some(Value::F64(f)) => *f as i32,
-            _ => 0,
-        };
-        Value::String(Arc::from(errno_name(code)))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "getSystemErrorName",
+        Box::new(|_ctx, args| {
+            let code = match args.first() {
+                Some(Value::I32(n)) => *n,
+                Some(Value::F64(f)) => *f as i32,
+                _ => 0,
+            };
+            Value::String(Arc::from(errno_name(code)))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "getSystemErrorMap", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        for (code, name) in [(1,"EPERM"),(2,"ENOENT"),(3,"ESRCH"),(4,"EINTR"),(5,"EIO"),
-                              (6,"ENXIO"),(7,"E2BIG"),(8,"ENOEXEC"),(9,"EBADF"),(10,"ECHILD"),
-                              (11,"EAGAIN"),(12,"ENOMEM"),(13,"EACCES"),(14,"EFAULT"),
-                              (16,"EBUSY"),(17,"EEXIST"),(19,"ENODEV"),(20,"ENOTDIR"),
-                              (21,"EISDIR"),(22,"EINVAL"),(23,"ENFILE"),(24,"EMFILE"),
-                              (28,"ENOSPC"),(30,"EROFS"),(32,"EPIPE"),(34,"ERANGE")] {
-            let arr = vec![Value::I32(code), Value::String(Arc::from(name))];
-            o.properties.insert(code.to_string(), Value::Object(Arc::new(Mutex::new(Object::new_array(arr)))));
-        }
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "getSystemErrorMap",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            for (code, name) in [
+                (1, "EPERM"),
+                (2, "ENOENT"),
+                (3, "ESRCH"),
+                (4, "EINTR"),
+                (5, "EIO"),
+                (6, "ENXIO"),
+                (7, "E2BIG"),
+                (8, "ENOEXEC"),
+                (9, "EBADF"),
+                (10, "ECHILD"),
+                (11, "EAGAIN"),
+                (12, "ENOMEM"),
+                (13, "EACCES"),
+                (14, "EFAULT"),
+                (16, "EBUSY"),
+                (17, "EEXIST"),
+                (19, "ENODEV"),
+                (20, "ENOTDIR"),
+                (21, "EISDIR"),
+                (22, "EINVAL"),
+                (23, "ENFILE"),
+                (24, "EMFILE"),
+                (28, "ENOSPC"),
+                (30, "EROFS"),
+                (32, "EPIPE"),
+                (34, "ERANGE"),
+            ] {
+                let arr = vec![Value::I32(code), Value::String(Arc::from(name))];
+                o.properties.insert(
+                    code.to_string(),
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(arr)))),
+                );
+            }
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
     // ── Stub wrappers ─────────────────────────────────────────────────
-    vm.register_host_fn(MODULE, "promisify", Box::new(|_ctx, _args| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }));
-    vm.register_host_fn(MODULE, "callbackify", Box::new(|_ctx, _args| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }));
-    vm.register_host_fn(MODULE, "deprecate", Box::new(|_ctx, _args| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }));
-    vm.register_host_fn(MODULE, "debuglog", Box::new(|_ctx, _args| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }));
-    vm.register_host_fn(MODULE, "inherits", Box::new(|_ctx, _args| {
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "promisify",
+        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "callbackify",
+        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "deprecate",
+        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+    );
+    vm.register_host_fn(
+        MODULE,
+        "debuglog",
+        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+    );
+    vm.register_host_fn(MODULE, "inherits", Box::new(|_ctx, _args| Value::Undefined));
 
     // ── MIMEType / MIMEParams ──────────────────────────────────────────
-    vm.register_host_fn(MODULE, "MIMEType", Box::new(|_ctx, args| {
-        let mime_str = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            _ => return Value::Undefined,
-        };
-        // Parse "type/subtype; param=value"
-        let (type_sub, _params_str) = mime_str.split_once(';').unwrap_or((&mime_str, ""));
-        let (ty, subtype) = type_sub.trim().split_once('/').unwrap_or((type_sub.trim(), ""));
-        let essence = format!("{}/{}", ty.trim(), subtype.trim());
-        let mut o = Object::new();
-        o.properties.insert("type".into(), Value::String(Arc::from(ty.trim())));
-        o.properties.insert("subtype".into(), Value::String(Arc::from(subtype.trim())));
-        o.properties.insert("essence".into(), Value::String(Arc::from(essence.as_str())));
-        o.properties.insert("params".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "MIMEType",
+        Box::new(|_ctx, args| {
+            let mime_str = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => return Value::Undefined,
+            };
+            // Parse "type/subtype; param=value"
+            let (type_sub, _params_str) = mime_str.split_once(';').unwrap_or((&mime_str, ""));
+            let (ty, subtype) = type_sub
+                .trim()
+                .split_once('/')
+                .unwrap_or((type_sub.trim(), ""));
+            let essence = format!("{}/{}", ty.trim(), subtype.trim());
+            let mut o = Object::new();
+            o.properties
+                .insert("type".into(), Value::String(Arc::from(ty.trim())));
+            o.properties
+                .insert("subtype".into(), Value::String(Arc::from(subtype.trim())));
+            o.properties
+                .insert("essence".into(), Value::String(Arc::from(essence.as_str())));
+            o.properties.insert(
+                "params".into(),
+                Value::Object(Arc::new(Mutex::new(Object::new()))),
+            );
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "MIMEParams", Box::new(|_ctx, _args| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "MIMEParams",
+        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+    );
 
     // ── styleText (Node 22+) ───────────────────────────────────────────
-    vm.register_host_fn(MODULE, "styleText", Box::new(|_ctx, args| {
-        let text = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            _ => String::new(),
-        };
-        Value::String(Arc::from(text.as_str()))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "styleText",
+        Box::new(|_ctx, args| {
+            let text = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => String::new(),
+            };
+            Value::String(Arc::from(text.as_str()))
+        }),
+    );
 }

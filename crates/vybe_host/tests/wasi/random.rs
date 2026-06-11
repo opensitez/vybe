@@ -37,29 +37,49 @@ fn invoke_result(module: &str, name: &str, args: Vec<Value>) -> Result<Value, St
 }
 
 fn array_len(value: &Value) -> usize {
-    let Value::Object(object) = value else { return 0 };
+    let Value::Object(object) = value else {
+        return 0;
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else { return 0 };
+    let ObjectKind::Array(values) = &object.kind else {
+        return 0;
+    };
     values.len()
 }
 
 fn byte_values(value: &Value) -> Vec<i32> {
-    let Value::Object(object) = value else { return Vec::new() };
+    let Value::Object(object) = value else {
+        return Vec::new();
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else { return Vec::new() };
+    let ObjectKind::Array(values) = &object.kind else {
+        return Vec::new();
+    };
     values.iter().map(|value| value.as_i32()).collect()
 }
 
 #[test]
 fn get_random_bytes_returns_requested_length() {
-    let result = invoke("wasi:random/random", "get-random-bytes", vec![Value::F64(16.0)]);
+    let result = invoke(
+        "wasi:random/random",
+        "get-random-bytes",
+        vec![Value::F64(16.0)],
+    );
     assert_eq!(array_len(&result), 16);
-    assert!(byte_values(&result).iter().all(|value| (0..=255).contains(value)));
+    assert!(
+        byte_values(&result)
+            .iter()
+            .all(|value| (0..=255).contains(value))
+    );
 }
 
 #[test]
 fn get_random_bytes_zero_length_returns_empty_array() {
-    let result = invoke("wasi:random/random", "get-random-bytes", vec![Value::F64(0.0)]);
+    let result = invoke(
+        "wasi:random/random",
+        "get-random-bytes",
+        vec![Value::F64(0.0)],
+    );
     assert_eq!(array_len(&result), 0);
 }
 
@@ -71,7 +91,11 @@ fn get_random_bytes_defaults_to_empty_when_length_missing() {
 
 #[test]
 fn get_random_bytes_negative_length_clamps_to_empty_array() {
-    let result = invoke("wasi:random/random", "get-random-bytes", vec![Value::F64(-1.0)]);
+    let result = invoke(
+        "wasi:random/random",
+        "get-random-bytes",
+        vec![Value::F64(-1.0)],
+    );
     assert_eq!(array_len(&result), 0);
 }
 
@@ -125,7 +149,11 @@ fn get_insecure_random_bytes_large_length_returns_requested_length() {
         vec![Value::F64(256.0)],
     );
     assert_eq!(array_len(&result), 256);
-    assert!(byte_values(&result).iter().all(|value| (0..=255).contains(value)));
+    assert!(
+        byte_values(&result)
+            .iter()
+            .all(|value| (0..=255).contains(value))
+    );
 }
 
 #[test]
@@ -135,7 +163,11 @@ fn get_insecure_random_bytes_values_stay_in_byte_range() {
         "get-insecure-random-bytes",
         vec![Value::F64(32.0)],
     );
-    assert!(byte_values(&result).iter().all(|value| (0..=255).contains(value)));
+    assert!(
+        byte_values(&result)
+            .iter()
+            .all(|value| (0..=255).contains(value))
+    );
 }
 
 #[test]
@@ -180,9 +212,17 @@ fn insecure_seed_values_are_non_negative_numbers() {
 
 #[test]
 fn get_random_bytes_large_length_returns_requested_length() {
-    let result = invoke("wasi:random/random", "get-random-bytes", vec![Value::F64(256.0)]);
+    let result = invoke(
+        "wasi:random/random",
+        "get-random-bytes",
+        vec![Value::F64(256.0)],
+    );
     assert_eq!(array_len(&result), 256);
-    assert!(byte_values(&result).iter().all(|value| (0..=255).contains(value)));
+    assert!(
+        byte_values(&result)
+            .iter()
+            .all(|value| (0..=255).contains(value))
+    );
 }
 
 #[test]

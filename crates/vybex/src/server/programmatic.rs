@@ -39,8 +39,8 @@ use bytes::Bytes;
 use http::Request;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use vybe_bytecode::{VM, Value, HostContext};
-use vybe_host::{install_context, RequestContext, ResponseMessage};
+use vybe_bytecode::{HostContext, VM, Value};
+use vybe_host::{RequestContext, ResponseMessage, install_context};
 
 use super::response_stream::{BoxBody, build_response};
 
@@ -128,7 +128,10 @@ fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
                 loop {
                     let (stream, remote) = match listener.accept().await {
                         Ok(p) => p,
-                        Err(e) => { eprintln!("[vybex] accept error: {e}"); continue; }
+                        Err(e) => {
+                            eprintln!("[vybex] accept error: {e}");
+                            continue;
+                        }
                     };
                     let event_tx = event_tx.clone();
                     tokio::spawn(async move {
@@ -137,7 +140,7 @@ fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
                             let event_tx = event_tx.clone();
                             async move {
                                 Ok::<_, std::convert::Infallible>(
-                                    handle_request(req, remote, local_addr, event_tx).await
+                                    handle_request(req, remote, local_addr, event_tx).await,
                                 )
                             }
                         });
@@ -162,7 +165,10 @@ fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
     // thread holds the only other sender and runs forever, channel
     // close would mean the runtime died.
     while let Ok(event) = event_rx.recv() {
-        let ServerEvent { ctx: req_ctx, done_tx } = event;
+        let ServerEvent {
+            ctx: req_ctx,
+            done_tx,
+        } = event;
         {
             let _guard = install_context(Arc::clone(&req_ctx));
             ctx.invoke(&handler, &[]);
@@ -202,7 +208,7 @@ async fn handle_request(
         &reassembled,
         body_bytes,
         remote,
-        None,           // no script filename — user's handler *is* the entry
+        None, // no script filename — user's handler *is* the entry
         None,
         std::path::Path::new("."),
         local_addr,
@@ -213,7 +219,10 @@ async fn handle_request(
     // body channel inside RequestContext streams out independently —
     // build_response reads it and produces the hyper body.
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-    let event = ServerEvent { ctx: Arc::clone(&built.ctx), done_tx };
+    let event = ServerEvent {
+        ctx: Arc::clone(&built.ctx),
+        done_tx,
+    };
     if event_tx.send(event).is_err() {
         return super::response_stream::bytes_response(
             503,
@@ -231,7 +240,9 @@ async fn handle_request(
     // Spawn a task to await done_tx so we don't leak it; we don't
     // actually need to block on it here — the response body drives
     // completion via the EOF of the streaming channel.
-    tokio::spawn(async move { let _ = done_rx.await; });
+    tokio::spawn(async move {
+        let _ = done_rx.await;
+    });
 
     resp
 }
@@ -254,4 +265,6 @@ async fn read_limited(mut body: Incoming, max: usize) -> Result<Bytes, String> {
 // strips inline uses; it's load-bearing via the types in request_context
 // and response_stream signatures.
 #[allow(dead_code)]
-fn _type_witness() -> Option<ResponseMessage> { None }
+fn _type_witness() -> Option<ResponseMessage> {
+    None
+}

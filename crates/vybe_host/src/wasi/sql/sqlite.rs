@@ -1,7 +1,7 @@
+use super::driver::SqlDriver;
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::Value;
 use vybe_bytecode::value::Object;
-use super::driver::SqlDriver;
 
 pub(super) struct SqliteDriver {
     conn: Mutex<rusqlite::Connection>,
@@ -23,29 +23,36 @@ impl SqliteDriver {
             )
         }
         .map_err(|e| e.to_string())?;
-        Ok(Self { conn: Mutex::new(conn), url: url.to_string() })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            url: url.to_string(),
+        })
     }
 }
 
 fn row_to_obj(row: &rusqlite::Row, col_names: &[String]) -> Value {
     use rusqlite::types::ValueRef;
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("DataRow")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("DataRow")));
     for (i, name) in col_names.iter().enumerate() {
         let val = match row.get_ref(i).unwrap_or(ValueRef::Null) {
-            ValueRef::Null       => Value::Null,
+            ValueRef::Null => Value::Null,
             ValueRef::Integer(n) => Value::F64(n as f64),
-            ValueRef::Real(f)    => Value::F64(f),
-            ValueRef::Text(b)    => Value::String(Arc::from(std::str::from_utf8(b).unwrap_or(""))),
-            ValueRef::Blob(_)    => Value::Null,
+            ValueRef::Real(f) => Value::F64(f),
+            ValueRef::Text(b) => Value::String(Arc::from(std::str::from_utf8(b).unwrap_or(""))),
+            ValueRef::Blob(_) => Value::Null,
         };
-            obj.properties.insert(name.clone(), val.clone());
-            obj.properties.insert(i.to_string(), val);
+        obj.properties.insert(name.clone(), val.clone());
+        obj.properties.insert(i.to_string(), val);
     }
     obj.properties.insert(
         "__col_names".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(
-            col_names.iter().map(|name| Value::String(Arc::from(name.as_str()))).collect(),
+            col_names
+                .iter()
+                .map(|name| Value::String(Arc::from(name.as_str())))
+                .collect(),
         )))),
     );
     Value::Object(Arc::new(Mutex::new(obj)))
@@ -83,7 +90,9 @@ impl SqlDriver for SqliteDriver {
         .map_err(|e| e.to_string())
     }
 
-    fn url(&self) -> &str { &self.url }
+    fn url(&self) -> &str {
+        &self.url
+    }
 
     fn tables_sql(&self) -> &'static str {
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"

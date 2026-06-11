@@ -41,7 +41,10 @@ pub struct WaitableSet {
 
 impl WaitableSet {
     pub fn new(id: u32) -> Self {
-        WaitableSet { id, members: Vec::new() }
+        WaitableSet {
+            id,
+            members: Vec::new(),
+        }
     }
 
     /// Join a waitable into this set.
@@ -88,7 +91,10 @@ pub struct WaitableRegistry {
 
 impl WaitableRegistry {
     pub fn new() -> Self {
-        WaitableRegistry { sets: HashMap::new(), next_id: 1 }
+        WaitableRegistry {
+            sets: HashMap::new(),
+            next_id: 1,
+        }
     }
 
     /// Create a new waitable set and return its u32 handle.

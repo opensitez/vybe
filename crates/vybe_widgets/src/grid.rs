@@ -1,8 +1,8 @@
 //! Simple data grid widget — header + rows grid rendering.
 
+use super::WidgetColors;
+use super::layout::{KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetId};
 use tiny_skia::*;
-use super::{WidgetColors};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId};
 
 pub struct DataGrid {
     pub columns: Vec<String>,
@@ -33,7 +33,10 @@ impl DataGrid {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
         let ts = Transform::from_scale(scale, scale);
@@ -51,7 +54,11 @@ impl DataGrid {
         pixmap.fill_rect(header_rect, &paint, ts, None);
 
         // Vertical column separators and header text omitted (text handled by external font engine)
-        let col_w = if self.columns.is_empty() { self.width } else { self.width / self.columns.len() as f32 };
+        let col_w = if self.columns.is_empty() {
+            self.width
+        } else {
+            self.width / self.columns.len() as f32
+        };
         // Draw vertical lines
         paint.set_color_rgba8(200, 200, 200, 255);
         let mut stroke = Stroke::default();
@@ -61,7 +68,9 @@ impl DataGrid {
             let mut pb = PathBuilder::new();
             pb.move_to(cx, y);
             pb.line_to(cx, y + self.height);
-            if let Some(path) = pb.finish() { pixmap.stroke_path(&path, &paint, &stroke, ts, None); }
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            }
         }
 
         // Horizontal lines for header + rows
@@ -71,42 +80,90 @@ impl DataGrid {
             let mut pb = PathBuilder::new();
             pb.move_to(x, row_y);
             pb.line_to(x + self.width, row_y);
-            if let Some(path) = pb.finish() { pixmap.stroke_path(&path, &paint, &stroke, ts, None); }
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            }
             row_y += self.row_height;
             line_count += 1;
-            if line_count > 1000 { break; }
-        }
-    }
-
-    pub fn measure(&self) -> (f32, f32) { (self.width, self.height) }
-}
-
-impl PanelWidget for DataGrid {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
-
-    fn render(&mut self, ctx: &mut RenderContext) {
-        let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
-        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
-        // Draw column headers and row data
-        let (fr, fg, fb, _) = self.colors.foreground;
-        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
-        let cw = if self.columns.is_empty() { self.width } else { self.width / self.columns.len() as f32 };
-        for (i, header) in self.columns.iter().enumerate() {
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, header, r.x + i as f32 * cw + 4.0, r.y + 4.0, 12.0, col, ctx.scale);
-        }
-        for (ri, row) in self.rows.iter().enumerate() {
-            let ry = r.y + self.header_height + ri as f32 * self.row_height;
-            if ry > r.y + r.h { break; }
-            for (ci, cell) in row.iter().enumerate() {
-                super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, cell, r.x + ci as f32 * cw + 4.0, ry + 2.0, 12.0, col, ctx.scale);
+            if line_count > 1000 {
+                break;
             }
         }
     }
 
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    pub fn measure(&self) -> (f32, f32) {
+        (self.width, self.height)
+    }
+}
+
+impl PanelWidget for DataGrid {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
+        // Draw column headers and row data
+        let (fr, fg, fb, _) = self.colors.foreground;
+        let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
+        let cw = if self.columns.is_empty() {
+            self.width
+        } else {
+            self.width / self.columns.len() as f32
+        };
+        for (i, header) in self.columns.iter().enumerate() {
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                header,
+                r.x + i as f32 * cw + 4.0,
+                r.y + 4.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
+        }
+        for (ri, row) in self.rows.iter().enumerate() {
+            let ry = r.y + self.header_height + ri as f32 * self.row_height;
+            if ry > r.y + r.h {
+                break;
+            }
+            for (ci, cell) in row.iter().enumerate() {
+                super::ide_text::draw_text(
+                    ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                    cell,
+                    r.x + ci as f32 * cw + 4.0,
+                    ry + 2.0,
+                    12.0,
+                    col,
+                    ctx.scale,
+                );
+            }
+        }
+    }
+
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 }

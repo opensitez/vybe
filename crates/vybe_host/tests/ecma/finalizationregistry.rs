@@ -12,8 +12,12 @@ use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
+    invoke_module("ecma:finalizationregistry", name, args)
+}
+
+fn invoke_module(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<ecma-finalizationregistry-test>");
-    let import_idx = chunk.add_import("ecma:finalizationregistry", name);
+    let import_idx = chunk.add_import(module, name);
     let argc = args.len() as u8;
     for value in args {
         let c = chunk.add_constant(value);
@@ -34,7 +38,8 @@ fn obj() -> Value {
 fn callback_obj() -> Value {
     // The host recognises this as a no-op cleanup callback descriptor.
     let mut o = Object::new();
-    o.properties.insert("__callback_noop".to_string(), Value::Bool(true));
+    o.properties
+        .insert("__callback_noop".to_string(), Value::Bool(true));
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -43,6 +48,12 @@ fn callback_obj() -> Value {
 #[test]
 fn new_returns_object() {
     let fr = invoke("new", vec![callback_obj()]);
+    assert!(matches!(fr, Value::Object(_)));
+}
+
+#[test]
+fn hyphenated_module_alias_new_returns_object() {
+    let fr = invoke_module("ecma:finalization-registry", "new", vec![callback_obj()]);
     assert!(matches!(fr, Value::Object(_)));
 }
 
@@ -74,7 +85,10 @@ fn unregister_with_known_token_returns_true() {
     let fr = invoke("new", vec![callback_obj()]);
     let target = obj();
     let token = obj();
-    invoke("registerWithToken", vec![fr.clone(), target, Value::I32(0), token.clone()]);
+    invoke(
+        "registerWithToken",
+        vec![fr.clone(), target, Value::I32(0), token.clone()],
+    );
     assert_eq!(invoke("unregister", vec![fr, token]), Value::Bool(true));
 }
 
@@ -90,7 +104,10 @@ fn unregister_twice_with_same_token_returns_false_on_second_call() {
     let fr = invoke("new", vec![callback_obj()]);
     let target = obj();
     let token = obj();
-    invoke("registerWithToken", vec![fr.clone(), target, Value::I32(0), token.clone()]);
+    invoke(
+        "registerWithToken",
+        vec![fr.clone(), target, Value::I32(0), token.clone()],
+    );
     invoke("unregister", vec![fr.clone(), token.clone()]);
     // Second unregister — entry is already gone.
     assert_eq!(invoke("unregister", vec![fr, token]), Value::Bool(false));
@@ -109,6 +126,7 @@ fn cleanup_callback_not_fired_before_gc() {
     // Either 0 (nothing collected) or Undefined (not exposed); both are valid.
     assert!(
         pending == Value::I32(0) || pending == Value::Undefined,
-        "cleanup must not fire synchronously, got {:?}", pending
+        "cleanup must not fire synchronously, got {:?}",
+        pending
     );
 }

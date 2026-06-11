@@ -40,10 +40,8 @@
 //!
 //! Zero VM. Zero host. Zero .NET wrapper.
 
-use crate::canvas::{Canvas as CanvasTrait, RecordingCanvas, TinySkiaCanvas, Color};
-use crate::layout::{
-    LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId,
-};
+use crate::canvas::{Canvas as CanvasTrait, Color, RecordingCanvas, TinySkiaCanvas};
+use crate::layout::{KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetId};
 
 /// A blank drawable surface widget.
 ///
@@ -139,14 +137,24 @@ impl Default for Canvas {
 }
 
 impl PanelWidget for Canvas {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // 1. Background fill (if requested).
         if let Some(bg) = self.background {
@@ -154,10 +162,13 @@ impl PanelWidget for Canvas {
             paint.set_color_rgba8(bg.r, bg.g, bg.b, bg.a);
             paint.anti_alias = true;
             if let Some(rect) = tiny_skia::Rect::from_xywh(
-                r.x * ctx.scale, r.y * ctx.scale,
-                r.w * ctx.scale, r.h * ctx.scale,
+                r.x * ctx.scale,
+                r.y * ctx.scale,
+                r.w * ctx.scale,
+                r.h * ctx.scale,
             ) {
-                ctx.pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                ctx.pixmap
+                    .fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
             }
         }
 
@@ -171,11 +182,8 @@ impl PanelWidget for Canvas {
         // `with_relative_coords(false)`, the recording is in absolute
         // pixmap coordinates and we leave the transform at identity.)
         if !self.recording.is_empty() {
-            let mut canvas = TinySkiaCanvas::with_text(
-                &mut ctx.pixmap,
-                ctx.font_system,
-                ctx.swash_cache,
-            );
+            let mut canvas =
+                TinySkiaCanvas::with_text(&mut ctx.pixmap, ctx.font_system, ctx.swash_cache);
             if self.relative_coords {
                 canvas.translate(r.x * ctx.scale, r.y * ctx.scale);
             }
@@ -186,8 +194,12 @@ impl PanelWidget for Canvas {
         }
     }
 
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     /// Used by the host bridge to find this widget by name and pull
     /// out its underlying `RecordingCanvas`. See

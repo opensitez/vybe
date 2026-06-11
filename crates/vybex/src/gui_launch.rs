@@ -10,30 +10,37 @@
 //! - `launch_vybewidget_form` — designer forms (builds widgets from `vybe_compiler::projects::vbforms::Form`)
 //!   (requires `gui_forms` feature)
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use vybe_host::GuiState;
 
 use vybe_widgets::{
     // Application framework
-    Application, run_app, Pixmap, fill_background,
-    FontSystem, SwashCache, RenderContext,
+    Application,
+    CommandValue,
+    FontSystem,
+    KeyEvent,
     // Layout types
-    LayoutRect, MouseEvent, KeyEvent,
+    LayoutRect,
+    MouseEvent,
     // Widget trait + events/commands
-    PanelWidget, WidgetEvent, WidgetCommand, CommandValue,
+    PanelWidget,
+    Pixmap,
+    RenderContext,
+    SwashCache,
+    WidgetCommand,
+    WidgetEvent,
+    fill_background,
+    run_app,
 };
 
 #[cfg(feature = "gui_forms")]
 use vybe_widgets::{
-    Form as WidgetForm,
-    Button, Label, TextInput, Checkbox, Radio, ListBox, ProgressBar,
-    Slider, NumericUpDown, DateTimePicker, ScrollBar, MaskedTextBox,
-    GroupBox, Panel, TreeView, DataGrid, ListView,
-    Tabs, MenuStrip, ContextMenu, StatusStrip, ToolStrip,
-    SplitContainer, FlowLayoutPanel, TableLayoutPanel, MonthCalendar,
-    PictureBox, Select, BindingNavigator,
+    BindingNavigator, Button, Checkbox, ContextMenu, DataGrid, DateTimePicker, FlowLayoutPanel,
+    Form as WidgetForm, GroupBox, Label, ListBox, ListView, MaskedTextBox, MenuStrip,
+    MonthCalendar, NumericUpDown, Panel, PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider,
+    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView,
 };
 
 // ── Data binding types ─────────────────────────────────────────────────
@@ -70,7 +77,11 @@ struct DataStore {
 
 #[cfg(feature = "gui_forms")]
 fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn PanelWidget> {
-    let text = ctrl.properties.get_string("Text").unwrap_or_default().to_string();
+    let text = ctrl
+        .properties
+        .get_string("Text")
+        .unwrap_or_default()
+        .to_string();
     // Preserve original case — VB compiler will lowercase identifiers as needed
     let name = &ctrl.name;
 
@@ -81,13 +92,15 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::Label | vybe_compiler::projects::vbforms::ControlType::LinkLabel => {
+        vybe_compiler::projects::vbforms::ControlType::Label
+        | vybe_compiler::projects::vbforms::ControlType::LinkLabel => {
             let mut w = Label::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::TextBox | vybe_compiler::projects::vbforms::ControlType::RichTextBox => {
+        vybe_compiler::projects::vbforms::ControlType::TextBox
+        | vybe_compiler::projects::vbforms::ControlType::RichTextBox => {
             let mut w = TextInput::new().with_name(&name);
             w.value = text;
             w.width = ctrl.bounds.width as f32;
@@ -106,21 +119,31 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
             Box::new(Radio::new(&text).with_name(&name))
         }
         vybe_compiler::projects::vbforms::ControlType::ComboBox => {
-            let items = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
+            let items = ctrl
+                .properties
+                .get_string_array("Items")
+                .cloned()
+                .unwrap_or_default();
             let mut w = Select::new(items).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::ListBox | vybe_compiler::projects::vbforms::ControlType::CheckedListBox => {
-            let items = ctrl.properties.get_string_array("Items").cloned().unwrap_or_default();
+        vybe_compiler::projects::vbforms::ControlType::ListBox
+        | vybe_compiler::projects::vbforms::ControlType::CheckedListBox => {
+            let items = ctrl
+                .properties
+                .get_string_array("Items")
+                .cloned()
+                .unwrap_or_default();
             let mut w = ListBox::new().with_name(&name);
             w.items = items;
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::Panel | vybe_compiler::projects::vbforms::ControlType::UserControl => {
+        vybe_compiler::projects::vbforms::ControlType::Panel
+        | vybe_compiler::projects::vbforms::ControlType::UserControl => {
             let mut w = Panel::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
@@ -156,7 +179,8 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
         vybe_compiler::projects::vbforms::ControlType::TreeView => {
             Box::new(TreeView::new("", 1.0).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::DataGridView | vybe_compiler::projects::vbforms::ControlType::DataGrid => {
+        vybe_compiler::projects::vbforms::ControlType::DataGridView
+        | vybe_compiler::projects::vbforms::ControlType::DataGrid => {
             Box::new(DataGrid::new(&[]).with_name(&name))
         }
         vybe_compiler::projects::vbforms::ControlType::ListView => {
@@ -234,7 +258,11 @@ struct FormApp {
 
 impl Application for FormApp {
     fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
-        self.gui.lock().unwrap().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        self.gui
+            .lock()
+            .unwrap()
+            .form
+            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
         if !self.initialised {
             self.initialised = true;
             self.fire_load_event();
@@ -243,7 +271,11 @@ impl Application for FormApp {
     }
 
     fn on_resize(&mut self, width: f32, height: f32) {
-        self.gui.lock().unwrap().form.set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        self.gui
+            .lock()
+            .unwrap()
+            .form
+            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
     }
 
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
@@ -294,18 +326,25 @@ impl FormApp {
     fn fire_load_event(&mut self) {
         let callback = {
             let g = self.gui.lock().unwrap();
-            g.get_event_handler("form1", "Load").cloned()
+            g.get_event_handler("form1", "Load")
+                .cloned()
                 .or_else(|| g.get_event_handler("me", "Load").cloned())
         };
         if let Some(cb) = callback {
             let mut vm = self.vm.borrow_mut();
-            let me = vm.globals.get("__f").cloned()
+            let me = vm
+                .globals
+                .get("__f")
+                .cloned()
                 .unwrap_or(vybe_bytecode::Value::Null);
             let arity = fn_arity(&cb);
             let result = match arity {
                 0 => vm.invoke(&cb, &[]),
                 1 => vm.invoke(&cb, &[me]),
-                _ => vm.invoke(&cb, &[me, vybe_bytecode::Value::Null, vybe_bytecode::Value::Null]),
+                _ => vm.invoke(
+                    &cb,
+                    &[me, vybe_bytecode::Value::Null, vybe_bytecode::Value::Null],
+                ),
             };
             if let Err(e) = result {
                 eprintln!("[LOAD] Error: {e}");
@@ -335,7 +374,10 @@ impl FormApp {
 
     fn invoke_callback(&mut self, cb: &vybe_bytecode::Value, control_name: &str) {
         let mut vm = self.vm.borrow_mut();
-        let me = vm.globals.get("__f").cloned()
+        let me = vm
+            .globals
+            .get("__f")
+            .cloned()
             .unwrap_or(vybe_bytecode::Value::Null);
         let arity = fn_arity(cb);
         let sender = vybe_bytecode::Value::String(Arc::from(control_name));
@@ -364,7 +406,10 @@ impl FormApp {
                 let txtcalc_text = form.properties.get("txtcalc").and_then(|value| {
                     if let vybe_bytecode::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
-                        control.properties.get("text").map(|text| format!("{}", text))
+                        control
+                            .properties
+                            .get("text")
+                            .map(|text| format!("{}", text))
                     } else {
                         None
                     }
@@ -372,16 +417,17 @@ impl FormApp {
                 let txtdisplay_text = form.properties.get("txtdisplay").and_then(|value| {
                     if let vybe_bytecode::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
-                        control.properties.get("text").map(|text| format!("{}", text))
+                        control
+                            .properties
+                            .get("text")
+                            .map(|text| format!("{}", text))
                     } else {
                         None
                     }
                 });
                 eprintln!(
                     "[gui] post_callback form_keys={:?} txtcalc.text={:?} txtdisplay.text={:?}",
-                    keys,
-                    txtcalc_text,
-                    txtdisplay_text,
+                    keys, txtcalc_text, txtdisplay_text,
                 );
             }
         }
@@ -397,7 +443,9 @@ impl FormApp {
                 for (field_name, value) in &fo.properties {
                     if let vybe_bytecode::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
-                        let control_name = control.properties.get("__control_name")
+                        let control_name = control
+                            .properties
+                            .get("__control_name")
                             .or_else(|| control.properties.get("name"))
                             .map(|v| format!("{}", v).to_lowercase())
                             .filter(|name| !name.is_empty())
@@ -428,18 +476,18 @@ impl FormApp {
         }
         for event in events {
             match &event {
-                WidgetEvent::ButtonClicked(name) |
-                WidgetEvent::CheckboxToggled(name, _) |
-                WidgetEvent::RadioSelected(name, _) |
-                WidgetEvent::TextChanged(name, _) |
-                WidgetEvent::LinkClicked(name) => {
+                WidgetEvent::ButtonClicked(name)
+                | WidgetEvent::CheckboxToggled(name, _)
+                | WidgetEvent::RadioSelected(name, _)
+                | WidgetEvent::TextChanged(name, _)
+                | WidgetEvent::LinkClicked(name) => {
                     self.fire_click(name);
                 }
-                WidgetEvent::SelectChanged(name, _) |
-                WidgetEvent::ListBoxSelected(name, _) => {
+                WidgetEvent::SelectChanged(name, _) | WidgetEvent::ListBoxSelected(name, _) => {
                     let callback = {
                         let g = self.gui.lock().unwrap();
-                        g.get_event_handler(&name, "SelectedIndexChanged").cloned()
+                        g.get_event_handler(&name, "SelectedIndexChanged")
+                            .cloned()
                             .or_else(|| g.get_event_handler(&name, "Click").cloned())
                     };
                     if let Some(cb) = callback {
@@ -452,7 +500,9 @@ impl FormApp {
                         if parts.len() == 3 {
                             let nav_name = parts[1];
                             let action = parts[2];
-                            if let Some(nav_info) = self.navigators.iter()
+                            if let Some(nav_info) = self
+                                .navigators
+                                .iter()
                                 .find(|n| n.navigator_name.eq_ignore_ascii_case(nav_name))
                             {
                                 let bs_name = nav_info.binding_source_name.clone();
@@ -469,12 +519,16 @@ impl FormApp {
     // ── Data binding ───────────────────────────────────────────────────
 
     fn init_data_bindings(&mut self) {
-        if self.binding_sources.is_empty() { return; }
+        if self.binding_sources.is_empty() {
+            return;
+        }
 
         let bs_infos: Vec<_> = self.binding_sources.clone();
         for bs_info in &bs_infos {
             let conn_str = self.get_connection_string(&bs_info.name, &bs_info.data_adapter_name);
-            if conn_str.is_empty() { continue; }
+            if conn_str.is_empty() {
+                continue;
+            }
 
             let sql = format!("SELECT * FROM {}", bs_info.data_member);
             match vybe_host::wasi::sql::query_rows(&conn_str, &sql) {
@@ -489,11 +543,14 @@ impl FormApp {
                 }
                 Err(e) => {
                     eprintln!("[DATA] Query error for '{}': {}", bs_info.name, e);
-                    self.data_store.insert(bs_info.name.to_lowercase(), DataStore {
-                        columns: Vec::new(),
-                        rows: Vec::new(),
-                        position: -1,
-                    });
+                    self.data_store.insert(
+                        bs_info.name.to_lowercase(),
+                        DataStore {
+                            columns: Vec::new(),
+                            rows: Vec::new(),
+                            position: -1,
+                        },
+                    );
                 }
             }
         }
@@ -504,16 +561,21 @@ impl FormApp {
         let vm = self.vm.borrow();
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.lock().unwrap();
-            if let Some(vybe_bytecode::Value::Object(bs_obj)) = fo.properties.get(&bs_name.to_lowercase()) {
+            if let Some(vybe_bytecode::Value::Object(bs_obj)) =
+                fo.properties.get(&bs_name.to_lowercase())
+            {
                 let bs = bs_obj.lock().unwrap();
-                if let Some(vybe_bytecode::Value::Object(da_obj)) = bs.properties.get("datasource") {
+                if let Some(vybe_bytecode::Value::Object(da_obj)) = bs.properties.get("datasource")
+                {
                     let da = da_obj.lock().unwrap();
                     if let Some(v) = da.properties.get("connectionstring") {
                         return format!("{}", v);
                     }
                 }
             }
-            if let Some(vybe_bytecode::Value::Object(da_obj)) = fo.properties.get(&adapter_name.to_lowercase()) {
+            if let Some(vybe_bytecode::Value::Object(da_obj)) =
+                fo.properties.get(&adapter_name.to_lowercase())
+            {
                 let da = da_obj.lock().unwrap();
                 if let Some(v) = da.properties.get("connectionstring") {
                     return format!("{}", v);
@@ -529,20 +591,29 @@ impl FormApp {
             Some(s) => s,
             None => return,
         };
-        if store.position < 0 || store.position as usize >= store.rows.len() { return; }
+        if store.position < 0 || store.position as usize >= store.rows.len() {
+            return;
+        }
         let row = &store.rows[store.position as usize];
 
         let vm = self.vm.borrow_mut();
         if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.lock().unwrap();
             for binding in &self.data_bindings {
-                if !binding.source_name.eq_ignore_ascii_case(bs_name) { continue; }
-                let col_key = row.keys()
+                if !binding.source_name.eq_ignore_ascii_case(bs_name) {
+                    continue;
+                }
+                let col_key = row
+                    .keys()
                     .find(|k| k.eq_ignore_ascii_case(&binding.column))
                     .cloned();
-                let value = col_key.and_then(|k| row.get(&k)).cloned().unwrap_or_default();
+                let value = col_key
+                    .and_then(|k| row.get(&k))
+                    .cloned()
+                    .unwrap_or_default();
                 let ctrl_lower = binding.control_name.to_lowercase();
-                if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower) {
+                if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower)
+                {
                     ctrl_obj.lock().unwrap().properties.insert(
                         binding.property.to_lowercase(),
                         vybe_bytecode::Value::String(Arc::from(value.as_str())),
@@ -557,11 +628,17 @@ impl FormApp {
     fn update_navigator_positions(&mut self) {
         let mut g = self.gui.lock().unwrap();
         for nav_info in &self.navigators {
-            if let Some(store) = self.data_store.get(&nav_info.binding_source_name.to_lowercase()) {
+            if let Some(store) = self
+                .data_store
+                .get(&nav_info.binding_source_name.to_lowercase())
+            {
                 let pos_count = format!("{},{}", store.position, store.rows.len());
                 g.form.send_command(
                     &nav_info.navigator_name.to_lowercase(),
-                    &WidgetCommand::Custom("set_position_and_count".into(), CommandValue::Text(pos_count)),
+                    &WidgetCommand::Custom(
+                        "set_position_and_count".into(),
+                        CommandValue::Text(pos_count),
+                    ),
                 );
             }
         }
@@ -575,7 +652,9 @@ impl FormApp {
                 None => return,
             };
             let count = store.rows.len() as i32;
-            if count == 0 { return; }
+            if count == 0 {
+                return;
+            }
             match action {
                 "first" => 0,
                 "prev" => (store.position - 1).max(0),
@@ -596,12 +675,10 @@ impl FormApp {
 
 fn fn_arity(val: &vybe_bytecode::Value) -> usize {
     match val {
-        vybe_bytecode::Value::Object(obj) => {
-            match &obj.lock().unwrap().kind {
-                vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
-                _ => 0,
-            }
-        }
+        vybe_bytecode::Value::Object(obj) => match &obj.lock().unwrap().kind {
+            vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
+            _ => 0,
+        },
         _ => 0,
     }
 }
@@ -609,64 +686,107 @@ fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 // ── Dialog registration ────────────────────────────────────────────────
 
 fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
+    use std::sync::{Arc, Mutex};
     use vybe_bytecode::Value;
     use vybe_bytecode::value::{Object, ObjectKind};
-    use std::sync::{Arc, Mutex};
     use vybe_widgets::dialogs::{FileDialog, FolderDialog};
 
-    vm.register_host_fn("vybe:gui", "__dlg_show", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let (dialog_type, title) = if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let dt = o.properties.get("__control_type").map(|v| format!("{}", v)).unwrap_or_default();
-            let t = o.properties.get("title")
-                .or_else(|| o.properties.get("text"))
-                .map(|v| format!("{}", v))
-                .unwrap_or_default();
-            (dt, t)
-        } else { (String::new(), String::new()) };
+    vm.register_host_fn(
+        "vybe:gui",
+        "__dlg_show",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            let (dialog_type, title) = if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                let dt = o
+                    .properties
+                    .get("__control_type")
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                let t = o
+                    .properties
+                    .get("title")
+                    .or_else(|| o.properties.get("text"))
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                (dt, t)
+            } else {
+                (String::new(), String::new())
+            };
 
-        match dialog_type.as_str() {
-            "OpenFileDialog" => {
-                let dlg_title = if title.is_empty() { "Open File".into() } else { title };
-                if let Some(path) = FileDialog::new(dlg_title).open() {
-                    if let Some(Value::Object(obj)) = args.first() {
-                        obj.lock().unwrap().properties.insert("filename".into(),
-                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
+            match dialog_type.as_str() {
+                "OpenFileDialog" => {
+                    let dlg_title = if title.is_empty() {
+                        "Open File".into()
+                    } else {
+                        title
+                    };
+                    if let Some(path) = FileDialog::new(dlg_title).open() {
+                        if let Some(Value::Object(obj)) = args.first() {
+                            obj.lock().unwrap().properties.insert(
+                                "filename".into(),
+                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
+                            );
+                        }
+                        Value::I32(1)
+                    } else {
+                        Value::I32(0)
                     }
-                    Value::I32(1)
-                } else { Value::I32(0) }
-            }
-            "SaveFileDialog" => {
-                let dlg_title = if title.is_empty() { "Save File".into() } else { title };
-                if let Some(path) = FileDialog::new(dlg_title).save() {
-                    if let Some(Value::Object(obj)) = args.first() {
-                        obj.lock().unwrap().properties.insert("filename".into(),
-                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
+                }
+                "SaveFileDialog" => {
+                    let dlg_title = if title.is_empty() {
+                        "Save File".into()
+                    } else {
+                        title
+                    };
+                    if let Some(path) = FileDialog::new(dlg_title).save() {
+                        if let Some(Value::Object(obj)) = args.first() {
+                            obj.lock().unwrap().properties.insert(
+                                "filename".into(),
+                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
+                            );
+                        }
+                        Value::I32(1)
+                    } else {
+                        Value::I32(0)
                     }
-                    Value::I32(1)
-                } else { Value::I32(0) }
-            }
-            "FolderBrowserDialog" => {
-                let dlg_title = if title.is_empty() { "Select Folder".into() } else { title };
-                if let Some(path) = FolderDialog::new(dlg_title).pick() {
-                    if let Some(Value::Object(obj)) = args.first() {
-                        obj.lock().unwrap().properties.insert("selectedpath".into(),
-                            Value::String(Arc::from(path.to_string_lossy().as_ref())));
+                }
+                "FolderBrowserDialog" => {
+                    let dlg_title = if title.is_empty() {
+                        "Select Folder".into()
+                    } else {
+                        title
+                    };
+                    if let Some(path) = FolderDialog::new(dlg_title).pick() {
+                        if let Some(Value::Object(obj)) = args.first() {
+                            obj.lock().unwrap().properties.insert(
+                                "selectedpath".into(),
+                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
+                            );
+                        }
+                        Value::I32(1)
+                    } else {
+                        Value::I32(0)
                     }
-                    Value::I32(1)
-                } else { Value::I32(0) }
+                }
+                "ColorDialog" | "FontDialog" => Value::I32(1),
+                _ => Value::I32(0),
             }
-            "ColorDialog" | "FontDialog" => Value::I32(1),
-            _ => Value::I32(0),
-        }
-    }));
+        }),
+    );
 
-    vm.register_host_fn("vybe:gui", "inputBox", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
-        Value::String(Arc::from(default.as_str()))
-    }));
+    vm.register_host_fn(
+        "vybe:gui",
+        "inputBox",
+        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
+            Value::String(Arc::from(default.as_str()))
+        }),
+    );
 
-    let dlg_show_idx = *vm.host_registry.get(&("vybe:gui".into(), "__dlg_show".into())).unwrap();
+    let dlg_show_idx = *vm
+        .host_registry
+        .get(&("vybe:gui".into(), "__dlg_show".into()))
+        .unwrap();
     let dlg_show_ref = {
         let mut o = Object::new();
         o.kind = ObjectKind::HostFunction(dlg_show_idx);
@@ -678,7 +798,13 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
 // ── Extract binding info from form definition (designer forms only) ────
 
 #[cfg(feature = "gui_forms")]
-fn extract_binding_info(form: &vybe_compiler::projects::vbforms::Form) -> (Vec<DataBindingEntry>, Vec<BindingSourceInfo>, Vec<NavigatorInfo>) {
+fn extract_binding_info(
+    form: &vybe_compiler::projects::vbforms::Form,
+) -> (
+    Vec<DataBindingEntry>,
+    Vec<BindingSourceInfo>,
+    Vec<NavigatorInfo>,
+) {
     let mut data_bindings = Vec::new();
     let mut binding_sources = Vec::new();
     let mut navigators = Vec::new();
@@ -687,8 +813,16 @@ fn extract_binding_info(form: &vybe_compiler::projects::vbforms::Form) -> (Vec<D
         let type_name = format!("{:?}", ctrl.control_type);
 
         if type_name.contains("BindingSource") {
-            let data_source = ctrl.properties.get_string("DataSource").unwrap_or_default().to_string();
-            let data_member = ctrl.properties.get_string("DataMember").unwrap_or_default().to_string();
+            let data_source = ctrl
+                .properties
+                .get_string("DataSource")
+                .unwrap_or_default()
+                .to_string();
+            let data_member = ctrl
+                .properties
+                .get_string("DataMember")
+                .unwrap_or_default()
+                .to_string();
             if !data_source.is_empty() && !data_member.is_empty() {
                 binding_sources.push(BindingSourceInfo {
                     name: ctrl.name.clone(),
@@ -699,7 +833,11 @@ fn extract_binding_info(form: &vybe_compiler::projects::vbforms::Form) -> (Vec<D
         }
 
         if type_name.contains("BindingNavigator") {
-            let bs = ctrl.properties.get_string("BindingSource").unwrap_or_default().to_string();
+            let bs = ctrl
+                .properties
+                .get_string("BindingSource")
+                .unwrap_or_default()
+                .to_string();
             if !bs.is_empty() {
                 navigators.push(NavigatorInfo {
                     navigator_name: ctrl.name.clone(),
@@ -708,7 +846,10 @@ fn extract_binding_info(form: &vybe_compiler::projects::vbforms::Form) -> (Vec<D
             }
         }
 
-        let binding_source = ctrl.properties.get_string("DataBindings.Source").map(|s| s.to_string());
+        let binding_source = ctrl
+            .properties
+            .get_string("DataBindings.Source")
+            .map(|s| s.to_string());
         if let Some(ref bs_name) = binding_source {
             if !bs_name.is_empty() {
                 for (key, val) in ctrl.properties.iter() {
@@ -750,7 +891,11 @@ pub fn launch_vybewidget_form(
         vm.globals.insert("__f".into(), form_obj);
     }
 
-    let model_control_count = form.controls.iter().filter(|c| !c.control_type.is_non_visual()).count();
+    let model_control_count = form
+        .controls
+        .iter()
+        .filter(|c| !c.control_type.is_non_visual())
+        .count();
     if model_control_count > 0 {
         let id_to_bounds: std::collections::HashMap<_, _> =
             form.controls.iter().map(|c| (c.id, &c.bounds)).collect();
@@ -759,7 +904,9 @@ pub fn launch_vybewidget_form(
         g.form = WidgetForm::new(&form.text);
         g.control_names.clear();
         for ctrl in &form.controls {
-            if ctrl.control_type.is_non_visual() { continue; }
+            if ctrl.control_type.is_non_visual() {
+                continue;
+            }
             let widget = make_widget(ctrl);
 
             let mut abs_x = ctrl.bounds.x;
@@ -770,10 +917,20 @@ pub fn launch_vybewidget_form(
                     abs_x += pb.x;
                     abs_y += pb.y;
                 }
-                parent = form.controls.iter().find(|c| c.id == pid).and_then(|c| c.parent_id);
+                parent = form
+                    .controls
+                    .iter()
+                    .find(|c| c.id == pid)
+                    .and_then(|c| c.parent_id);
             }
 
-            g.form.add_boxed_control(widget, abs_x as f32, abs_y as f32, ctrl.bounds.width as f32, ctrl.bounds.height as f32);
+            g.form.add_boxed_control(
+                widget,
+                abs_x as f32,
+                abs_y as f32,
+                ctrl.bounds.width as f32,
+                ctrl.bounds.height as f32,
+            );
             g.control_names.push(ctrl.name.clone());
         }
     }
@@ -794,20 +951,11 @@ pub fn launch_vybewidget_form(
         initialised: false,
     };
 
-    run_app(
-        &form.text,
-        form.width as u32,
-        form.height as u32,
-        1.0,
-        app,
-    );
+    run_app(&form.text, form.width as u32, form.height as u32, 1.0, app);
 }
 
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
-pub fn launch_gui(
-    mut vm: vybe_bytecode::VM,
-    gui: Arc<Mutex<GuiState>>,
-) {
+pub fn launch_gui(mut vm: vybe_bytecode::VM, gui: Arc<Mutex<GuiState>>) {
     register_dialog_fns(&mut vm);
 
     let (title, width, height) = {
@@ -855,14 +1003,14 @@ pub fn launch_vm_form(
 
 #[cfg(test)]
 mod tests {
-    use vybe_compiler::projects;
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use vybe_bytecode::value::ObjectKind;
+    use vybe_bytecode::{HostContext, VM, Value};
     use vybe_compiler::compiler::Compiler;
     use vybe_compiler::languages::vb;
     use vybe_compiler::profile::parse_profile;
-    use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::ObjectKind;
-    use vybe_bytecode::{HostContext, Value, VM};
+    use vybe_compiler::projects;
     use vybe_host::gui_state::GuiState;
     use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
 
@@ -875,7 +1023,11 @@ mod tests {
 
         let mut vm = VM::new();
         let gui = vybe_host::register_all_with_gui(&mut vm);
-        vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vm.register_host_fn(
+            "wasi:logging/logging",
+            "log",
+            Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+        );
         vybe_host::setup_namespaces(&mut vm);
         vm.run(chunks).expect("VB run failed");
         (vm, gui)
@@ -887,7 +1039,11 @@ mod tests {
 
         let mut vm = VM::new();
         let gui = vybe_host::register_all_with_gui(&mut vm);
-        vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vm.register_host_fn(
+            "wasi:logging/logging",
+            "log",
+            Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+        );
         vybe_host::setup_namespaces(&mut vm);
         vm.run(chunks).expect("project run failed");
         (vm, gui)
@@ -900,7 +1056,9 @@ mod tests {
                 match form_guard.properties.get(field_name) {
                     Some(Value::Object(control_obj)) => {
                         let control_guard = control_obj.lock().unwrap();
-                        control_guard.properties.get("__control_name")
+                        control_guard
+                            .properties
+                            .get("__control_name")
                             .or_else(|| control_guard.properties.get("name"))
                             .map(|value| format!("{}", value).to_lowercase())
                             .unwrap_or_else(|| field_name.to_string())
@@ -940,9 +1098,10 @@ mod tests {
 
     #[test]
     fn simulated_button_click_updates_display() {
-        let source = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calculator.vb"),
-        )
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/vb/calculator.vb"
+        ))
         .expect("calculator source");
 
         let (mut vm, gui) = run_vb_gui(&source);
@@ -984,11 +1143,20 @@ mod tests {
         assert!(app.handle_mouse(press));
         assert!(app.handle_mouse(release));
 
-        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let form = app
+            .vm
+            .borrow()
+            .globals
+            .get("__f")
+            .cloned()
+            .expect("__f global");
         let display_name = control_widget_name(&form, "txtdisplay");
         let display_text = {
             let mut guard = gui.lock().unwrap();
-            match guard.form.send_command(&display_name, &WidgetCommand::GetText) {
+            match guard
+                .form
+                .send_command(&display_name, &WidgetCommand::GetText)
+            {
                 CommandValue::Text(text) => text,
                 other => panic!("Expected txtdisplay widget text, got {:?}", other),
             }
@@ -999,9 +1167,10 @@ mod tests {
 
     #[test]
     fn simulated_project_button_click_updates_widget_text() {
-        let (mut vm, gui) = run_bundle_gui(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calc/Calculator.vbproj"),
-        );
+        let (mut vm, gui) = run_bundle_gui(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/vb/calc/Calculator.vbproj"
+        ));
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
             vm.globals.insert("__f".into(), form_obj);
         }
@@ -1023,11 +1192,20 @@ mod tests {
         app.fire_click("btn8");
         app.fire_click("btn5");
 
-        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let form = app
+            .vm
+            .borrow()
+            .globals
+            .get("__f")
+            .cloned()
+            .expect("__f global");
         let txtcalc_name = control_widget_name(&form, "txtcalc");
         let text = {
             let mut guard = gui.lock().unwrap();
-            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+            match guard
+                .form
+                .send_command(&txtcalc_name, &WidgetCommand::GetText)
+            {
                 CommandValue::Text(text) => text,
                 other => panic!("Expected txtcalc widget text, got {:?}", other),
             }
@@ -1038,9 +1216,10 @@ mod tests {
 
     #[test]
     fn simulated_project_textbox_starts_empty_and_first_click_has_no_null_prefix() {
-        let (mut vm, gui) = run_bundle_gui(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calc/Calculator.vbproj"),
-        );
+        let (mut vm, gui) = run_bundle_gui(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/vb/calc/Calculator.vbproj"
+        ));
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
             vm.globals.insert("__f".into(), form_obj);
         }
@@ -1059,12 +1238,21 @@ mod tests {
 
         app.on_init(340.0, 280.0, 1.0);
 
-        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let form = app
+            .vm
+            .borrow()
+            .globals
+            .get("__f")
+            .cloned()
+            .expect("__f global");
         let txtcalc_name = control_widget_name(&form, "txtcalc");
 
         let initial_text = {
             let mut guard = gui.lock().unwrap();
-            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+            match guard
+                .form
+                .send_command(&txtcalc_name, &WidgetCommand::GetText)
+            {
                 CommandValue::Text(text) => text,
                 other => panic!("Expected txtcalc widget text, got {:?}", other),
             }
@@ -1076,7 +1264,10 @@ mod tests {
 
         let updated_text = {
             let mut guard = gui.lock().unwrap();
-            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+            match guard
+                .form
+                .send_command(&txtcalc_name, &WidgetCommand::GetText)
+            {
                 CommandValue::Text(text) => text,
                 other => panic!("Expected txtcalc widget text, got {:?}", other),
             }
@@ -1124,14 +1315,24 @@ End Module
         }
 
         let form = vm.globals.get("__f").cloned().expect("__f global");
-        let open_forms = vm.globals.get("__openforms").cloned().expect("__openforms global");
+        let open_forms = vm
+            .globals
+            .get("__openforms")
+            .cloned()
+            .expect("__openforms global");
 
         let (controls, components, txt1, bs1) = match &form {
             Value::Object(form_obj) => {
                 let form = form_obj.lock().unwrap();
                 (
-                    form.properties.get("controls").cloned().expect("controls collection"),
-                    form.properties.get("components").cloned().expect("components collection"),
+                    form.properties
+                        .get("controls")
+                        .cloned()
+                        .expect("controls collection"),
+                    form.properties
+                        .get("components")
+                        .cloned()
+                        .expect("components collection"),
                     form.properties.get("txt1").cloned().expect("txt1 field"),
                     form.properties.get("bs1").cloned().expect("bs1 field"),
                 )

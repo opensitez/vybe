@@ -1,9 +1,7 @@
+use crossbeam_channel::{Receiver, Sender};
+use lsp_types::{CompletionItemKind, Diagnostic, DiagnosticSeverity, Position, Range};
 use std::collections::HashMap;
 use std::thread;
-use crossbeam_channel::{Sender, Receiver};
-use lsp_types::{
-    Diagnostic, Position, Range, DiagnosticSeverity, CompletionItemKind,
-};
 use vybe_compiler::lsp::{AnalysisResult, SymbolKind};
 
 #[derive(Debug, Clone)]
@@ -24,9 +22,9 @@ pub enum LspEvent {
 }
 
 pub enum LspRequest {
-    Init(String, String, String),   // content, language_id, uri
-    Change(String, String),         // content, uri
-    Completion(String, u32, u32),   // uri, line, col
+    Init(String, String, String), // content, language_id, uri
+    Change(String, String),       // content, uri
+    Completion(String, u32, u32), // uri, line, col
     #[allow(dead_code)]
     Close(String),
     #[allow(dead_code)]
@@ -96,27 +94,40 @@ impl LspClient {
             }
         });
 
-        Self { tx: req_tx, rx: evt_rx }
+        Self {
+            tx: req_tx,
+            rx: evt_rx,
+        }
     }
 
-    pub fn send(&self, req: LspRequest) { self.tx.send(req).ok(); }
+    pub fn send(&self, req: LspRequest) {
+        self.tx.send(req).ok();
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 fn emit_diagnostics(result: &AnalysisResult, uri: &str, tx: &Sender<LspEvent>) {
-    let diagnostics = result.diagnostics.iter().map(|d| Diagnostic {
-        range: Range::new(Position::new(d.line, d.col), Position::new(d.line, d.end_col)),
-        severity: Some(match d.severity {
-            vybe_compiler::lsp::DiagSeverity::Error   => DiagnosticSeverity::ERROR,
-            vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
-            vybe_compiler::lsp::DiagSeverity::Info    => DiagnosticSeverity::INFORMATION,
-        }),
-        source: Some("vybe".to_string()),
-        message: d.message.clone(),
-        ..Default::default()
-    }).collect();
-    tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics)).ok();
+    let diagnostics = result
+        .diagnostics
+        .iter()
+        .map(|d| Diagnostic {
+            range: Range::new(
+                Position::new(d.line, d.col),
+                Position::new(d.line, d.end_col),
+            ),
+            severity: Some(match d.severity {
+                vybe_compiler::lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
+                vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
+                vybe_compiler::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
+            }),
+            source: Some("vybe".to_string()),
+            message: d.message.clone(),
+            ..Default::default()
+        })
+        .collect();
+    tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics))
+        .ok();
 }
 
 /// Word immediately before (line, col) — the completion prefix.
@@ -131,12 +142,21 @@ fn word_before(content: &str, line: u32, col: u32) -> String {
 }
 
 /// Recursively find a symbol by name (case-insensitive).
-fn find_symbol<'a>(syms: &'a [vybe_compiler::lsp::Symbol], name: &str) -> Option<&'a vybe_compiler::lsp::Symbol> {
-    if name.is_empty() { return None; }
+fn find_symbol<'a>(
+    syms: &'a [vybe_compiler::lsp::Symbol],
+    name: &str,
+) -> Option<&'a vybe_compiler::lsp::Symbol> {
+    if name.is_empty() {
+        return None;
+    }
     let lower = name.to_lowercase();
     for sym in syms {
-        if sym.name.to_lowercase() == lower { return Some(sym); }
-        if let Some(f) = find_symbol(&sym.children, name) { return Some(f); }
+        if sym.name.to_lowercase() == lower {
+            return Some(sym);
+        }
+        if let Some(f) = find_symbol(&sym.children, name) {
+            return Some(f);
+        }
     }
     None
 }
@@ -161,12 +181,20 @@ fn build_completions(result: &AnalysisResult, prefix: &str) -> Vec<SimpleComplet
     items
 }
 
-fn collect_from_symbols(syms: &[vybe_compiler::lsp::Symbol], prefix: &str, out: &mut Vec<SimpleCompletion>) {
+fn collect_from_symbols(
+    syms: &[vybe_compiler::lsp::Symbol],
+    prefix: &str,
+    out: &mut Vec<SimpleCompletion>,
+) {
     for sym in syms {
         if sym.name.to_lowercase().starts_with(prefix) {
             out.push(SimpleCompletion {
                 label: sym.name.clone(),
-                detail: if sym.detail.is_empty() { None } else { Some(sym.detail.clone()) },
+                detail: if sym.detail.is_empty() {
+                    None
+                } else {
+                    Some(sym.detail.clone())
+                },
                 insert_text: sym.name.clone(),
                 kind: Some(kind_to_lsp(sym.kind)),
             });
@@ -178,18 +206,18 @@ fn collect_from_symbols(syms: &[vybe_compiler::lsp::Symbol], prefix: &str, out: 
 fn kind_to_lsp(k: SymbolKind) -> CompletionItemKind {
     match k {
         SymbolKind::Function | SymbolKind::Procedure => CompletionItemKind::FUNCTION,
-        SymbolKind::Class    => CompletionItemKind::CLASS,
+        SymbolKind::Class => CompletionItemKind::CLASS,
         SymbolKind::Interface => CompletionItemKind::INTERFACE,
-        SymbolKind::Variable  => CompletionItemKind::VARIABLE,
-        SymbolKind::Constant  => CompletionItemKind::CONSTANT,
-        SymbolKind::Field     => CompletionItemKind::FIELD,
-        SymbolKind::Property  => CompletionItemKind::PROPERTY,
+        SymbolKind::Variable => CompletionItemKind::VARIABLE,
+        SymbolKind::Constant => CompletionItemKind::CONSTANT,
+        SymbolKind::Field => CompletionItemKind::FIELD,
+        SymbolKind::Property => CompletionItemKind::PROPERTY,
         SymbolKind::Method | SymbolKind::Constructor => CompletionItemKind::METHOD,
-        SymbolKind::Module    => CompletionItemKind::MODULE,
-        SymbolKind::Enum      => CompletionItemKind::ENUM,
+        SymbolKind::Module => CompletionItemKind::MODULE,
+        SymbolKind::Enum => CompletionItemKind::ENUM,
         SymbolKind::EnumMember => CompletionItemKind::ENUM_MEMBER,
-        SymbolKind::Struct    => CompletionItemKind::STRUCT,
-        SymbolKind::Event     => CompletionItemKind::EVENT,
-        SymbolKind::Type      => CompletionItemKind::TYPE_PARAMETER,
+        SymbolKind::Struct => CompletionItemKind::STRUCT,
+        SymbolKind::Event => CompletionItemKind::EVENT,
+        SymbolKind::Type => CompletionItemKind::TYPE_PARAMETER,
     }
 }

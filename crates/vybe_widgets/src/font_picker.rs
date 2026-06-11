@@ -4,10 +4,13 @@
 //! - Font family list (left, wider)
 //! - Font size list (right, narrower)
 
-use tiny_skia::*;
-use cosmic_text::{FontSystem, SwashCache, Color as CosmicColor};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::rounded_rect_path;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
+use tiny_skia::*;
 
 /// The list of available font families (matches legacy editor).
 pub const FONT_FAMILIES: &[&str] = &[
@@ -76,7 +79,10 @@ impl FontPicker {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     pub fn set(&mut self, family: &str, size: u32) {
         self.family = family.to_string();
@@ -94,7 +100,9 @@ impl FontPicker {
         if let Some(size_str) = parts.next() {
             let num: String = size_str.chars().filter(|c| c.is_ascii_digit()).collect();
             if let Ok(sz) = num.parse::<u32>() {
-                if sz > 0 { self.size = sz; }
+                if sz > 0 {
+                    self.size = sz;
+                }
             }
         }
     }
@@ -115,8 +123,15 @@ impl FontPicker {
 
     /// Render the compact display (current font as text, for property rows).
     pub fn render_compact(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-        x: f32, y: f32, w: f32, h: f32, scale: f32,
+        &self,
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        scale: f32,
     ) {
         let mut paint = Paint::default();
         paint.anti_alias = true;
@@ -124,21 +139,41 @@ impl FontPicker {
         // Background
         paint.set_color_rgba8(255, 255, 255, 255);
         if let Some(path) = rounded_rect_path(x, y, w, h, 2.0) {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // Border
         paint.set_color_rgba8(180, 180, 180, 255);
         if let Some(path) = rounded_rect_path(x, y, w, h, 2.0) {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0,
+                    ..Default::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // Text
         let display = format!("{}, {}px", self.family, self.size);
         crate::tree_view::TreeView::draw_text_static_internal(
-            pix, fs, sc, &display,
-            (x + 4.0) * scale, (y + 3.0) * scale,
-            CosmicColor::rgba(30, 30, 30, 255), scale,
+            pix,
+            fs,
+            sc,
+            &display,
+            (x + 4.0) * scale,
+            (y + 3.0) * scale,
+            CosmicColor::rgba(30, 30, 30, 255),
+            scale,
         );
 
         // Dropdown arrow
@@ -151,16 +186,29 @@ impl FontPicker {
         pb.line_to(ax + 4.0, ay + 5.0);
         pb.close();
         if let Some(path) = pb.finish() {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
     }
 
     /// Render the popup.
     pub fn render_popup(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-        popup_x: f32, popup_y: f32, scale: f32,
+        &self,
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        popup_x: f32,
+        popup_y: f32,
+        scale: f32,
     ) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
 
         let (pw, ph) = Self::popup_size();
         let mut paint = Paint::default();
@@ -168,39 +216,65 @@ impl FontPicker {
 
         // Shadow
         paint.set_color_rgba8(0, 0, 0, 40);
-        if let Some(r) = Rect::from_xywh((popup_x + 2.0) * scale, (popup_y + 2.0) * scale, pw * scale, ph * scale) {
+        if let Some(r) = Rect::from_xywh(
+            (popup_x + 2.0) * scale,
+            (popup_y + 2.0) * scale,
+            pw * scale,
+            ph * scale,
+        ) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
 
         // Background
         paint.set_color_rgba8(252, 252, 252, 255);
         if let Some(path) = rounded_rect_path(popup_x, popup_y, pw, ph, 4.0) {
-            pix.fill_path(&path, &paint, FillRule::Winding, Transform::from_scale(scale, scale), None);
+            pix.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         // Border
         paint.set_color_rgba8(180, 180, 180, 255);
         if let Some(path) = rounded_rect_path(popup_x, popup_y, pw, ph, 4.0) {
-            pix.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::from_scale(scale, scale), None);
+            pix.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.0,
+                    ..Default::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
         }
 
         let list_x = popup_x + POPUP_PAD;
         let list_y = popup_y + POPUP_PAD;
 
         // ── Family list ──
-        let selected_fam_idx = FONT_FAMILIES.iter().position(|f| *f == self.family.as_str());
+        let selected_fam_idx = FONT_FAMILIES
+            .iter()
+            .position(|f| *f == self.family.as_str());
         for (i, &fam) in FONT_FAMILIES.iter().enumerate() {
             let iy = list_y + i as f32 * ROW_H;
 
             // Highlight
             if Some(i) == self.hover_family {
                 paint.set_color_rgba8(0, 120, 212, 40);
-                if let Some(r) = Rect::from_xywh(list_x * scale, iy * scale, FAMILY_W * scale, ROW_H * scale) {
+                if let Some(r) =
+                    Rect::from_xywh(list_x * scale, iy * scale, FAMILY_W * scale, ROW_H * scale)
+                {
                     pix.fill_rect(r, &paint, Transform::identity(), None);
                 }
             } else if Some(i) == selected_fam_idx {
                 paint.set_color_rgba8(0, 120, 212, 25);
-                if let Some(r) = Rect::from_xywh(list_x * scale, iy * scale, FAMILY_W * scale, ROW_H * scale) {
+                if let Some(r) =
+                    Rect::from_xywh(list_x * scale, iy * scale, FAMILY_W * scale, ROW_H * scale)
+                {
                     pix.fill_rect(r, &paint, Transform::identity(), None);
                 }
             }
@@ -211,16 +285,26 @@ impl FontPicker {
                 CosmicColor::rgba(30, 30, 30, 255)
             };
             crate::tree_view::TreeView::draw_text_static_internal(
-                pix, fs, sc, fam,
-                (list_x + 4.0) * scale, (iy + 3.0) * scale,
-                text_color, scale,
+                pix,
+                fs,
+                sc,
+                fam,
+                (list_x + 4.0) * scale,
+                (iy + 3.0) * scale,
+                text_color,
+                scale,
             );
         }
 
         // Separator line
         let sep_x = list_x + FAMILY_W + POPUP_GAP / 2.0;
         paint.set_color_rgba8(200, 200, 200, 255);
-        if let Some(r) = Rect::from_xywh(sep_x * scale, list_y * scale, 1.0 * scale, (FONT_FAMILIES.len().max(FONT_SIZES.len()) as f32 * ROW_H) * scale) {
+        if let Some(r) = Rect::from_xywh(
+            sep_x * scale,
+            list_y * scale,
+            1.0 * scale,
+            (FONT_FAMILIES.len().max(FONT_SIZES.len()) as f32 * ROW_H) * scale,
+        ) {
             pix.fill_rect(r, &paint, Transform::identity(), None);
         }
 
@@ -232,12 +316,16 @@ impl FontPicker {
 
             if Some(i) == self.hover_size {
                 paint.set_color_rgba8(0, 120, 212, 40);
-                if let Some(r) = Rect::from_xywh(size_x * scale, iy * scale, SIZE_W * scale, ROW_H * scale) {
+                if let Some(r) =
+                    Rect::from_xywh(size_x * scale, iy * scale, SIZE_W * scale, ROW_H * scale)
+                {
                     pix.fill_rect(r, &paint, Transform::identity(), None);
                 }
             } else if Some(i) == selected_size_idx {
                 paint.set_color_rgba8(0, 120, 212, 25);
-                if let Some(r) = Rect::from_xywh(size_x * scale, iy * scale, SIZE_W * scale, ROW_H * scale) {
+                if let Some(r) =
+                    Rect::from_xywh(size_x * scale, iy * scale, SIZE_W * scale, ROW_H * scale)
+                {
                     pix.fill_rect(r, &paint, Transform::identity(), None);
                 }
             }
@@ -249,16 +337,29 @@ impl FontPicker {
             };
             let sz_str = format!("{}", sz);
             crate::tree_view::TreeView::draw_text_static_internal(
-                pix, fs, sc, &sz_str,
-                (size_x + 4.0) * scale, (iy + 3.0) * scale,
-                text_color, scale,
+                pix,
+                fs,
+                sc,
+                &sz_str,
+                (size_x + 4.0) * scale,
+                (iy + 3.0) * scale,
+                text_color,
+                scale,
             );
         }
     }
 
     /// Handle a click. Returns event.
-    pub fn handle_click(&mut self, mx: f32, my: f32, popup_x: f32, popup_y: f32) -> FontPickerEvent {
-        if !self.open { return FontPickerEvent::None; }
+    pub fn handle_click(
+        &mut self,
+        mx: f32,
+        my: f32,
+        popup_x: f32,
+        popup_y: f32,
+    ) -> FontPickerEvent {
+        if !self.open {
+            return FontPickerEvent::None;
+        }
 
         let (pw, ph) = Self::popup_size();
 
@@ -276,7 +377,10 @@ impl FontPicker {
             let row = ((my - list_y) / ROW_H) as usize;
             if row < FONT_FAMILIES.len() {
                 self.family = FONT_FAMILIES[row].to_string();
-                return FontPickerEvent::Changed { family: self.family.clone(), size: self.size };
+                return FontPickerEvent::Changed {
+                    family: self.family.clone(),
+                    size: self.size,
+                };
             }
         }
 
@@ -286,7 +390,10 @@ impl FontPicker {
             let row = ((my - list_y) / ROW_H) as usize;
             if row < FONT_SIZES.len() {
                 self.size = FONT_SIZES[row];
-                return FontPickerEvent::Changed { family: self.family.clone(), size: self.size };
+                return FontPickerEvent::Changed {
+                    family: self.family.clone(),
+                    size: self.size,
+                };
             }
         }
 
@@ -295,7 +402,9 @@ impl FontPicker {
 
     /// Handle mouse hover to update highlight state.
     pub fn handle_hover(&mut self, mx: f32, my: f32, popup_x: f32, popup_y: f32) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
 
         let list_x = popup_x + POPUP_PAD;
         let list_y = popup_y + POPUP_PAD;
@@ -303,7 +412,11 @@ impl FontPicker {
         // Family hover
         if mx >= list_x && mx < list_x + FAMILY_W && my >= list_y {
             let row = ((my - list_y) / ROW_H) as usize;
-            self.hover_family = if row < FONT_FAMILIES.len() { Some(row) } else { None };
+            self.hover_family = if row < FONT_FAMILIES.len() {
+                Some(row)
+            } else {
+                None
+            };
         } else {
             self.hover_family = None;
         }
@@ -312,7 +425,11 @@ impl FontPicker {
         let size_x = list_x + FAMILY_W + POPUP_GAP;
         if mx >= size_x && mx < size_x + SIZE_W && my >= list_y {
             let row = ((my - list_y) / ROW_H) as usize;
-            self.hover_size = if row < FONT_SIZES.len() { Some(row) } else { None };
+            self.hover_size = if row < FONT_SIZES.len() {
+                Some(row)
+            } else {
+                None
+            };
         } else {
             self.hover_size = None;
         }
@@ -320,17 +437,43 @@ impl FontPicker {
 }
 
 impl PanelWidget for FontPicker {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
-        self.render_compact(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, r.w, r.h, ctx.scale);
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        self.render_compact(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            r.x,
+            r.y,
+            r.w,
+            r.h,
+            ctx.scale,
+        );
         if self.open {
-            self.render_popup(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y + r.h + 2.0, ctx.scale);
+            self.render_popup(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                r.x,
+                r.y + r.h + 2.0,
+                ctx.scale,
+            );
         }
     }
 
@@ -348,7 +491,8 @@ impl PanelWidget for FontPicker {
                     match self.handle_click(event.x, event.y, popup_x, popup_y) {
                         FontPickerEvent::Changed { family, size } => {
                             let val = format!("{}, {}px", family, size);
-                            self.pending_events.push(WidgetEvent::ColorChanged(self.name.clone(), val));
+                            self.pending_events
+                                .push(WidgetEvent::ColorChanged(self.name.clone(), val));
                             return true;
                         }
                         FontPickerEvent::Closed => return true,
@@ -368,14 +512,23 @@ impl PanelWidget for FontPicker {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.set_from_string(t); CommandValue::None }
-            WidgetCommand::GetText => CommandValue::Text(format!("{}, {}pt", self.family, self.size)),
+            WidgetCommand::SetText(t) => {
+                self.set_from_string(t);
+                CommandValue::None
+            }
+            WidgetCommand::GetText => {
+                CommandValue::Text(format!("{}, {}pt", self.family, self.size))
+            }
             _ => CommandValue::None,
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

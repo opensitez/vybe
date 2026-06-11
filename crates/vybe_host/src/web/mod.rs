@@ -21,11 +21,11 @@
 //!                          pending full Document/Element resource types.
 
 pub mod crypto;
-pub mod url;
+pub mod dom_parser;
 pub mod encoding;
 pub mod fetch;
 pub mod timers;
-pub mod dom_parser;
+pub mod url;
 
 use vybe_bytecode::VM;
 

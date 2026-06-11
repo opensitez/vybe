@@ -8163,8 +8163,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         }
-                        if let Some(iterator_slot) =
-                            self.iterator_close_slot_for_break(Some(label))
+                        if let Some(iterator_slot) = self.iterator_close_slot_for_break(Some(label))
                         {
                             self.emit_js_iterator_close(iterator_slot);
                         }
@@ -10572,7 +10571,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        self.emit(Op::REF_IS_NULL);
+                        self.emit(Op::REF_IS_UNDEFINED);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
                         self.compile_expr(default)?;
@@ -10634,7 +10633,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
                                 self.emit(Op::DROP);
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                                self.emit(Op::REF_IS_NULL);
+                                self.emit(Op::REF_IS_UNDEFINED);
                                 let line = self.line;
                                 self.chunk().emit_if_value(line);
                                 self.compile_expr(def)?;

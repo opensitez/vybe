@@ -14,9 +14,11 @@
 //! All date math is delegated to `chrono::DateTime<Utc>` so we don't
 //! reinvent leap-year / timezone arithmetic.
 
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+};
 use std::sync::Arc;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
-use vybe_bytecode::{HostContext, Value, VM};
+use vybe_bytecode::{HostContext, VM, Value};
 
 const MODULE: &str = "ecma:date";
 
@@ -80,14 +82,44 @@ fn build_utc_ms(
 
 fn construct_date_from_args(values: &[Value]) -> f64 {
     let year = values.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
-    let constructor_year = if (0..=99).contains(&year) { year + 1900 } else { year };
-    let month_zero = values.get(1).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
-    let day = values.get(2).map(|v| v.as_f64().trunc() as i64).unwrap_or(1);
-    let hour = values.get(3).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
-    let minute = values.get(4).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
-    let second = values.get(5).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
-    let millisecond = values.get(6).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
-    build_utc_ms(constructor_year, month_zero, day, hour, minute, second, millisecond)
+    let constructor_year = if (0..=99).contains(&year) {
+        year + 1900
+    } else {
+        year
+    };
+    let month_zero = values
+        .get(1)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(0);
+    let day = values
+        .get(2)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(1);
+    let hour = values
+        .get(3)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(0);
+    let minute = values
+        .get(4)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(0);
+    let second = values
+        .get(5)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(0);
+    let millisecond = values
+        .get(6)
+        .map(|v| v.as_f64().trunc() as i64)
+        .unwrap_or(0);
+    build_utc_ms(
+        constructor_year,
+        month_zero,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond,
+    )
 }
 
 /// Extract the millisecond timestamp from a Date arg. Accepts either a
@@ -118,7 +150,10 @@ fn ms_arg(args: &[Value], idx: usize) -> f64 {
 /// than producing NaN. e.g. `setDate(35)` on Jan rolls into Feb.
 fn setter_helper(args: &[Value], component: &str) -> f64 {
     let ms = ms_arg(args, 0);
-    let dt = match dt_from_ms(ms) { Some(d) => d, None => return f64::NAN };
+    let dt = match dt_from_ms(ms) {
+        Some(d) => d,
+        None => return f64::NAN,
+    };
     let mut year = dt.year();
     let mut month_zero = dt.month0() as i64;
     let mut day = dt.day() as i64;
@@ -253,18 +288,22 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
         "getYear" => getter!(|dt: &DateTime<Utc>| dt.year() - 1900),
         "getMonth" | "getUTCMonth" => getter!(|dt: &DateTime<Utc>| dt.month() as i32 - 1),
         "getDate" | "getUTCDate" => getter!(|dt: &DateTime<Utc>| dt.day() as i32),
-        "getDay" | "getUTCDay" => getter!(|dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32),
+        "getDay" | "getUTCDay" => {
+            getter!(|dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32)
+        }
         "getHours" | "getUTCHours" => getter!(|dt: &DateTime<Utc>| dt.hour() as i32),
         "getMinutes" | "getUTCMinutes" => getter!(|dt: &DateTime<Utc>| dt.minute() as i32),
         "getSeconds" | "getUTCSeconds" => getter!(|dt: &DateTime<Utc>| dt.second() as i32),
-        "getMilliseconds" | "getUTCMilliseconds" => getter!(|dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32),
+        "getMilliseconds" | "getUTCMilliseconds" => {
+            getter!(|dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32)
+        }
         "getTime" | "valueOf" => Value::F64(ms_arg(args, 0)),
         "getTimezoneOffset" => Value::F64(0.0),
         "toISOString" | "toJSON" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => Value::String(Arc::from(
-                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str()
+                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
                 )),
                 None if method == "toJSON" => Value::Null,
                 None => Value::String(Arc::from("Invalid Date")),
@@ -277,29 +316,29 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
                 None => Value::String(Arc::from("Invalid Date")),
             }
         }
-        "toString" => {
+        "toString" | "toLocaleString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => Value::String(Arc::from(
-                    dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string().as_str()
+                    dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)")
+                        .to_string()
+                        .as_str(),
                 )),
                 None => Value::String(Arc::from("Invalid Date")),
             }
         }
-        "toDateString" => {
+        "toDateString" | "toLocaleDateString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%a %b %d %Y").to_string().as_str()
-                )),
+                Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
                 None => Value::String(Arc::from("Invalid Date")),
             }
         }
-        "toTimeString" => {
+        "toTimeString" | "toLocaleTimeString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => Value::String(Arc::from(
-                    dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str()
+                    dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
                 )),
                 None => Value::String(Arc::from("Invalid Date")),
             }
@@ -308,7 +347,10 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
         "setTime" => {
             let new_ms = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             if let Some(Value::Object(obj)) = args.first() {
-                obj.lock().unwrap().properties.insert("__time".into(), Value::F64(new_ms));
+                obj.lock()
+                    .unwrap()
+                    .properties
+                    .insert("__time".into(), Value::F64(new_ms));
             }
             Value::F64(new_ms)
         }
@@ -327,7 +369,10 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
 fn date_setter(args: &[Value], component: &str) -> Value {
     let new_ms = setter_helper(args, component);
     if let Some(Value::Object(obj)) = args.first() {
-        obj.lock().unwrap().properties.insert("__time".into(), Value::F64(new_ms));
+        obj.lock()
+            .unwrap()
+            .properties
+            .insert("__time".into(), Value::F64(new_ms));
     }
     Value::F64(new_ms)
 }
@@ -390,9 +435,11 @@ pub fn register(vm: &mut VM) {
     // observable timestamps. Read the WASI fn for the spec record shape.
 
     // Date.now() → ms since epoch (ECMA §21.4.1.1).
-    vm.register_host_fn(MODULE, "now", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        Value::F64(ms_of(Utc::now()))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "now",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(ms_of(Utc::now()))),
+    );
 
     // new Date(...) — ECMA §21.4.2 constructor.
     //   new Date()                  → wall-clock.now() lifted into a Date object
@@ -442,132 +489,198 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Date.parse(str) → ms since epoch, NaN on failure.
-    vm.register_host_fn(MODULE, "parse", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        Value::F64(parse_natural(&s))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "parse",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            Value::F64(parse_natural(&s))
+        }),
+    );
 
     // Date.UTC(year, month, day?, hours?, minutes?, seconds?, ms?) → ms
     // Spec: month is 0-indexed. Defaults: day=1, hours/min/sec/ms=0.
-    vm.register_host_fn(MODULE, "UTC", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::F64(construct_date_from_args(args))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "UTC",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::F64(construct_date_from_args(args))
+        }),
+    );
 
     // getFullYear / getMonth / getDate / getDay / getHours / getMinutes
     // / getSeconds — operate on a ms timestamp. `getMonth` is 0-indexed
     // per ECMA, `getDay` is day-of-week (Sunday=0).
     macro_rules! getter {
         ($name:literal, $body:expr) => {
-            vm.register_host_fn(MODULE, $name, Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-                let ms = ms_arg(args, 0);
-                if let Some(dt) = dt_from_ms(ms) {
-                    Value::F64($body(&dt) as f64)
-                } else {
-                    Value::F64(f64::NAN)
-                }
-            }));
+            vm.register_host_fn(
+                MODULE,
+                $name,
+                Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+                    let ms = ms_arg(args, 0);
+                    if let Some(dt) = dt_from_ms(ms) {
+                        Value::F64($body(&dt) as f64)
+                    } else {
+                        Value::F64(f64::NAN)
+                    }
+                }),
+            );
         };
     }
     getter!("getFullYear", |dt: &DateTime<Utc>| dt.year());
     getter!("getYear", |dt: &DateTime<Utc>| dt.year() - 1900);
     getter!("getMonth", |dt: &DateTime<Utc>| dt.month() as i32 - 1);
     getter!("getDate", |dt: &DateTime<Utc>| dt.day() as i32);
-    getter!("getDay", |dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32);
+    getter!(
+        "getDay",
+        |dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32
+    );
     getter!("getHours", |dt: &DateTime<Utc>| dt.hour() as i32);
     getter!("getMinutes", |dt: &DateTime<Utc>| dt.minute() as i32);
     getter!("getSeconds", |dt: &DateTime<Utc>| dt.second() as i32);
-    getter!("getMilliseconds", |dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32);
+    getter!(
+        "getMilliseconds",
+        |dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32
+    );
     getter!("getTime", |dt: &DateTime<Utc>| dt.timestamp_millis());
     // UTC variants — chrono is already in UTC, so they share the impl.
     getter!("getUTCFullYear", |dt: &DateTime<Utc>| dt.year());
     getter!("getUTCMonth", |dt: &DateTime<Utc>| dt.month() as i32 - 1);
     getter!("getUTCDate", |dt: &DateTime<Utc>| dt.day() as i32);
-    getter!("getUTCDay", |dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32);
+    getter!(
+        "getUTCDay",
+        |dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32
+    );
     getter!("getUTCHours", |dt: &DateTime<Utc>| dt.hour() as i32);
     getter!("getUTCMinutes", |dt: &DateTime<Utc>| dt.minute() as i32);
     getter!("getUTCSeconds", |dt: &DateTime<Utc>| dt.second() as i32);
-    getter!("getUTCMilliseconds", |dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32);
+    getter!(
+        "getUTCMilliseconds",
+        |dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32
+    );
     getter!("valueOf", |dt: &DateTime<Utc>| dt.timestamp_millis());
     getter!("getTimezoneOffset", |_dt: &DateTime<Utc>| 0i32);
 
     // toISOString(this) — "2026-03-25T00:00:00.000Z"
-    vm.register_host_fn(MODULE, "toISOString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match dt_from_ms(ms) {
-            Some(dt) => {
-                let s = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                Value::String(Arc::from(s.as_str()))
+    vm.register_host_fn(
+        MODULE,
+        "toISOString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match dt_from_ms(ms) {
+                Some(dt) => {
+                    let s = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+                    Value::String(Arc::from(s.as_str()))
+                }
+                None => Value::String(Arc::from("Invalid Date")),
             }
-            None => Value::String(Arc::from("Invalid Date")),
-        }
-    }));
+        }),
+    );
 
     // toString(this) — "Mon Mar 25 2026 00:00:00 GMT+0000"
-    vm.register_host_fn(MODULE, "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match dt_from_ms(ms) {
-            Some(dt) => {
-                let s = dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string();
-                Value::String(Arc::from(s.as_str()))
+    vm.register_host_fn(
+        MODULE,
+        "toString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match dt_from_ms(ms) {
+                Some(dt) => {
+                    let s = dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string();
+                    Value::String(Arc::from(s.as_str()))
+                }
+                None => Value::String(Arc::from("Invalid Date")),
             }
-            None => Value::String(Arc::from("Invalid Date")),
-        }
-    }));
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "toUTCString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match format_utc_string(ms) {
-            Some(text) => Value::String(Arc::from(text.as_str())),
-            None => Value::String(Arc::from("Invalid Date")),
-        }
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toUTCString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match format_utc_string(ms) {
+                Some(text) => Value::String(Arc::from(text.as_str())),
+                None => Value::String(Arc::from("Invalid Date")),
+            }
+        }),
+    );
 
     // toDateString(this) — "Mon Mar 25 2026" (date portion only)
-    vm.register_host_fn(MODULE, "toDateString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match dt_from_ms(ms) {
-            Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
-            None => Value::String(Arc::from("Invalid Date")),
-        }
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toDateString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match dt_from_ms(ms) {
+                Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
+                None => Value::String(Arc::from("Invalid Date")),
+            }
+        }),
+    );
 
     // toTimeString(this) — "00:00:00 GMT+0000 (UTC)"
-    vm.register_host_fn(MODULE, "toTimeString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match dt_from_ms(ms) {
-            Some(dt) => Value::String(Arc::from(dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str())),
-            None => Value::String(Arc::from("Invalid Date")),
-        }
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toTimeString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match dt_from_ms(ms) {
+                Some(dt) => Value::String(Arc::from(
+                    dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
+                )),
+                None => Value::String(Arc::from("Invalid Date")),
+            }
+        }),
+    );
 
     // toJSON(this) — same as toISOString per ECMA-262 §21.4.4.37
-    vm.register_host_fn(MODULE, "toJSON", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = ms_arg(args, 0);
-        match dt_from_ms(ms) {
-            Some(dt) => Value::String(Arc::from(dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str())),
-            None => Value::Null,
-        }
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toJSON",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = ms_arg(args, 0);
+            match dt_from_ms(ms) {
+                Some(dt) => Value::String(Arc::from(
+                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
+                )),
+                None => Value::Null,
+            }
+        }),
+    );
 
     // setTime(this, ms) — mutates `__time` and returns the new ms.
-    vm.register_host_fn(MODULE, "setTime", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let new_ms = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
-        if let Some(Value::Object(obj)) = args.first() {
-            obj.lock().unwrap().properties.insert("__time".into(), Value::F64(new_ms));
-        }
-        Value::F64(new_ms)
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "setTime",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let new_ms = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            if let Some(Value::Object(obj)) = args.first() {
+                obj.lock()
+                    .unwrap()
+                    .properties
+                    .insert("__time".into(), Value::F64(new_ms));
+            }
+            Value::F64(new_ms)
+        }),
+    );
 
     // Component setters — mutate the Date's __time and return new ms.
     macro_rules! setter {
         ($name:literal, $component:ident) => {
-            vm.register_host_fn(MODULE, $name, Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-                let new_ms = setter_helper(args, stringify!($component));
-                if let Some(Value::Object(obj)) = args.first() {
-                    obj.lock().unwrap().properties.insert("__time".into(), Value::F64(new_ms));
-                }
-                Value::F64(new_ms)
-            }));
+            vm.register_host_fn(
+                MODULE,
+                $name,
+                Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+                    let new_ms = setter_helper(args, stringify!($component));
+                    if let Some(Value::Object(obj)) = args.first() {
+                        obj.lock()
+                            .unwrap()
+                            .properties
+                            .insert("__time".into(), Value::F64(new_ms));
+                    }
+                    Value::F64(new_ms)
+                }),
+            );
         };
     }
     setter!("setFullYear", year);
@@ -589,33 +702,62 @@ pub fn register(vm: &mut VM) {
 
     // fromUnixSeconds(secs) → ms. Bridges POSIX `time()` to JS Date
     // model. Fractional seconds preserved.
-    vm.register_host_fn(MODULE, "fromUnixSeconds", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let secs = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
-        Value::F64(secs * 1000.0)
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "fromUnixSeconds",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let secs = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+            Value::F64(secs * 1000.0)
+        }),
+    );
 
     // toUnixSeconds(ms) → floor(ms / 1000). Bridges JS Date → POSIX.
-    vm.register_host_fn(MODULE, "toUnixSeconds", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = args.first().map(|v| v.as_f64()).unwrap_or_else(|| ms_of(Utc::now()));
-        Value::F64((ms / 1000.0).floor())
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toUnixSeconds",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ms = args
+                .first()
+                .map(|v| v.as_f64())
+                .unwrap_or_else(|| ms_of(Utc::now()));
+            Value::F64((ms / 1000.0).floor())
+        }),
+    );
 
     // nowSeconds() — POSIX-style: current seconds since epoch. Equivalent
     // to `toUnixSeconds(now())` but saves a call.
-    vm.register_host_fn(MODULE, "nowSeconds", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        Value::F64(Utc::now().timestamp() as f64)
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "nowSeconds",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            Value::F64(Utc::now().timestamp() as f64)
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "toLocaleString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        dispatch_date_method("toString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toLocaleString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            dispatch_date_method("toString", args)
+                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "toLocaleDateString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        dispatch_date_method("toDateString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
-    }));
+    vm.register_host_fn(
+        MODULE,
+        "toLocaleDateString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            dispatch_date_method("toDateString", args)
+                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+        }),
+    );
 
-    vm.register_host_fn(MODULE, "toLocaleTimeString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        dispatch_date_method("toTimeString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
-    }));
-
+    vm.register_host_fn(
+        MODULE,
+        "toLocaleTimeString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            dispatch_date_method("toTimeString", args)
+                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+        }),
+    );
 }

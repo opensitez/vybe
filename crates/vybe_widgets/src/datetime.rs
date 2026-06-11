@@ -1,8 +1,11 @@
 //! DateTimePicker widget — text area with dropdown button.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 pub struct DateTimePicker {
     pub value: String,
@@ -31,7 +34,10 @@ impl DateTimePicker {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Width of the dropdown button area.
     fn button_width(&self) -> f32 {
@@ -85,7 +91,11 @@ impl DateTimePicker {
         }
 
         // Outer border
-        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        let (r, g, b, a) = if self.focused {
+            self.colors.focus_ring
+        } else {
+            self.colors.border
+        };
         paint.set_color_rgba8(r, g, b, a);
         stroke.width = 1.0;
         if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 1.0) {
@@ -104,26 +114,56 @@ impl DateTimePicker {
 }
 
 impl PanelWidget for DateTimePicker {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         if !self.value.is_empty() {
             let (fr, fg, fb, _) = self.colors.foreground;
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &self.value, r.x + 4.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &self.value,
+                r.x + 4.0,
+                r.y + 4.0,
+                12.0,
+                cosmic_text::Color::rgba(fr, fg, fb, 255),
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             self.focused = true;
             return true;
@@ -131,12 +171,19 @@ impl PanelWidget for DateTimePicker {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn focusable(&self) -> bool { true }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.value = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                self.value = t.clone();
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
             _ => CommandValue::None,
         }

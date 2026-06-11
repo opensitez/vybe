@@ -55,10 +55,10 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{Value, VM};
+use vybe_bytecode::{VM, Value};
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 // ── nodeType constants (WHATWG DOM Living Standard §4.4) ──────────
 const ELEMENT_NODE: i32 = 1;
@@ -118,102 +118,150 @@ fn type_id_for(node_type: i32) -> usize {
 
 pub fn register(vm: &mut VM) {
     // ── DOMParser ────────────────────────────────────────────────
-    vm.register_host_fn("web:dom-parser", "parserNew", Box::new(|_ctx, _args| {
-        let mut obj = Object::new();
-        obj.properties.insert("__type".into(), s("DOMParser"));
-        Value::Object(Arc::new(Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "parserNew",
+        Box::new(|_ctx, _args| {
+            let mut obj = Object::new();
+            obj.properties.insert("__type".into(), s("DOMParser"));
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "parseFromString", Box::new(|_ctx, args| {
-        // Spec: `DOMParser.parseFromString(string, type)`. We accept
-        // both the instance-call shape (args[0] = DOMParser, args[1]
-        // = string, args[2] = type) and the flat shorthand
-        // (args[0] = string, args[1] = type) so callers that don't
-        // construct a parser still work.
-        let (xml_arg, _type_arg) = match args.first() {
-            Some(Value::Object(o)) if o.lock().unwrap().properties.get("__type")
-                .and_then(|v| match v { Value::String(s) => Some(s.as_ref().to_string()), _ => None })
-                .as_deref() == Some("DOMParser") =>
-            {
-                (args.get(1).cloned().unwrap_or(Value::Null),
-                 args.get(2).cloned().unwrap_or(Value::Null))
+    vm.register_host_fn(
+        "web:dom-parser",
+        "parseFromString",
+        Box::new(|_ctx, args| {
+            // Spec: `DOMParser.parseFromString(string, type)`. We accept
+            // both the instance-call shape (args[0] = DOMParser, args[1]
+            // = string, args[2] = type) and the flat shorthand
+            // (args[0] = string, args[1] = type) so callers that don't
+            // construct a parser still work.
+            let (xml_arg, _type_arg) = match args.first() {
+                Some(Value::Object(o))
+                    if o.lock()
+                        .unwrap()
+                        .properties
+                        .get("__type")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.as_ref().to_string()),
+                            _ => None,
+                        })
+                        .as_deref()
+                        == Some("DOMParser") =>
+                {
+                    (
+                        args.get(1).cloned().unwrap_or(Value::Null),
+                        args.get(2).cloned().unwrap_or(Value::Null),
+                    )
+                }
+                _ => (
+                    args.first().cloned().unwrap_or(Value::Null),
+                    args.get(1).cloned().unwrap_or(Value::Null),
+                ),
+            };
+            let xml = match xml_arg {
+                Value::String(s) => s.to_string(),
+                other => format!("{}", other),
+            };
+            match parse_xml(&xml) {
+                Ok(doc) => doc,
+                Err(_) => parse_error_document(&xml),
             }
-            _ => (args.first().cloned().unwrap_or(Value::Null),
-                  args.get(1).cloned().unwrap_or(Value::Null)),
-        };
-        let xml = match xml_arg {
-            Value::String(s) => s.to_string(),
-            other => format!("{}", other),
-        };
-        match parse_xml(&xml) {
-            Ok(doc) => doc,
-            Err(_) => parse_error_document(&xml),
-        }
-    }));
+        }),
+    );
 
     // Convenience flat fn: `parse(s)` shorthand callers use without an
     // explicit DOMParser instance. Same return as `parseFromString`.
-    vm.register_host_fn("web:dom-parser", "parse", Box::new(|_ctx, args| {
-        let xml = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => String::new(),
-        };
-        match parse_xml(&xml) {
-            Ok(doc) => doc,
-            Err(_) => parse_error_document(&xml),
-        }
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "parse",
+        Box::new(|_ctx, args| {
+            let xml = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            match parse_xml(&xml) {
+                Ok(doc) => doc,
+                Err(_) => parse_error_document(&xml),
+            }
+        }),
+    );
 
     // ── XMLSerializer ────────────────────────────────────────────
-    vm.register_host_fn("web:dom-parser", "serializerNew", Box::new(|_ctx, _args| {
-        let mut obj = Object::new();
-        obj.properties.insert("__type".into(), s("XMLSerializer"));
-        Value::Object(Arc::new(Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "serializerNew",
+        Box::new(|_ctx, _args| {
+            let mut obj = Object::new();
+            obj.properties.insert("__type".into(), s("XMLSerializer"));
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "serializeToString", Box::new(|_ctx, args| {
-        // Accepts both `(serializer, node)` and `(node)` shapes.
-        let node = match args.first() {
-            Some(Value::Object(o)) if o.lock().unwrap().properties.get("__type")
-                .and_then(|v| match v { Value::String(s) => Some(s.as_ref().to_string()), _ => None })
-                .as_deref() == Some("XMLSerializer") =>
-            {
-                args.get(1).cloned().unwrap_or(Value::Null)
+    vm.register_host_fn(
+        "web:dom-parser",
+        "serializeToString",
+        Box::new(|_ctx, args| {
+            // Accepts both `(serializer, node)` and `(node)` shapes.
+            let node = match args.first() {
+                Some(Value::Object(o))
+                    if o.lock()
+                        .unwrap()
+                        .properties
+                        .get("__type")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.as_ref().to_string()),
+                            _ => None,
+                        })
+                        .as_deref()
+                        == Some("XMLSerializer") =>
+                {
+                    args.get(1).cloned().unwrap_or(Value::Null)
+                }
+                other => other.cloned().unwrap_or(Value::Null),
+            };
+            let mut out = String::new();
+            if let Value::Object(o) = &node {
+                serialize_node(o, &mut out);
             }
-            other => other.cloned().unwrap_or(Value::Null),
-        };
-        let mut out = String::new();
-        if let Value::Object(o) = &node {
-            serialize_node(o, &mut out);
-        }
-        s(&out)
-    }));
+            s(&out)
+        }),
+    );
 
     // Convenience: `toString(node)` matches the legacy shorthand.
-    vm.register_host_fn("web:dom-parser", "toString", Box::new(|_ctx, args| {
-        let mut out = String::new();
-        if let Some(Value::Object(o)) = args.first() {
-            serialize_node(o, &mut out);
-        }
-        s(&out)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "toString",
+        Box::new(|_ctx, args| {
+            let mut out = String::new();
+            if let Some(Value::Object(o)) = args.first() {
+                serialize_node(o, &mut out);
+            }
+            s(&out)
+        }),
+    );
 
     // Convenience helper retained from the pre-spec API: `load(path)`
     // reads from disk and parses. Real WHATWG flow is `fetch(url)` →
     // `.text()` → `parseFromString` — provided here for parity with
     // VB `XDocument.Load(path)` test patterns.
-    vm.register_host_fn("web:dom-parser", "load", Box::new(|_ctx, args| {
-        let path = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(xml) => parse_xml(&xml).unwrap_or_else(|_| parse_error_document(&xml)),
-            Err(_) => Value::Null,
-        }
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "load",
+        Box::new(|_ctx, args| {
+            let path = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(xml) => parse_xml(&xml).unwrap_or_else(|_| parse_error_document(&xml)),
+                Err(_) => Value::Null,
+            }
+        }),
+    );
 
     // ── Node / Element / Document method helpers ─────────────────
     // Properties (`tagName`, `nodeType`, `childNodes`, etc.) are set
@@ -221,68 +269,98 @@ pub fn register(vm: &mut VM) {
     // via plain `Op::STRUCT_GET` — no host fn round-trip. The host
     // fns below cover the *computed* methods that walk the tree.
 
-    vm.register_host_fn("web:dom-parser", "getElementById", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return Value::Null; };
-        let target = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        find_by_id(root, &target).unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getElementById",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return Value::Null;
+            };
+            let target = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            find_by_id(root, &target).unwrap_or(Value::Null)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "getElementsByTagName", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return empty_array(); };
-        let tag = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return empty_array(),
-        };
-        let mut out: Vec<Value> = Vec::new();
-        find_by_tag_name(root, &tag, &mut out);
-        make_array(out)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getElementsByTagName",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return empty_array();
+            };
+            let tag = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return empty_array(),
+            };
+            let mut out: Vec<Value> = Vec::new();
+            find_by_tag_name(root, &tag, &mut out);
+            make_array(out)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "getElementsByClassName", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return empty_array(); };
-        let cls = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return empty_array(),
-        };
-        let mut out: Vec<Value> = Vec::new();
-        find_by_class_name(root, &cls, &mut out);
-        make_array(out)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getElementsByClassName",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return empty_array();
+            };
+            let cls = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return empty_array(),
+            };
+            let mut out: Vec<Value> = Vec::new();
+            find_by_class_name(root, &cls, &mut out);
+            make_array(out)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "getAttribute", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let name = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let elem = elem.lock().unwrap();
-        let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
-            return Value::Null;
-        };
-        let attrs = attrs.lock().unwrap();
-        attrs.properties.get(&name).cloned().unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getAttribute",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let name = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let elem = elem.lock().unwrap();
+            let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
+                return Value::Null;
+            };
+            let attrs = attrs.lock().unwrap();
+            attrs.properties.get(&name).cloned().unwrap_or(Value::Null)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "hasAttribute", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Bool(false); };
-        let name = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Bool(false),
-        };
-        let elem = elem.lock().unwrap();
-        let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
-            return Value::Bool(false);
-        };
-        Value::Bool(attrs.lock().unwrap().properties.contains_key(&name))
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "hasAttribute",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Bool(false);
+            };
+            let name = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Bool(false),
+            };
+            let elem = elem.lock().unwrap();
+            let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
+                return Value::Bool(false);
+            };
+            Value::Bool(attrs.lock().unwrap().properties.contains_key(&name))
+        }),
+    );
 
     // ── Selectors API Level 1 (W3C) ──────────────────────────────
     // CSS selector subset: tag, `*`, `#id`, `.class`, `[attr]` /
@@ -292,49 +370,67 @@ pub fn register(vm: &mut VM) {
     // and selector lists (comma-separated). Pseudo-classes
     // (`:first-child`, `:nth-child`) are Phase 2.5 follow-up.
 
-    vm.register_host_fn("web:dom-parser", "querySelector", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return Value::Null; };
-        let selector = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let parsed = match parse_selector_list(&selector) {
-            Some(s) => s,
-            None => return Value::Null,
-        };
-        find_first_match(root, &parsed).unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "querySelector",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return Value::Null;
+            };
+            let selector = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let parsed = match parse_selector_list(&selector) {
+                Some(s) => s,
+                None => return Value::Null,
+            };
+            find_first_match(root, &parsed).unwrap_or(Value::Null)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "querySelectorAll", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return empty_array(); };
-        let selector = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return empty_array(),
-        };
-        let parsed = match parse_selector_list(&selector) {
-            Some(s) => s,
-            None => return empty_array(),
-        };
-        let mut out: Vec<Value> = Vec::new();
-        find_all_matches(root, &parsed, &mut out);
-        make_array(out)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "querySelectorAll",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return empty_array();
+            };
+            let selector = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return empty_array(),
+            };
+            let parsed = match parse_selector_list(&selector) {
+                Some(s) => s,
+                None => return empty_array(),
+            };
+            let mut out: Vec<Value> = Vec::new();
+            find_all_matches(root, &parsed, &mut out);
+            make_array(out)
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "matches", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Bool(false); };
-        let selector = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Bool(false),
-        };
-        let parsed = match parse_selector_list(&selector) {
-            Some(s) => s,
-            None => return Value::Bool(false),
-        };
-        Value::Bool(parsed.iter().any(|sel| selector_matches(elem, sel)))
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "matches",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Bool(false);
+            };
+            let selector = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Bool(false),
+            };
+            let parsed = match parse_selector_list(&selector) {
+                Some(s) => s,
+                None => return Value::Bool(false),
+            };
+            Value::Bool(parsed.iter().any(|sel| selector_matches(elem, sel)))
+        }),
+    );
 
     // ── DOM Mutation (Phase 3) ───────────────────────────────────
     // WHATWG DOM Living Standard §4.5: Document factories +
@@ -384,123 +480,182 @@ pub fn register(vm: &mut VM) {
         node
     }));
 
-    vm.register_host_fn("web:dom-parser", "createComment", Box::new(|_ctx, args| {
-        let text = match args.get(1).or(args.first()) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => String::new(),
-        };
-        let node = make_node(COMMENT_NODE, "#comment", Some(&text));
-        if let Value::Object(n) = &node {
-            n.lock().unwrap().properties.insert("textContent".into(), s(&text));
-        }
-        node
-    }));
-
-    vm.register_host_fn("web:dom-parser", "setAttribute", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let name = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let val = match args.get(2) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => String::new(),
-        };
-        let elem_lock = elem.lock().unwrap();
-        let attrs = elem_lock.properties.get("attributes").cloned();
-        drop(elem_lock);
-        if let Some(Value::Object(a)) = attrs {
-            a.lock().unwrap().properties.insert(name.clone(), s(&val));
-        }
-        // Mirror id / className for the common attrs.
-        let mut elem_w = elem.lock().unwrap();
-        if name == "id" {
-            elem_w.properties.insert("id".into(), s(&val));
-        } else if name == "class" {
-            elem_w.properties.insert("className".into(), s(&val));
-        }
-        Value::Null
-    }));
-
-    vm.register_host_fn("web:dom-parser", "removeAttribute", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let name = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let elem_lock = elem.lock().unwrap();
-        let attrs = elem_lock.properties.get("attributes").cloned();
-        drop(elem_lock);
-        if let Some(Value::Object(a)) = attrs {
-            a.lock().unwrap().properties.remove(&name);
-        }
-        let mut elem_w = elem.lock().unwrap();
-        if name == "id" {
-            elem_w.properties.insert("id".into(), s(""));
-        } else if name == "class" {
-            elem_w.properties.insert("className".into(), s(""));
-        }
-        Value::Null
-    }));
-
-    vm.register_host_fn("web:dom-parser", "appendChild", Box::new(|_ctx, args| {
-        let Some(Value::Object(parent)) = args.first() else { return Value::Null; };
-        let Some(Value::Object(child)) = args.get(1) else { return Value::Null; };
-        // Detach child from any current parent first (DOM semantics:
-        // appendChild is a move, not a copy — `pre-insert` step in spec).
-        detach_from_parent(child);
-        // Append + rewire siblings.
-        append_child_inner(parent, child);
-        Value::Object(child.clone())
-    }));
-
-    vm.register_host_fn("web:dom-parser", "removeChild", Box::new(|_ctx, args| {
-        let Some(Value::Object(parent)) = args.first() else { return Value::Null; };
-        let Some(Value::Object(child)) = args.get(1) else { return Value::Null; };
-        if remove_child_inner(parent, child) {
-            Value::Object(child.clone())
-        } else {
-            Value::Null
-        }
-    }));
-
-    vm.register_host_fn("web:dom-parser", "insertBefore", Box::new(|_ctx, args| {
-        let Some(Value::Object(parent)) = args.first() else { return Value::Null; };
-        let Some(Value::Object(new_child)) = args.get(1) else { return Value::Null; };
-        let reference = args.get(2).cloned();
-        detach_from_parent(new_child);
-        match reference {
-            Some(Value::Object(ref_node)) => {
-                if !insert_before_inner(parent, new_child, &ref_node) {
-                    append_child_inner(parent, new_child);
-                }
+    vm.register_host_fn(
+        "web:dom-parser",
+        "createComment",
+        Box::new(|_ctx, args| {
+            let text = match args.get(1).or(args.first()) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            let node = make_node(COMMENT_NODE, "#comment", Some(&text));
+            if let Value::Object(n) = &node {
+                n.lock()
+                    .unwrap()
+                    .properties
+                    .insert("textContent".into(), s(&text));
             }
-            _ => append_child_inner(parent, new_child),
-        }
-        Value::Object(new_child.clone())
-    }));
+            node
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "replaceChild", Box::new(|_ctx, args| {
-        let Some(Value::Object(parent)) = args.first() else { return Value::Null; };
-        let Some(Value::Object(new_child)) = args.get(1) else { return Value::Null; };
-        let Some(Value::Object(old_child)) = args.get(2) else { return Value::Null; };
-        detach_from_parent(new_child);
-        if !insert_before_inner(parent, new_child, old_child) {
-            return Value::Null;
-        }
-        let _ = remove_child_inner(parent, old_child);
-        Value::Object(old_child.clone())
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "setAttribute",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let name = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let val = match args.get(2) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            let elem_lock = elem.lock().unwrap();
+            let attrs = elem_lock.properties.get("attributes").cloned();
+            drop(elem_lock);
+            if let Some(Value::Object(a)) = attrs {
+                a.lock().unwrap().properties.insert(name.clone(), s(&val));
+            }
+            // Mirror id / className for the common attrs.
+            let mut elem_w = elem.lock().unwrap();
+            if name == "id" {
+                elem_w.properties.insert("id".into(), s(&val));
+            } else if name == "class" {
+                elem_w.properties.insert("className".into(), s(&val));
+            }
+            Value::Null
+        }),
+    );
 
-    vm.register_host_fn("web:dom-parser", "cloneNode", Box::new(|_ctx, args| {
-        let Some(Value::Object(node)) = args.first() else { return Value::Null; };
-        let deep = matches!(args.get(1), Some(Value::Bool(true)));
-        clone_node(node, deep)
-    }));
+    vm.register_host_fn(
+        "web:dom-parser",
+        "removeAttribute",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let name = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let elem_lock = elem.lock().unwrap();
+            let attrs = elem_lock.properties.get("attributes").cloned();
+            drop(elem_lock);
+            if let Some(Value::Object(a)) = attrs {
+                a.lock().unwrap().properties.remove(&name);
+            }
+            let mut elem_w = elem.lock().unwrap();
+            if name == "id" {
+                elem_w.properties.insert("id".into(), s(""));
+            } else if name == "class" {
+                elem_w.properties.insert("className".into(), s(""));
+            }
+            Value::Null
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "appendChild",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(parent)) = args.first() else {
+                return Value::Null;
+            };
+            let Some(Value::Object(child)) = args.get(1) else {
+                return Value::Null;
+            };
+            // Detach child from any current parent first (DOM semantics:
+            // appendChild is a move, not a copy — `pre-insert` step in spec).
+            detach_from_parent(child);
+            // Append + rewire siblings.
+            append_child_inner(parent, child);
+            Value::Object(child.clone())
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "removeChild",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(parent)) = args.first() else {
+                return Value::Null;
+            };
+            let Some(Value::Object(child)) = args.get(1) else {
+                return Value::Null;
+            };
+            if remove_child_inner(parent, child) {
+                Value::Object(child.clone())
+            } else {
+                Value::Null
+            }
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "insertBefore",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(parent)) = args.first() else {
+                return Value::Null;
+            };
+            let Some(Value::Object(new_child)) = args.get(1) else {
+                return Value::Null;
+            };
+            let reference = args.get(2).cloned();
+            detach_from_parent(new_child);
+            match reference {
+                Some(Value::Object(ref_node)) => {
+                    if !insert_before_inner(parent, new_child, &ref_node) {
+                        append_child_inner(parent, new_child);
+                    }
+                }
+                _ => append_child_inner(parent, new_child),
+            }
+            Value::Object(new_child.clone())
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "replaceChild",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(parent)) = args.first() else {
+                return Value::Null;
+            };
+            let Some(Value::Object(new_child)) = args.get(1) else {
+                return Value::Null;
+            };
+            let Some(Value::Object(old_child)) = args.get(2) else {
+                return Value::Null;
+            };
+            detach_from_parent(new_child);
+            if !insert_before_inner(parent, new_child, old_child) {
+                return Value::Null;
+            }
+            let _ = remove_child_inner(parent, old_child);
+            Value::Object(old_child.clone())
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "cloneNode",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(node)) = args.first() else {
+                return Value::Null;
+            };
+            let deep = matches!(args.get(1), Some(Value::Bool(true)));
+            clone_node(node, deep)
+        }),
+    );
 
     // ── DocumentFragment + Namespace-aware variants (Phase 4) ────
     vm.register_host_fn("web:dom-parser", "createDocumentFragment", Box::new(|_ctx, args| {
@@ -547,116 +702,161 @@ pub fn register(vm: &mut VM) {
         elem
     }));
 
-    vm.register_host_fn("web:dom-parser", "setAttributeNS", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let _ns = match args.get(1) {
-            Some(Value::String(s)) => Some(s.to_string()),
-            Some(Value::Null) | None => None,
-            Some(other) => Some(format!("{}", other)),
-        };
-        let name = match args.get(2) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let val = match args.get(3) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => String::new(),
-        };
-        let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
-        if let Some(Value::Object(a)) = attrs {
-            a.lock().unwrap().properties.insert(name.clone(), s(&val));
-        }
-        if name == "id" {
-            elem.lock().unwrap().properties.insert("id".into(), s(&val));
-        } else if name == "class" {
-            elem.lock().unwrap().properties.insert("className".into(), s(&val));
-        }
-        Value::Null
-    }));
-
-    vm.register_host_fn("web:dom-parser", "getAttributeNS", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let name = match args.get(2).or(args.get(1)) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
-        if let Some(Value::Object(a)) = attrs {
-            return a.lock().unwrap().properties.get(&name).cloned().unwrap_or(Value::Null);
-        }
-        Value::Null
-    }));
-
-    vm.register_host_fn("web:dom-parser", "hasAttributeNS", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Bool(false); };
-        let name = match args.get(2).or(args.get(1)) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Bool(false),
-        };
-        let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
-        if let Some(Value::Object(a)) = attrs {
-            return Value::Bool(a.lock().unwrap().properties.contains_key(&name));
-        }
-        Value::Bool(false)
-    }));
-
-    vm.register_host_fn("web:dom-parser", "removeAttributeNS", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let name = match args.get(2).or(args.get(1)) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
-        if let Some(Value::Object(a)) = attrs {
-            a.lock().unwrap().properties.remove(&name);
-        }
-        Value::Null
-    }));
-
-    vm.register_host_fn("web:dom-parser", "getElementsByTagNameNS", Box::new(|_ctx, args| {
-        let Some(Value::Object(root)) = args.first() else { return empty_array(); };
-        let local = match args.get(2).or(args.get(1)) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return empty_array(),
-        };
-        let mut out: Vec<Value> = Vec::new();
-        find_by_local_name(root, &local, &mut out);
-        make_array(out)
-    }));
-
-    vm.register_host_fn("web:dom-parser", "closest", Box::new(|_ctx, args| {
-        let Some(Value::Object(elem)) = args.first() else { return Value::Null; };
-        let selector = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Null,
-        };
-        let parsed = match parse_selector_list(&selector) {
-            Some(s) => s,
-            None => return Value::Null,
-        };
-        let mut current = Some(elem.clone());
-        while let Some(node) = current {
-            if parsed.iter().any(|sel| selector_matches(&node, sel)) {
-                return Value::Object(node);
-            }
-            let parent = {
-                let n = node.lock().unwrap();
-                match n.properties.get("parentNode") {
-                    Some(Value::Object(p)) => Some(p.clone()),
-                    _ => None,
-                }
+    vm.register_host_fn(
+        "web:dom-parser",
+        "setAttributeNS",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
             };
-            current = parent;
-        }
-        Value::Null
-    }));
+            let _ns = match args.get(1) {
+                Some(Value::String(s)) => Some(s.to_string()),
+                Some(Value::Null) | None => None,
+                Some(other) => Some(format!("{}", other)),
+            };
+            let name = match args.get(2) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let val = match args.get(3) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
+            if let Some(Value::Object(a)) = attrs {
+                a.lock().unwrap().properties.insert(name.clone(), s(&val));
+            }
+            if name == "id" {
+                elem.lock().unwrap().properties.insert("id".into(), s(&val));
+            } else if name == "class" {
+                elem.lock()
+                    .unwrap()
+                    .properties
+                    .insert("className".into(), s(&val));
+            }
+            Value::Null
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getAttributeNS",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let name = match args.get(2).or(args.get(1)) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
+            if let Some(Value::Object(a)) = attrs {
+                return a
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            Value::Null
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "hasAttributeNS",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Bool(false);
+            };
+            let name = match args.get(2).or(args.get(1)) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Bool(false),
+            };
+            let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
+            if let Some(Value::Object(a)) = attrs {
+                return Value::Bool(a.lock().unwrap().properties.contains_key(&name));
+            }
+            Value::Bool(false)
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "removeAttributeNS",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let name = match args.get(2).or(args.get(1)) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
+            if let Some(Value::Object(a)) = attrs {
+                a.lock().unwrap().properties.remove(&name);
+            }
+            Value::Null
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "getElementsByTagNameNS",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(root)) = args.first() else {
+                return empty_array();
+            };
+            let local = match args.get(2).or(args.get(1)) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return empty_array(),
+            };
+            let mut out: Vec<Value> = Vec::new();
+            find_by_local_name(root, &local, &mut out);
+            make_array(out)
+        }),
+    );
+
+    vm.register_host_fn(
+        "web:dom-parser",
+        "closest",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(elem)) = args.first() else {
+                return Value::Null;
+            };
+            let selector = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            let parsed = match parse_selector_list(&selector) {
+                Some(s) => s,
+                None => return Value::Null,
+            };
+            let mut current = Some(elem.clone());
+            while let Some(node) = current {
+                if parsed.iter().any(|sel| selector_matches(&node, sel)) {
+                    return Value::Object(node);
+                }
+                let parent = {
+                    let n = node.lock().unwrap();
+                    match n.properties.get("parentNode") {
+                        Some(Value::Object(p)) => Some(p.clone()),
+                        _ => None,
+                    }
+                };
+                current = parent;
+            }
+            Value::Null
+        }),
+    );
 }
 
 // ── Parser entry point ────────────────────────────────────────────
@@ -760,14 +960,16 @@ fn parse_error_document(xml: &str) -> Value {
     let err_elem = {
         let mut o = Object::new();
         o.properties.insert("__type".into(), s("Element"));
-        o.properties.insert("nodeType".into(), Value::I32(ELEMENT_NODE));
+        o.properties
+            .insert("nodeType".into(), Value::I32(ELEMENT_NODE));
         o.properties.insert("nodeName".into(), s("parsererror"));
         o.properties.insert("tagName".into(), s("parsererror"));
         o.properties.insert("localName".into(), s("parsererror"));
         o.properties.insert("prefix".into(), Value::Null);
         o.properties.insert("namespaceURI".into(), Value::Null);
         o.properties.insert("nodeValue".into(), Value::Null);
-        o.properties.insert("attributes".into(), make_empty_object());
+        o.properties
+            .insert("attributes".into(), make_empty_object());
         o.properties.insert("childNodes".into(), make_array(vec![]));
         o.properties.insert("children".into(), make_array(vec![]));
         o.properties.insert("textContent".into(), s(xml));
@@ -776,13 +978,24 @@ fn parse_error_document(xml: &str) -> Value {
         Value::Object(Arc::new(Mutex::new(o)))
     };
     if let Value::Object(d) = &doc {
-        if let Value::Object(arr) = d.lock().unwrap().properties.get("childNodes").cloned().unwrap_or(Value::Null) {
+        if let Value::Object(arr) = d
+            .lock()
+            .unwrap()
+            .properties
+            .get("childNodes")
+            .cloned()
+            .unwrap_or(Value::Null)
+        {
             if let ObjectKind::Array(ref mut items) = arr.lock().unwrap().kind {
                 items.push(err_elem.clone());
             }
         }
         if let Value::Object(d_obj) = &doc {
-            d_obj.lock().unwrap().properties.insert("documentElement".into(), err_elem);
+            d_obj
+                .lock()
+                .unwrap()
+                .properties
+                .insert("documentElement".into(), err_elem);
         }
     }
     if let Value::Object(d) = &doc {
@@ -803,11 +1016,15 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     let mut o = Object::new();
     o.type_id = type_id_for(ELEMENT_NODE);
     o.properties.insert("__type".into(), s("Element"));
-    o.properties.insert("nodeType".into(), Value::I32(ELEMENT_NODE));
+    o.properties
+        .insert("nodeType".into(), Value::I32(ELEMENT_NODE));
     o.properties.insert("nodeName".into(), s(&raw_name));
     o.properties.insert("tagName".into(), s(&raw_name));
     o.properties.insert("localName".into(), s(&local_name));
-    o.properties.insert("prefix".into(), prefix.map(|p| s(&p)).unwrap_or(Value::Null));
+    o.properties.insert(
+        "prefix".into(),
+        prefix.map(|p| s(&p)).unwrap_or(Value::Null),
+    );
     o.properties.insert("namespaceURI".into(), Value::Null);
     o.properties.insert("nodeValue".into(), Value::Null);
 
@@ -820,7 +1037,10 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     let mut class_val = String::new();
     for attr in e.attributes().with_checks(false).flatten() {
         let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-        let val = attr.unescape_value().map(|c| c.into_owned()).unwrap_or_default();
+        let val = attr
+            .unescape_value()
+            .map(|c| c.into_owned())
+            .unwrap_or_default();
         if key == "id" {
             id_val = val.clone();
         } else if key == "class" {
@@ -828,7 +1048,10 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
         }
         attrs.properties.insert(key, s(&val));
     }
-    o.properties.insert("attributes".into(), Value::Object(Arc::new(Mutex::new(attrs))));
+    o.properties.insert(
+        "attributes".into(),
+        Value::Object(Arc::new(Mutex::new(attrs))),
+    );
     o.properties.insert("id".into(), s(&id_val));
     o.properties.insert("className".into(), s(&class_val));
 
@@ -851,12 +1074,16 @@ fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
         _ => "Node",
     };
     o.properties.insert("__type".into(), s(typename));
-    o.properties.insert("nodeType".into(), Value::I32(node_type));
+    o.properties
+        .insert("nodeType".into(), Value::I32(node_type));
     o.properties.insert("nodeName".into(), s(node_name));
-    o.properties.insert("nodeValue".into(), match value {
-        Some(v) => s(v),
-        None => Value::Null,
-    });
+    o.properties.insert(
+        "nodeValue".into(),
+        match value {
+            Some(v) => s(v),
+            None => Value::Null,
+        },
+    );
     if node_type == DOCUMENT_NODE {
         o.properties.insert("childNodes".into(), make_array(vec![]));
         o.properties.insert("documentElement".into(), Value::Null);
@@ -868,8 +1095,10 @@ fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
 fn make_pi_node(target: &str, data: &str) -> Value {
     let mut o = Object::new();
     o.type_id = type_id_for(PROCESSING_INSTRUCTION_NODE);
-    o.properties.insert("__type".into(), s("ProcessingInstruction"));
-    o.properties.insert("nodeType".into(), Value::I32(PROCESSING_INSTRUCTION_NODE));
+    o.properties
+        .insert("__type".into(), s("ProcessingInstruction"));
+    o.properties
+        .insert("nodeType".into(), Value::I32(PROCESSING_INSTRUCTION_NODE));
     o.properties.insert("nodeName".into(), s(target));
     o.properties.insert("target".into(), s(target));
     o.properties.insert("data".into(), s(data));
@@ -898,19 +1127,27 @@ fn finalize_node_tree(
 ) {
     {
         let mut n = node.lock().unwrap();
-        n.properties.insert("parentNode".into(),
-            parent.map(|p| Value::Object(p.clone())).unwrap_or(Value::Null));
-        n.properties.insert("ownerDocument".into(),
+        n.properties.insert(
+            "parentNode".into(),
+            parent
+                .map(|p| Value::Object(p.clone()))
+                .unwrap_or(Value::Null),
+        );
+        n.properties.insert(
+            "ownerDocument".into(),
             match document {
                 Some(d) if !Arc::ptr_eq(d, node) => Value::Object(d.clone()),
                 _ => Value::Null,
-            });
+            },
+        );
     }
     let children = {
         let n = node.lock().unwrap();
         n.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = children else { return };
+    let Some(Value::Object(arr)) = children else {
+        return;
+    };
     let child_values: Vec<Value> = {
         let a = arr.lock().unwrap();
         if let ObjectKind::Array(ref items) = a.kind {
@@ -930,28 +1167,41 @@ fn finalize_node_tree(
     // firstChild / lastChild / siblings on the children list.
     for (i, child) in child_values.iter().enumerate() {
         if let Value::Object(child_obj) = child {
-            let prev = if i > 0 { child_values.get(i - 1).cloned() } else { None };
+            let prev = if i > 0 {
+                child_values.get(i - 1).cloned()
+            } else {
+                None
+            };
             let next = child_values.get(i + 1).cloned();
             let mut c = child_obj.lock().unwrap();
-            c.properties.insert("previousSibling".into(), prev.unwrap_or(Value::Null));
-            c.properties.insert("nextSibling".into(), next.unwrap_or(Value::Null));
+            c.properties
+                .insert("previousSibling".into(), prev.unwrap_or(Value::Null));
+            c.properties
+                .insert("nextSibling".into(), next.unwrap_or(Value::Null));
         }
     }
 
     // Element-only children list + firstElementChild / lastElementChild.
-    let element_children: Vec<Value> = child_values.iter()
-        .filter(|v| matches!(v, Value::Object(o)
-            if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1)))))
+    let element_children: Vec<Value> = child_values
+        .iter()
+        .filter(|v| {
+            matches!(v, Value::Object(o)
+            if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1))))
+        })
         .cloned()
         .collect();
     let first_elem = element_children.first().cloned().unwrap_or(Value::Null);
     let last_elem = element_children.last().cloned().unwrap_or(Value::Null);
 
     let mut n = node.lock().unwrap();
-    n.properties.insert("firstChild".into(),
-        child_values.first().cloned().unwrap_or(Value::Null));
-    n.properties.insert("lastChild".into(),
-        child_values.last().cloned().unwrap_or(Value::Null));
+    n.properties.insert(
+        "firstChild".into(),
+        child_values.first().cloned().unwrap_or(Value::Null),
+    );
+    n.properties.insert(
+        "lastChild".into(),
+        child_values.last().cloned().unwrap_or(Value::Null),
+    );
 
     let is_element_or_doc = matches!(n.properties.get("nodeType"), Some(Value::I32(node_type))
         if *node_type == ELEMENT_NODE || *node_type == DOCUMENT_NODE);
@@ -966,12 +1216,17 @@ fn finalize_node_tree(
                 *items = element_children;
             }
         } else {
-            n.properties.insert("children".into(), make_array(element_children));
+            n.properties
+                .insert("children".into(), make_array(element_children));
         }
         n.properties.insert("firstElementChild".into(), first_elem);
         n.properties.insert("lastElementChild".into(), last_elem);
     } else if is_text_like {
-        let nv = n.properties.get("nodeValue").cloned().unwrap_or(Value::Null);
+        let nv = n
+            .properties
+            .get("nodeValue")
+            .cloned()
+            .unwrap_or(Value::Null);
         n.properties.insert("textContent".into(), nv);
     }
     // Drop the lock BEFORE recursing into `collect_text`, which
@@ -982,7 +1237,10 @@ fn finalize_node_tree(
     if is_element_or_doc {
         let mut buf = String::new();
         collect_text(node, &mut buf);
-        node.lock().unwrap().properties.insert("textContent".into(), s(&buf));
+        node.lock()
+            .unwrap()
+            .properties
+            .insert("textContent".into(), s(&buf));
     }
 }
 
@@ -1015,19 +1273,28 @@ fn set_document_element(doc: &Arc<Mutex<Object>>) {
         let d = doc.lock().unwrap();
         d.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = element else { return };
+    let Some(Value::Object(arr)) = element else {
+        return;
+    };
     let elem_root = {
         let a = arr.lock().unwrap();
         if let ObjectKind::Array(ref items) = a.kind {
-            items.iter().find(|v| matches!(v, Value::Object(o)
-                if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1)))))
+            items
+                .iter()
+                .find(|v| {
+                    matches!(v, Value::Object(o)
+                if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1))))
+                })
                 .cloned()
                 .unwrap_or(Value::Null)
         } else {
             Value::Null
         }
     };
-    doc.lock().unwrap().properties.insert("documentElement".into(), elem_root);
+    doc.lock()
+        .unwrap()
+        .properties
+        .insert("documentElement".into(), elem_root);
 }
 
 // ── Tree walkers (computed methods) ───────────────────────────────
@@ -1072,7 +1339,9 @@ fn find_by_tag_name(node: &Arc<Mutex<Object>>, tag: &str, out: &mut Vec<Value>) 
     if let Some(Value::Object(arr)) = children {
         let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
             a.clone()
-        } else { return };
+        } else {
+            return;
+        };
         for child in items {
             if let Value::Object(child_obj) = child {
                 find_by_tag_name(&child_obj, tag, out);
@@ -1095,7 +1364,9 @@ fn find_by_class_name(node: &Arc<Mutex<Object>>, target: &str, out: &mut Vec<Val
     if let Some(Value::Object(arr)) = children {
         let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
             a.clone()
-        } else { return };
+        } else {
+            return;
+        };
         for child in items {
             if let Value::Object(child_obj) = child {
                 find_by_class_name(&child_obj, target, out);
@@ -1119,7 +1390,9 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
             if let Some(Value::Object(arr)) = children {
                 let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
                     a.clone()
-                } else { return };
+                } else {
+                    return;
+                };
                 for child in items {
                     if let Value::Object(c) = child {
                         serialize_node(&c, out);
@@ -1138,7 +1411,9 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
             if let Some(Value::Object(attrs)) = n.properties.get("attributes") {
                 let attrs_lock = attrs.lock().unwrap();
                 for (k, v) in &attrs_lock.properties {
-                    if k.starts_with("__") { continue; }
+                    if k.starts_with("__") {
+                        continue;
+                    }
                     out.push(' ');
                     out.push_str(k);
                     out.push_str("=\"");
@@ -1154,7 +1429,9 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
                 Some(Value::Object(arr)) => {
                     if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
                         a.clone()
-                    } else { vec![] }
+                    } else {
+                        vec![]
+                    }
                 }
                 _ => vec![],
             };
@@ -1399,7 +1676,9 @@ fn parse_compound(chars: &[char]) -> Option<(CompoundSelector, usize)> {
             while i < chars.len() && is_ident_char(chars[i]) {
                 i += 1;
             }
-            if start == i { return None; }
+            if start == i {
+                return None;
+            }
             parts.push(SimplePart::Id(chars[start..i].iter().collect()));
         } else if c == '.' {
             i += 1;
@@ -1407,7 +1686,9 @@ fn parse_compound(chars: &[char]) -> Option<(CompoundSelector, usize)> {
             while i < chars.len() && is_ident_char(chars[i]) {
                 i += 1;
             }
-            if start == i { return None; }
+            if start == i {
+                return None;
+            }
             parts.push(SimplePart::Class(chars[start..i].iter().collect()));
         } else if c == '[' {
             i += 1;
@@ -1439,27 +1720,62 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
     while i < chars.len() && is_ident_char(chars[i]) {
         i += 1;
     }
-    if start == i { return None; }
+    if start == i {
+        return None;
+    }
     let name: String = chars[start..i].iter().collect();
     // Skip whitespace
-    while i < chars.len() && chars[i].is_whitespace() { i += 1; }
-    if i >= chars.len() { return None; }
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= chars.len() {
+        return None;
+    }
     if chars[i] == ']' {
-        return Some((SimplePart::Attr { name, op: AttrOp::Has, value: None }, i + 1));
+        return Some((
+            SimplePart::Attr {
+                name,
+                op: AttrOp::Has,
+                value: None,
+            },
+            i + 1,
+        ));
     }
     // Operator: =, *=, ^=, $=, ~=, |=
     let op = match chars[i] {
-        '=' => { i += 1; AttrOp::Exact }
-        '*' if i + 1 < chars.len() && chars[i + 1] == '=' => { i += 2; AttrOp::Substring }
-        '^' if i + 1 < chars.len() && chars[i + 1] == '=' => { i += 2; AttrOp::Prefix }
-        '$' if i + 1 < chars.len() && chars[i + 1] == '=' => { i += 2; AttrOp::Suffix }
-        '~' if i + 1 < chars.len() && chars[i + 1] == '=' => { i += 2; AttrOp::Word }
-        '|' if i + 1 < chars.len() && chars[i + 1] == '=' => { i += 2; AttrOp::Lang }
+        '=' => {
+            i += 1;
+            AttrOp::Exact
+        }
+        '*' if i + 1 < chars.len() && chars[i + 1] == '=' => {
+            i += 2;
+            AttrOp::Substring
+        }
+        '^' if i + 1 < chars.len() && chars[i + 1] == '=' => {
+            i += 2;
+            AttrOp::Prefix
+        }
+        '$' if i + 1 < chars.len() && chars[i + 1] == '=' => {
+            i += 2;
+            AttrOp::Suffix
+        }
+        '~' if i + 1 < chars.len() && chars[i + 1] == '=' => {
+            i += 2;
+            AttrOp::Word
+        }
+        '|' if i + 1 < chars.len() && chars[i + 1] == '=' => {
+            i += 2;
+            AttrOp::Lang
+        }
         _ => return None,
     };
     // Skip whitespace
-    while i < chars.len() && chars[i].is_whitespace() { i += 1; }
-    if i >= chars.len() { return None; }
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= chars.len() {
+        return None;
+    }
     // Quoted or unquoted value
     let value = if chars[i] == '"' || chars[i] == '\'' {
         let quote = chars[i];
@@ -1468,7 +1784,9 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
         while i < chars.len() && chars[i] != quote {
             i += 1;
         }
-        if i >= chars.len() { return None; }
+        if i >= chars.len() {
+            return None;
+        }
         let v: String = chars[start..i].iter().collect();
         i += 1; // closing quote
         v
@@ -1480,9 +1798,20 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
         chars[start..i].iter().collect()
     };
     // Skip whitespace + closing ']'.
-    while i < chars.len() && chars[i].is_whitespace() { i += 1; }
-    if i >= chars.len() || chars[i] != ']' { return None; }
-    Some((SimplePart::Attr { name, op, value: Some(value) }, i + 1))
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= chars.len() || chars[i] != ']' {
+        return None;
+    }
+    Some((
+        SimplePart::Attr {
+            name,
+            op,
+            value: Some(value),
+        },
+        i + 1,
+    ))
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -1499,7 +1828,9 @@ fn selector_matches(elem: &Arc<Mutex<Object>>, selector: &ComplexSelector) -> bo
     // earlier compound matches an ancestor / sibling per its combinator
     // to the right neighbour.
     let parts = &selector.parts;
-    if parts.is_empty() { return true; }
+    if parts.is_empty() {
+        return true;
+    }
     if !compound_matches(elem, &parts.last().unwrap().1) {
         return false;
     }
@@ -1521,11 +1852,16 @@ fn selector_matches(elem: &Arc<Mutex<Object>>, selector: &ComplexSelector) -> bo
                         break;
                     }
                     node = parent_of(&current_safe(&p));
-                    if let Some(pp) = node.clone() { current = pp.clone(); }
-                    else { break; }
+                    if let Some(pp) = node.clone() {
+                        current = pp.clone();
+                    } else {
+                        break;
+                    }
                     node = parent_of(&current);
                 }
-                if !found { return false; }
+                if !found {
+                    return false;
+                }
             }
             Combinator::Child => {
                 let parent = match parent_of(&current) {
@@ -1559,7 +1895,9 @@ fn selector_matches(elem: &Arc<Mutex<Object>>, selector: &ComplexSelector) -> bo
                     }
                     sibling = previous_sibling_of(&current_safe(&s));
                 }
-                if !found { return false; }
+                if !found {
+                    return false;
+                }
             }
         }
         idx -= 1;
@@ -1684,26 +2022,25 @@ fn current_safe(node: &Arc<Mutex<Object>>) -> Arc<Mutex<Object>> {
     node.clone()
 }
 
-fn find_first_match(
-    root: &Arc<Mutex<Object>>,
-    selectors: &[ComplexSelector],
-) -> Option<Value> {
-    if selectors.iter().any(|s| selector_matches(root, s))
-        && {
-            let n = root.lock().unwrap();
-            matches!(n.properties.get("nodeType"), Some(Value::I32(t)) if *t == ELEMENT_NODE)
-        }
-    {
+fn find_first_match(root: &Arc<Mutex<Object>>, selectors: &[ComplexSelector]) -> Option<Value> {
+    if selectors.iter().any(|s| selector_matches(root, s)) && {
+        let n = root.lock().unwrap();
+        matches!(n.properties.get("nodeType"), Some(Value::I32(t)) if *t == ELEMENT_NODE)
+    } {
         return Some(Value::Object(root.clone()));
     }
     let children = {
         let n = root.lock().unwrap();
         n.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = children else { return None };
+    let Some(Value::Object(arr)) = children else {
+        return None;
+    };
     let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
         a.clone()
-    } else { return None };
+    } else {
+        return None;
+    };
     for child in items {
         if let Value::Object(c) = child {
             if let Some(found) = find_first_match(&c, selectors) {
@@ -1730,10 +2067,14 @@ fn find_all_matches(
         let n = root.lock().unwrap();
         n.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = children else { return };
+    let Some(Value::Object(arr)) = children else {
+        return;
+    };
     let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
         a.clone()
-    } else { return };
+    } else {
+        return;
+    };
     for child in items {
         if let Value::Object(c) = child {
             find_all_matches(&c, selectors, out);
@@ -1752,18 +2093,25 @@ fn new_element_node(tag: &str, owner: Option<&Arc<Mutex<Object>>>) -> Value {
     let mut o = Object::new();
     o.type_id = type_id_for(ELEMENT_NODE);
     o.properties.insert("__type".into(), s("Element"));
-    o.properties.insert("nodeType".into(), Value::I32(ELEMENT_NODE));
+    o.properties
+        .insert("nodeType".into(), Value::I32(ELEMENT_NODE));
     o.properties.insert("nodeName".into(), s(tag));
     o.properties.insert("tagName".into(), s(tag));
     o.properties.insert("localName".into(), s(&local_name));
-    o.properties.insert("prefix".into(), prefix.map(|p| s(&p)).unwrap_or(Value::Null));
+    o.properties.insert(
+        "prefix".into(),
+        prefix.map(|p| s(&p)).unwrap_or(Value::Null),
+    );
     o.properties.insert("namespaceURI".into(), Value::Null);
     o.properties.insert("nodeValue".into(), Value::Null);
 
     let mut attrs = Object::new();
     attrs.type_id = dom_type_ids().map(|d| d.named_node_map).unwrap_or(0);
     attrs.properties.insert("__type".into(), s("NamedNodeMap"));
-    o.properties.insert("attributes".into(), Value::Object(Arc::new(Mutex::new(attrs))));
+    o.properties.insert(
+        "attributes".into(),
+        Value::Object(Arc::new(Mutex::new(attrs))),
+    );
     o.properties.insert("id".into(), s(""));
     o.properties.insert("className".into(), s(""));
     o.properties.insert("childNodes".into(), make_array(vec![]));
@@ -1776,8 +2124,12 @@ fn new_element_node(tag: &str, owner: Option<&Arc<Mutex<Object>>>) -> Value {
     o.properties.insert("previousSibling".into(), Value::Null);
     o.properties.insert("firstElementChild".into(), Value::Null);
     o.properties.insert("lastElementChild".into(), Value::Null);
-    o.properties.insert("ownerDocument".into(),
-        owner.map(|d| Value::Object(d.clone())).unwrap_or(Value::Null));
+    o.properties.insert(
+        "ownerDocument".into(),
+        owner
+            .map(|d| Value::Object(d.clone()))
+            .unwrap_or(Value::Null),
+    );
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -1801,7 +2153,9 @@ fn append_child_inner(parent: &Arc<Mutex<Object>>, child: &Arc<Mutex<Object>>) {
         let p = parent.lock().unwrap();
         p.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = arr else { return };
+    let Some(Value::Object(arr)) = arr else {
+        return;
+    };
     {
         let mut a = arr.lock().unwrap();
         if let ObjectKind::Array(ref mut items) = a.kind {
@@ -1811,7 +2165,8 @@ fn append_child_inner(parent: &Arc<Mutex<Object>>, child: &Arc<Mutex<Object>>) {
     // Update child's parent.
     {
         let mut c = child.lock().unwrap();
-        c.properties.insert("parentNode".into(), Value::Object(parent.clone()));
+        c.properties
+            .insert("parentNode".into(), Value::Object(parent.clone()));
     }
     refresh_node_relationships(parent);
 }
@@ -1821,7 +2176,9 @@ fn remove_child_inner(parent: &Arc<Mutex<Object>>, child: &Arc<Mutex<Object>>) -
         let p = parent.lock().unwrap();
         p.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = arr else { return false };
+    let Some(Value::Object(arr)) = arr else {
+        return false;
+    };
     let removed = {
         let mut a = arr.lock().unwrap();
         let mut found = false;
@@ -1860,7 +2217,9 @@ fn insert_before_inner(
         let p = parent.lock().unwrap();
         p.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = arr else { return false };
+    let Some(Value::Object(arr)) = arr else {
+        return false;
+    };
     let inserted = {
         let mut a = arr.lock().unwrap();
         let mut idx = None;
@@ -1885,7 +2244,11 @@ fn insert_before_inner(
         }
     };
     if inserted {
-        new_child.lock().unwrap().properties.insert("parentNode".into(), Value::Object(parent.clone()));
+        new_child
+            .lock()
+            .unwrap()
+            .properties
+            .insert("parentNode".into(), Value::Object(parent.clone()));
         refresh_node_relationships(parent);
     }
     inserted
@@ -1899,7 +2262,9 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
         let p = parent.lock().unwrap();
         p.properties.get("childNodes").cloned()
     };
-    let Some(Value::Object(arr)) = children else { return };
+    let Some(Value::Object(arr)) = children else {
+        return;
+    };
     let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
         a.clone()
     } else {
@@ -1908,17 +2273,26 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
 
     for (i, child) in items.iter().enumerate() {
         if let Value::Object(child_obj) = child {
-            let prev = if i > 0 { items.get(i - 1).cloned() } else { None };
+            let prev = if i > 0 {
+                items.get(i - 1).cloned()
+            } else {
+                None
+            };
             let next = items.get(i + 1).cloned();
             let mut c = child_obj.lock().unwrap();
-            c.properties.insert("previousSibling".into(), prev.unwrap_or(Value::Null));
-            c.properties.insert("nextSibling".into(), next.unwrap_or(Value::Null));
+            c.properties
+                .insert("previousSibling".into(), prev.unwrap_or(Value::Null));
+            c.properties
+                .insert("nextSibling".into(), next.unwrap_or(Value::Null));
         }
     }
 
-    let element_children: Vec<Value> = items.iter()
-        .filter(|v| matches!(v, Value::Object(o)
-            if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1)))))
+    let element_children: Vec<Value> = items
+        .iter()
+        .filter(|v| {
+            matches!(v, Value::Object(o)
+            if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1))))
+        })
         .cloned()
         .collect();
 
@@ -1943,14 +2317,19 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
                     *a_items = element_children;
                 }
             } else {
-                p.properties.insert("children".into(), make_array(element_children));
+                p.properties
+                    .insert("children".into(), make_array(element_children));
             }
             p.properties.insert("firstElementChild".into(), first_elem);
             p.properties.insert("lastElementChild".into(), last_elem);
             // documentElement on Document always tracks first Element child.
             if matches!(p.properties.get("nodeType"), Some(Value::I32(t)) if *t == DOCUMENT_NODE) {
-                let elem_root = items.iter().find(|v| matches!(v, Value::Object(o)
-                    if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1)))))
+                let elem_root = items
+                    .iter()
+                    .find(|v| {
+                        matches!(v, Value::Object(o)
+                    if matches!(o.lock().unwrap().properties.get("nodeType"), Some(Value::I32(1))))
+                    })
                     .cloned()
                     .unwrap_or(Value::Null);
                 p.properties.insert("documentElement".into(), elem_root);
@@ -1960,7 +2339,11 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
     // textContent on the parent — needs lock dropped before recursing.
     let mut buf = String::new();
     collect_text(parent, &mut buf);
-    parent.lock().unwrap().properties.insert("textContent".into(), s(&buf));
+    parent
+        .lock()
+        .unwrap()
+        .properties
+        .insert("textContent".into(), s(&buf));
 }
 
 fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
@@ -1970,9 +2353,8 @@ fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
     // Shallow copy of all properties EXCEPT structural pointers.
     for (key, val) in &n.properties {
         match key.as_str() {
-            "parentNode" | "nextSibling" | "previousSibling"
-            | "firstChild" | "lastChild" | "firstElementChild" | "lastElementChild"
-            | "ownerDocument" => continue, // reset structural state
+            "parentNode" | "nextSibling" | "previousSibling" | "firstChild" | "lastChild"
+            | "firstElementChild" | "lastElementChild" | "ownerDocument" => continue, // reset structural state
             "childNodes" | "children" | "attributes" => continue, // handled below
             _ => {
                 clone.properties.insert(key.clone(), val.clone());
@@ -1982,11 +2364,17 @@ fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
     // Reset structural state.
     clone.properties.insert("parentNode".into(), Value::Null);
     clone.properties.insert("nextSibling".into(), Value::Null);
-    clone.properties.insert("previousSibling".into(), Value::Null);
+    clone
+        .properties
+        .insert("previousSibling".into(), Value::Null);
     clone.properties.insert("firstChild".into(), Value::Null);
     clone.properties.insert("lastChild".into(), Value::Null);
-    clone.properties.insert("firstElementChild".into(), Value::Null);
-    clone.properties.insert("lastElementChild".into(), Value::Null);
+    clone
+        .properties
+        .insert("firstElementChild".into(), Value::Null);
+    clone
+        .properties
+        .insert("lastElementChild".into(), Value::Null);
     clone.properties.insert("ownerDocument".into(), Value::Null);
 
     // Clone attributes (deep copy of NamedNodeMap).
@@ -1996,11 +2384,17 @@ fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
         for (k, v) in &attrs_src.lock().unwrap().properties {
             attrs_clone.properties.insert(k.clone(), v.clone());
         }
-        clone.properties.insert("attributes".into(),
-            Value::Object(Arc::new(Mutex::new(attrs_clone))));
+        clone.properties.insert(
+            "attributes".into(),
+            Value::Object(Arc::new(Mutex::new(attrs_clone))),
+        );
     }
-    clone.properties.insert("childNodes".into(), make_array(vec![]));
-    clone.properties.insert("children".into(), make_array(vec![]));
+    clone
+        .properties
+        .insert("childNodes".into(), make_array(vec![]));
+    clone
+        .properties
+        .insert("children".into(), make_array(vec![]));
     drop(n);
 
     let clone_arc = Arc::new(Mutex::new(clone));
@@ -2039,8 +2433,10 @@ fn new_document_fragment(owner: Option<&Arc<Mutex<Object>>>) -> Value {
     let mut o = Object::new();
     o.type_id = dom_type_ids().map(|d| d.element).unwrap_or(0);
     o.properties.insert("__type".into(), s("DocumentFragment"));
-    o.properties.insert("nodeType".into(), Value::I32(DOCUMENT_FRAGMENT_NODE));
-    o.properties.insert("nodeName".into(), s("#document-fragment"));
+    o.properties
+        .insert("nodeType".into(), Value::I32(DOCUMENT_FRAGMENT_NODE));
+    o.properties
+        .insert("nodeName".into(), s("#document-fragment"));
     o.properties.insert("nodeValue".into(), Value::Null);
     o.properties.insert("childNodes".into(), make_array(vec![]));
     o.properties.insert("children".into(), make_array(vec![]));
@@ -2052,8 +2448,12 @@ fn new_document_fragment(owner: Option<&Arc<Mutex<Object>>>) -> Value {
     o.properties.insert("previousSibling".into(), Value::Null);
     o.properties.insert("firstElementChild".into(), Value::Null);
     o.properties.insert("lastElementChild".into(), Value::Null);
-    o.properties.insert("ownerDocument".into(),
-        owner.map(|d| Value::Object(d.clone())).unwrap_or(Value::Null));
+    o.properties.insert(
+        "ownerDocument".into(),
+        owner
+            .map(|d| Value::Object(d.clone()))
+            .unwrap_or(Value::Null),
+    );
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -2071,7 +2471,9 @@ fn find_by_local_name(node: &Arc<Mutex<Object>>, local: &str, out: &mut Vec<Valu
     if let Some(Value::Object(arr)) = children {
         let items: Vec<Value> = if let ObjectKind::Array(ref a) = arr.lock().unwrap().kind {
             a.clone()
-        } else { return };
+        } else {
+            return;
+        };
         for child in items {
             if let Value::Object(c) = child {
                 find_by_local_name(&c, local, out);

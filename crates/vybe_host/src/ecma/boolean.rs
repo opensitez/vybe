@@ -13,7 +13,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::Object;
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{HostContext, VM, Value};
 
 static BOOLEAN_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -27,36 +27,66 @@ pub(crate) fn shared_boolean_prototype() -> Value {
 
 pub(crate) fn boxed_boolean(value: bool) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Boolean")));
-    obj.properties.insert("__primitive".into(), Value::Bool(value));
-    obj.properties.insert("__proto__".into(), shared_boolean_prototype());
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Boolean")));
+    obj.properties
+        .insert("__primitive".into(), Value::Bool(value));
+    obj.properties
+        .insert("__proto__".into(), shared_boolean_prototype());
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("ecma:boolean", "Boolean", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
-    }));
-    vm.register_host_fn("ecma:boolean", "new", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        boxed_boolean(to_boolean(args.first().unwrap_or(&Value::Undefined)))
-    }));
-    vm.register_host_fn("ecma:boolean", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::String(Arc::from(if boolean_value(args.first().unwrap_or(&Value::Undefined)) { "true" } else { "false" }))
-    }));
-    vm.register_host_fn("ecma:boolean", "valueOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::Bool(boolean_value(args.first().unwrap_or(&Value::Undefined)))
-    }));
+    vm.register_host_fn(
+        "ecma:boolean",
+        "Boolean",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
+        }),
+    );
+    vm.register_host_fn(
+        "ecma:boolean",
+        "new",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            boxed_boolean(to_boolean(args.first().unwrap_or(&Value::Undefined)))
+        }),
+    );
+    vm.register_host_fn(
+        "ecma:boolean",
+        "toString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::String(Arc::from(
+                if boolean_value(args.first().unwrap_or(&Value::Undefined)) {
+                    "true"
+                } else {
+                    "false"
+                },
+            ))
+        }),
+    );
+    vm.register_host_fn(
+        "ecma:boolean",
+        "valueOf",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::Bool(boolean_value(args.first().unwrap_or(&Value::Undefined)))
+        }),
+    );
     // Alias used by the compiler for dynamic coercion.
-    vm.register_host_fn("ecma:boolean", "toBoolean", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
-    }));
+    vm.register_host_fn(
+        "ecma:boolean",
+        "toBoolean",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
+        }),
+    );
 }
 
 fn boolean_value(value: &Value) -> bool {
     if let Value::Object(obj) = value {
         let primitive = {
             let locked = obj.lock().unwrap();
-            if matches!(locked.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Boolean") {
+            if matches!(locked.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Boolean")
+            {
                 locked.properties.get("__primitive").cloned()
             } else {
                 None

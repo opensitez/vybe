@@ -47,12 +47,18 @@ fn as_string(value: &Value) -> String {
 
 #[test]
 fn max_safe_integer_is_2_pow_53_minus_1() {
-    assert_eq!(invoke("MAX_SAFE_INTEGER", vec![]), Value::F64(9007199254740991.0));
+    assert_eq!(
+        invoke("MAX_SAFE_INTEGER", vec![]),
+        Value::F64(9007199254740991.0)
+    );
 }
 
 #[test]
 fn min_safe_integer_is_negative_2_pow_53_minus_1() {
-    assert_eq!(invoke("MIN_SAFE_INTEGER", vec![]), Value::F64(-9007199254740991.0));
+    assert_eq!(
+        invoke("MIN_SAFE_INTEGER", vec![]),
+        Value::F64(-9007199254740991.0)
+    );
 }
 
 #[test]
@@ -60,7 +66,11 @@ fn epsilon_constant() {
     let v = invoke("EPSILON", vec![]);
     if let Value::F64(eps) = v {
         // EPSILON ≈ 2.220446049250313e-16; check the order of magnitude.
-        assert!(eps > 0.0 && eps < 1e-15, "EPSILON should be tiny positive, got {}", eps);
+        assert!(
+            eps > 0.0 && eps < 1e-15,
+            "EPSILON should be tiny positive, got {}",
+            eps
+        );
     } else {
         panic!("EPSILON expected f64, got {:?}", v);
     }
@@ -97,15 +107,27 @@ fn nan_constant_is_nan() {
 
 #[test]
 fn is_finite_true_for_finite_numbers() {
-    assert_eq!(invoke("isFinite", vec![Value::F64(42.0)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(42.0)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isFinite", vec![Value::F64(0.0)]), Value::Bool(true));
 }
 
 #[test]
 fn is_finite_false_for_infinities_and_nan() {
-    assert_eq!(invoke("isFinite", vec![Value::F64(f64::INFINITY)]), Value::Bool(false));
-    assert_eq!(invoke("isFinite", vec![Value::F64(f64::NEG_INFINITY)]), Value::Bool(false));
-    assert_eq!(invoke("isFinite", vec![Value::F64(f64::NAN)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(f64::INFINITY)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(f64::NEG_INFINITY)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(f64::NAN)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -116,7 +138,10 @@ fn is_finite_false_for_strings() {
 
 #[test]
 fn is_nan_true_only_for_nan() {
-    assert_eq!(invoke("isNaN", vec![Value::F64(f64::NAN)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isNaN", vec![Value::F64(f64::NAN)]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("isNaN", vec![Value::F64(42.0)]), Value::Bool(false));
 }
 
@@ -131,21 +156,42 @@ fn is_nan_strict_false_for_strings_unlike_global() {
 
 #[test]
 fn is_integer_true_for_whole_numbers() {
-    assert_eq!(invoke("isInteger", vec![Value::F64(42.0)]), Value::Bool(true));
-    assert_eq!(invoke("isInteger", vec![Value::F64(-3.0)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isInteger", vec![Value::F64(42.0)]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isInteger", vec![Value::F64(-3.0)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn is_integer_false_for_non_whole_or_non_finite() {
-    assert_eq!(invoke("isInteger", vec![Value::F64(3.14)]), Value::Bool(false));
-    assert_eq!(invoke("isInteger", vec![Value::F64(f64::NAN)]), Value::Bool(false));
-    assert_eq!(invoke("isInteger", vec![Value::F64(f64::INFINITY)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isInteger", vec![Value::F64(3.14)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("isInteger", vec![Value::F64(f64::NAN)]),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        invoke("isInteger", vec![Value::F64(f64::INFINITY)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn is_safe_integer_within_range() {
-    assert_eq!(invoke("isSafeInteger", vec![Value::F64(9007199254740991.0)]), Value::Bool(true));
-    assert_eq!(invoke("isSafeInteger", vec![Value::F64(9007199254740992.0)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isSafeInteger", vec![Value::F64(9007199254740991.0)]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("isSafeInteger", vec![Value::F64(9007199254740992.0)]),
+        Value::Bool(false)
+    );
 }
 
 // ── Number.parseInt / parseFloat — same as global ─────────────────
@@ -157,8 +203,14 @@ fn parse_int_decimal_default() {
 
 #[test]
 fn parse_int_with_radix() {
-    assert_eq!(invoke("parseInt", vec![s("ff"), Value::F64(16.0)]), Value::F64(255.0));
-    assert_eq!(invoke("parseInt", vec![s("101"), Value::F64(2.0)]), Value::F64(5.0));
+    assert_eq!(
+        invoke("parseInt", vec![s("ff"), Value::F64(16.0)]),
+        Value::F64(255.0)
+    );
+    assert_eq!(
+        invoke("parseInt", vec![s("101"), Value::F64(2.0)]),
+        Value::F64(5.0)
+    );
 }
 
 #[test]
@@ -205,7 +257,13 @@ fn to_fixed_default_digits_zero() {
 
 #[test]
 fn to_fixed_with_n_digits() {
-    assert_eq!(as_string(&invoke("toFixed", vec![Value::F64(3.14159), Value::F64(2.0)])), "3.14");
+    assert_eq!(
+        as_string(&invoke(
+            "toFixed",
+            vec![Value::F64(3.14159), Value::F64(2.0)]
+        )),
+        "3.14"
+    );
 }
 
 #[test]
@@ -215,12 +273,21 @@ fn to_string_radix_decimal_default() {
 
 #[test]
 fn to_string_radix_hex() {
-    assert_eq!(as_string(&invoke("toString", vec![Value::F64(255.0), Value::F64(16.0)])), "ff");
+    assert_eq!(
+        as_string(&invoke(
+            "toString",
+            vec![Value::F64(255.0), Value::F64(16.0)]
+        )),
+        "ff"
+    );
 }
 
 #[test]
 fn to_string_radix_binary() {
-    assert_eq!(as_string(&invoke("toString", vec![Value::F64(5.0), Value::F64(2.0)])), "101");
+    assert_eq!(
+        as_string(&invoke("toString", vec![Value::F64(5.0), Value::F64(2.0)])),
+        "101"
+    );
 }
 
 // ── Number.prototype.toPrecision ─────────────────────────────────────────────
@@ -230,14 +297,27 @@ fn to_precision_uses_significant_digits_not_decimal_places() {
     // toFixed(2) → "3.14"; toPrecision(3) → "3.14" only for small numbers.
     // toPrecision counts ALL significant digits, switching to exponential
     // notation when the number is too large or too small.
-    assert_eq!(as_string(&invoke("toPrecision", vec![Value::F64(123.456), Value::F64(5.0)])), "123.46");
+    assert_eq!(
+        as_string(&invoke(
+            "toPrecision",
+            vec![Value::F64(123.456), Value::F64(5.0)]
+        )),
+        "123.46"
+    );
 }
 
 #[test]
 fn to_precision_switches_to_exponential_for_large_numbers() {
     // 123456.toPrecision(3) → "1.23e+5" (cannot fit 3 sig-figs without exp).
-    let result = as_string(&invoke("toPrecision", vec![Value::F64(123456.0), Value::F64(3.0)]));
-    assert!(result.contains('e') || result.contains('E'), "expected exponential notation, got {}", result);
+    let result = as_string(&invoke(
+        "toPrecision",
+        vec![Value::F64(123456.0), Value::F64(3.0)],
+    ));
+    assert!(
+        result.contains('e') || result.contains('E'),
+        "expected exponential notation, got {}",
+        result
+    );
 }
 
 // ── Number.prototype.toExponential ───────────────────────────────────────────
@@ -245,17 +325,27 @@ fn to_precision_switches_to_exponential_for_large_numbers() {
 #[test]
 fn to_exponential_formats_in_scientific_notation() {
     // (1234).toExponential(2) → "1.23e+3"
-    let result = as_string(&invoke("toExponential", vec![Value::F64(1234.0), Value::F64(2.0)]));
+    let result = as_string(&invoke(
+        "toExponential",
+        vec![Value::F64(1234.0), Value::F64(2.0)],
+    ));
     // The mantissa must be 1.23 and the exponent must encode +3.
-    assert!(result.starts_with("1.23") && (result.contains("e+3") || result.contains("e+03")),
-        "got {}", result);
+    assert!(
+        result.starts_with("1.23") && (result.contains("e+3") || result.contains("e+03")),
+        "got {}",
+        result
+    );
 }
 
 #[test]
 fn to_exponential_no_arg_uses_full_precision() {
     // (0.00123).toExponential() → "1.23e-3" (no rounding).
     let result = as_string(&invoke("toExponential", vec![Value::F64(0.00123)]));
-    assert!(result.contains('e') || result.contains('E'), "expected exponential notation, got {}", result);
+    assert!(
+        result.contains('e') || result.contains('E'),
+        "expected exponential notation, got {}",
+        result
+    );
 }
 
 // ── Number.MAX_VALUE / MIN_VALUE ─────────────────────────────────────────────
@@ -263,7 +353,11 @@ fn to_exponential_no_arg_uses_full_precision() {
 #[test]
 fn max_value_is_finite_and_very_large() {
     if let Value::F64(n) = invoke("MAX_VALUE", vec![]) {
-        assert!(n.is_finite() && n > 1e300, "MAX_VALUE should be > 1e300, got {}", n);
+        assert!(
+            n.is_finite() && n > 1e300,
+            "MAX_VALUE should be > 1e300, got {}",
+            n
+        );
     } else {
         panic!("expected F64");
     }
@@ -273,7 +367,11 @@ fn max_value_is_finite_and_very_large() {
 fn min_value_is_the_smallest_positive_subnormal() {
     // ECMA-262: Number.MIN_VALUE is the smallest positive value, ≈ 5e-324.
     if let Value::F64(n) = invoke("MIN_VALUE", vec![]) {
-        assert!(n > 0.0 && n < 1e-320, "MIN_VALUE should be tiny positive, got {}", n);
+        assert!(
+            n > 0.0 && n < 1e-320,
+            "MIN_VALUE should be tiny positive, got {}",
+            n
+        );
     } else {
         panic!("expected F64");
     }
@@ -327,12 +425,18 @@ fn global_is_finite_coerces_string_to_number() {
 
 #[test]
 fn global_is_finite_false_for_infinity_string() {
-    assert_eq!(invoke("globalIsFinite", vec![s("Infinity")]), Value::Bool(false));
+    assert_eq!(
+        invoke("globalIsFinite", vec![s("Infinity")]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn global_is_finite_false_for_nan_value() {
-    assert_eq!(invoke("globalIsFinite", vec![Value::F64(f64::NAN)]), Value::Bool(false));
+    assert_eq!(
+        invoke("globalIsFinite", vec![Value::F64(f64::NAN)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]

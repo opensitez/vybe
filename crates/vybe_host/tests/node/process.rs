@@ -85,7 +85,10 @@ fn array_strings(value: &Value) -> Vec<String> {
 fn platform_returns_recognized_string() {
     let s = as_string(&call_proc("platform", vec![]));
     assert!(
-        matches!(s.as_str(), "darwin" | "linux" | "win32" | "freebsd" | "openbsd"),
+        matches!(
+            s.as_str(),
+            "darwin" | "linux" | "win32" | "freebsd" | "openbsd"
+        ),
         "process.platform() should be Node-recognized, got {}",
         s
     );
@@ -95,7 +98,10 @@ fn platform_returns_recognized_string() {
 fn arch_returns_recognized_string() {
     let s = as_string(&call_proc("arch", vec![]));
     assert!(
-        matches!(s.as_str(), "x64" | "arm64" | "ia32" | "arm" | "ppc64" | "s390x" | "riscv64"),
+        matches!(
+            s.as_str(),
+            "x64" | "arm64" | "ia32" | "arm" | "ppc64" | "s390x" | "riscv64"
+        ),
         "process.arch() should be Node-recognized, got {}",
         s
     );
@@ -106,7 +112,11 @@ fn version_returns_v_prefixed_string() {
     // Node uses "vMAJOR.MINOR.PATCH" — Vybe surfaces something with a
     // leading 'v' so consuming code's regex still matches.
     let v = as_string(&call_proc("version", vec![]));
-    assert!(v.starts_with('v'), "process.version should start with 'v', got {}", v);
+    assert!(
+        v.starts_with('v'),
+        "process.version should start with 'v', got {}",
+        v
+    );
 }
 
 // ── pid / ppid ────────────────────────────────────────────────────
@@ -115,8 +125,17 @@ fn version_returns_v_prefixed_string() {
 fn pid_returns_positive_integer() {
     let v = call_proc("pid", vec![]);
     if let Value::F64(n) = v {
-        assert!(n > 0.0 && n.is_finite(), "process.pid should be positive int, got {}", n);
-        assert_eq!(n.fract(), 0.0, "process.pid should be integer-valued, got {}", n);
+        assert!(
+            n > 0.0 && n.is_finite(),
+            "process.pid should be positive int, got {}",
+            n
+        );
+        assert_eq!(
+            n.fract(),
+            0.0,
+            "process.pid should be integer-valued, got {}",
+            n
+        );
     } else {
         panic!("process.pid expected number, got {:?}", v);
     }
@@ -139,17 +158,13 @@ fn chdir_changes_working_directory() {
     // Each test gets a temp dir; chdir into it, verify cwd reflects it,
     // then chdir back so we don't pollute.
     let original = std::env::current_dir().expect("get cwd");
-    let dir = std::env::temp_dir().join(format!(
-        "vybe-node-process-chdir-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("vybe-node-process-chdir-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
 
     call_proc("chdir", vec![s(dir.to_str().unwrap())]);
     let after = as_string(&call_proc("cwd", vec![]));
     assert!(
-        std::path::Path::new(&after).canonicalize().ok()
-            == dir.canonicalize().ok(),
+        std::path::Path::new(&after).canonicalize().ok() == dir.canonicalize().ok(),
         "after chdir, cwd should be the new dir; got {} vs {}",
         after,
         dir.display()
@@ -165,7 +180,10 @@ fn chdir_changes_working_directory() {
 fn argv_returns_array_of_strings() {
     let v = call_proc("argv", vec![]);
     let names = array_strings(&v);
-    assert!(!names.is_empty(), "process.argv should have at least the executable path");
+    assert!(
+        !names.is_empty(),
+        "process.argv should have at least the executable path"
+    );
 }
 
 // ── env ───────────────────────────────────────────────────────────
@@ -201,7 +219,11 @@ fn exec_path_returns_existing_file() {
 fn uptime_returns_non_negative_number() {
     let v = call_proc("uptime", vec![]);
     if let Value::F64(n) = v {
-        assert!(n >= 0.0 && n.is_finite(), "uptime should be non-negative finite, got {}", n);
+        assert!(
+            n >= 0.0 && n.is_finite(),
+            "uptime should be non-negative finite, got {}",
+            n
+        );
     } else {
         panic!("process.uptime() expected number, got {:?}", v);
     }
@@ -215,8 +237,14 @@ fn hrtime_returns_two_element_array() {
         let object = object.lock().unwrap();
         if let ObjectKind::Array(elems) = &object.kind {
             assert_eq!(elems.len(), 2, "hrtime() returns [s, ns] pair");
-            assert!(matches!(&elems[0], Value::F64(_) | Value::I32(_)), "hrtime[0] number");
-            assert!(matches!(&elems[1], Value::F64(_) | Value::I32(_)), "hrtime[1] number");
+            assert!(
+                matches!(&elems[0], Value::F64(_) | Value::I32(_)),
+                "hrtime[0] number"
+            );
+            assert!(
+                matches!(&elems[1], Value::F64(_) | Value::I32(_)),
+                "hrtime[1] number"
+            );
             return;
         }
     }
@@ -252,7 +280,10 @@ fn versions_returns_object_with_node_key() {
     let v = call_proc("versions", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("node"), "process.versions must have 'node' key");
+        assert!(
+            o.properties.contains_key("node"),
+            "process.versions must have 'node' key"
+        );
         return;
     }
     panic!("process.versions expected object, got {:?}", v);
@@ -267,7 +298,10 @@ fn versions_node_is_non_empty_string() {
             assert!(!s.is_empty(), "process.versions.node must be non-empty");
             return;
         }
-        panic!("process.versions.node expected string, got {:?}", o.properties.get("node"));
+        panic!(
+            "process.versions.node expected string, got {:?}",
+            o.properties.get("node")
+        );
     }
     panic!("process.versions expected object, got {:?}", v);
 }
@@ -278,7 +312,10 @@ fn versions_node_is_non_empty_string() {
 fn ppid_returns_positive_integer() {
     let v = call_proc("ppid", vec![]);
     match v {
-        Value::F64(n) => assert!(n > 0.0 && n.is_finite(), "process.ppid must be positive, got {n}"),
+        Value::F64(n) => assert!(
+            n > 0.0 && n.is_finite(),
+            "process.ppid must be positive, got {n}"
+        ),
         Value::I32(n) => assert!(n > 0, "process.ppid must be positive, got {n}"),
         Value::I64(n) => assert!(n > 0, "process.ppid must be positive, got {n}"),
         other => panic!("process.ppid expected number, got {:?}", other),
@@ -290,7 +327,11 @@ fn ppid_returns_positive_integer() {
 #[test]
 fn title_returns_string() {
     let v = call_proc("title", vec![]);
-    assert!(matches!(v, Value::String(_)), "process.title must be a string, got {:?}", v);
+    assert!(
+        matches!(v, Value::String(_)),
+        "process.title must be a string, got {:?}",
+        v
+    );
 }
 
 // ── argv0 ─────────────────────────────────────────────────────────────────────
@@ -307,7 +348,10 @@ fn argv0_returns_non_empty_string() {
 #[test]
 fn exec_argv_returns_array() {
     let v = call_proc("execArgv", vec![]);
-    assert!(matches!(v, Value::Object(_)), "process.execArgv must be an array");
+    assert!(
+        matches!(v, Value::Object(_)),
+        "process.execArgv must be an array"
+    );
 }
 
 // ── cpuUsage ──────────────────────────────────────────────────────────────────
@@ -317,8 +361,14 @@ fn cpu_usage_returns_object_with_user_and_system() {
     let v = call_proc("cpuUsage", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("user"), "cpuUsage().user must exist");
-        assert!(o.properties.contains_key("system"), "cpuUsage().system must exist");
+        assert!(
+            o.properties.contains_key("user"),
+            "cpuUsage().user must exist"
+        );
+        assert!(
+            o.properties.contains_key("system"),
+            "cpuUsage().system must exist"
+        );
         return;
     }
     panic!("process.cpuUsage() expected object, got {:?}", v);
@@ -348,7 +398,10 @@ fn cpu_usage_values_are_non_negative() {
 #[test]
 fn resource_usage_returns_object() {
     let v = call_proc("resourceUsage", vec![]);
-    assert!(matches!(v, Value::Object(_)), "process.resourceUsage() must return an object");
+    assert!(
+        matches!(v, Value::Object(_)),
+        "process.resourceUsage() must return an object"
+    );
 }
 
 #[test]
@@ -356,8 +409,14 @@ fn resource_usage_has_user_cpu_time() {
     let v = call_proc("resourceUsage", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("userCPUTime"), "resourceUsage().userCPUTime must exist");
-        assert!(o.properties.contains_key("systemCPUTime"), "resourceUsage().systemCPUTime must exist");
+        assert!(
+            o.properties.contains_key("userCPUTime"),
+            "resourceUsage().userCPUTime must exist"
+        );
+        assert!(
+            o.properties.contains_key("systemCPUTime"),
+            "resourceUsage().systemCPUTime must exist"
+        );
         return;
     }
     panic!("process.resourceUsage() expected object, got {:?}", v);
@@ -369,8 +428,12 @@ fn resource_usage_has_user_cpu_time() {
 fn exit_code_is_numeric_or_undefined() {
     let v = call_proc("exitCode", vec![]);
     assert!(
-        matches!(v, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined | Value::Null),
-        "process.exitCode must be a number or undefined, got {:?}", v
+        matches!(
+            v,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined | Value::Null
+        ),
+        "process.exitCode must be a number or undefined, got {:?}",
+        v
     );
 }
 
@@ -378,10 +441,14 @@ fn exit_code_is_numeric_or_undefined() {
 
 #[test]
 fn emit_warning_returns_undefined() {
-    let v = call_proc("emitWarning", vec![Value::String(std::sync::Arc::from("test warning"))]);
+    let v = call_proc(
+        "emitWarning",
+        vec![Value::String(std::sync::Arc::from("test warning"))],
+    );
     assert!(
         matches!(v, Value::Undefined | Value::Null),
-        "process.emitWarning() must return undefined, got {:?}", v
+        "process.emitWarning() must return undefined, got {:?}",
+        v
     );
 }
 
@@ -390,7 +457,10 @@ fn emit_warning_returns_undefined() {
 #[test]
 fn features_returns_object() {
     let v = call_proc("features", vec![]);
-    assert!(matches!(v, Value::Object(_)), "process.features must be an object");
+    assert!(
+        matches!(v, Value::Object(_)),
+        "process.features must be an object"
+    );
 }
 
 // ── release ───────────────────────────────────────────────────────────────────
@@ -400,7 +470,10 @@ fn release_returns_object_with_name() {
     let v = call_proc("release", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("name"), "process.release.name must exist");
+        assert!(
+            o.properties.contains_key("name"),
+            "process.release.name must exist"
+        );
         return;
     }
     panic!("process.release expected object, got {:?}", v);
@@ -412,7 +485,11 @@ fn release_name_is_node() {
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
         if let Some(Value::String(name)) = o.properties.get("name") {
-            assert_eq!(name.as_ref(), "node", "process.release.name must be 'node', got {name}");
+            assert_eq!(
+                name.as_ref(),
+                "node",
+                "process.release.name must be 'node', got {name}"
+            );
             return;
         }
     }
@@ -454,5 +531,8 @@ fn proposal_node_process_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:process imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:process imports: {missing:?}"
+    );
 }

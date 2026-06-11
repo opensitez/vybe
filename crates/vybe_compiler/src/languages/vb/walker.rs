@@ -336,10 +336,7 @@ fn maybe_rewrite_vb_binary(op: BinOp, left: Expression, right: Expression) -> Ex
         };
         return call_expr(
             build_dotted_expr("Regex.IsMatch"),
-            vec![
-                Argument::positional(pattern),
-                Argument::positional(left),
-            ],
+            vec![Argument::positional(pattern), Argument::positional(left)],
         );
     }
 

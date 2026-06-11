@@ -7,13 +7,13 @@
 //! Emits `WidgetEvent::Action("nav:<name>:<action>")` where `<action>` is one
 //! of: `first`, `prev`, `next`, `last`, `add`, `remove`.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
 use super::layout::{
-    LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton,
-    KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue,
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
 };
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 /// Which navigation button was pressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,12 +29,12 @@ pub enum NavAction {
 impl NavAction {
     pub fn as_str(&self) -> &'static str {
         match self {
-            NavAction::First    => "first",
+            NavAction::First => "first",
             NavAction::Previous => "prev",
-            NavAction::Next     => "next",
-            NavAction::Last     => "last",
-            NavAction::Add      => "add",
-            NavAction::Remove   => "remove",
+            NavAction::Next => "next",
+            NavAction::Last => "last",
+            NavAction::Add => "add",
+            NavAction::Remove => "remove",
         }
     }
 }
@@ -85,7 +85,10 @@ impl BindingNavigator {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Set the current record position (0-based) and total count.
     pub fn set_position(&mut self, position: i32, count: i32) {
@@ -95,7 +98,9 @@ impl BindingNavigator {
 
     fn relayout(&mut self) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         self.buttons.clear();
         let btn_h = (r.h - 6.0).max(12.0);
@@ -104,18 +109,9 @@ impl BindingNavigator {
         let gap = 2.0_f32;
         let pad = 4.0_f32;
 
-        let defs: &[(&str, NavAction)] = &[
-            ("⏮", NavAction::First),
-            ("◀", NavAction::Previous),
-        ];
-        let defs_right: &[(&str, NavAction)] = &[
-            ("▶", NavAction::Next),
-            ("⏭", NavAction::Last),
-        ];
-        let defs_extra: &[(&str, NavAction)] = &[
-            ("+", NavAction::Add),
-            ("−", NavAction::Remove),
-        ];
+        let defs: &[(&str, NavAction)] = &[("⏮", NavAction::First), ("◀", NavAction::Previous)];
+        let defs_right: &[(&str, NavAction)] = &[("▶", NavAction::Next), ("⏭", NavAction::Last)];
+        let defs_extra: &[(&str, NavAction)] = &[("+", NavAction::Add), ("−", NavAction::Remove)];
 
         let mut cx = r.x + pad;
         let cy = r.y + (r.h - btn_h) / 2.0;
@@ -171,23 +167,39 @@ impl BindingNavigator {
 }
 
 impl PanelWidget for BindingNavigator {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn focusable(&self) -> bool { true }
-    fn set_focused(&mut self, f: bool) { self.focused = f; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, h: bool) { self.hovered = h; }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
+    fn set_focused(&mut self, f: bool) {
+        self.focused = f;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, h: bool) {
+        self.hovered = h;
+    }
 
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.relayout();
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         let ts = Transform::from_scale(ctx.scale, ctx.scale);
         let mut paint = Paint::default();
@@ -197,13 +209,17 @@ impl PanelWidget for BindingNavigator {
         let (br, bg, bb, ba) = self.colors.background;
         paint.set_color_rgba8(br, bg, bb, ba);
         if let Some(path) = super::rounded_rect_path(r.x, r.y, r.w, r.h, 3.0) {
-            ctx.pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+            ctx.pixmap
+                .fill_path(&path, &paint, FillRule::Winding, ts, None);
         }
 
         // Toolbar border
         let (bdr, bdg, bdb, bda) = self.colors.border;
         paint.set_color_rgba8(bdr, bdg, bdb, bda);
-        let stroke = Stroke { width: 1.0, ..Stroke::default() };
+        let stroke = Stroke {
+            width: 1.0,
+            ..Stroke::default()
+        };
         if let Some(path) = super::rounded_rect_path(r.x, r.y, r.w, r.h, 3.0) {
             ctx.pixmap.stroke_path(&path, &paint, &stroke, ts, None);
         }
@@ -224,7 +240,8 @@ impl PanelWidget for BindingNavigator {
                 paint.set_color_rgba8(240, 240, 240, 255);
             }
             if let Some(path) = super::rounded_rect_path(br.x, br.y, br.w, br.h, 3.0) {
-                ctx.pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+                ctx.pixmap
+                    .fill_path(&path, &paint, FillRule::Winding, ts, None);
             }
 
             // Button border
@@ -234,13 +251,20 @@ impl PanelWidget for BindingNavigator {
             }
 
             // Button label — centered
-            let tw = super::ide_text::measure_text(ctx.font_system, btn.label, font_size, ctx.scale);
+            let tw =
+                super::ide_text::measure_text(ctx.font_system, btn.label, font_size, ctx.scale);
             let tx = br.x + (br.w - tw) / 2.0;
             let ty = br.y + (br.h - font_size) / 2.0 - 1.0;
             super::ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                btn.label, tx, ty, font_size,
-                CosmicColor::rgba(fr, fg, fb, 255), ctx.scale,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                btn.label,
+                tx,
+                ty,
+                font_size,
+                CosmicColor::rgba(fr, fg, fb, 255),
+                ctx.scale,
             );
         }
 
@@ -249,7 +273,8 @@ impl PanelWidget for BindingNavigator {
         if cr.w > 0.0 {
             paint.set_color_rgba8(255, 255, 255, 255);
             if let Some(path) = super::rounded_rect_path(cr.x, cr.y, cr.w, cr.h, 2.0) {
-                ctx.pixmap.fill_path(&path, &paint, FillRule::Winding, ts, None);
+                ctx.pixmap
+                    .fill_path(&path, &paint, FillRule::Winding, ts, None);
             }
             paint.set_color_rgba8(190, 190, 190, 255);
             if let Some(path) = super::rounded_rect_path(cr.x, cr.y, cr.w, cr.h, 2.0) {
@@ -257,13 +282,20 @@ impl PanelWidget for BindingNavigator {
             }
             let display_pos = if self.count > 0 { self.position + 1 } else { 0 };
             let counter_text = format!("{} of {}", display_pos, self.count);
-            let tw = super::ide_text::measure_text(ctx.font_system, &counter_text, font_size, ctx.scale);
+            let tw =
+                super::ide_text::measure_text(ctx.font_system, &counter_text, font_size, ctx.scale);
             let tx = cr.x + (cr.w - tw) / 2.0;
             let ty = cr.y + (cr.h - font_size) / 2.0 - 1.0;
             super::ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                &counter_text, tx, ty, font_size,
-                CosmicColor::rgba(fr, fg, fb, 255), ctx.scale,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &counter_text,
+                tx,
+                ty,
+                font_size,
+                CosmicColor::rgba(fr, fg, fb, 255),
+                ctx.scale,
             );
         }
     }
@@ -271,7 +303,10 @@ impl PanelWidget for BindingNavigator {
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         if !self.rect.contains(event.x, event.y) {
             // Clear hover/press on all buttons
-            for btn in &mut self.buttons { btn.hovered = false; btn.pressed = false; }
+            for btn in &mut self.buttons {
+                btn.hovered = false;
+                btn.pressed = false;
+            }
             return false;
         }
 
@@ -305,7 +340,9 @@ impl PanelWidget for BindingNavigator {
         }
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {
         std::mem::take(&mut self.pending_events)
@@ -319,9 +356,7 @@ impl PanelWidget for BindingNavigator {
                 self.position = *v as i32;
                 CommandValue::None
             }
-            WidgetCommand::GetValue => {
-                CommandValue::Number(self.position as f64)
-            }
+            WidgetCommand::GetValue => CommandValue::Number(self.position as f64),
             WidgetCommand::Custom(key, val) => {
                 match key.as_str() {
                     "set_count" => {

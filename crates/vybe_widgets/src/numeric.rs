@@ -1,8 +1,11 @@
 //! NumericUpDown widget — text field with spinner buttons.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 pub struct NumericUpDown {
     pub value: f64,
@@ -39,7 +42,10 @@ impl NumericUpDown {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Width of the spinner button area.
     fn button_width(&self) -> f32 {
@@ -113,7 +119,11 @@ impl NumericUpDown {
         }
 
         // Outer border
-        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        let (r, g, b, a) = if self.focused {
+            self.colors.focus_ring
+        } else {
+            self.colors.border
+        };
         paint.set_color_rgba8(r, g, b, a);
         stroke.width = 1.0;
         if let Some(path) = rounded_rect_path(x, y, self.width, self.height, 1.0) {
@@ -162,29 +172,60 @@ impl NumericUpDown {
 }
 
 impl PanelWidget for NumericUpDown {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         let txt = self.display_text();
         let (fr, fg, fb, _) = self.colors.foreground;
-        super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &txt, r.x + 4.0, r.y + 4.0, 12.0, cosmic_text::Color::rgba(fr, fg, fb, 255), ctx.scale);
+        super::ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &txt,
+            r.x + 4.0,
+            r.y + 4.0,
+            12.0,
+            cosmic_text::Color::rgba(fr, fg, fb, 255),
+            ctx.scale,
+        );
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         let r = self.rect;
-        if !r.contains(event.x, event.y) { return false; }
+        if !r.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             if self.click(event.x - r.x, event.y - r.y) {
-                self.pending_events.push(WidgetEvent::NumericChanged(self.name.clone(), self.value));
+                self.pending_events
+                    .push(WidgetEvent::NumericChanged(self.name.clone(), self.value));
                 return true;
             }
         }
@@ -192,25 +233,37 @@ impl PanelWidget for NumericUpDown {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused { return false; }
+        if !self.focused {
+            return false;
+        }
         use winit::keyboard::{Key, NamedKey};
         match &event.logical_key {
-            Key::Named(NamedKey::ArrowUp) => { self.increment(); self.pending_events.push(WidgetEvent::NumericChanged(self.name.clone(), self.value)); true }
-            Key::Named(NamedKey::ArrowDown) => { self.decrement(); self.pending_events.push(WidgetEvent::NumericChanged(self.name.clone(), self.value)); true }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.increment();
+                self.pending_events
+                    .push(WidgetEvent::NumericChanged(self.name.clone(), self.value));
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.decrement();
+                self.pending_events
+                    .push(WidgetEvent::NumericChanged(self.name.clone(), self.value));
+                true
+            }
             _ => false,
         }
     }
 
-    fn focusable(&self) -> bool { true }
+    fn focusable(&self) -> bool {
+        true
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetValue(v) => {
                 if (self.value - *v).abs() > f64::EPSILON {
                     self.value = *v;
-                    self.pending_events.push(WidgetEvent::NumericChanged(
-                        self.name.clone(),
-                        self.value,
-                    ));
+                    self.pending_events
+                        .push(WidgetEvent::NumericChanged(self.name.clone(), self.value));
                 }
                 CommandValue::None
             }
@@ -219,5 +272,7 @@ impl PanelWidget for NumericUpDown {
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

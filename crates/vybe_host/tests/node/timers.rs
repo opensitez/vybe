@@ -53,8 +53,10 @@ fn set_timeout_returns_handle_object() {
     // Passing Null as callback — host must accept any value; the returned
     // handle is an opaque reference the caller can pass to clearTimeout.
     let handle = call_timers("setTimeout", vec![Value::Null, Value::I32(0)]);
-    assert!(matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
-        "expected a non-null handle, got {handle:?}");
+    assert!(
+        matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
+        "expected a non-null handle, got {handle:?}"
+    );
 }
 
 #[test]
@@ -64,7 +66,8 @@ fn set_timeout_handle_is_distinct_per_call() {
     // Two handles for two registrations — they must not be the same object
     // (reference equality, not value equality).
     assert_ne!(
-        format!("{h1:?}"), format!("{h2:?}"),
+        format!("{h1:?}"),
+        format!("{h2:?}"),
         "handles should be distinct objects"
     );
 }
@@ -96,8 +99,10 @@ fn clear_timeout_accepts_undefined_without_panic() {
 #[test]
 fn set_interval_returns_handle_object() {
     let handle = call_timers("setInterval", vec![Value::Null, Value::I32(100)]);
-    assert!(matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
-        "expected a non-null handle, got {handle:?}");
+    assert!(
+        matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
+        "expected a non-null handle, got {handle:?}"
+    );
 }
 
 // ── clearInterval ─────────────────────────────────────────────────────────────
@@ -120,8 +125,10 @@ fn clear_interval_accepts_null_without_panic() {
 #[test]
 fn set_immediate_returns_handle() {
     let handle = call_timers("setImmediate", vec![Value::Null]);
-    assert!(matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
-        "expected a non-null handle, got {handle:?}");
+    assert!(
+        matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
+        "expected a non-null handle, got {handle:?}"
+    );
 }
 
 // ── clearImmediate ────────────────────────────────────────────────────────────
@@ -163,7 +170,10 @@ fn timeout_handle_has_unref_method() {
     let handle = call_timers("setTimeout", vec![Value::Null, Value::I32(1000)]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("unref"), "Timeout.unref must exist");
+        assert!(
+            o.properties.contains_key("unref"),
+            "Timeout.unref must exist"
+        );
     }
 }
 
@@ -172,7 +182,10 @@ fn timeout_handle_has_has_ref_method() {
     let handle = call_timers("setTimeout", vec![Value::Null, Value::I32(1000)]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("hasRef"), "Timeout.hasRef must exist");
+        assert!(
+            o.properties.contains_key("hasRef"),
+            "Timeout.hasRef must exist"
+        );
     }
 }
 
@@ -181,18 +194,24 @@ fn timeout_handle_refresh_method_exists() {
     let handle = call_timers("setTimeout", vec![Value::Null, Value::I32(1000)]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("refresh"), "Timeout.refresh must exist");
+        assert!(
+            o.properties.contains_key("refresh"),
+            "Timeout.refresh must exist"
+        );
     }
 }
 
 #[test]
 fn set_timeout_with_extra_args_returns_handle() {
-    let handle = call_timers("setTimeout", vec![
-        Value::Null,
-        Value::I32(0),
-        Value::String(std::sync::Arc::from("arg1")),
-        Value::I32(42),
-    ]);
+    let handle = call_timers(
+        "setTimeout",
+        vec![
+            Value::Null,
+            Value::I32(0),
+            Value::String(std::sync::Arc::from("arg1")),
+            Value::I32(42),
+        ],
+    );
     assert!(
         matches!(handle, Value::Object(_) | Value::I32(_) | Value::F64(_)),
         "setTimeout with extra args must return handle"
@@ -215,7 +234,10 @@ fn interval_handle_has_unref_method() {
     let handle = call_timers("setInterval", vec![Value::Null, Value::I32(1000)]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("unref"), "Interval.unref must exist");
+        assert!(
+            o.properties.contains_key("unref"),
+            "Interval.unref must exist"
+        );
     }
 }
 
@@ -224,7 +246,10 @@ fn interval_handle_has_has_ref_method() {
     let handle = call_timers("setInterval", vec![Value::Null, Value::I32(1000)]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("hasRef"), "Interval.hasRef must exist");
+        assert!(
+            o.properties.contains_key("hasRef"),
+            "Interval.hasRef must exist"
+        );
     }
 }
 
@@ -244,7 +269,10 @@ fn immediate_handle_has_unref_method() {
     let handle = call_timers("setImmediate", vec![Value::Null]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("unref"), "Immediate.unref must exist");
+        assert!(
+            o.properties.contains_key("unref"),
+            "Immediate.unref must exist"
+        );
     }
 }
 
@@ -253,7 +281,10 @@ fn immediate_handle_has_has_ref_method() {
     let handle = call_timers("setImmediate", vec![Value::Null]);
     if let Value::Object(obj) = &handle {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("hasRef"), "Immediate.hasRef must exist");
+        assert!(
+            o.properties.contains_key("hasRef"),
+            "Immediate.hasRef must exist"
+        );
     }
 }
 
@@ -293,5 +324,8 @@ fn proposal_node_timers_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:timers imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:timers imports: {missing:?}"
+    );
 }

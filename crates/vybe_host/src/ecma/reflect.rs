@@ -21,219 +21,362 @@
 //! Object operations are the same — Reflect just exposes them as
 //! standalone functions instead of Object statics.
 
-use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value, HostContext};
-use vybe_bytecode::value::{Object, ObjectKind};
 use crate::ecma::function::invoke_with_explicit_this;
+use crate::ecma::object::{
+    install_noop_setter, is_nonconfig, is_not_extensible, mark_not_extensible,
+    ordered_own_string_keys, proto_walk_get, track_key, track_nonconfig, track_nonenum,
+};
+use std::sync::{Arc, Mutex};
+use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("ecma:reflect", "__proxyRevoke", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(proxy)) = args.first() {
-            let mut o = proxy.lock().unwrap();
-            o.properties.insert("__vybe_proxy_revoked".into(), Value::Bool(true));
-            o.properties.insert("__vybe_proxy_handler".into(), Value::Null);
-        }
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "__proxyRevoke",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(proxy)) = args.first() {
+                let mut o = proxy.lock().unwrap();
+                o.properties
+                    .insert("__vybe_proxy_revoked".into(), Value::Bool(true));
+                o.properties
+                    .insert("__vybe_proxy_handler".into(), Value::Null);
+            }
+            Value::Undefined
+        }),
+    );
     let proxy_revoke_idx = *vm
         .host_registry
         .get(&("ecma:reflect".to_string(), "__proxyRevoke".to_string()))
         .expect("ecma:reflect.__proxyRevoke must be registered");
 
-    vm.register_host_fn("ecma:reflect", "proxyRevocable", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
+    vm.register_host_fn(
+        "ecma:reflect",
+        "proxyRevocable",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
 
-        let mut proxy = Object::new();
-        proxy.properties.insert("__vybe_proxy_target".into(), target.clone());
-        proxy.properties.insert("__vybe_proxy_handler".into(), handler);
-        if let Value::Object(target_obj) = &target {
-            if let Some(proto) = target_obj.lock().unwrap().properties.get("__proto__").cloned() {
-                proxy.properties.insert("__proto__".into(), proto);
+            let mut proxy = Object::new();
+            proxy
+                .properties
+                .insert("__vybe_proxy_target".into(), target.clone());
+            proxy
+                .properties
+                .insert("__vybe_proxy_handler".into(), handler);
+            if let Value::Object(target_obj) = &target {
+                if let Some(proto) = target_obj
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("__proto__")
+                    .cloned()
+                {
+                    proxy.properties.insert("__proto__".into(), proto);
+                }
             }
-        }
-        let proxy_value = Value::Object(Arc::new(Mutex::new(proxy)));
+            let proxy_value = Value::Object(Arc::new(Mutex::new(proxy)));
 
-        let mut revoke = Object::new();
-        revoke.kind = ObjectKind::HostFunction(proxy_revoke_idx);
-        revoke.properties.insert(
-            "__bound_args".into(),
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![proxy_value.clone()])))),
-        );
-        let revoke_value = Value::Object(Arc::new(Mutex::new(revoke)));
+            let mut revoke = Object::new();
+            revoke.kind = ObjectKind::HostFunction(proxy_revoke_idx);
+            revoke.properties.insert(
+                "__bound_args".into(),
+                Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                    proxy_value.clone(),
+                ])))),
+            );
+            let revoke_value = Value::Object(Arc::new(Mutex::new(revoke)));
 
-        let mut result = Object::new();
-        result.properties.insert("proxy".into(), proxy_value);
-        result.properties.insert("revoke".into(), revoke_value);
-        Value::Object(Arc::new(Mutex::new(result)))
-    }));
+            let mut result = Object::new();
+            result.properties.insert("proxy".into(), proxy_value);
+            result.properties.insert("revoke".into(), revoke_value);
+            Value::Object(Arc::new(Mutex::new(result)))
+        }),
+    );
 
     // Reflect.apply(target, thisArg, argsList) → result
-    vm.register_host_fn("ecma:reflect", "apply", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let mut invoke_args: Vec<Value> = Vec::new();
-        if let Some(Value::Object(arr)) = args.get(2) {
-            let o = arr.lock().unwrap();
-            if let ObjectKind::Array(ref v) = o.kind {
-                invoke_args.extend(v.iter().cloned());
+    vm.register_host_fn(
+        "ecma:reflect",
+        "apply",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let mut invoke_args: Vec<Value> = Vec::new();
+            if let Some(Value::Object(arr)) = args.get(2) {
+                let o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    invoke_args.extend(v.iter().cloned());
+                }
             }
-        }
-        let result = invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args);
-        if matches!(result, Value::Null) { Value::Undefined } else { result }
-    }));
+            let result = invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args);
+            if matches!(result, Value::Null) {
+                Value::Undefined
+            } else {
+                result
+            }
+        }),
+    );
 
     // Reflect.construct(target, argsList, newTarget?) → object
     //
-    vm.register_host_fn("ecma:reflect", "construct", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let mut this_value = Object::new();
-        if let Value::Object(target_obj) = &target {
-            if let Some(proto) = target_obj.lock().unwrap().properties.get("prototype").cloned() {
-                this_value.properties.insert("__proto__".into(), proto);
+    vm.register_host_fn(
+        "ecma:reflect",
+        "construct",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut this_value = Object::new();
+            if let Value::Object(target_obj) = &target {
+                if let Some(proto) = target_obj
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("prototype")
+                    .cloned()
+                {
+                    this_value.properties.insert("__proto__".into(), proto);
+                }
             }
-        }
-        let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
-        let mut invoke_args: Vec<Value> = Vec::new();
-        if let Some(Value::Object(arr)) = args.get(1) {
-            let o = arr.lock().unwrap();
-            if let ObjectKind::Array(ref v) = o.kind {
-                invoke_args.extend(v.iter().cloned());
+            let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
+            let mut invoke_args: Vec<Value> = Vec::new();
+            if let Some(Value::Object(arr)) = args.get(1) {
+                let o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    invoke_args.extend(v.iter().cloned());
+                }
             }
-        }
-        let result = invoke_with_explicit_this(ctx, &target, this_obj.clone(), &invoke_args);
-        // If the target returns an object, use it; else use the synthetic this.
-        if matches!(result, Value::Object(_)) { result } else { this_obj }
-    }));
+            let result = invoke_with_explicit_this(ctx, &target, this_obj.clone(), &invoke_args);
+            // If the target returns an object, use it; else use the synthetic this.
+            if matches!(result, Value::Object(_)) {
+                result
+            } else {
+                this_obj
+            }
+        }),
+    );
 
     // Reflect.get(target, key, receiver?) → value
-    vm.register_host_fn("ecma:reflect", "get", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            return o.properties.get(&key).cloned().unwrap_or(Value::Undefined);
-        }
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "get",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            if let Some(Value::Object(obj)) = args.first() {
+                return proto_walk_get(obj, &key).unwrap_or(Value::Undefined);
+            }
+            Value::Undefined
+        }),
+    );
 
     // Reflect.set(target, key, value, receiver?) → bool (always true here)
-    vm.register_host_fn("ecma:reflect", "set", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.lock().unwrap();
-            o.properties.insert(key, val);
-            return Value::Bool(true);
-        }
-        Value::Bool(false)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "set",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
+                if o.properties.contains_key(&format!("__set_{}", key)) {
+                    return Value::Bool(false);
+                }
+                if is_not_extensible(&o) && !o.properties.contains_key(&key) {
+                    return Value::Bool(false);
+                }
+                o.properties.insert(key, val);
+                return Value::Bool(true);
+            }
+            Value::Bool(false)
+        }),
+    );
 
     // Reflect.has(target, key) → bool. Mirrors `key in target` (own + proto).
-    vm.register_host_fn("ecma:reflect", "has", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            return Value::Bool(o.properties.contains_key(&key));
-        }
-        Value::Bool(false)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "has",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            if let Some(Value::Object(obj)) = args.first() {
+                return Value::Bool(proto_walk_get(obj, &key).is_some());
+            }
+            Value::Bool(false)
+        }),
+    );
 
     // Reflect.deleteProperty(target, key) → bool
-    vm.register_host_fn("ecma:reflect", "deleteProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.lock().unwrap();
-            o.properties.remove(&key);
-            return Value::Bool(true);
-        }
-        Value::Bool(true)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "deleteProperty",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
+                if is_nonconfig(&o, &key) {
+                    return Value::Bool(false);
+                }
+                o.properties.remove(&key);
+                return Value::Bool(true);
+            }
+            Value::Bool(true)
+        }),
+    );
 
     // Reflect.ownKeys(target) → Array of string keys.
-    vm.register_host_fn("ecma:reflect", "ownKeys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let keys: Vec<Value> = o.properties.keys()
-                .filter(|k| !k.starts_with("__"))
-                .map(|k| Value::String(Arc::from(k.as_str())))
-                .collect();
-            return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
-        }
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "ownKeys",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                let mut keys: Vec<Value> = ordered_own_string_keys(&o)
+                    .into_iter()
+                    .map(|k| Value::String(Arc::from(k.as_str())))
+                    .collect();
+                if let Some(Value::Object(sym_keys)) = o.properties.get("__sym_keys") {
+                    if let ObjectKind::Array(sym_entries) = &sym_keys.lock().unwrap().kind {
+                        keys.extend(sym_entries.iter().cloned());
+                    }
+                }
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+            }
+            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+        }),
+    );
 
     // Reflect.getOwnPropertyDescriptor(target, key) → descriptor object | undefined
-    vm.register_host_fn("ecma:reflect", "getOwnPropertyDescriptor", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            if let Some(val) = o.properties.get(&key) {
-                let mut desc = Object::new();
-                desc.properties.insert("value".into(), val.clone());
-                desc.properties.insert("writable".into(), Value::Bool(true));
-                desc.properties.insert("enumerable".into(), Value::Bool(!key.starts_with("__")));
-                desc.properties.insert("configurable".into(), Value::Bool(true));
-                return Value::Object(Arc::new(Mutex::new(desc)));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "getOwnPropertyDescriptor",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                if let Some(val) = o.properties.get(&key) {
+                    let mut desc = Object::new();
+                    desc.properties.insert("value".into(), val.clone());
+                    desc.properties.insert("writable".into(), Value::Bool(true));
+                    desc.properties
+                        .insert("enumerable".into(), Value::Bool(!key.starts_with("__")));
+                    desc.properties
+                        .insert("configurable".into(), Value::Bool(true));
+                    return Value::Object(Arc::new(Mutex::new(desc)));
+                }
             }
-        }
-        Value::Undefined
-    }));
+            Value::Undefined
+        }),
+    );
 
     // Reflect.defineProperty(target, key, attrs) → bool
-    vm.register_host_fn("ecma:reflect", "defineProperty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        let val = if let Some(Value::Object(attrs)) = args.get(2) {
-            let a = attrs.lock().unwrap();
-            a.properties.get("value").cloned().unwrap_or(Value::Undefined)
-        } else { Value::Undefined };
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.lock().unwrap();
-            o.properties.insert(key, val);
-            return Value::Bool(true);
-        }
-        Value::Bool(false)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "defineProperty",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let (val, enumerable, writable, configurable) =
+                if let Some(Value::Object(attrs)) = args.get(2) {
+                    let a = attrs.lock().unwrap();
+                    (
+                        a.properties.get("value").cloned(),
+                        a.properties
+                            .get("enumerable")
+                            .map(|v| v.as_bool())
+                            .unwrap_or(false),
+                        a.properties.get("writable").map(|v| v.as_bool()),
+                        a.properties
+                            .get("configurable")
+                            .map(|v| v.as_bool())
+                            .unwrap_or(false),
+                    )
+                } else {
+                    (None, false, None, false)
+                };
+            if let Some(Value::Object(obj)) = args.first() {
+                track_key(obj, &key);
+                if !enumerable {
+                    track_nonenum(obj, &key);
+                }
+                let mut o = obj.lock().unwrap();
+                if o.properties.contains_key(&key) && is_nonconfig(&o, &key) {
+                    return Value::Bool(false);
+                }
+                if is_not_extensible(&o) && !o.properties.contains_key(&key) {
+                    return Value::Bool(false);
+                }
+                if let Some(v) = val {
+                    o.properties.insert(key.clone(), v);
+                    if matches!(writable, Some(false) | None) {
+                        install_noop_setter(&mut o, &key);
+                    }
+                } else if !o.properties.contains_key(&key) {
+                    o.properties.insert(key.clone(), Value::Undefined);
+                }
+                drop(o);
+                if !configurable {
+                    track_nonconfig(obj, &key);
+                }
+                return Value::Bool(true);
+            }
+            Value::Bool(false)
+        }),
+    );
 
     // Reflect.getPrototypeOf(target) → Object | null
     //
     // Vybe stores the prototype under `__proto__`; missing → null.
-    vm.register_host_fn("ecma:reflect", "getPrototypeOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            return o.properties.get("__proto__").cloned().unwrap_or(Value::Null);
-        }
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "getPrototypeOf",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                return o
+                    .properties
+                    .get("__proto__")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            Value::Null
+        }),
+    );
 
     // Reflect.setPrototypeOf(target, proto) → bool
-    vm.register_host_fn("ecma:reflect", "setPrototypeOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let proto = args.get(1).cloned().unwrap_or(Value::Null);
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.lock().unwrap();
-            o.properties.insert("__proto__".into(), proto);
-            return Value::Bool(true);
-        }
-        Value::Bool(false)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "setPrototypeOf",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let proto = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
+                o.properties.insert("__proto__".into(), proto);
+                return Value::Bool(true);
+            }
+            Value::Bool(false)
+        }),
+    );
 
-    // Reflect.isExtensible(target) → bool. Vybe doesn't enforce
-    // [[Extensible]] beyond the freeze marker.
-    vm.register_host_fn("ecma:reflect", "isExtensible", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            return Value::Bool(o.properties.get("__frozen").map(|v|
-                !matches!(v, Value::Bool(true))).unwrap_or(true));
-        }
-        Value::Bool(false)
-    }));
+    // Reflect.isExtensible(target) → bool.
+    vm.register_host_fn(
+        "ecma:reflect",
+        "isExtensible",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                return Value::Bool(!is_not_extensible(&o));
+            }
+            Value::Bool(false)
+        }),
+    );
 
     // Reflect.preventExtensions(target) → bool
-    vm.register_host_fn("ecma:reflect", "preventExtensions", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let mut o = obj.lock().unwrap();
-            o.properties.insert("__frozen".into(), Value::Bool(true));
-            return Value::Bool(true);
-        }
-        Value::Bool(false)
-    }));
+    vm.register_host_fn(
+        "ecma:reflect",
+        "preventExtensions",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
+                mark_not_extensible(&mut o);
+                return Value::Bool(true);
+            }
+            Value::Bool(false)
+        }),
+    );
 }

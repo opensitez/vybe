@@ -1,8 +1,11 @@
 //! SplitContainer widget — two panels with a draggable divider.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{
+    KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
+    PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 pub struct SplitContainer {
     pub horizontal: bool,
@@ -38,7 +41,10 @@ impl SplitContainer {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Pixel position of the splitter center.
     fn splitter_pos(&self) -> f32 {
@@ -185,7 +191,9 @@ impl SplitContainer {
 
     /// Update split position during drag.
     pub fn mouse_move(&mut self, mx: f32, my: f32) {
-        if !self.dragging { return; }
+        if !self.dragging {
+            return;
+        }
         if self.horizontal {
             self.split_position = (mx / self.width).clamp(0.1, 0.9);
         } else {
@@ -217,14 +225,26 @@ impl SplitContainer {
 }
 
 impl PanelWidget for SplitContainer {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
     }
 
@@ -241,7 +261,10 @@ impl PanelWidget for SplitContainer {
             MouseEventKind::Move => {
                 if self.dragging {
                     self.mouse_move(lx, ly);
-                    self.pending_events.push(WidgetEvent::SplitMoved(self.name.clone(), self.split_position));
+                    self.pending_events.push(WidgetEvent::SplitMoved(
+                        self.name.clone(),
+                        self.split_position,
+                    ));
                     return true;
                 }
             }
@@ -256,15 +279,23 @@ impl PanelWidget for SplitContainer {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
         let r = self.rect;
         let lx = x - r.x;
         let ly = y - r.y;
         if self.hit_splitter(lx, ly) || self.dragging {
-            if self.horizontal { winit::window::CursorIcon::EwResize } else { winit::window::CursorIcon::NsResize }
+            if self.horizontal {
+                winit::window::CursorIcon::EwResize
+            } else {
+                winit::window::CursorIcon::NsResize
+            }
         } else {
             winit::window::CursorIcon::Default
         }

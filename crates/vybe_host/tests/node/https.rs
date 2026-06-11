@@ -59,7 +59,13 @@ fn new_obj(pairs: Vec<(&str, Value)>) -> Value {
 
 fn prop(v: &Value, key: &str) -> Value {
     match v {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -82,25 +88,37 @@ fn create_server_returns_object() {
 #[test]
 fn create_server_has_listen_method() {
     let server = call_https("createServer", vec![]);
-    assert!(has_method(&server, "listen"), "https.createServer().listen must exist");
+    assert!(
+        has_method(&server, "listen"),
+        "https.createServer().listen must exist"
+    );
 }
 
 #[test]
 fn create_server_has_close_method() {
     let server = call_https("createServer", vec![]);
-    assert!(has_method(&server, "close"), "https.createServer().close must exist");
+    assert!(
+        has_method(&server, "close"),
+        "https.createServer().close must exist"
+    );
 }
 
 #[test]
 fn create_server_has_address_method() {
     let server = call_https("createServer", vec![]);
-    assert!(has_method(&server, "address"), "https.createServer().address must exist");
+    assert!(
+        has_method(&server, "address"),
+        "https.createServer().address must exist"
+    );
 }
 
 #[test]
 fn create_server_has_set_timeout_method() {
     let server = call_https("createServer", vec![]);
-    assert!(has_method(&server, "setTimeout"), "https.createServer().setTimeout must exist");
+    assert!(
+        has_method(&server, "setTimeout"),
+        "https.createServer().setTimeout must exist"
+    );
 }
 
 #[test]
@@ -115,7 +133,10 @@ fn create_server_has_set_secure_context_method() {
 #[test]
 fn create_server_has_get_connections_method() {
     let server = call_https("createServer", vec![]);
-    assert!(has_method(&server, "getConnections"), "https.createServer().getConnections must exist");
+    assert!(
+        has_method(&server, "getConnections"),
+        "https.createServer().getConnections must exist"
+    );
 }
 
 #[test]
@@ -135,7 +156,10 @@ fn create_server_with_tls_options() {
         ("key", s("-----BEGIN PRIVATE KEY-----\n...")),
     ]);
     let server = call_https("createServer", vec![opts]);
-    assert!(matches!(server, Value::Object(_)), "createServer with TLS options must return object");
+    assert!(
+        matches!(server, Value::Object(_)),
+        "createServer with TLS options must return object"
+    );
 }
 
 // ── request ───────────────────────────────────────────────────────────────────
@@ -149,7 +173,10 @@ fn request_returns_client_request_object() {
         ("method", s("GET")),
     ]);
     let req = call_https("request", vec![opts]);
-    assert!(matches!(req, Value::Object(_)), "https.request must return ClientRequest object");
+    assert!(
+        matches!(req, Value::Object(_)),
+        "https.request must return ClientRequest object"
+    );
 }
 
 #[test]
@@ -170,35 +197,50 @@ fn request_has_write_method() {
 fn request_has_set_header_method() {
     let opts = new_obj(vec![("hostname", s("example.com"))]);
     let req = call_https("request", vec![opts]);
-    assert!(has_method(&req, "setHeader"), "ClientRequest.setHeader must exist");
+    assert!(
+        has_method(&req, "setHeader"),
+        "ClientRequest.setHeader must exist"
+    );
 }
 
 #[test]
 fn request_has_get_header_method() {
     let opts = new_obj(vec![("hostname", s("example.com"))]);
     let req = call_https("request", vec![opts]);
-    assert!(has_method(&req, "getHeader"), "ClientRequest.getHeader must exist");
+    assert!(
+        has_method(&req, "getHeader"),
+        "ClientRequest.getHeader must exist"
+    );
 }
 
 #[test]
 fn request_has_remove_header_method() {
     let opts = new_obj(vec![("hostname", s("example.com"))]);
     let req = call_https("request", vec![opts]);
-    assert!(has_method(&req, "removeHeader"), "ClientRequest.removeHeader must exist");
+    assert!(
+        has_method(&req, "removeHeader"),
+        "ClientRequest.removeHeader must exist"
+    );
 }
 
 #[test]
 fn request_has_destroy_method() {
     let opts = new_obj(vec![("hostname", s("example.com"))]);
     let req = call_https("request", vec![opts]);
-    assert!(has_method(&req, "destroy"), "ClientRequest.destroy must exist");
+    assert!(
+        has_method(&req, "destroy"),
+        "ClientRequest.destroy must exist"
+    );
 }
 
 #[test]
 fn request_has_set_timeout_method() {
     let opts = new_obj(vec![("hostname", s("example.com"))]);
     let req = call_https("request", vec![opts]);
-    assert!(has_method(&req, "setTimeout"), "ClientRequest.setTimeout must exist");
+    assert!(
+        has_method(&req, "setTimeout"),
+        "ClientRequest.setTimeout must exist"
+    );
 }
 
 #[test]
@@ -219,7 +261,11 @@ fn request_protocol_is_https() {
     let req = call_https("request", vec![opts]);
     let protocol = prop(&req, "protocol");
     match protocol {
-        Value::String(p) => assert_eq!(p.as_ref(), "https:", "https.request.protocol must be 'https:'"),
+        Value::String(p) => assert_eq!(
+            p.as_ref(),
+            "https:",
+            "https.request.protocol must be 'https:'"
+        ),
         Value::Undefined => {} // TDD
         other => panic!("protocol expected string, got {:?}", other),
     }
@@ -232,7 +278,10 @@ fn request_with_reject_unauthorized_false() {
         ("rejectUnauthorized", Value::Bool(false)),
     ]);
     let req = call_https("request", vec![opts]);
-    assert!(matches!(req, Value::Object(_)), "request with rejectUnauthorized:false must return object");
+    assert!(
+        matches!(req, Value::Object(_)),
+        "request with rejectUnauthorized:false must return object"
+    );
 }
 
 // ── get ───────────────────────────────────────────────────────────────────────
@@ -240,20 +289,29 @@ fn request_with_reject_unauthorized_false() {
 #[test]
 fn get_returns_client_request_object() {
     let req = call_https("get", vec![s("https://example.com/")]);
-    assert!(matches!(req, Value::Object(_)), "https.get must return ClientRequest");
+    assert!(
+        matches!(req, Value::Object(_)),
+        "https.get must return ClientRequest"
+    );
 }
 
 #[test]
 fn get_has_end_method() {
     let req = call_https("get", vec![s("https://example.com/")]);
-    assert!(has_method(&req, "end"), "ClientRequest from https.get must have end()");
+    assert!(
+        has_method(&req, "end"),
+        "ClientRequest from https.get must have end()"
+    );
 }
 
 #[test]
 fn get_with_options_object() {
     let opts = new_obj(vec![("hostname", s("example.com")), ("path", s("/api"))]);
     let req = call_https("get", vec![opts]);
-    assert!(matches!(req, Value::Object(_)), "https.get with options object must return object");
+    assert!(
+        matches!(req, Value::Object(_)),
+        "https.get with options object must return object"
+    );
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
@@ -269,9 +327,10 @@ fn agent_max_sockets_default_is_infinity() {
     let agent = call_https("Agent", vec![]);
     let max = prop(&agent, "maxSockets");
     assert!(
-        matches!(max, Value::F64(f) if f.is_infinite() && f > 0.0) ||
-        matches!(max, Value::I32(n) if n > 0),
-        "Agent.maxSockets default must be Infinity or large number, got {:?}", max
+        matches!(max, Value::F64(f) if f.is_infinite() && f > 0.0)
+            || matches!(max, Value::I32(n) if n > 0),
+        "Agent.maxSockets default must be Infinity or large number, got {:?}",
+        max
     );
 }
 
@@ -288,19 +347,28 @@ fn agent_has_max_free_sockets_property() {
 #[test]
 fn agent_has_sockets_property() {
     let agent = call_https("Agent", vec![]);
-    assert!(!matches!(prop(&agent, "sockets"), Value::Undefined), "Agent.sockets must exist");
+    assert!(
+        !matches!(prop(&agent, "sockets"), Value::Undefined),
+        "Agent.sockets must exist"
+    );
 }
 
 #[test]
 fn agent_has_requests_property() {
     let agent = call_https("Agent", vec![]);
-    assert!(!matches!(prop(&agent, "requests"), Value::Undefined), "Agent.requests must exist");
+    assert!(
+        !matches!(prop(&agent, "requests"), Value::Undefined),
+        "Agent.requests must exist"
+    );
 }
 
 #[test]
 fn agent_has_free_sockets_property() {
     let agent = call_https("Agent", vec![]);
-    assert!(!matches!(prop(&agent, "freeSockets"), Value::Undefined), "Agent.freeSockets must exist");
+    assert!(
+        !matches!(prop(&agent, "freeSockets"), Value::Undefined),
+        "Agent.freeSockets must exist"
+    );
 }
 
 #[test]
@@ -319,7 +387,10 @@ fn agent_has_get_name_method() {
 fn agent_has_max_cached_sessions_option() {
     let opts = new_obj(vec![("maxCachedSessions", Value::I32(100))]);
     let agent = call_https("Agent", vec![opts]);
-    assert!(matches!(agent, Value::Object(_)), "Agent with maxCachedSessions must return object");
+    assert!(
+        matches!(agent, Value::Object(_)),
+        "Agent with maxCachedSessions must return object"
+    );
 }
 
 #[test]
@@ -330,7 +401,10 @@ fn agent_tls_options_ca_cert_key() {
         ("key", s("-----BEGIN PRIVATE KEY-----...")),
     ]);
     let agent = call_https("Agent", vec![opts]);
-    assert!(matches!(agent, Value::Object(_)), "Agent with TLS options must return object");
+    assert!(
+        matches!(agent, Value::Object(_)),
+        "Agent with TLS options must return object"
+    );
 }
 
 // ── globalAgent ───────────────────────────────────────────────────────────────
@@ -344,7 +418,10 @@ fn global_agent_is_an_agent_object() {
 #[test]
 fn global_agent_has_destroy_method() {
     let agent = call_https("globalAgent", vec![]);
-    assert!(has_method(&agent, "destroy"), "globalAgent.destroy must exist");
+    assert!(
+        has_method(&agent, "destroy"),
+        "globalAgent.destroy must exist"
+    );
 }
 
 #[test]
@@ -375,5 +452,8 @@ fn proposal_node_https_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:https imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:https imports: {missing:?}"
+    );
 }

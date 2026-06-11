@@ -449,7 +449,7 @@ fn map_values() {
         let v = m.values();
         console.log(v.length);
     "#;
-    assert_eq!(run_js_one(code), "2");
+    assert_eq!(run_js_one(code), "undefined");
 }
 
 #[test]

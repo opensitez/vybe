@@ -25,7 +25,9 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
@@ -56,7 +58,11 @@ fn iter_next(it: Value) -> (Value, bool) {
         Value::Object(o) => {
             let o = o.lock().unwrap();
             let done = matches!(o.properties.get("done"), Some(Value::Bool(true)));
-            let val = o.properties.get("value").cloned().unwrap_or(Value::Undefined);
+            let val = o
+                .properties
+                .get("value")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             (val, done)
         }
         _ => (Value::Undefined, true),
@@ -67,7 +73,9 @@ fn collect_iter(it: Value) -> Vec<Value> {
     let mut out = Vec::new();
     loop {
         let (val, done) = iter_next(it.clone());
-        if done { break; }
+        if done {
+            break;
+        }
         out.push(val);
     }
     out
@@ -123,8 +131,14 @@ fn from_array_produces_a_shallow_copy() {
     let original = arr(vec![Value::I32(1), Value::I32(2)]);
     let copy = invoke("from", vec![original.clone()]);
     // Same contents but different object identity.
-    let copy_ptr = match &copy { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let orig_ptr = match &original { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let copy_ptr = match &copy {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let orig_ptr = match &original {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_ne!(copy_ptr, orig_ptr);
     assert_eq!(elems(&copy), vec![Value::I32(1), Value::I32(2)]);
 }
@@ -189,7 +203,10 @@ fn splice_returns_removed_elements_as_array() {
 #[test]
 fn splice_with_zero_delete_count_only_inserts() {
     let a = arr(vec![Value::I32(1), Value::I32(3)]);
-    let removed = invoke("splice", vec![a.clone(), Value::I32(1), Value::I32(0), Value::I32(2)]);
+    let removed = invoke(
+        "splice",
+        vec![a.clone(), Value::I32(1), Value::I32(0), Value::I32(2)],
+    );
     // Returns empty array (nothing removed)
     assert_eq!(elems(&removed).len(), 0);
     // Array is now [1, 2, 3]
@@ -215,7 +232,12 @@ fn slice_does_not_mutate_original() {
 
 #[test]
 fn slice_with_negative_indices_counts_from_end() {
-    let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     let result = invoke("slice", vec![a, Value::I32(-2)]);
     assert_eq!(elems(&result), vec![Value::I32(3), Value::I32(4)]);
 }
@@ -226,14 +248,20 @@ fn slice_with_negative_indices_counts_from_end() {
 fn index_of_uses_strict_equality_nan_not_found() {
     // indexOf uses ===; NaN !== NaN so NaN is never found.
     let a = arr(vec![Value::F64(f64::NAN)]);
-    assert_eq!(invoke("indexOf", vec![a, Value::F64(f64::NAN)]), Value::I32(-1));
+    assert_eq!(
+        invoke("indexOf", vec![a, Value::F64(f64::NAN)]),
+        Value::I32(-1)
+    );
 }
 
 #[test]
 fn includes_uses_same_value_zero_nan_found() {
     // includes uses SameValueZero; NaN equals NaN.
     let a = arr(vec![Value::F64(f64::NAN)]);
-    assert_eq!(invoke("includes", vec![a, Value::F64(f64::NAN)]), Value::Bool(true));
+    assert_eq!(
+        invoke("includes", vec![a, Value::F64(f64::NAN)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -246,7 +274,12 @@ fn last_index_of_searches_backward_from_end() {
 
 #[test]
 fn join_renders_null_and_undefined_elements_as_empty_string() {
-    let a = arr(vec![Value::I32(1), Value::Null, Value::Undefined, Value::I32(2)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::Null,
+        Value::Undefined,
+        Value::I32(2),
+    ]);
     match invoke("join", vec![a, s(",")]) {
         Value::String(s) => assert_eq!(s.as_ref(), "1,,,2"),
         other => panic!("expected string, got {:?}", other),
@@ -265,7 +298,10 @@ fn flat_default_depth_one_does_not_recurse_deeper() {
     let e = elems(&result);
     assert_eq!(e.len(), 2);
     assert_eq!(e[0], Value::I32(1));
-    assert!(matches!(e[1], Value::Object(_)), "inner array should remain nested");
+    assert!(
+        matches!(e[1], Value::Object(_)),
+        "inner array should remain nested"
+    );
 }
 
 // ── sort — default is lexicographic ──────────────────────────────────────────
@@ -287,9 +323,15 @@ fn sort_default_compares_as_strings_so_ten_precedes_nine() {
 #[test]
 fn reverse_mutates_in_place_and_returns_same_object() {
     let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
-    let orig_ptr = match &a { Value::Object(arc) => Arc::as_ptr(arc) as usize, _ => 0 };
+    let orig_ptr = match &a {
+        Value::Object(arc) => Arc::as_ptr(arc) as usize,
+        _ => 0,
+    };
     let result = invoke("reverse", vec![a]);
-    let result_ptr = match &result { Value::Object(arc) => Arc::as_ptr(arc) as usize, _ => 1 };
+    let result_ptr = match &result {
+        Value::Object(arc) => Arc::as_ptr(arc) as usize,
+        _ => 1,
+    };
     assert_eq!(orig_ptr, result_ptr); // same object
     assert_eq!(elems(&result)[0], Value::I32(3));
 }
@@ -309,15 +351,26 @@ fn to_reversed_does_not_mutate_original() {
 #[test]
 fn fill_returns_same_array_reference() {
     let a = arr(vec![Value::I32(0), Value::I32(0), Value::I32(0)]);
-    let orig_ptr = match &a { Value::Object(arc) => Arc::as_ptr(arc) as usize, _ => 0 };
+    let orig_ptr = match &a {
+        Value::Object(arc) => Arc::as_ptr(arc) as usize,
+        _ => 0,
+    };
     let result = invoke("fill", vec![a, Value::I32(7), Value::I32(0), Value::I32(3)]);
-    let result_ptr = match &result { Value::Object(arc) => Arc::as_ptr(arc) as usize, _ => 1 };
+    let result_ptr = match &result {
+        Value::Object(arc) => Arc::as_ptr(arc) as usize,
+        _ => 1,
+    };
     assert_eq!(orig_ptr, result_ptr);
 }
 
 #[test]
 fn fill_with_start_and_end_only_fills_that_range() {
-    let a = arr(vec![Value::I32(0), Value::I32(0), Value::I32(0), Value::I32(0)]);
+    let a = arr(vec![
+        Value::I32(0),
+        Value::I32(0),
+        Value::I32(0),
+        Value::I32(0),
+    ]);
     let result = invoke("fill", vec![a, Value::I32(9), Value::I32(1), Value::I32(3)]);
     let e = elems(&result);
     assert_eq!(e[0], Value::I32(0)); // untouched
@@ -331,14 +384,20 @@ fn fill_with_start_and_end_only_fills_that_range() {
 #[test]
 fn at_negative_index_addresses_from_end() {
     let a = arr(vec![Value::I32(10), Value::I32(20), Value::I32(30)]);
-    assert_eq!(invoke("at", vec![a.clone(), Value::I32(-1)]), Value::I32(30));
+    assert_eq!(
+        invoke("at", vec![a.clone(), Value::I32(-1)]),
+        Value::I32(30)
+    );
     assert_eq!(invoke("at", vec![a, Value::I32(-2)]), Value::I32(20));
 }
 
 #[test]
 fn at_out_of_bounds_returns_undefined() {
     let a = arr(vec![Value::I32(1)]);
-    assert_eq!(invoke("at", vec![a.clone(), Value::I32(5)]), Value::Undefined);
+    assert_eq!(
+        invoke("at", vec![a.clone(), Value::I32(5)]),
+        Value::Undefined
+    );
     assert_eq!(invoke("at", vec![a, Value::I32(-5)]), Value::Undefined);
 }
 
@@ -389,7 +448,12 @@ fn concat_flattens_one_level_only() {
 #[test]
 fn find_last_returns_rightmost_matching_element() {
     // ECMA-262 ES2023: findLast searches from the end. [1,3,2,4].findLast(x > 2) = 4.
-    let a = arr(vec![Value::I32(1), Value::I32(3), Value::I32(2), Value::I32(4)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::I32(3),
+        Value::I32(2),
+        Value::I32(4),
+    ]);
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(2));
@@ -412,7 +476,12 @@ fn find_last_returns_undefined_when_no_match() {
 #[test]
 fn find_last_index_returns_rightmost_matching_index() {
     // [1,3,2,4].findLastIndex(x > 2) → index 3 (the 4).
-    let a = arr(vec![Value::I32(1), Value::I32(3), Value::I32(2), Value::I32(4)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::I32(3),
+        Value::I32(2),
+        Value::I32(4),
+    ]);
     let pred = {
         let mut o = Object::new();
         o.properties.insert("__pred_gt".to_string(), Value::I32(2));
@@ -468,8 +537,11 @@ fn entries_iterator_yields_index_value_pairs() {
 fn copy_within_handles_overlapping_source_and_target() {
     // [1,2,3,4,5].copyWithin(1,3) → [1,4,5,4,5]
     let a = arr(vec![
-        Value::I32(1), Value::I32(2), Value::I32(3),
-        Value::I32(4), Value::I32(5),
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+        Value::I32(5),
     ]);
     let result = invoke("copyWithin", vec![a, Value::I32(1), Value::I32(3)]);
     let e = elems(&result);
@@ -496,21 +568,29 @@ fn reduce_sums_all_elements_left_to_right() {
     // reduce([1,2,3], (acc,x)=>acc+x, 0) = 6
     let callback = {
         let mut o = Object::new();
-        o.properties.insert("__reduce_add".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__reduce_add".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
-    assert_eq!(invoke("reduce", vec![a, callback, Value::I32(0)]), Value::I32(6));
+    assert_eq!(
+        invoke("reduce", vec![a, callback, Value::I32(0)]),
+        Value::I32(6)
+    );
 }
 
 #[test]
 fn reduce_on_empty_array_returns_initial_value() {
     let callback = {
         let mut o = Object::new();
-        o.properties.insert("__reduce_add".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__reduce_add".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
-    assert_eq!(invoke("reduce", vec![arr(vec![]), callback, Value::I32(42)]), Value::I32(42));
+    assert_eq!(
+        invoke("reduce", vec![arr(vec![]), callback, Value::I32(42)]),
+        Value::I32(42)
+    );
 }
 
 #[test]
@@ -518,7 +598,8 @@ fn reduce_right_processes_from_right_to_left() {
     // reduceRight(["a","b","c"], (acc,x)=>acc+x, "") = "cba"
     let callback = {
         let mut o = Object::new();
-        o.properties.insert("__reduce_concat".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__reduce_concat".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![s("a"), s("b"), s("c")]);
@@ -536,7 +617,12 @@ fn find_returns_first_matching_element() {
         o.properties.insert("__pred_gt".to_string(), Value::I32(2));
         Value::Object(Arc::new(Mutex::new(o)))
     };
-    let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     assert_eq!(invoke("find", vec![a, pred]), Value::I32(3));
 }
 
@@ -544,7 +630,8 @@ fn find_returns_first_matching_element() {
 fn find_returns_undefined_when_no_element_matches() {
     let pred = {
         let mut o = Object::new();
-        o.properties.insert("__pred_gt".to_string(), Value::I32(100));
+        o.properties
+            .insert("__pred_gt".to_string(), Value::I32(100));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![Value::I32(1), Value::I32(2)]);
@@ -566,7 +653,8 @@ fn find_index_returns_index_of_first_match() {
 fn find_index_returns_negative_one_when_no_match() {
     let pred = {
         let mut o = Object::new();
-        o.properties.insert("__pred_gt".to_string(), Value::I32(100));
+        o.properties
+            .insert("__pred_gt".to_string(), Value::I32(100));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![Value::I32(1), Value::I32(2)]);
@@ -603,7 +691,8 @@ fn every_on_empty_array_returns_true_vacuously() {
     // ECMA-262: every([]) = true (vacuous truth).
     let pred = {
         let mut o = Object::new();
-        o.properties.insert("__pred_gt".to_string(), Value::I32(999));
+        o.properties
+            .insert("__pred_gt".to_string(), Value::I32(999));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     assert_eq!(invoke("every", vec![arr(vec![]), pred]), Value::Bool(true));
@@ -624,7 +713,8 @@ fn some_returns_true_when_at_least_one_matches() {
 fn some_returns_false_when_no_element_matches() {
     let pred = {
         let mut o = Object::new();
-        o.properties.insert("__pred_gt".to_string(), Value::I32(100));
+        o.properties
+            .insert("__pred_gt".to_string(), Value::I32(100));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![Value::I32(1), Value::I32(2)]);
@@ -653,7 +743,10 @@ fn map_transforms_each_element() {
     };
     let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
     let result = invoke("map", vec![a, cb]);
-    assert_eq!(elems(&result), vec![Value::I32(2), Value::I32(4), Value::I32(6)]);
+    assert_eq!(
+        elems(&result),
+        vec![Value::I32(2), Value::I32(4), Value::I32(6)]
+    );
 }
 
 #[test]
@@ -673,17 +766,23 @@ fn filter_keeps_only_matching_elements() {
     // filter([1,2,3,4], x => x % 2 == 0) = [2,4]
     let pred = {
         let mut o = Object::new();
-        o.properties.insert("__filter_mod_eq".to_string(),
+        o.properties.insert(
+            "__filter_mod_eq".to_string(),
             Value::Object(Arc::new(Mutex::new({
                 let mut p = Object::new();
                 p.properties.insert("mod".to_string(), Value::I32(2));
                 p.properties.insert("eq".to_string(), Value::I32(0));
                 p
-            })))
+            }))),
         );
         Value::Object(Arc::new(Mutex::new(o)))
     };
-    let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    let a = arr(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     let result = invoke("filter", vec![a, pred]);
     assert_eq!(elems(&result), vec![Value::I32(2), Value::I32(4)]);
 }
@@ -693,12 +792,16 @@ fn flat_map_maps_then_flattens_one_level() {
     // flatMap([1,2], x => [x, x]) = [1,1,2,2]
     let cb = {
         let mut o = Object::new();
-        o.properties.insert("__flatmap_dup".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__flatmap_dup".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let a = arr(vec![Value::I32(1), Value::I32(2)]);
     let result = invoke("flatMap", vec![a, cb]);
-    assert_eq!(elems(&result), vec![Value::I32(1), Value::I32(1), Value::I32(2), Value::I32(2)]);
+    assert_eq!(
+        elems(&result),
+        vec![Value::I32(1), Value::I32(1), Value::I32(2), Value::I32(2)]
+    );
 }
 
 // ── forEach ───────────────────────────────────────────────────────────────────
@@ -722,7 +825,8 @@ fn from_with_map_fn_transforms_elements() {
     // Array.from({length:3}, (_, i) => i*2) = [0,2,4]
     let map_fn = {
         let mut o = Object::new();
-        o.properties.insert("__from_map_double_index".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__from_map_double_index".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let array_like = {
@@ -731,7 +835,10 @@ fn from_with_map_fn_transforms_elements() {
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("fromWithMap", vec![array_like, map_fn]);
-    assert_eq!(elems(&result), vec![Value::I32(0), Value::I32(2), Value::I32(4)]);
+    assert_eq!(
+        elems(&result),
+        vec![Value::I32(0), Value::I32(2), Value::I32(4)]
+    );
 }
 
 // ── Array.fromAsync (ES2024 §22.1.2.2) ───────────────────────────────────────

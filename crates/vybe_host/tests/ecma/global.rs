@@ -26,7 +26,9 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(std::sync::Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(std::sync::Arc::from(text))
+}
 
 // ── global isNaN — COERCES to number first ────────────────────────────────────
 
@@ -45,13 +47,19 @@ fn global_is_nan_coerces_numeric_string_to_false() {
 
 #[test]
 fn global_is_nan_true_for_nan_value() {
-    assert_eq!(invoke("isNaN", vec![Value::F64(f64::NAN)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isNaN", vec![Value::F64(f64::NAN)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
 fn global_is_nan_false_for_infinity() {
     // Infinity is not NaN.
-    assert_eq!(invoke("isNaN", vec![Value::F64(f64::INFINITY)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isNaN", vec![Value::F64(f64::INFINITY)]),
+        Value::Bool(false)
+    );
 }
 
 // ── global isFinite — COERCES to number first ─────────────────────────────────
@@ -71,12 +79,18 @@ fn global_is_finite_coerces_non_numeric_string_to_false() {
 
 #[test]
 fn global_is_finite_false_for_infinity() {
-    assert_eq!(invoke("isFinite", vec![Value::F64(f64::INFINITY)]), Value::Bool(false));
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(f64::INFINITY)]),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn global_is_finite_true_for_finite_number() {
-    assert_eq!(invoke("isFinite", vec![Value::F64(42.0)]), Value::Bool(true));
+    assert_eq!(
+        invoke("isFinite", vec![Value::F64(42.0)]),
+        Value::Bool(true)
+    );
 }
 
 // ── global parseInt / parseFloat (same as Number.parseInt/parseFloat) ─────────
@@ -147,15 +161,19 @@ fn undefined_global_property_is_undefined() {
 #[test]
 fn encode_uri_leaves_unreserved_chars_unchanged() {
     // ECMA-262 §18.2.6.4: letters, digits, and -_.!~*'() are not encoded.
-    assert_eq!(invoke("encodeURI", vec![s("hello world")]),
-        Value::String("hello%20world".into()));
+    assert_eq!(
+        invoke("encodeURI", vec![s("hello world")]),
+        Value::String("hello%20world".into())
+    );
 }
 
 #[test]
 fn encode_uri_preserves_reserved_chars() {
     // §18.2.6.4: encodeURI preserves URI-reserved chars including '#'
-    assert_eq!(invoke("encodeURI", vec![s("a#b")]),
-        Value::String("a#b".into()));
+    assert_eq!(
+        invoke("encodeURI", vec![s("a#b")]),
+        Value::String("a#b".into())
+    );
 }
 
 #[test]
@@ -163,8 +181,11 @@ fn encode_uri_component_encodes_reserved_chars() {
     // encodeURIComponent encodes '/' and '?' which encodeURI preserves.
     let r = invoke("encodeURIComponent", vec![s("a/b?c=1")]);
     let s_result = format!("{}", r);
-    assert!(s_result.contains("a%2Fb") || s_result.contains("a%2fb"),
-        "/ must be percent-encoded: {}", s_result);
+    assert!(
+        s_result.contains("a%2Fb") || s_result.contains("a%2fb"),
+        "/ must be percent-encoded: {}",
+        s_result
+    );
 }
 
 #[test]

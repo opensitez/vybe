@@ -7448,8 +7448,13 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         let rest = &raw[3..];
         let is_nowdoc = rest.starts_with('\'');
         // Skip optional quote around tag name
-        let tag_start = if is_nowdoc || rest.starts_with('"') { &rest[1..] } else { rest };
-        let tag_end = tag_start.find(|c: char| !c.is_alphanumeric() && c != '_')
+        let tag_start = if is_nowdoc || rest.starts_with('"') {
+            &rest[1..]
+        } else {
+            rest
+        };
+        let tag_end = tag_start
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(tag_start.len());
         let tag = &tag_start[..tag_end];
         // Content starts after the first newline following the tag line
@@ -7466,7 +7471,9 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         let content = content.to_string();
 
         if is_nowdoc {
-            return Expression::new(ExprKind::Lit(Literal::Str(unmask_php_literal_tags(&content))));
+            return Expression::new(ExprKind::Lit(Literal::Str(unmask_php_literal_tags(
+                &content,
+            ))));
         }
         // Heredoc: interpolate like double-quoted string
         if !content.contains('$') {
@@ -7544,7 +7551,13 @@ fn strip_heredoc_indentation(content: &str) -> String {
     }
     content
         .lines()
-        .map(|l| if l.len() >= min_indent { &l[min_indent..] } else { l })
+        .map(|l| {
+            if l.len() >= min_indent {
+                &l[min_indent..]
+            } else {
+                l
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

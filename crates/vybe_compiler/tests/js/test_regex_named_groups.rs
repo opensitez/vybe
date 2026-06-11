@@ -191,7 +191,7 @@ const matches = [..."12px 30em 5px".matchAll(/\d+(?!px)\b/g)].map(m => m[0]);
 console.log(matches.join(","));
 "#
         ),
-        vec!["30"]
+        vec![""]
     );
 }
 

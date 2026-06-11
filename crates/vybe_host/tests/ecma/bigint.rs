@@ -25,7 +25,9 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn bi(n: i64) -> Value { Value::I64(n) }
+fn bi(n: i64) -> Value {
+    Value::I64(n)
+}
 
 // ── BigInt() coercion ─────────────────────────────────────────────────────────
 
@@ -73,7 +75,10 @@ fn sub_self_is_zero() {
 
 #[test]
 fn neg_double_negation_is_identity() {
-    assert_eq!(invoke("neg", vec![invoke("neg", vec![bi(42)])]), Value::I64(42));
+    assert_eq!(
+        invoke("neg", vec![invoke("neg", vec![bi(42)])]),
+        Value::I64(42)
+    );
 }
 
 // ── Bitwise — two's complement semantics ─────────────────────────────────────
@@ -110,12 +115,18 @@ fn shl_one_left_four_equals_sixteen() {
 #[test]
 fn as_int_n_8_wraps_128_to_negative_128() {
     // 128 is just outside the signed 8-bit range; wraps to -128.
-    assert_eq!(invoke("asIntN", vec![Value::I32(8), bi(128)]), Value::I64(-128));
+    assert_eq!(
+        invoke("asIntN", vec![Value::I32(8), bi(128)]),
+        Value::I64(-128)
+    );
 }
 
 #[test]
 fn as_int_n_8_keeps_127_unchanged() {
-    assert_eq!(invoke("asIntN", vec![Value::I32(8), bi(127)]), Value::I64(127));
+    assert_eq!(
+        invoke("asIntN", vec![Value::I32(8), bi(127)]),
+        Value::I64(127)
+    );
 }
 
 #[test]
@@ -128,13 +139,19 @@ fn as_int_n_1_of_one_is_negative_one() {
 
 #[test]
 fn as_uint_n_8_wraps_256_to_zero() {
-    assert_eq!(invoke("asUintN", vec![Value::I32(8), bi(256)]), Value::I64(0));
+    assert_eq!(
+        invoke("asUintN", vec![Value::I32(8), bi(256)]),
+        Value::I64(0)
+    );
 }
 
 #[test]
 fn as_uint_n_8_of_negative_one_is_255() {
     // -1n in unsigned 8-bit = 255 (all bits set).
-    assert_eq!(invoke("asUintN", vec![Value::I32(8), bi(-1)]), Value::I64(255));
+    assert_eq!(
+        invoke("asUintN", vec![Value::I32(8), bi(-1)]),
+        Value::I64(255)
+    );
 }
 
 #[test]

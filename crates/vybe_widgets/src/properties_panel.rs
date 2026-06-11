@@ -5,14 +5,16 @@
 //! state (scroll, active tab, color picker, `TextInput` editor, open
 //! `Dropdown`, `ScrollBar`) — not the underlying data model.
 
-use crate::{
-    FontSystem, SwashCache, TextColor as CosmicColor, KeyEvent,
-    layout::{RenderContext, MouseEvent, MouseEventKind, MouseButton, LayoutRect, WidgetEvent, CheckState},
-    PanelWidget, TextInput, Checkbox, Dropdown, DropdownEvent, ScrollBar,
-};
 use crate::color_picker::{ColorPicker, ColorPickerEvent};
 use crate::ide_text::draw_text;
-use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
+use crate::{
+    Checkbox, Dropdown, DropdownEvent, FontSystem, KeyEvent, PanelWidget, ScrollBar, SwashCache,
+    TextColor as CosmicColor, TextInput,
+    layout::{
+        CheckState, LayoutRect, MouseButton, MouseEvent, MouseEventKind, RenderContext, WidgetEvent,
+    },
+};
+use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Clone)]
@@ -27,7 +29,10 @@ pub enum PropItem {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum PropTab { Properties, Events }
+pub enum PropTab {
+    Properties,
+    Events,
+}
 
 /// In-progress inline edit: the property key plus the focused TextInput.
 pub struct EditingProp {
@@ -47,17 +52,34 @@ pub struct OpenDropdown {
 pub enum PropEvent {
     None,
     TabChanged(PropTab),
-    ColorPickerChanged { prop_name: String, hex: String },
-    ColorPickerClosed  { prop_name: String, hex: String },
+    ColorPickerChanged {
+        prop_name: String,
+        hex: String,
+    },
+    ColorPickerClosed {
+        prop_name: String,
+        hex: String,
+    },
     /// User pressed Enter (or clicked away) after editing a value.
-    ValueCommitted     { key: String, value: String },
+    ValueCommitted {
+        key: String,
+        value: String,
+    },
     /// Checkbox clicked — caller should flip the backing property.
-    ValueToggled       { key: String, value: bool },
+    ValueToggled {
+        key: String,
+        value: bool,
+    },
     /// Dropdown item selected — caller should persist the new value.
-    ValueSelected      { key: String, value: String },
+    ValueSelected {
+        key: String,
+        value: String,
+    },
     /// User clicked an event row in the Events tab. Caller should insert /
     /// navigate to the matching handler in code-behind.
-    EventHandlerRequested { event: String },
+    EventHandlerRequested {
+        event: String,
+    },
 }
 
 pub const PROP_HEADER_H: f32 = 28.0;
@@ -91,44 +113,73 @@ impl Default for PropertiesPanel {
 }
 
 impl PropertiesPanel {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn items_height(items: &[PropItem]) -> f32 {
-        items.iter().map(|i| match i {
-            PropItem::Section(_) => PROP_SECTION_H,
-            PropItem::Row(..) | PropItem::CheckboxRow(..)
-            | PropItem::DropdownRow(..) | PropItem::MultilineRow(..) => PROP_ROW_H,
-        }).sum()
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn is_editing(&self) -> bool { self.editing.is_some() }
+    pub fn items_height(items: &[PropItem]) -> f32 {
+        items
+            .iter()
+            .map(|i| match i {
+                PropItem::Section(_) => PROP_SECTION_H,
+                PropItem::Row(..)
+                | PropItem::CheckboxRow(..)
+                | PropItem::DropdownRow(..)
+                | PropItem::MultilineRow(..) => PROP_ROW_H,
+            })
+            .sum()
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
 
     /// End any in-progress edit and emit a commit event if there was one.
     pub fn commit_edit(&mut self) -> PropEvent {
         if let Some(edit) = self.editing.take() {
-            PropEvent::ValueCommitted { key: edit.key, value: edit.input.value }
+            PropEvent::ValueCommitted {
+                key: edit.key,
+                value: edit.input.value,
+            }
         } else {
             PropEvent::None
         }
     }
 
-    fn start_edit(&mut self, key: &str, current_value: &str,
-                  panel_x: f32, panel_w: f32, row_y: f32) {
+    fn start_edit(
+        &mut self,
+        key: &str,
+        current_value: &str,
+        panel_x: f32,
+        panel_w: f32,
+        row_y: f32,
+    ) {
         let val_x = panel_x + panel_w * 0.42;
         let val_w = panel_w - (val_x - panel_x) - PROP_SCROLLBAR_W - 2.0;
         let mut input = TextInput::new().with_name("prop_edit");
         input.value = current_value.to_string();
         input.cursor = current_value.len();
-        input.set_rect(LayoutRect { x: val_x, y: row_y, w: val_w, h: PROP_ROW_H });
+        input.set_rect(LayoutRect {
+            x: val_x,
+            y: row_y,
+            w: val_w,
+            h: PROP_ROW_H,
+        });
         input.set_focused(true);
-        self.editing = Some(EditingProp { key: key.to_string(), input });
+        self.editing = Some(EditingProp {
+            key: key.to_string(),
+            input,
+        });
     }
 
     /// Draw the panel. Call this once per frame.
     pub fn draw(
         &mut self,
         ctx: &mut RenderContext,
-        x: f32, y: f32, w: f32, h: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
         items: &[PropItem],
     ) {
         let s = ctx.scale;
@@ -142,34 +193,65 @@ impl PropertiesPanel {
 
         // Title + tabs
         let title_color = CosmicColor::rgba(50, 50, 50, 255);
-        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Properties",
-                  x + 10.0, y + 6.0, 13.0, title_color, s);
+        draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Properties",
+            x + 10.0,
+            y + 6.0,
+            13.0,
+            title_color,
+            s,
+        );
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(ctx.pixmap, &paint, x, y + PROP_HEADER_H - 1.0, w, 1.0, s);
 
         let tab_y = y + PROP_HEADER_H;
         let tab_w = (w - 2.0) / 2.0;
         let text_color = CosmicColor::rgba(30, 30, 30, 255);
-        let dim_color  = CosmicColor::rgba(100, 100, 100, 255);
+        let dim_color = CosmicColor::rgba(100, 100, 100, 255);
 
-        draw_tab(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Properties",
-                 x + 1.0, tab_y, tab_w, self.tab == PropTab::Properties, text_color, dim_color, s);
-        draw_tab(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Events",
-                 x + 1.0 + tab_w, tab_y, tab_w, self.tab == PropTab::Events, text_color, dim_color, s);
+        draw_tab(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Properties",
+            x + 1.0,
+            tab_y,
+            tab_w,
+            self.tab == PropTab::Properties,
+            text_color,
+            dim_color,
+            s,
+        );
+        draw_tab(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Events",
+            x + 1.0 + tab_w,
+            tab_y,
+            tab_w,
+            self.tab == PropTab::Events,
+            text_color,
+            dim_color,
+            s,
+        );
 
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(ctx.pixmap, &paint, x, tab_y + PROP_TAB_H - 1.0, w, 1.0, s);
 
         // Content
         let content_top = tab_y + PROP_TAB_H;
-        let content_h   = h - PROP_HEADER_H - PROP_TAB_H;
+        let content_h = h - PROP_HEADER_H - PROP_TAB_H;
 
-        let label_color   = CosmicColor::rgba(80, 80, 80, 255);
-        let val_color     = CosmicColor::rgba(30, 30, 30, 255);
+        let label_color = CosmicColor::rgba(80, 80, 80, 255);
+        let val_color = CosmicColor::rgba(30, 30, 30, 255);
         let section_color = CosmicColor::rgba(100, 100, 100, 255);
-        let val_x         = x + w * 0.42;
-        let mut row_y     = content_top + 2.0 - self.scroll_y;
-        let mut row_idx   = 0usize;
+        let val_x = x + w * 0.42;
+        let mut row_y = content_top + 2.0 - self.scroll_y;
+        let mut row_idx = 0usize;
         let mut editor_row_y: Option<f32> = None;
 
         for item in items {
@@ -177,14 +259,35 @@ impl PropertiesPanel {
                 PropItem::Section(label) => {
                     if row_y + PROP_SECTION_H > content_top && row_y < content_top + content_h {
                         paint.set_color_rgba8(240, 240, 240, 255);
-                        fill(ctx.pixmap, &paint, x + 1.0, row_y, w - 2.0, PROP_SECTION_H, s);
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, label,
-                                  x + 8.0, row_y + 3.0, 10.0, section_color, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            x + 1.0,
+                            row_y,
+                            w - 2.0,
+                            PROP_SECTION_H,
+                            s,
+                        );
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            label,
+                            x + 8.0,
+                            row_y + 3.0,
+                            10.0,
+                            section_color,
+                            s,
+                        );
                     }
                     row_y += PROP_SECTION_H;
                 }
                 PropItem::Row(key, value) => {
-                    let being_edited = self.editing.as_ref().map(|e| &e.key == key).unwrap_or(false);
+                    let being_edited = self
+                        .editing
+                        .as_ref()
+                        .map(|e| &e.key == key)
+                        .unwrap_or(false);
                     if row_y + PROP_ROW_H > content_top && row_y < content_top + content_h {
                         if being_edited {
                             paint.set_color_rgba8(227, 242, 253, 255);
@@ -193,14 +296,32 @@ impl PropertiesPanel {
                             paint.set_color_rgba8(247, 247, 247, 255);
                             fill(ctx.pixmap, &paint, x + 1.0, row_y, w - 2.0, PROP_ROW_H, s);
                         }
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, key,
-                                  x + 8.0, row_y + 4.0, 11.0, label_color, s);
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            key,
+                            x + 8.0,
+                            row_y + 4.0,
+                            11.0,
+                            label_color,
+                            s,
+                        );
                         paint.set_color_rgba8(230, 230, 230, 255);
                         fill(ctx.pixmap, &paint, val_x - 2.0, row_y, 1.0, PROP_ROW_H, s);
 
                         if !being_edited {
-                            draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, value,
-                                      val_x + 4.0, row_y + 4.0, 11.0, val_color, s);
+                            draw_text(
+                                ctx.pixmap,
+                                ctx.font_system,
+                                ctx.swash_cache,
+                                value,
+                                val_x + 4.0,
+                                row_y + 4.0,
+                                11.0,
+                                val_color,
+                                s,
+                            );
 
                             if key == "BackColor" || key == "ForeColor" {
                                 let sw_x = x + w - PROP_SCROLLBAR_W - 22.0;
@@ -219,7 +340,15 @@ impl PropertiesPanel {
                         }
 
                         paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(ctx.pixmap, &paint, x + 1.0, row_y + PROP_ROW_H - 1.0, w - 2.0, 1.0, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            x + 1.0,
+                            row_y + PROP_ROW_H - 1.0,
+                            w - 2.0,
+                            1.0,
+                            s,
+                        );
                     }
                     row_idx += 1;
                     row_y += PROP_ROW_H;
@@ -230,31 +359,65 @@ impl PropertiesPanel {
                             paint.set_color_rgba8(247, 247, 247, 255);
                             fill(ctx.pixmap, &paint, x + 1.0, row_y, w - 2.0, PROP_ROW_H, s);
                         }
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, key,
-                                  x + 8.0, row_y + 4.0, 11.0, label_color, s);
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            key,
+                            x + 8.0,
+                            row_y + 4.0,
+                            11.0,
+                            label_color,
+                            s,
+                        );
                         paint.set_color_rgba8(230, 230, 230, 255);
                         fill(ctx.pixmap, &paint, val_x - 2.0, row_y, 1.0, PROP_ROW_H, s);
 
                         // Real Checkbox widget: paint at value column.
-                        let cb_x  = val_x + 4.0;
-                        let cb_y  = row_y + 4.0;
+                        let cb_x = val_x + 4.0;
+                        let cb_y = row_y + 4.0;
                         let mut cb = Checkbox::new("");
                         cb.size = 14.0;
-                        cb.check_state = if *checked { CheckState::Checked } else { CheckState::Unchecked };
+                        cb.check_state = if *checked {
+                            CheckState::Checked
+                        } else {
+                            CheckState::Unchecked
+                        };
                         cb.paint(ctx.pixmap, cb_x, cb_y, s);
 
                         let lbl = if *checked { "True" } else { "False" };
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, lbl,
-                                  cb_x + cb.size + 4.0, row_y + 4.0, 11.0, val_color, s);
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            lbl,
+                            cb_x + cb.size + 4.0,
+                            row_y + 4.0,
+                            11.0,
+                            val_color,
+                            s,
+                        );
                         paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(ctx.pixmap, &paint, x + 1.0, row_y + PROP_ROW_H - 1.0, w - 2.0, 1.0, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            x + 1.0,
+                            row_y + PROP_ROW_H - 1.0,
+                            w - 2.0,
+                            1.0,
+                            s,
+                        );
                     }
                     let _ = key;
                     row_idx += 1;
                     row_y += PROP_ROW_H;
                 }
                 PropItem::MultilineRow(key, value) => {
-                    let being_edited = self.editing.as_ref().map(|e| &e.key == key).unwrap_or(false);
+                    let being_edited = self
+                        .editing
+                        .as_ref()
+                        .map(|e| &e.key == key)
+                        .unwrap_or(false);
                     if row_y + PROP_ROW_H > content_top && row_y < content_top + content_h {
                         if being_edited {
                             paint.set_color_rgba8(227, 242, 253, 255);
@@ -263,21 +426,50 @@ impl PropertiesPanel {
                             paint.set_color_rgba8(247, 247, 247, 255);
                             fill(ctx.pixmap, &paint, x + 1.0, row_y, w - 2.0, PROP_ROW_H, s);
                         }
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, key,
-                                  x + 8.0, row_y + 4.0, 11.0, label_color, s);
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            key,
+                            x + 8.0,
+                            row_y + 4.0,
+                            11.0,
+                            label_color,
+                            s,
+                        );
                         paint.set_color_rgba8(230, 230, 230, 255);
                         fill(ctx.pixmap, &paint, val_x - 2.0, row_y, 1.0, PROP_ROW_H, s);
                         if !being_edited {
                             let joined = value.replace('\n', ", ");
-                            let shown = if joined.is_empty() { "(empty) …".to_string() }
-                                        else { format!("{} …", joined) };
-                            draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &shown,
-                                      val_x + 4.0, row_y + 4.0, 11.0, val_color, s);
+                            let shown = if joined.is_empty() {
+                                "(empty) …".to_string()
+                            } else {
+                                format!("{} …", joined)
+                            };
+                            draw_text(
+                                ctx.pixmap,
+                                ctx.font_system,
+                                ctx.swash_cache,
+                                &shown,
+                                val_x + 4.0,
+                                row_y + 4.0,
+                                11.0,
+                                val_color,
+                                s,
+                            );
                         } else {
                             editor_row_y = Some(row_y);
                         }
                         paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(ctx.pixmap, &paint, x + 1.0, row_y + PROP_ROW_H - 1.0, w - 2.0, 1.0, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            x + 1.0,
+                            row_y + PROP_ROW_H - 1.0,
+                            w - 2.0,
+                            1.0,
+                            s,
+                        );
                     }
                     row_idx += 1;
                     row_y += PROP_ROW_H;
@@ -288,26 +480,68 @@ impl PropertiesPanel {
                             paint.set_color_rgba8(247, 247, 247, 255);
                             fill(ctx.pixmap, &paint, x + 1.0, row_y, w - 2.0, PROP_ROW_H, s);
                         }
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, key,
-                                  x + 8.0, row_y + 4.0, 11.0, label_color, s);
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            key,
+                            x + 8.0,
+                            row_y + 4.0,
+                            11.0,
+                            label_color,
+                            s,
+                        );
                         paint.set_color_rgba8(230, 230, 230, 255);
                         fill(ctx.pixmap, &paint, val_x - 2.0, row_y, 1.0, PROP_ROW_H, s);
                         let dd_w = w - (val_x - x) - PROP_SCROLLBAR_W - 2.0;
                         paint.set_color_rgba8(255, 255, 255, 255);
-                        fill(ctx.pixmap, &paint, val_x, row_y + 1.0, dd_w, PROP_ROW_H - 2.0, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            val_x,
+                            row_y + 1.0,
+                            dd_w,
+                            PROP_ROW_H - 2.0,
+                            s,
+                        );
                         paint.set_color_rgba8(180, 180, 180, 255);
-                        stroke_rect(ctx.pixmap, &paint, val_x, row_y + 1.0, dd_w, PROP_ROW_H - 2.0, s);
-                        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, current,
-                                  val_x + 4.0, row_y + 4.0, 11.0, val_color, s);
+                        stroke_rect(
+                            ctx.pixmap,
+                            &paint,
+                            val_x,
+                            row_y + 1.0,
+                            dd_w,
+                            PROP_ROW_H - 2.0,
+                            s,
+                        );
+                        draw_text(
+                            ctx.pixmap,
+                            ctx.font_system,
+                            ctx.swash_cache,
+                            current,
+                            val_x + 4.0,
+                            row_y + 4.0,
+                            11.0,
+                            val_color,
+                            s,
+                        );
                         let arr_x = val_x + dd_w - 14.0;
                         let arr_y = row_y + PROP_ROW_H / 2.0 - 2.0;
                         paint.set_color_rgba8(80, 80, 80, 255);
-                        fill(ctx.pixmap, &paint, arr_x,       arr_y,       8.0, 1.0, s);
+                        fill(ctx.pixmap, &paint, arr_x, arr_y, 8.0, 1.0, s);
                         fill(ctx.pixmap, &paint, arr_x + 1.0, arr_y + 1.0, 6.0, 1.0, s);
                         fill(ctx.pixmap, &paint, arr_x + 2.0, arr_y + 2.0, 4.0, 1.0, s);
                         fill(ctx.pixmap, &paint, arr_x + 3.0, arr_y + 3.0, 2.0, 1.0, s);
                         paint.set_color_rgba8(235, 235, 235, 255);
-                        fill(ctx.pixmap, &paint, x + 1.0, row_y + PROP_ROW_H - 1.0, w - 2.0, 1.0, s);
+                        fill(
+                            ctx.pixmap,
+                            &paint,
+                            x + 1.0,
+                            row_y + PROP_ROW_H - 1.0,
+                            w - 2.0,
+                            1.0,
+                            s,
+                        );
                     }
                     let _ = key;
                     row_idx += 1;
@@ -317,21 +551,61 @@ impl PropertiesPanel {
         }
 
         if items.is_empty() {
-            draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "No selection",
-                      x + 10.0, content_top + 8.0, 12.0, dim_color, s);
+            draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                "No selection",
+                x + 10.0,
+                content_top + 8.0,
+                12.0,
+                dim_color,
+                s,
+            );
         }
 
         // Overdraw header/tabs to clip scrolled items
         paint.set_color_rgba8(250, 250, 250, 255);
         fill(ctx.pixmap, &paint, x, y, w, PROP_HEADER_H + PROP_TAB_H, s);
-        draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Properties",
-                  x + 10.0, y + 6.0, 13.0, title_color, s);
+        draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Properties",
+            x + 10.0,
+            y + 6.0,
+            13.0,
+            title_color,
+            s,
+        );
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(ctx.pixmap, &paint, x, y + PROP_HEADER_H - 1.0, w, 1.0, s);
-        draw_tab(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Properties",
-                 x + 1.0, tab_y, tab_w, self.tab == PropTab::Properties, text_color, dim_color, s);
-        draw_tab(ctx.pixmap, ctx.font_system, ctx.swash_cache, "Events",
-                 x + 1.0 + tab_w, tab_y, tab_w, self.tab == PropTab::Events, text_color, dim_color, s);
+        draw_tab(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Properties",
+            x + 1.0,
+            tab_y,
+            tab_w,
+            self.tab == PropTab::Properties,
+            text_color,
+            dim_color,
+            s,
+        );
+        draw_tab(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            "Events",
+            x + 1.0 + tab_w,
+            tab_y,
+            tab_w,
+            self.tab == PropTab::Events,
+            text_color,
+            dim_color,
+            s,
+        );
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(ctx.pixmap, &paint, x, tab_y + PROP_TAB_H - 1.0, w, 1.0, s);
 
@@ -348,7 +622,8 @@ impl PropertiesPanel {
                 w: PROP_SCROLLBAR_W,
                 h: content_h,
             });
-            self.scrollbar.paint(ctx.pixmap, x + w - PROP_SCROLLBAR_W, content_top, s);
+            self.scrollbar
+                .paint(ctx.pixmap, x + w - PROP_SCROLLBAR_W, content_top, s);
         }
 
         // Left border on top
@@ -358,7 +633,12 @@ impl PropertiesPanel {
         // Render the TextInput editor last so it paints above the row.
         if let (Some(edit), Some(ry)) = (self.editing.as_mut(), editor_row_y) {
             let val_w = w - (val_x - x) - PROP_SCROLLBAR_W - 2.0;
-            edit.input.set_rect(LayoutRect { x: val_x, y: ry, w: val_w, h: PROP_ROW_H });
+            edit.input.set_rect(LayoutRect {
+                x: val_x,
+                y: ry,
+                w: val_w,
+                h: PROP_ROW_H,
+            });
             edit.input.render(ctx);
         }
 
@@ -366,8 +646,11 @@ impl PropertiesPanel {
         if let Some(open) = self.dropdown.as_mut() {
             open.dropdown.scale = ctx.scale;
             open.dropdown.render_list(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                open.x, open.y,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                open.x,
+                open.y,
                 (255, 255, 255, 255),
                 (180, 180, 180, 255),
                 (227, 242, 253, 255),
@@ -381,15 +664,20 @@ impl PropertiesPanel {
         if self.color_picker.open {
             let popup_x = x + 10.0;
             let popup_y = y + PROP_HEADER_H + PROP_TAB_H + 40.0;
-            self.color_picker.render_popup(ctx.pixmap, popup_x, popup_y, ctx.scale);
+            self.color_picker
+                .render_popup(ctx.pixmap, popup_x, popup_y, ctx.scale);
         }
     }
 
     /// Handle a mouse click. Returns a PropEvent the caller should react to.
     pub fn handle_click(
         &mut self,
-        mx: f32, my: f32,
-        x: f32, y: f32, w: f32, h: f32,
+        mx: f32,
+        my: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
         items: &[PropItem],
     ) -> PropEvent {
         if mx < x || mx >= x + w || my < y || my >= y + h {
@@ -403,7 +691,10 @@ impl PropertiesPanel {
             match evt {
                 DropdownEvent::Selected(idx) => {
                     let value = open.dropdown.items.get(idx).cloned().unwrap_or_default();
-                    return PropEvent::ValueSelected { key: open.key, value };
+                    return PropEvent::ValueSelected {
+                        key: open.key,
+                        value,
+                    };
                 }
                 DropdownEvent::Closed | DropdownEvent::None => {
                     // Closed — fall through so the click also counts normally.
@@ -416,9 +707,12 @@ impl PropertiesPanel {
         if let Some(edit) = self.editing.as_mut() {
             if edit.input.rect().contains(mx, my) {
                 let me = MouseEvent {
-                    x: mx, y: my,
+                    x: mx,
+                    y: my,
                     kind: MouseEventKind::Press(MouseButton::Left),
-                    cmd: false, shift: false, alt: false,
+                    cmd: false,
+                    shift: false,
+                    alt: false,
                 };
                 edit.input.handle_mouse(&me);
                 edit.input.set_focused(true);
@@ -430,11 +724,12 @@ impl PropertiesPanel {
         // visible (content exceeds viewport), otherwise the right-edge of
         // the value column would eat clicks meant for a Row.
         let content_top = y + PROP_HEADER_H + PROP_TAB_H;
-        let content_h   = h - PROP_HEADER_H - PROP_TAB_H;
+        let content_h = h - PROP_HEADER_H - PROP_TAB_H;
         let total_h = Self::items_height(items);
         if total_h > content_h
             && mx >= x + w - PROP_SCROLLBAR_W
-            && my >= content_top && my < content_top + content_h
+            && my >= content_top
+            && my < content_top + content_h
         {
             let sb_x = x + w - PROP_SCROLLBAR_W;
             if self.scrollbar.mouse_down(mx - sb_x, my - content_top) {
@@ -474,7 +769,11 @@ impl PropertiesPanel {
         let tab_y = y + PROP_HEADER_H;
         if my >= tab_y && my < tab_y + PROP_TAB_H {
             let tab_w = (w - 2.0) / 2.0;
-            let new_tab = if mx < x + 1.0 + tab_w { PropTab::Properties } else { PropTab::Events };
+            let new_tab = if mx < x + 1.0 + tab_w {
+                PropTab::Properties
+            } else {
+                PropTab::Events
+            };
             if new_tab != self.tab {
                 self.tab = new_tab;
                 self.scroll_y = 0.0;
@@ -508,7 +807,9 @@ impl PropertiesPanel {
                 let mut row_y = content_top + 2.0 - self.scroll_y;
                 for item in items {
                     match item {
-                        PropItem::Section(_) => { row_y += PROP_SECTION_H; }
+                        PropItem::Section(_) => {
+                            row_y += PROP_SECTION_H;
+                        }
                         PropItem::Row(key, value) => {
                             if my >= row_y && my < row_y + PROP_ROW_H {
                                 if key == "BackColor" || key == "ForeColor" {
@@ -528,20 +829,32 @@ impl PropertiesPanel {
                                 let cb_y = row_y + 4.0;
                                 let mut cb = Checkbox::new("");
                                 cb.size = 14.0;
-                                cb.check_state = if *checked { CheckState::Checked } else { CheckState::Unchecked };
+                                cb.check_state = if *checked {
+                                    CheckState::Checked
+                                } else {
+                                    CheckState::Unchecked
+                                };
                                 if cb.click(mx - cb_x, my - cb_y) {
-                                    return PropEvent::ValueToggled { key: key.clone(), value: !*checked };
+                                    return PropEvent::ValueToggled {
+                                        key: key.clone(),
+                                        value: !*checked,
+                                    };
                                 }
                                 // Click on the row but outside the checkbox — still flip.
-                                return PropEvent::ValueToggled { key: key.clone(), value: !*checked };
+                                return PropEvent::ValueToggled {
+                                    key: key.clone(),
+                                    value: !*checked,
+                                };
                             }
                             row_y += PROP_ROW_H;
                         }
                         PropItem::DropdownRow(key, current, options) => {
                             if my >= row_y && my < row_y + PROP_ROW_H {
-                                let selected_idx = options.iter().position(|o| o == current).unwrap_or(0);
-                                let mut dd = Dropdown::new(options.clone(), selected_idx, 1.0, Some(1))
-                                    .with_name(key);
+                                let selected_idx =
+                                    options.iter().position(|o| o == current).unwrap_or(0);
+                                let mut dd =
+                                    Dropdown::new(options.clone(), selected_idx, 1.0, Some(1))
+                                        .with_name(key);
                                 let (_dd_w, _dd_h) = dd.get_size();
                                 let anchor_x = val_x;
                                 let anchor_y = row_y + PROP_ROW_H;
@@ -579,12 +892,16 @@ impl PropertiesPanel {
     /// Route a mouse move. Forward to scrollbar drag / color picker drag.
     pub fn handle_mouse_move(
         &mut self,
-        mx: f32, my: f32,
-        x: f32, y: f32, w: f32, h: f32,
+        mx: f32,
+        my: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
     ) -> PropEvent {
         let _ = (x, w);
         let content_top = y + PROP_HEADER_H + PROP_TAB_H;
-        let content_h   = h - PROP_HEADER_H - PROP_TAB_H;
+        let content_h = h - PROP_HEADER_H - PROP_TAB_H;
         if self.scrollbar.dragging {
             let sb_x = x + w - PROP_SCROLLBAR_W;
             self.scrollbar.mouse_move(mx - sb_x, my - content_top);
@@ -608,13 +925,20 @@ impl PropertiesPanel {
     /// Keyboard input. When an edit is active, forwards to the `TextInput`;
     /// Enter commits (returning `ValueCommitted`), Escape cancels.
     pub fn handle_key(&mut self, event: &KeyEvent) -> PropEvent {
-        let Some(edit) = self.editing.as_mut() else { return PropEvent::None; };
-        if event.state != winit::event::ElementState::Pressed { return PropEvent::None; }
+        let Some(edit) = self.editing.as_mut() else {
+            return PropEvent::None;
+        };
+        if event.state != winit::event::ElementState::Pressed {
+            return PropEvent::None;
+        }
 
         match &event.logical_key {
             Key::Named(NamedKey::Enter) => {
                 let taken = self.editing.take().unwrap();
-                return PropEvent::ValueCommitted { key: taken.key, value: taken.input.value };
+                return PropEvent::ValueCommitted {
+                    key: taken.key,
+                    value: taken.input.value,
+                };
             }
             Key::Named(NamedKey::Escape) => {
                 self.editing = None;
@@ -636,16 +960,36 @@ impl PropertiesPanel {
 }
 
 fn draw_tab(
-    pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-    label: &str, x: f32, y: f32, w: f32, active: bool,
-    text_color: CosmicColor, dim_color: CosmicColor, s: f32,
+    pix: &mut Pixmap,
+    fs: &mut FontSystem,
+    sc: &mut SwashCache,
+    label: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    active: bool,
+    text_color: CosmicColor,
+    dim_color: CosmicColor,
+    s: f32,
 ) {
     let mut paint = Paint::default();
-    if active { paint.set_color_rgba8(227, 242, 253, 255); }
-    else      { paint.set_color_rgba8(245, 245, 245, 255); }
+    if active {
+        paint.set_color_rgba8(227, 242, 253, 255);
+    } else {
+        paint.set_color_rgba8(245, 245, 245, 255);
+    }
     fill(pix, &paint, x, y, w, PROP_TAB_H, s);
-    draw_text(pix, fs, sc, label, x + 13.0, y + 5.0, 12.0,
-              if active { text_color } else { dim_color }, s);
+    draw_text(
+        pix,
+        fs,
+        sc,
+        label,
+        x + 13.0,
+        y + 5.0,
+        12.0,
+        if active { text_color } else { dim_color },
+        s,
+    );
 }
 
 /// Rows whose value is derived / computed and can't be edited in-place.

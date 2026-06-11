@@ -55,7 +55,13 @@ fn new_obj(pairs: Vec<(&str, Value)>) -> Value {
 
 fn prop(v: &Value, key: &str) -> Value {
     match v {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -106,10 +112,7 @@ fn create_interface_with_prompt_option() {
 
 #[test]
 fn create_interface_with_crlf_delay() {
-    let opts = new_obj(vec![
-        ("input", Value::Null),
-        ("crlfDelay", Value::I32(100)),
-    ]);
+    let opts = new_obj(vec![("input", Value::Null), ("crlfDelay", Value::I32(100))]);
     let iface = call_rl("createInterface", vec![opts]);
     assert!(matches!(iface, Value::Object(_)));
 }
@@ -137,13 +140,19 @@ fn interface_has_resume_method() {
 #[test]
 fn interface_has_set_prompt_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "setPrompt"), "Interface.setPrompt must exist");
+    assert!(
+        has_method(&iface, "setPrompt"),
+        "Interface.setPrompt must exist"
+    );
 }
 
 #[test]
 fn interface_has_get_prompt_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "getPrompt"), "Interface.getPrompt must exist");
+    assert!(
+        has_method(&iface, "getPrompt"),
+        "Interface.getPrompt must exist"
+    );
 }
 
 #[test]
@@ -155,7 +164,10 @@ fn interface_has_prompt_method() {
 #[test]
 fn interface_has_question_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "question"), "Interface.question must exist");
+    assert!(
+        has_method(&iface, "question"),
+        "Interface.question must exist"
+    );
 }
 
 #[test]
@@ -167,7 +179,10 @@ fn interface_has_write_method() {
 #[test]
 fn interface_has_get_cursor_pos_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "getCursorPos"), "Interface.getCursorPos must exist");
+    assert!(
+        has_method(&iface, "getCursorPos"),
+        "Interface.getCursorPos must exist"
+    );
 }
 
 // ── Interface EventEmitter ────────────────────────────────────────────────────
@@ -175,7 +190,10 @@ fn interface_has_get_cursor_pos_method() {
 #[test]
 fn interface_has_on_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "on"), "Interface.on (EventEmitter) must exist");
+    assert!(
+        has_method(&iface, "on"),
+        "Interface.on (EventEmitter) must exist"
+    );
 }
 
 #[test]
@@ -199,19 +217,28 @@ fn interface_has_emit_method() {
 #[test]
 fn interface_has_remove_listener_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "removeListener"), "Interface.removeListener must exist");
+    assert!(
+        has_method(&iface, "removeListener"),
+        "Interface.removeListener must exist"
+    );
 }
 
 #[test]
 fn interface_has_add_listener_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "addListener"), "Interface.addListener must exist");
+    assert!(
+        has_method(&iface, "addListener"),
+        "Interface.addListener must exist"
+    );
 }
 
 #[test]
 fn interface_has_remove_all_listeners_method() {
     let iface = create_iface();
-    assert!(has_method(&iface, "removeAllListeners"), "Interface.removeAllListeners must exist");
+    assert!(
+        has_method(&iface, "removeAllListeners"),
+        "Interface.removeAllListeners must exist"
+    );
 }
 
 // ── Interface properties ──────────────────────────────────────────────────────
@@ -222,7 +249,8 @@ fn interface_has_terminal_property() {
     let terminal = prop(&iface, "terminal");
     assert!(
         matches!(terminal, Value::Bool(_) | Value::Undefined | Value::Null),
-        "Interface.terminal must be bool or undefined, got {:?}", terminal
+        "Interface.terminal must be bool or undefined, got {:?}",
+        terminal
     );
 }
 
@@ -232,7 +260,8 @@ fn interface_has_line_property() {
     let line = prop(&iface, "line");
     assert!(
         matches!(line, Value::String(_) | Value::Undefined | Value::Null),
-        "Interface.line must be string or undefined, got {:?}", line
+        "Interface.line must be string or undefined, got {:?}",
+        line
     );
 }
 
@@ -241,8 +270,12 @@ fn interface_has_cursor_property() {
     let iface = create_iface();
     let cursor = prop(&iface, "cursor");
     assert!(
-        matches!(cursor, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined | Value::Null),
-        "Interface.cursor must be numeric or undefined, got {:?}", cursor
+        matches!(
+            cursor,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined | Value::Null
+        ),
+        "Interface.cursor must be numeric or undefined, got {:?}",
+        cursor
     );
 }
 
@@ -251,49 +284,79 @@ fn interface_has_cursor_property() {
 #[test]
 fn cursor_to_null_stream_does_not_panic() {
     let result = call_rl("cursorTo", vec![Value::Null, Value::I32(0), Value::I32(0)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn cursor_to_x_only_does_not_panic() {
     let result = call_rl("cursorTo", vec![Value::Null, Value::I32(5)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn move_cursor_null_stream_does_not_panic() {
-    let result = call_rl("moveCursor", vec![Value::Null, Value::I32(0), Value::I32(0)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    let result = call_rl(
+        "moveCursor",
+        vec![Value::Null, Value::I32(0), Value::I32(0)],
+    );
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn move_cursor_negative_direction_does_not_panic() {
-    let result = call_rl("moveCursor", vec![Value::Null, Value::I32(-5), Value::I32(-3)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    let result = call_rl(
+        "moveCursor",
+        vec![Value::Null, Value::I32(-5), Value::I32(-3)],
+    );
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn clear_line_dir_zero_does_not_panic() {
     let result = call_rl("clearLine", vec![Value::Null, Value::I32(0)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn clear_line_dir_minus_one_does_not_panic() {
     let result = call_rl("clearLine", vec![Value::Null, Value::I32(-1)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn clear_line_dir_plus_one_does_not_panic() {
     let result = call_rl("clearLine", vec![Value::Null, Value::I32(1)]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 #[test]
 fn clear_screen_down_null_stream_does_not_panic() {
     let result = call_rl("clearScreenDown", vec![Value::Null]);
-    assert!(matches!(result, Value::Bool(_) | Value::Undefined | Value::Null));
+    assert!(matches!(
+        result,
+        Value::Bool(_) | Value::Undefined | Value::Null
+    ));
 }
 
 // ── emitKeypressEvents ────────────────────────────────────────────────────────
@@ -328,5 +391,8 @@ fn proposal_node_readline_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:readline imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:readline imports: {missing:?}"
+    );
 }

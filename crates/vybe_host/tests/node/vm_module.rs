@@ -124,7 +124,11 @@ fn create_context_with_sandbox_preserves_properties() {
     match &ctx {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            let my_var = obj.properties.get("myVar").cloned().unwrap_or(Value::Undefined);
+            let my_var = obj
+                .properties
+                .get("myVar")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(my_var, Value::I32(42));
         }
         _ => panic!("expected object"),

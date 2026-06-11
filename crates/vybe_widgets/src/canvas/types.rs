@@ -17,9 +17,24 @@ pub struct Color {
 }
 
 impl Color {
-    pub const BLACK: Color = Color { r: 0, g: 0, b: 0, a: 255 };
-    pub const WHITE: Color = Color { r: 255, g: 255, b: 255, a: 255 };
-    pub const TRANSPARENT: Color = Color { r: 0, g: 0, b: 0, a: 0 };
+    pub const BLACK: Color = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const WHITE: Color = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+    pub const TRANSPARENT: Color = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
 
     /// Construct an opaque RGB colour.
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
@@ -49,7 +64,9 @@ pub enum LineCap {
 }
 
 impl Default for LineCap {
-    fn default() -> Self { LineCap::Butt }
+    fn default() -> Self {
+        LineCap::Butt
+    }
 }
 
 /// How stroked lines join at corners.
@@ -64,22 +81,38 @@ pub enum LineJoin {
 }
 
 impl Default for LineJoin {
-    fn default() -> Self { LineJoin::Miter }
+    fn default() -> Self {
+        LineJoin::Miter
+    }
 }
 
 /// Font weight (normal vs bold). HTML5 canvas uses numeric weights too,
 /// but every backend we care about reduces them to a binary normal/bold
 /// distinction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FontWeight { Normal, Bold }
+pub enum FontWeight {
+    Normal,
+    Bold,
+}
 
-impl Default for FontWeight { fn default() -> Self { FontWeight::Normal } }
+impl Default for FontWeight {
+    fn default() -> Self {
+        FontWeight::Normal
+    }
+}
 
 /// Font style (upright vs italic).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FontStyle { Normal, Italic }
+pub enum FontStyle {
+    Normal,
+    Italic,
+}
 
-impl Default for FontStyle { fn default() -> Self { FontStyle::Normal } }
+impl Default for FontStyle {
+    fn default() -> Self {
+        FontStyle::Normal
+    }
+}
 
 /// A font specification — family name + size + weight/style.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,16 +137,29 @@ impl Default for Font {
 impl Font {
     /// Construct a font with the given family and size.
     pub fn new(family: impl Into<String>, size: f32) -> Self {
-        Self { family: family.into(), size, weight: FontWeight::Normal, style: FontStyle::Normal }
+        Self {
+            family: family.into(),
+            size,
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+        }
     }
 
     pub fn with_bold(mut self, bold: bool) -> Self {
-        self.weight = if bold { FontWeight::Bold } else { FontWeight::Normal };
+        self.weight = if bold {
+            FontWeight::Bold
+        } else {
+            FontWeight::Normal
+        };
         self
     }
 
     pub fn with_italic(mut self, italic: bool) -> Self {
-        self.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
+        self.style = if italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
         self
     }
 }
@@ -146,7 +192,11 @@ impl Image {
             (width * height * 4) as usize,
             "Image::from_rgba: expected width*height*4 bytes",
         );
-        Self { width, height, pixels: Arc::new(pixels) }
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+        }
     }
 
     /// Decode an image from a file path. Supports PNG, JPEG, GIF, and BMP.

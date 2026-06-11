@@ -1,9 +1,12 @@
 //! Checkbox widget — standalone tiny-skia rendered checkbox.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
+use super::layout::{
+    CheckState, CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue, CheckState};
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 pub struct Checkbox {
     pub check_state: CheckState,
@@ -36,11 +39,19 @@ impl Checkbox {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_check_state(mut self, state: CheckState) -> Self { self.check_state = state; self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    pub fn with_check_state(mut self, state: CheckState) -> Self {
+        self.check_state = state;
+        self
+    }
 
     /// Convenience: is the checkbox in the checked state?
-    pub fn checked(&self) -> bool { self.check_state.is_checked() }
+    pub fn checked(&self) -> bool {
+        self.check_state.is_checked()
+    }
 
     /// Paint the checkbox at (x, y) into the pixmap.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -57,7 +68,11 @@ impl Checkbox {
         }
 
         // Border
-        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        let (r, g, b, a) = if self.focused {
+            self.colors.focus_ring
+        } else {
+            self.colors.border
+        };
         paint.set_color_rgba8(r, g, b, a);
         let mut stroke = Stroke::default();
         stroke.width = if self.focused { 2.0 } else { 1.0 };
@@ -108,7 +123,9 @@ impl Checkbox {
     /// Handle a click at (x, y) relative to the widget's origin.
     /// Returns true if the checkbox was toggled.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
-        if self.disabled { return false; }
+        if self.disabled {
+            return false;
+        }
         if x >= 0.0 && y >= 0.0 && x <= self.size && y <= self.size {
             self.check_state = self.check_state.toggle();
             return true;
@@ -118,27 +135,43 @@ impl Checkbox {
 
     /// Toggle the checked state.
     pub fn toggle(&mut self) {
-        if !self.disabled { self.check_state = self.check_state.toggle(); }
+        if !self.disabled {
+            self.check_state = self.check_state.toggle();
+        }
     }
 }
 
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for Checkbox {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Render checkbox box via existing paint method
         let box_y = r.y + (r.h - self.size) / 2.0;
@@ -151,19 +184,30 @@ impl PanelWidget for Checkbox {
             let tx = r.x + self.size + 6.0;
             let ty = r.y + (r.h - font_size) / 2.0 - 1.0;
             super::ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                &self.label, tx, ty, font_size,
-                CosmicColor::rgba(fr, fg, fb, 255), ctx.scale,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &self.label,
+                tx,
+                ty,
+                font_size,
+                CosmicColor::rgba(fr, fg, fb, 255),
+                ctx.scale,
             );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) { return false; }
+        if !self.rect.contains(event.x, event.y) {
+            return false;
+        }
         if let MouseEventKind::Press(LayoutMouseButton::Left) = event.kind {
             if !self.disabled {
                 self.check_state = self.check_state.toggle();
-                self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.check_state.is_checked()));
+                self.pending_events.push(WidgetEvent::CheckboxToggled(
+                    self.name.clone(),
+                    self.check_state.is_checked(),
+                ));
             }
             return true;
         }
@@ -171,14 +215,19 @@ impl PanelWidget for Checkbox {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused { return false; }
-        use winit::keyboard::{Key, NamedKey};
+        if !self.focused {
+            return false;
+        }
         use winit::event::ElementState;
+        use winit::keyboard::{Key, NamedKey};
         if event.state == ElementState::Pressed {
             if let Key::Named(NamedKey::Space) = &event.key_without_modifiers {
                 if !self.disabled {
                     self.check_state = self.check_state.toggle();
-                    self.pending_events.push(WidgetEvent::CheckboxToggled(self.name.clone(), self.check_state.is_checked()));
+                    self.pending_events.push(WidgetEvent::CheckboxToggled(
+                        self.name.clone(),
+                        self.check_state.is_checked(),
+                    ));
                 }
                 return true;
             }
@@ -188,10 +237,17 @@ impl PanelWidget for Checkbox {
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.label = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                self.label = t.clone();
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
             WidgetCommand::SetChecked(c) => {
-                let new_state = if *c { CheckState::Checked } else { CheckState::Unchecked };
+                let new_state = if *c {
+                    CheckState::Checked
+                } else {
+                    CheckState::Unchecked
+                };
                 if self.check_state != new_state {
                     self.check_state = new_state;
                     self.pending_events.push(WidgetEvent::CheckboxToggled(
@@ -202,37 +258,38 @@ impl PanelWidget for Checkbox {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Bool(self.check_state.is_checked()),
-            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
-            WidgetCommand::Custom(key, val) => {
-                match key.as_str() {
-                    "SetCheckState" => {
-                        if let CommandValue::Text(s) = val {
-                            let new_state = match s.as_str() {
-                                "checked" => CheckState::Checked,
-                                "indeterminate" => CheckState::Indeterminate,
-                                _ => CheckState::Unchecked,
-                            };
-                            if self.check_state != new_state {
-                                self.check_state = new_state;
-                                self.pending_events.push(WidgetEvent::CheckboxToggled(
-                                    self.name.clone(),
-                                    self.check_state.is_checked(),
-                                ));
-                            }
-                        }
-                        CommandValue::None
-                    }
-                    "GetCheckState" => {
-                        let s = match self.check_state {
-                            CheckState::Checked => "checked",
-                            CheckState::Unchecked => "unchecked",
-                            CheckState::Indeterminate => "indeterminate",
-                        };
-                        CommandValue::Text(s.to_string())
-                    }
-                    _ => CommandValue::None,
-                }
+            WidgetCommand::SetEnabled(e) => {
+                self.disabled = !e;
+                CommandValue::None
             }
+            WidgetCommand::Custom(key, val) => match key.as_str() {
+                "SetCheckState" => {
+                    if let CommandValue::Text(s) = val {
+                        let new_state = match s.as_str() {
+                            "checked" => CheckState::Checked,
+                            "indeterminate" => CheckState::Indeterminate,
+                            _ => CheckState::Unchecked,
+                        };
+                        if self.check_state != new_state {
+                            self.check_state = new_state;
+                            self.pending_events.push(WidgetEvent::CheckboxToggled(
+                                self.name.clone(),
+                                self.check_state.is_checked(),
+                            ));
+                        }
+                    }
+                    CommandValue::None
+                }
+                "GetCheckState" => {
+                    let s = match self.check_state {
+                        CheckState::Checked => "checked",
+                        CheckState::Unchecked => "unchecked",
+                        CheckState::Indeterminate => "indeterminate",
+                    };
+                    CommandValue::Text(s.to_string())
+                }
+                _ => CommandValue::None,
+            },
             _ => CommandValue::None,
         }
     }
@@ -241,5 +298,7 @@ impl PanelWidget for Checkbox {
         std::mem::take(&mut self.pending_events)
     }
 
-    fn focusable(&self) -> bool { !self.disabled }
+    fn focusable(&self) -> bool {
+        !self.disabled
+    }
 }

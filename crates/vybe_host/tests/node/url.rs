@@ -360,7 +360,10 @@ fn url_to_json_returns_href() {
     let url = call_url("URL", vec![s("https://example.com/path")]);
     let result = call_url("urlToJSON", vec![url]);
     if let Value::String(s) = &result {
-        assert!(s.contains("example.com"), "URL.toJSON() must return href string");
+        assert!(
+            s.contains("example.com"),
+            "URL.toJSON() must return href string"
+        );
     }
     // TDD
 }
@@ -473,7 +476,10 @@ fn search_params_sort_orders_keys_lexicographically() {
     if let Value::String(s) = &serialized {
         let a_pos = s.find("a=").unwrap_or(usize::MAX);
         let z_pos = s.find("z=").unwrap_or(usize::MAX);
-        assert!(a_pos < z_pos, "after sort, 'a=' must come before 'z=', got: {s}");
+        assert!(
+            a_pos < z_pos,
+            "after sort, 'a=' must come before 'z=', got: {s}"
+        );
     }
     // TDD
 }

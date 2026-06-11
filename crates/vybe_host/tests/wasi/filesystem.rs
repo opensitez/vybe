@@ -54,7 +54,8 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn types(name: &str, args: Vec<Value>) -> Value {
@@ -97,7 +98,11 @@ fn is_error(value: &Value) -> Option<String> {
 /// surface specifically for tests — production code uses
 /// `get-directories`).
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke("wasi:filesystem/types", "__test_open_root", vec![s(dir.to_str().unwrap())])
+    invoke(
+        "wasi:filesystem/types",
+        "__test_open_root",
+        vec![s(dir.to_str().unwrap())],
+    )
 }
 
 macro_rules! assert_wasi_error {
@@ -120,8 +125,14 @@ fn get_directories_returns_array_of_pairs() {
                     if let ObjectKind::Array(pair_elements) = &pair.kind {
                         assert_eq!(pair_elements.len(), 2, "(descriptor, path) pair shape");
                         // pair[0] is a descriptor object, pair[1] is the path string.
-                        assert!(matches!(pair_elements[0], Value::Object(_)), "pair[0] descriptor");
-                        assert!(matches!(pair_elements[1], Value::String(_)), "pair[1] path string");
+                        assert!(
+                            matches!(pair_elements[0], Value::Object(_)),
+                            "pair[0] descriptor"
+                        );
+                        assert!(
+                            matches!(pair_elements[1], Value::String(_)),
+                            "pair[1] path string"
+                        );
                         return;
                     }
                 }
@@ -144,20 +155,41 @@ fn open_at_existing_file_returns_descriptor() {
 
     let root = open_test_root(&dir);
     // open-at(parent, path-flags=0, path="hello.txt", open-flags=0, %flags=0)
-    let result = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("hello.txt"), Value::I32(0), Value::I32(0),
-    ]);
-    assert!(is_error(&result).is_none(), "expected ok descriptor, got error {:?}", is_error(&result));
-    assert!(matches!(result, Value::Object(_)), "open-at returns a descriptor object");
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("hello.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
+    assert!(
+        is_error(&result).is_none(),
+        "expected ok descriptor, got error {:?}",
+        is_error(&result)
+    );
+    assert!(
+        matches!(result, Value::Object(_)),
+        "open-at returns a descriptor object"
+    );
 }
 
 #[test]
 fn open_at_missing_file_returns_no_entry_error() {
     let dir = scratch_dir("open_at_missing");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("nope.txt"), Value::I32(0), Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("nope.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("no-entry"));
 }
 
@@ -166,11 +198,21 @@ fn open_at_with_create_flag_creates_new_file() {
     let dir = scratch_dir("open_at_create");
     let root = open_test_root(&dir);
     // open-flags::create = bit 0 (per WIT: create, directory, exclusive, truncate)
-    let result = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("new.txt"), Value::I32(1), Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("new.txt"),
+            Value::I32(1),
+            Value::I32(0),
+        ],
+    );
     assert!(is_error(&result).is_none(), "open-at create should succeed");
-    assert!(dir.join("new.txt").exists(), "file should be created on disk");
+    assert!(
+        dir.join("new.txt").exists(),
+        "file should be created on disk"
+    );
 }
 
 #[test]
@@ -179,13 +221,16 @@ fn open_at_with_create_exclusive_on_existing_file_errors_exist() {
     std::fs::write(dir.join("taken.txt"), "hi").unwrap();
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("taken.txt"),
-        Value::I32(1 | 4),
-        Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("taken.txt"),
+            Value::I32(1 | 4),
+            Value::I32(0),
+        ],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("exist"));
 }
 
@@ -195,13 +240,16 @@ fn open_at_with_directory_flag_on_file_errors_not_directory() {
     std::fs::write(dir.join("plain.txt"), "hi").unwrap();
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("plain.txt"),
-        Value::I32(2),
-        Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("plain.txt"),
+            Value::I32(2),
+            Value::I32(0),
+        ],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("not-directory"));
 }
 
@@ -211,15 +259,21 @@ fn open_at_with_truncate_flag_clears_existing_file() {
     std::fs::write(dir.join("truncate.txt"), "payload").unwrap();
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("truncate.txt"),
-        Value::I32(8),
-        Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("truncate.txt"),
+            Value::I32(8),
+            Value::I32(0),
+        ],
+    );
     assert!(is_error(&result).is_none());
-    assert_eq!(std::fs::read_to_string(dir.join("truncate.txt")).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("truncate.txt")).unwrap(),
+        ""
+    );
 }
 
 #[test]
@@ -228,14 +282,20 @@ fn open_at_directory_flag_on_existing_directory_returns_directory_descriptor() {
     std::fs::create_dir(dir.join("subdir")).unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("subdir"),
-        Value::I32(2),
-        Value::I32(0),
-    ]);
-    assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("directory"));
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("subdir"),
+            Value::I32(2),
+            Value::I32(0),
+        ],
+    );
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![descriptor]),
+        s("directory")
+    );
 }
 
 #[test]
@@ -246,9 +306,10 @@ fn stat_at_returns_descriptor_stat() {
     let root = open_test_root(&dir);
 
     // stat-at(path-flags, path)
-    let stats = types("[method]descriptor.stat-at", vec![
-        root, Value::I32(0), s("sized.bin"),
-    ]);
+    let stats = types(
+        "[method]descriptor.stat-at",
+        vec![root, Value::I32(0), s("sized.bin")],
+    );
     assert_eq!(prop(&stats, "size"), Value::F64(6.0));
     // descriptor-stat fields per WIT: type, link-count, size, mtime, atime, ctime
     assert_eq!(prop(&stats, "type"), s("regular-file"));
@@ -259,11 +320,10 @@ fn stat_at_missing_file_returns_no_entry_error() {
     let dir = scratch_dir("stat_at_missing");
     let root = open_test_root(&dir);
 
-    let stats = types("[method]descriptor.stat-at", vec![
-        root,
-        Value::I32(0),
-        s("missing.txt"),
-    ]);
+    let stats = types(
+        "[method]descriptor.stat-at",
+        vec![root, Value::I32(0), s("missing.txt")],
+    );
     assert_eq!(is_error(&stats).as_deref(), Some("no-entry"));
 }
 
@@ -274,9 +334,16 @@ fn stat_on_open_descriptor() {
     std::fs::write(&file, b"xx").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("d.bin"), Value::I32(0), Value::I32(0),
-    ]);
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("d.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     let stats = types("[method]descriptor.stat", vec![descriptor]);
     assert_eq!(prop(&stats, "size"), Value::F64(2.0));
     assert_eq!(prop(&stats, "type"), s("regular-file"));
@@ -289,9 +356,16 @@ fn stat_on_deleted_descriptor_returns_no_entry() {
     std::fs::write(&file, b"xx").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("gone.bin"), Value::I32(0), Value::I32(0),
-    ]);
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("gone.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     std::fs::remove_file(file).unwrap();
 
     let stats = types("[method]descriptor.stat", vec![descriptor]);
@@ -305,11 +379,24 @@ fn get_type_returns_descriptor_type() {
     std::fs::write(&file, "").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root.clone(), Value::I32(0), s("t.txt"), Value::I32(0), Value::I32(0),
-    ]);
-    assert_eq!(types("[method]descriptor.get-type", vec![descriptor]), s("regular-file"));
-    assert_eq!(types("[method]descriptor.get-type", vec![root]), s("directory"));
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root.clone(),
+            Value::I32(0),
+            s("t.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![descriptor]),
+        s("regular-file")
+    );
+    assert_eq!(
+        types("[method]descriptor.get-type", vec![root]),
+        s("directory")
+    );
 }
 
 #[test]
@@ -319,9 +406,16 @@ fn get_type_after_file_deleted_returns_no_entry() {
     std::fs::write(&file, "bye").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("gone.txt"), Value::I32(0), Value::I32(0),
-    ]);
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("gone.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     std::fs::remove_file(file).unwrap();
 
     let ty = types("[method]descriptor.get-type", vec![descriptor]);
@@ -339,19 +433,29 @@ fn read_directory_then_iterate_entries() {
     let root = open_test_root(&dir);
 
     let stream = types("[method]descriptor.read-directory", vec![root]);
-    assert!(matches!(stream, Value::Object(_)), "read-directory returns a directory-entry-stream");
+    assert!(
+        matches!(stream, Value::Object(_)),
+        "read-directory returns a directory-entry-stream"
+    );
 
     let mut names = Vec::new();
     loop {
-        let entry = types("[method]directory-entry-stream.read-directory-entry", vec![stream.clone()]);
+        let entry = types(
+            "[method]directory-entry-stream.read-directory-entry",
+            vec![stream.clone()],
+        );
         // option<directory-entry>: null = end-of-stream
-        if matches!(entry, Value::Null) { break; }
+        if matches!(entry, Value::Null) {
+            break;
+        }
         let name = match prop(&entry, "name") {
             Value::String(text) => text.to_string(),
             other => panic!("directory-entry.name expected string, got {:?}", other),
         };
         names.push(name);
-        if names.len() > 50 { panic!("read-directory-entry didn't terminate"); }
+        if names.len() > 50 {
+            panic!("read-directory-entry didn't terminate");
+        }
     }
     names.sort();
     assert_eq!(names, vec!["a.txt", "b.txt", "sub"]);
@@ -362,13 +466,16 @@ fn read_directory_on_file_descriptor_errors_not_directory() {
     let dir = scratch_dir("read_directory_file");
     std::fs::write(dir.join("plain.txt"), "hi").unwrap();
     let root = open_test_root(&dir);
-    let file = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("plain.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
+    let file = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("plain.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
 
     let result = types("[method]descriptor.read-directory", vec![file]);
     assert_eq!(is_error(&result).as_deref(), Some("not-directory"));
@@ -380,8 +487,20 @@ fn directory_entry_stream_returns_null_after_end_of_stream() {
     let root = open_test_root(&dir);
 
     let stream = types("[method]descriptor.read-directory", vec![root]);
-    assert!(matches!(types("[method]directory-entry-stream.read-directory-entry", vec![stream.clone()]), Value::Null));
-    assert!(matches!(types("[method]directory-entry-stream.read-directory-entry", vec![stream]), Value::Null));
+    assert!(matches!(
+        types(
+            "[method]directory-entry-stream.read-directory-entry",
+            vec![stream.clone()]
+        ),
+        Value::Null
+    ));
+    assert!(matches!(
+        types(
+            "[method]directory-entry-stream.read-directory-entry",
+            vec![stream]
+        ),
+        Value::Null
+    ));
 }
 
 // ── [method]descriptor.create-directory-at ────────────────────────
@@ -390,8 +509,14 @@ fn directory_entry_stream_returns_null_after_end_of_stream() {
 fn create_directory_at_makes_subdir() {
     let dir = scratch_dir("create_dir");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.create-directory-at", vec![root, s("sub")]);
-    assert!(is_error(&result).is_none(), "create-directory-at should succeed");
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![root, s("sub")],
+    );
+    assert!(
+        is_error(&result).is_none(),
+        "create-directory-at should succeed"
+    );
     assert!(dir.join("sub").is_dir(), "sub/ should exist on disk");
 }
 
@@ -401,7 +526,10 @@ fn create_directory_at_existing_directory_errors_exist() {
     std::fs::create_dir(dir.join("sub")).unwrap();
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.create-directory-at", vec![root, s("sub")]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![root, s("sub")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("exist"));
 }
 
@@ -430,7 +558,10 @@ fn unlink_file_at_on_directory_errors_is_directory() {
 fn unlink_file_at_missing_path_errors_no_entry() {
     let dir = scratch_dir("unlink_missing");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.unlink-file-at", vec![root, s("missing")]);
+    let result = types(
+        "[method]descriptor.unlink-file-at",
+        vec![root, s("missing")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("no-entry"));
 }
 
@@ -441,7 +572,10 @@ fn remove_directory_at_removes_empty_dir() {
     let dir = scratch_dir("rmdir_empty");
     std::fs::create_dir(dir.join("empty")).unwrap();
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.remove-directory-at", vec![root, s("empty")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![root, s("empty")],
+    );
     assert!(is_error(&result).is_none());
     assert!(!dir.join("empty").exists());
 }
@@ -453,7 +587,10 @@ fn remove_directory_at_non_empty_errors_not_empty() {
     std::fs::create_dir(&sub).unwrap();
     std::fs::write(sub.join("x"), "").unwrap();
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.remove-directory-at", vec![root, s("full")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![root, s("full")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("not-empty"));
 }
 
@@ -461,7 +598,10 @@ fn remove_directory_at_non_empty_errors_not_empty() {
 fn remove_directory_at_missing_path_errors_no_entry() {
     let dir = scratch_dir("rmdir_missing");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.remove-directory-at", vec![root, s("ghost")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![root, s("ghost")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("no-entry"));
 }
 
@@ -472,9 +612,10 @@ fn rename_at_moves_within_same_parent() {
     let dir = scratch_dir("rename_within");
     std::fs::write(dir.join("a"), "data").unwrap();
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.rename-at", vec![
-        root.clone(), s("a"), root, s("b"),
-    ]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![root.clone(), s("a"), root, s("b")],
+    );
     assert!(is_error(&result).is_none());
     assert!(!dir.join("a").exists());
     assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "data");
@@ -489,29 +630,30 @@ fn rename_at_across_directory_descriptors_moves_file() {
     std::fs::create_dir(&to).unwrap();
     std::fs::write(from.join("note.txt"), "payload").unwrap();
     let root = open_test_root(&dir);
-    let from_dir = types("[method]descriptor.open-at", vec![
-        root.clone(),
-        Value::I32(0),
-        s("from"),
-        Value::I32(2),
-        Value::I32(0),
-    ]);
-    let to_dir = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("to"),
-        Value::I32(2),
-        Value::I32(0),
-    ]);
+    let from_dir = types(
+        "[method]descriptor.open-at",
+        vec![
+            root.clone(),
+            Value::I32(0),
+            s("from"),
+            Value::I32(2),
+            Value::I32(0),
+        ],
+    );
+    let to_dir = types(
+        "[method]descriptor.open-at",
+        vec![root, Value::I32(0), s("to"), Value::I32(2), Value::I32(0)],
+    );
 
-    let result = types("[method]descriptor.rename-at", vec![
-        from_dir,
-        s("note.txt"),
-        to_dir,
-        s("moved.txt"),
-    ]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![from_dir, s("note.txt"), to_dir, s("moved.txt")],
+    );
     assert!(is_error(&result).is_none());
-    assert_eq!(std::fs::read_to_string(to.join("moved.txt")).unwrap(), "payload");
+    assert_eq!(
+        std::fs::read_to_string(to.join("moved.txt")).unwrap(),
+        "payload"
+    );
 }
 
 #[test]
@@ -519,12 +661,10 @@ fn rename_at_missing_source_errors_no_entry() {
     let dir = scratch_dir("rename_missing");
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.rename-at", vec![
-        root.clone(),
-        s("missing.txt"),
-        root,
-        s("dest.txt"),
-    ]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![root.clone(), s("missing.txt"), root, s("dest.txt")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("no-entry"));
 }
 
@@ -545,7 +685,10 @@ fn readlink_at_missing_path_errors_no_entry() {
     let dir = scratch_dir("readlink_missing");
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.readlink-at", vec![root, s("missing-link")]);
+    let result = types(
+        "[method]descriptor.readlink-at",
+        vec![root, s("missing-link")],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("no-entry"));
 }
 
@@ -555,7 +698,10 @@ fn readlink_at_missing_path_errors_no_entry() {
 fn is_same_object_true_for_same_descriptor() {
     let dir = scratch_dir("same_obj");
     let root = open_test_root(&dir);
-    let same = types("[method]descriptor.is-same-object", vec![root.clone(), root]);
+    let same = types(
+        "[method]descriptor.is-same-object",
+        vec![root.clone(), root],
+    );
     assert_eq!(same, Value::Bool(true));
 }
 
@@ -565,20 +711,26 @@ fn is_same_object_true_for_distinct_descriptors_to_same_path() {
     std::fs::write(dir.join("same.txt"), "payload").unwrap();
     let root = open_test_root(&dir);
 
-    let first = types("[method]descriptor.open-at", vec![
-        root.clone(),
-        Value::I32(0),
-        s("same.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
-    let second = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("same.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
+    let first = types(
+        "[method]descriptor.open-at",
+        vec![
+            root.clone(),
+            Value::I32(0),
+            s("same.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
+    let second = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("same.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
 
     let same = types("[method]descriptor.is-same-object", vec![first, second]);
     assert_eq!(same, Value::Bool(true));
@@ -591,20 +743,26 @@ fn is_same_object_false_for_different_paths() {
     std::fs::write(dir.join("b.txt"), "b").unwrap();
     let root = open_test_root(&dir);
 
-    let first = types("[method]descriptor.open-at", vec![
-        root.clone(),
-        Value::I32(0),
-        s("a.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
-    let second = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("b.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
+    let first = types(
+        "[method]descriptor.open-at",
+        vec![
+            root.clone(),
+            Value::I32(0),
+            s("a.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
+    let second = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("b.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
 
     let same = types("[method]descriptor.is-same-object", vec![first, second]);
     assert_eq!(same, Value::Bool(false));
@@ -619,15 +777,29 @@ fn read_via_stream_yields_input_stream() {
     std::fs::write(&file, b"hello, world").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root, Value::I32(0), s("payload.bin"), Value::I32(0), Value::I32(0),
-    ]);
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("payload.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     // read-via-stream(offset=0)
-    let stream = types("[method]descriptor.read-via-stream", vec![
-        descriptor, Value::F64(0.0),
-    ]);
-    assert!(is_error(&stream).is_none(), "read-via-stream should succeed");
-    assert!(matches!(stream, Value::Object(_)), "read-via-stream returns an input-stream");
+    let stream = types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(0.0)],
+    );
+    assert!(
+        is_error(&stream).is_none(),
+        "read-via-stream should succeed"
+    );
+    assert!(
+        matches!(stream, Value::Object(_)),
+        "read-via-stream returns an input-stream"
+    );
 
     // Now read from it via wasi:io/streams.[method]input-stream.blocking-read
     let chunk = invoke(
@@ -659,14 +831,20 @@ fn input_stream_read_respects_offset_and_length() {
     std::fs::write(dir.join("payload.bin"), b"abcdef").unwrap();
     let root = open_test_root(&dir);
 
-    let descriptor = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        s("payload.bin"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
-    let stream = types("[method]descriptor.read-via-stream", vec![descriptor, Value::F64(2.0)]);
+    let descriptor = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s("payload.bin"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
+    let stream = types(
+        "[method]descriptor.read-via-stream",
+        vec![descriptor, Value::F64(2.0)],
+    );
     let chunk = invoke(
         "wasi:io/streams",
         "[method]input-stream.read",
@@ -689,7 +867,10 @@ fn input_stream_read_respects_offset_and_length() {
         }
     }
 
-    panic!("input-stream.read should return a list<u8>, got {:?}", chunk);
+    panic!(
+        "input-stream.read should return a list<u8>, got {:?}",
+        chunk
+    );
 }
 
 #[test]
@@ -697,19 +878,25 @@ fn read_via_stream_on_directory_errors_is_directory() {
     let dir = scratch_dir("read_stream_directory");
     let root = open_test_root(&dir);
 
-    let result = types("[method]descriptor.read-via-stream", vec![root, Value::F64(0.0)]);
+    let result = types(
+        "[method]descriptor.read-via-stream",
+        vec![root, Value::F64(0.0)],
+    );
     assert_eq!(is_error(&result).as_deref(), Some("is-directory"));
 }
 
 #[test]
 fn open_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.open-at", vec![
-        Value::Null,
-        Value::I32(0),
-        s("child.txt"),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            Value::Null,
+            Value::I32(0),
+            s("child.txt"),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -717,13 +904,16 @@ fn open_at_rejects_bad_descriptor() {
 fn open_at_rejects_non_string_path_argument() {
     let dir = scratch_dir("open_at_invalid_path_arg");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.open-at", vec![
-        root,
-        Value::I32(0),
-        Value::I32(42),
-        Value::I32(0),
-        Value::I32(0),
-    ]);
+    let result = types(
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            Value::I32(42),
+            Value::I32(0),
+            Value::I32(0),
+        ],
+    );
     assert_wasi_error!(result, "invalid");
 }
 
@@ -735,7 +925,10 @@ fn stat_rejects_bad_descriptor() {
 
 #[test]
 fn stat_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.stat-at", vec![Value::Null, Value::I32(0), s("x")]);
+    let result = types(
+        "[method]descriptor.stat-at",
+        vec![Value::Null, Value::I32(0), s("x")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -747,25 +940,37 @@ fn read_directory_rejects_bad_descriptor() {
 
 #[test]
 fn directory_entry_stream_read_rejects_bad_descriptor() {
-    let result = types("[method]directory-entry-stream.read-directory-entry", vec![Value::Null]);
+    let result = types(
+        "[method]directory-entry-stream.read-directory-entry",
+        vec![Value::Null],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn create_directory_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.create-directory-at", vec![Value::Null, s("sub")]);
+    let result = types(
+        "[method]descriptor.create-directory-at",
+        vec![Value::Null, s("sub")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn unlink_file_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.unlink-file-at", vec![Value::Null, s("file")]);
+    let result = types(
+        "[method]descriptor.unlink-file-at",
+        vec![Value::Null, s("file")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn remove_directory_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.remove-directory-at", vec![Value::Null, s("dir")]);
+    let result = types(
+        "[method]descriptor.remove-directory-at",
+        vec![Value::Null, s("dir")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -773,12 +978,10 @@ fn remove_directory_at_rejects_bad_descriptor() {
 fn rename_at_rejects_bad_source_descriptor() {
     let dir = scratch_dir("rename_bad_source");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.rename-at", vec![
-        Value::Null,
-        s("a"),
-        root,
-        s("b"),
-    ]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![Value::Null, s("a"), root, s("b")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -786,36 +989,48 @@ fn rename_at_rejects_bad_source_descriptor() {
 fn rename_at_rejects_bad_target_descriptor() {
     let dir = scratch_dir("rename_bad_target");
     let root = open_test_root(&dir);
-    let result = types("[method]descriptor.rename-at", vec![
-        root,
-        s("a"),
-        Value::Null,
-        s("b"),
-    ]);
+    let result = types(
+        "[method]descriptor.rename-at",
+        vec![root, s("a"), Value::Null, s("b")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn readlink_at_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.readlink-at", vec![Value::Null, s("link")]);
+    let result = types(
+        "[method]descriptor.readlink-at",
+        vec![Value::Null, s("link")],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn read_via_stream_rejects_bad_descriptor() {
-    let result = types("[method]descriptor.read-via-stream", vec![Value::Null, Value::F64(0.0)]);
+    let result = types(
+        "[method]descriptor.read-via-stream",
+        vec![Value::Null, Value::F64(0.0)],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn input_stream_read_rejects_bad_descriptor() {
-    let result = invoke("wasi:io/streams", "[method]input-stream.read", vec![Value::Null, Value::F64(1.0)]);
+    let result = invoke(
+        "wasi:io/streams",
+        "[method]input-stream.read",
+        vec![Value::Null, Value::F64(1.0)],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
 #[test]
 fn input_stream_blocking_read_rejects_bad_descriptor() {
-    let result = invoke("wasi:io/streams", "[method]input-stream.blocking-read", vec![Value::Null, Value::F64(1.0)]);
+    let result = invoke(
+        "wasi:io/streams",
+        "[method]input-stream.blocking-read",
+        vec![Value::Null, Value::F64(1.0)],
+    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -829,7 +1044,10 @@ fn proposal_filesystem_preopens_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi:filesystem/preopens", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing filesystem preopens imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing filesystem preopens imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -866,5 +1084,8 @@ fn proposal_filesystem_descriptor_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi:filesystem/types", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing filesystem descriptor imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing filesystem descriptor imports: {missing:?}"
+    );
 }

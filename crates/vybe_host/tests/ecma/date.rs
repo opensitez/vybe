@@ -25,6 +25,22 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
+fn invoke_value(name: &str, args: Vec<Value>) -> Value {
+    let mut chunk = Chunk::new("<ecma-value-date-test>");
+    let import_idx = chunk.add_import("ecma:value", name);
+    let argc = args.len() as u8;
+    for value in args {
+        let c = chunk.add_constant(value);
+        chunk.emit_op_u16(Op::CONST, c, 0);
+    }
+    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
+    chunk.emit(argc, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    vm.run(vec![chunk]).expect("VM run failed")
+}
+
 fn as_num(v: &Value) -> f64 {
     match v {
         Value::I32(n) => *n as f64,
@@ -34,7 +50,13 @@ fn as_num(v: &Value) -> f64 {
     }
 }
 
-fn epoch_date() -> Value { invoke("new", vec![Value::F64(0.0)]) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
+
+fn epoch_date() -> Value {
+    invoke("new", vec![Value::F64(0.0)])
+}
 
 // ── Date.now ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +64,10 @@ fn epoch_date() -> Value { invoke("new", vec![Value::F64(0.0)]) }
 fn now_returns_milliseconds_past_unix_epoch_in_year_2000_plus() {
     // Jan 1 2001 = 978307200000 ms. Any modern clock must exceed this.
     let ms = as_num(&invoke("now", vec![]));
-    assert!(ms > 978_307_200_000.0, "Date.now() must exceed year-2001 timestamp");
+    assert!(
+        ms > 978_307_200_000.0,
+        "Date.now() must exceed year-2001 timestamp"
+    );
 }
 
 #[test]
@@ -149,6 +174,15 @@ fn to_date_string_does_not_include_time_component() {
 }
 
 #[test]
+fn value_invoke_method_locale_date_string_on_date_object() {
+    let d = epoch_date();
+    match invoke_value("invokeMethod", vec![d, s("toLocaleDateString")]) {
+        Value::String(text) => assert!(!text.is_empty()),
+        other => panic!("expected string, got {:?}", other),
+    }
+}
+
+#[test]
 fn to_utc_string_contains_gmt_or_utc_marker() {
     let d = epoch_date();
     match invoke("toUTCString", vec![d]) {
@@ -179,7 +213,10 @@ fn utc_returns_millisecond_timestamp_for_any_date() {
 
 #[test]
 fn parse_iso_string_returns_its_millisecond_timestamp() {
-    let result = invoke("parse", vec![Value::String(Arc::from("1970-01-01T00:00:00.000Z"))]);
+    let result = invoke(
+        "parse",
+        vec![Value::String(Arc::from("1970-01-01T00:00:00.000Z"))],
+    );
     assert_eq!(as_num(&result), 0.0);
 }
 
@@ -206,7 +243,10 @@ fn get_timezone_offset_is_integer_minutes_within_plausible_range() {
     let d = epoch_date();
     let offset = as_num(&invoke("getTimezoneOffset", vec![d]));
     // Valid UTC offsets: -720 (UTC-12) to +840 (UTC+14), in minutes.
-    assert!(offset >= -840.0 && offset <= 720.0, "offset out of range: {offset}");
+    assert!(
+        offset >= -840.0 && offset <= 720.0,
+        "offset out of range: {offset}"
+    );
     assert_eq!(offset, offset.trunc(), "offset must be integer minutes");
 }
 
@@ -394,21 +434,30 @@ fn get_utc_day_returns_valid_weekday() {
 #[test]
 fn get_utc_milliseconds_returns_ms_component() {
     // Construct date with known ms offset via timestamp
-    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T00:00:00.250Z"))]);
+    let ms = invoke(
+        "parse",
+        vec![Value::String(Arc::from("2024-01-01T00:00:00.250Z"))],
+    );
     let d = invoke("new", vec![ms]);
     assert_eq!(invoke("getUTCMilliseconds", vec![d]).as_i32(), 250);
 }
 
 #[test]
 fn get_utc_minutes_returns_minute_component() {
-    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T12:34:00Z"))]);
+    let ms = invoke(
+        "parse",
+        vec![Value::String(Arc::from("2024-01-01T12:34:00Z"))],
+    );
     let d = invoke("new", vec![ms]);
     assert_eq!(invoke("getUTCMinutes", vec![d]).as_i32(), 34);
 }
 
 #[test]
 fn get_utc_seconds_returns_second_component() {
-    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T00:00:42Z"))]);
+    let ms = invoke(
+        "parse",
+        vec![Value::String(Arc::from("2024-01-01T00:00:42Z"))],
+    );
     let d = invoke("new", vec![ms]);
     assert_eq!(invoke("getUTCSeconds", vec![d]).as_i32(), 42);
 }

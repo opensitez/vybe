@@ -11,8 +11,8 @@
 //! just route through `ctx.invoke` with the resolved args list.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::{HostContext, VM, Value};
 
 static FUNCTION_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -25,13 +25,17 @@ pub(crate) fn shared_function_prototype() -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("ecma:function", "invokeBound", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let bound_this = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let target_proto = args.get(2).cloned().unwrap_or(Value::Undefined);
+    vm.register_host_fn(
+        "ecma:function",
+        "invokeBound",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let bound_this = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let target_proto = args.get(2).cloned().unwrap_or(Value::Undefined);
 
-        invoke_bound_target(ctx, &target, bound_this, target_proto, &args[3..])
-    }));
+            invoke_bound_target(ctx, &target, bound_this, target_proto, &args[3..])
+        }),
+    );
 
     let invoke_bound_idx = *vm
         .host_registry
@@ -39,109 +43,178 @@ pub fn register(vm: &mut VM) {
         .expect("ecma:function.invokeBound must be registered before bind");
 
     // Function.prototype.name — §20.2.3.3: returns the name property.
-    vm.register_host_fn("ecma:function", "name", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let name = o.properties.get("name")
-                .or_else(|| o.properties.get("__fn_name"));
-            if let Some(Value::String(s)) = name {
-                return Value::String(s.clone());
+    vm.register_host_fn(
+        "ecma:function",
+        "name",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                let name = o
+                    .properties
+                    .get("name")
+                    .or_else(|| o.properties.get("__fn_name"));
+                if let Some(Value::String(s)) = name {
+                    return Value::String(s.clone());
+                }
             }
-        }
-        Value::String(Arc::from(""))
-    }));
+            Value::String(Arc::from(""))
+        }),
+    );
 
     // Function.prototype.length — §20.2.3.2: formal parameter count.
-    vm.register_host_fn("ecma:function", "length", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let len = o.properties.get("length").or_else(|| o.properties.get("__fn_arity"));
-            match len {
-                Some(Value::I32(n)) => return Value::I32(*n),
-                Some(Value::F64(n)) => return Value::I32(*n as i32),
-                Some(Value::I64(n)) => return Value::I32(*n as i32),
-                _ => {}
+    vm.register_host_fn(
+        "ecma:function",
+        "length",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                let len = o
+                    .properties
+                    .get("length")
+                    .or_else(|| o.properties.get("__fn_arity"));
+                match len {
+                    Some(Value::I32(n)) => return Value::I32(*n),
+                    Some(Value::F64(n)) => return Value::I32(*n as i32),
+                    Some(Value::I64(n)) => return Value::I32(*n as i32),
+                    _ => {}
+                }
+                if let ObjectKind::Function(f) = &o.kind {
+                    return Value::I32(f.arity as i32);
+                }
             }
-            if let ObjectKind::Function(f) = &o.kind {
-                return Value::I32(f.arity as i32);
-            }
-        }
-        Value::I32(0)
-    }));
+            Value::I32(0)
+        }),
+    );
 
     // Function.prototype.toString — §20.2.3.5.
-    vm.register_host_fn("ecma:function", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let name = o.properties.get("name").or_else(|| o.properties.get("__fn_name"))
-                .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-                .unwrap_or_default();
-            return Value::String(Arc::from(format!("function {}() {{ [native code] }}", name).as_str()));
-        }
-        Value::String(Arc::from("function () { [native code] }"))
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "toString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                let name = o
+                    .properties
+                    .get("name")
+                    .or_else(|| o.properties.get("__fn_name"))
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                return Value::String(Arc::from(
+                    format!("function {}() {{ [native code] }}", name).as_str(),
+                ));
+            }
+            Value::String(Arc::from("function () { [native code] }"))
+        }),
+    );
 
     // new Function(body) — §20.2.1.1: creates a callable from a body string.
-    vm.register_host_fn("ecma:function", "new", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let body = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let mut obj = Object::new();
-        obj.properties.insert("name".into(), Value::String(Arc::from("anonymous")));
-        obj.properties.insert("length".into(), Value::I32(0));
-        obj.properties.insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
-        obj.properties.insert("__fn_return".into(), Value::Undefined);
-        Value::Object(Arc::new(Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "new",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let body = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let mut obj = Object::new();
+            obj.properties
+                .insert("name".into(), Value::String(Arc::from("anonymous")));
+            obj.properties.insert("length".into(), Value::I32(0));
+            obj.properties
+                .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
+            obj.properties
+                .insert("__fn_return".into(), Value::Undefined);
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }),
+    );
 
     // new Function(params, body) — §20.2.1.1 with parameters.
-    vm.register_host_fn("ecma:function", "newWithParams", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let params = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let body = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-        let mut obj = Object::new();
-        obj.properties.insert("name".into(), Value::String(Arc::from("anonymous")));
-        obj.properties.insert("length".into(), Value::I32(if params.is_empty() { 0 } else { 1 }));
-        obj.properties.insert("__fn_params".into(), Value::String(Arc::from(params.as_str())));
-        obj.properties.insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
-        obj.properties.insert("__fn_return".into(), Value::Undefined);
-        Value::Object(Arc::new(Mutex::new(obj)))
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "newWithParams",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let params = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let body = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let mut obj = Object::new();
+            obj.properties
+                .insert("name".into(), Value::String(Arc::from("anonymous")));
+            obj.properties.insert(
+                "length".into(),
+                Value::I32(if params.is_empty() { 0 } else { 1 }),
+            );
+            obj.properties.insert(
+                "__fn_params".into(),
+                Value::String(Arc::from(params.as_str())),
+            );
+            obj.properties
+                .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
+            obj.properties
+                .insert("__fn_return".into(), Value::Undefined);
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }),
+    );
 
     // bindWithArgs(fn, thisArg, ...args) — like bind with pre-supplied args.
-    vm.register_host_fn("ecma:function", "bindWithArgs", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let bound: Vec<Value> = if args.len() > 1 { args[1..].to_vec() } else { Vec::new() };
-        bind_function_with_arity(&target, bound, invoke_bound_idx)
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "bindWithArgs",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let bound: Vec<Value> = if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            bind_function_with_arity(&target, bound, invoke_bound_idx)
+        }),
+    );
 
     // Function.prototype.bind(this_fn, thisArg, ...boundArgs) → new Function
     //
     // The returned function ref carries `__bound_args = [thisArg, ...boundArgs]`
     // and points at the same host fn idx as the receiver (or the same
     // chunk for user functions).
-    vm.register_host_fn("ecma:function", "bind", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let bound: Vec<Value> = if args.len() > 1 { args[1..].to_vec() } else { Vec::new() };
-        bind_function(&target, bound, invoke_bound_idx)
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "bind",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let bound: Vec<Value> = if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            bind_function(&target, bound, invoke_bound_idx)
+        }),
+    );
 
     // Function.prototype.call(this_fn, thisArg, ...args) → result
     //
     // Synchronously invokes the receiver with the given thisArg + args.
-    vm.register_host_fn("ecma:function", "call", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-        invoke_with_explicit_this(ctx, &target, this_arg, &args[2..])
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "call",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            invoke_with_explicit_this(ctx, &target, this_arg, &args[2..])
+        }),
+    );
 
     // Function.prototype.apply(this_fn, thisArg, argsArray) → result
-    vm.register_host_fn("ecma:function", "apply", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let invoke_args = args
-            .get(2)
-            .map(collect_apply_args)
-            .unwrap_or_default();
-        invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
-    }));
+    vm.register_host_fn(
+        "ecma:function",
+        "apply",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let invoke_args = args.get(2).map(collect_apply_args).unwrap_or_default();
+            invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+        }),
+    );
 }
 
 pub(crate) fn invoke_bound_callback_if_needed(
@@ -185,7 +258,13 @@ pub(crate) fn invoke_bound_callback_if_needed(
     let mut invoke_args = Vec::with_capacity(stored_bound.len().saturating_sub(3) + args.len());
     invoke_args.extend(stored_bound.iter().skip(3).cloned());
     invoke_args.extend_from_slice(args);
-    Some(invoke_bound_target(ctx, &target, bound_this, target_proto, &invoke_args))
+    Some(invoke_bound_target(
+        ctx,
+        &target,
+        bound_this,
+        target_proto,
+        &invoke_args,
+    ))
 }
 
 pub(crate) fn invoke_with_explicit_this(
@@ -197,15 +276,15 @@ pub(crate) fn invoke_with_explicit_this(
     match target {
         Value::Object(obj)
             if matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(_))
-                && obj.lock().unwrap().properties.contains_key("__bound_args") => {
+                && obj.lock().unwrap().properties.contains_key("__bound_args") =>
+        {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = ctx.invoke(target, args);
             ctx.set_js_this(previous_this);
             result
         }
-        Value::Object(obj)
-            if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
+        Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = invoke_compiled_function(ctx, target, args);
@@ -241,7 +320,8 @@ fn invoke_bound_target(
 ) -> Value {
     match target {
         Value::Object(target_obj)
-            if matches!(target_obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
+            if matches!(target_obj.lock().unwrap().kind, ObjectKind::Function(_)) =>
+        {
             let previous_this = ctx.current_js_this();
             let constructor_call = matches!((&previous_this, &target_proto),
                 (Value::Object(current), Value::Object(expected_proto))
@@ -308,7 +388,10 @@ fn host_function_uses_explicit_receiver(target: &Value) -> bool {
     };
     let object = obj.lock().unwrap();
     matches!(object.kind, ObjectKind::HostFunction(_))
-        && matches!(object.properties.get("__vybe_method_receiver"), Some(Value::Bool(true)))
+        && matches!(
+            object.properties.get("__vybe_method_receiver"),
+            Some(Value::Bool(true))
+        )
 }
 
 fn collect_apply_args(value: &Value) -> Vec<Value> {
@@ -359,7 +442,11 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             }
             _ => Vec::new(),
         };
-        let name = match o.properties.get("name").or_else(|| o.properties.get("__fn_name")) {
+        let name = match o
+            .properties
+            .get("name")
+            .or_else(|| o.properties.get("__fn_name"))
+        {
             Some(Value::String(text)) => text.to_string(),
             Some(other) => format!("{}", other),
             None => String::new(),
@@ -375,13 +462,19 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
                 _ => 0,
             },
         };
-        let prototype = o.properties.get("prototype").cloned().unwrap_or(Value::Undefined);
+        let prototype = o
+            .properties
+            .get("prototype")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         (o.kind.clone(), prev_bound, name, length, prototype)
     };
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
     let mut stored_bound = Vec::new();
-    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx) && existing_bound.len() >= 3 {
+    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx)
+        && existing_bound.len() >= 3
+    {
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(existing_bound[1].clone());
         stored_bound.push(existing_bound[2].clone());
@@ -397,15 +490,21 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     let mut wrapper = Object::new();
     wrapper.kind = ObjectKind::HostFunction(invoke_bound_idx);
     let consumed_args = stored_bound.len().saturating_sub(3);
-    wrapper.properties.insert("__bound_args".into(), Value::Object(
-        Arc::new(Mutex::new(Object::new_array(stored_bound)))
-    ));
-    wrapper.properties.insert("__proto__".into(), shared_function_prototype());
+    wrapper.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(stored_bound)))),
+    );
+    wrapper
+        .properties
+        .insert("__proto__".into(), shared_function_prototype());
     wrapper.properties.insert(
         "name".into(),
         Value::String(Arc::from(format!("bound {}", target_name).as_str())),
     );
-    wrapper.properties.insert("length".into(), Value::F64(target_length.saturating_sub(consumed_args) as f64));
+    wrapper.properties.insert(
+        "length".into(),
+        Value::F64(target_length.saturating_sub(consumed_args) as f64),
+    );
     if !matches!(target_proto, Value::Null | Value::Undefined) {
         wrapper.properties.insert("prototype".into(), target_proto);
     }
@@ -433,7 +532,11 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             }
             _ => Vec::new(),
         };
-        let name = match o.properties.get("name").or_else(|| o.properties.get("__fn_name")) {
+        let name = match o
+            .properties
+            .get("name")
+            .or_else(|| o.properties.get("__fn_name"))
+        {
             Some(Value::String(text)) => text.to_string(),
             Some(other) => format!("{}", other),
             None => String::new(),
@@ -449,13 +552,19 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
                 _ => 0,
             },
         };
-        let prototype = o.properties.get("prototype").cloned().unwrap_or(Value::Undefined);
+        let prototype = o
+            .properties
+            .get("prototype")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         (o.kind.clone(), prev_bound, name, length, prototype)
     };
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
     let mut stored_bound = Vec::new();
-    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx) && existing_bound.len() >= 3 {
+    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx)
+        && existing_bound.len() >= 3
+    {
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(existing_bound[1].clone());
         stored_bound.push(existing_bound[2].clone());
@@ -471,15 +580,21 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     let mut wrapper = Object::new();
     wrapper.kind = ObjectKind::HostFunction(invoke_bound_idx);
     let consumed_args = stored_bound.len().saturating_sub(3);
-    wrapper.properties.insert("__bound_args".into(), Value::Object(
-        Arc::new(Mutex::new(Object::new_array(stored_bound)))
-    ));
-    wrapper.properties.insert("__proto__".into(), shared_function_prototype());
+    wrapper.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(stored_bound)))),
+    );
+    wrapper
+        .properties
+        .insert("__proto__".into(), shared_function_prototype());
     wrapper.properties.insert(
         "name".into(),
         Value::String(Arc::from(format!("bound {}", target_name).as_str())),
     );
-    wrapper.properties.insert("length".into(), Value::F64(target_length.saturating_sub(consumed_args) as f64));
+    wrapper.properties.insert(
+        "length".into(),
+        Value::F64(target_length.saturating_sub(consumed_args) as f64),
+    );
     if !matches!(target_proto, Value::Null | Value::Undefined) {
         wrapper.properties.insert("prototype".into(), target_proto);
     }

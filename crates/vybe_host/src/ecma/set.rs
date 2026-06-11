@@ -12,22 +12,40 @@
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 
-fn bound_iterator_method(receiver: &Arc<Mutex<Object>>, module: &str, name: &str, idx: usize) -> Value {
+fn bound_iterator_method(
+    receiver: &Arc<Mutex<Object>>,
+    module: &str,
+    name: &str,
+    idx: usize,
+) -> Value {
     let mut fn_obj = Object::new();
     fn_obj.kind = ObjectKind::HostFunction(idx);
-    fn_obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-    fn_obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-    fn_obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-    fn_obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
-    fn_obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__host_module".into(), Value::String(Arc::from(module)));
+    fn_obj
+        .properties
+        .insert("__host_name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    fn_obj.properties.insert(
+        "__proto__".into(),
+        crate::ecma::function::shared_function_prototype(),
+    );
+    fn_obj
+        .properties
+        .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::Object(receiver.clone())])))),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(receiver.clone()),
+        ])))),
     );
     Value::Object(Arc::new(Mutex::new(fn_obj)))
 }
@@ -38,7 +56,8 @@ fn new_set() -> Value {
     obj.properties.insert("size".into(), Value::I32(0));
     // __type stamp: see comment on `ecma:map.new`. Without it the
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Set")));
     let set = Arc::new(Mutex::new(obj));
     if let Some(idx) = SET_ITERATOR_IDX.get() {
         set.lock().unwrap().properties.insert(
@@ -60,7 +79,8 @@ fn new_set_from_iterable(args: &[Value]) -> Value {
                     _ => Vec::new(),
                 }
             }
-            Some(Value::String(text)) => text.chars()
+            Some(Value::String(text)) => text
+                .chars()
                 .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
                 .collect(),
             _ => Vec::new(),
@@ -97,10 +117,15 @@ fn sync_set_size(obj: &mut Object) {
 pub fn register(vm: &mut VM) {
     // `new Set(iterable?)` — per ECMA-262 §24.2.1.1 the constructor optionally
     // takes an iterable whose elements become Set members.
-    vm.register_host_fn("ecma:set", "new",
-        Box::new(|_ctx, args| new_set_from_iterable(args)));
+    vm.register_host_fn(
+        "ecma:set",
+        "new",
+        Box::new(|_ctx, args| new_set_from_iterable(args)),
+    );
 
-    vm.register_host_fn("ecma:set", "fromIterable",
+    vm.register_host_fn(
+        "ecma:set",
+        "fromIterable",
         Box::new(|_ctx, args| {
             let s = new_set();
             if let Value::Object(setobj) = &s {
@@ -112,21 +137,27 @@ pub fn register(vm: &mut VM) {
                             _ => Vec::new(),
                         }
                     }
-                    Some(Value::String(text)) => text.chars()
+                    Some(Value::String(text)) => text
+                        .chars()
                         .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
                         .collect(),
                     _ => Vec::new(),
                 };
                 let mut so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref mut s) = so.kind {
-                    for item in items { s.insert(item); }
+                    for item in items {
+                        s.insert(item);
+                    }
                 }
                 sync_set_size(&mut so);
             }
             s
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "add",
+    vm.register_host_fn(
+        "ecma:set",
+        "add",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -140,9 +171,12 @@ pub fn register(vm: &mut VM) {
                 return Value::Object(setobj);
             }
             Value::Null
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "has",
+    vm.register_host_fn(
+        "ecma:set",
+        "has",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -152,9 +186,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "delete",
+    vm.register_host_fn(
+        "ecma:set",
+        "delete",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -170,19 +207,27 @@ pub fn register(vm: &mut VM) {
                 return Value::Bool(removed);
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "clear",
+    vm.register_host_fn(
+        "ecma:set",
+        "clear",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let mut so = setobj.lock().unwrap();
-                if let ObjectKind::Set(ref mut s) = so.kind { s.clear(); }
+                if let ObjectKind::Set(ref mut s) = so.kind {
+                    s.clear();
+                }
                 sync_set_size(&mut so);
             }
             Value::Null
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "size",
+    vm.register_host_fn(
+        "ecma:set",
+        "size",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
@@ -191,10 +236,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
     for name in &["values", "keys"] {
-        vm.register_host_fn("ecma:set", name,
+        vm.register_host_fn(
+            "ecma:set",
+            name,
             Box::new(|_ctx, args| {
                 if let Some(setobj) = is_set(args, 0) {
                     let so = setobj.lock().unwrap();
@@ -204,34 +252,45 @@ pub fn register(vm: &mut VM) {
                     }
                 }
                 crate::ecma::array::make_array_iterator(Vec::new())
-            }));
+            }),
+        );
     }
-    if let Some(idx) = vm.host_registry
+    if let Some(idx) = vm
+        .host_registry
         .get(&("ecma:set".to_string(), "values".to_string()))
         .copied()
     {
         let _ = SET_ITERATOR_IDX.set(idx);
     }
 
-    vm.register_host_fn("ecma:set", "entries",
+    vm.register_host_fn(
+        "ecma:set",
+        "entries",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
-                    let pairs: Vec<Value> = s.iter()
-                        .map(|v| Value::Object(Arc::new(Mutex::new(
-                            Object::new_array(vec![v.clone(), v.clone()])
-                        ))))
+                    let pairs: Vec<Value> = s
+                        .iter()
+                        .map(|v| {
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                                v.clone(),
+                                v.clone(),
+                            ]))))
+                        })
                         .collect();
                     return crate::ecma::array::make_array_iterator(pairs);
                 }
             }
             crate::ecma::array::make_array_iterator(Vec::new())
-        }));
+        }),
+    );
 
     // Set.prototype.forEach(callback) — callback receives (value,
     // value, set) — the key mirrors the value per §24.2.3.6.
-    vm.register_host_fn("ecma:set", "forEach",
+    vm.register_host_fn(
+        "ecma:set",
+        "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let this_arg = args.get(2).cloned();
@@ -246,9 +305,7 @@ pub fn register(vm: &mut VM) {
                     }
                 };
                 for v in snapshot {
-                    let invoke_args = vec![
-                        v.clone(), v, Value::Object(setobj.clone()),
-                    ];
+                    let invoke_args = vec![v.clone(), v, Value::Object(setobj.clone())];
                     if let Some(this_arg) = this_arg.clone() {
                         ctx.set_js_this(this_arg);
                     }
@@ -259,7 +316,8 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
     // ── Set algebra (ES2025) ────────────────────────────────────────
     //
@@ -269,7 +327,9 @@ pub fn register(vm: &mut VM) {
     // members that aren't in a" for `union`; "iterate a, keep those
     // also in b" for `intersection`; etc.
 
-    vm.register_host_fn("ecma:set", "union",
+    vm.register_host_fn(
+        "ecma:set",
+        "union",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let Value::Object(outobj) = &out {
@@ -279,7 +339,9 @@ pub fn register(vm: &mut VM) {
                         if let Some(setobj) = is_set(args, arg_idx) {
                             let so = setobj.lock().unwrap();
                             if let ObjectKind::Set(ref s) = so.kind {
-                                for v in s.iter() { os.insert(v.clone()); }
+                                for v in s.iter() {
+                                    os.insert(v.clone());
+                                }
                             }
                         }
                     }
@@ -287,9 +349,12 @@ pub fn register(vm: &mut VM) {
                 sync_set_size(&mut o);
             }
             out
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "intersection",
+    vm.register_host_fn(
+        "ecma:set",
+        "intersection",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -297,9 +362,8 @@ pub fn register(vm: &mut VM) {
                     let alock = a.lock().unwrap();
                     let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs),
-                            ObjectKind::Set(out_s))
-                        = (&alock.kind, &block.kind, &mut o.kind)
+                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
+                        (&alock.kind, &block.kind, &mut o.kind)
                     {
                         for v in avs.iter() {
                             if bvs.contains(v) {
@@ -311,9 +375,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             out
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "difference",
+    vm.register_host_fn(
+        "ecma:set",
+        "difference",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -321,9 +388,8 @@ pub fn register(vm: &mut VM) {
                     let alock = a.lock().unwrap();
                     let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs),
-                            ObjectKind::Set(out_s))
-                        = (&alock.kind, &block.kind, &mut o.kind)
+                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
+                        (&alock.kind, &block.kind, &mut o.kind)
                     {
                         for v in avs.iter() {
                             if !bvs.contains(v) {
@@ -335,9 +401,12 @@ pub fn register(vm: &mut VM) {
                 }
             }
             out
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "symmetricDifference",
+    vm.register_host_fn(
+        "ecma:set",
+        "symmetricDifference",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -345,9 +414,8 @@ pub fn register(vm: &mut VM) {
                     let alock = a.lock().unwrap();
                     let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs),
-                            ObjectKind::Set(out_s))
-                        = (&alock.kind, &block.kind, &mut o.kind)
+                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
+                        (&alock.kind, &block.kind, &mut o.kind)
                     {
                         for v in avs.iter() {
                             if !bvs.contains(v) {
@@ -364,59 +432,65 @@ pub fn register(vm: &mut VM) {
                 }
             }
             out
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "isSubsetOf",
+    vm.register_host_fn(
+        "ecma:set",
+        "isSubsetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
                 let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs))
-                    = (&alock.kind, &block.kind)
-                {
+                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
                     let is_sub = avs.iter().all(|v| bvs.contains(v));
                     return Value::I32(if is_sub { 1 } else { 0 });
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "isSupersetOf",
+    vm.register_host_fn(
+        "ecma:set",
+        "isSupersetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
                 let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs))
-                    = (&alock.kind, &block.kind)
-                {
+                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
                     let is_super = bvs.iter().all(|v| avs.contains(v));
                     return Value::I32(if is_super { 1 } else { 0 });
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "isDisjointFrom",
+    vm.register_host_fn(
+        "ecma:set",
+        "isDisjointFrom",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
                 let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs))
-                    = (&alock.kind, &block.kind)
-                {
+                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
                     let disjoint = !avs.iter().any(|v| bvs.contains(v));
                     return Value::I32(if disjoint { 1 } else { 0 });
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
     // .NET HashSet mutating set algebra — `UnionWith` / `IntersectWith` /
     // `ExceptWith` / `SymmetricExceptWith` modify the receiver in place.
     // Distinct from the immutable ES2025 `union` / `intersection` / etc.
     // which return a fresh Set. The ES variants are still registered above;
     // these mutate variants are the .NET-shape entry points.
-    vm.register_host_fn("ecma:set", "unionWith",
+    vm.register_host_fn(
+        "ecma:set",
+        "unionWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let to_add: Vec<Value> = {
@@ -429,14 +503,19 @@ pub fn register(vm: &mut VM) {
                 };
                 let mut alock = a.lock().unwrap();
                 if let ObjectKind::Set(ref mut avs) = alock.kind {
-                    for v in to_add { avs.insert(v); }
+                    for v in to_add {
+                        avs.insert(v);
+                    }
                 }
                 sync_set_size(&mut alock);
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "intersectWith",
+    vm.register_host_fn(
+        "ecma:set",
+        "intersectWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let b_snapshot: Vec<Value> = {
@@ -454,9 +533,12 @@ pub fn register(vm: &mut VM) {
                 sync_set_size(&mut alock);
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "exceptWith",
+    vm.register_host_fn(
+        "ecma:set",
+        "exceptWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let b_snapshot: Vec<Value> = {
@@ -474,9 +556,12 @@ pub fn register(vm: &mut VM) {
                 sync_set_size(&mut alock);
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "symmetricExceptWith",
+    vm.register_host_fn(
+        "ecma:set",
+        "symmetricExceptWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let b_snapshot: Vec<Value> = {
@@ -499,25 +584,29 @@ pub fn register(vm: &mut VM) {
                         }
                     }
                     avs.retain(|v| !to_remove.contains(v));
-                    for v in to_add { avs.insert(v); }
+                    for v in to_add {
+                        avs.insert(v);
+                    }
                 }
                 sync_set_size(&mut alock);
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:set", "overlaps",
+    vm.register_host_fn(
+        "ecma:set",
+        "overlaps",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
                 let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs))
-                    = (&alock.kind, &block.kind)
-                {
+                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
                     let overlap = avs.iter().any(|v| bvs.contains(v));
                     return Value::Bool(overlap);
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 }

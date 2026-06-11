@@ -70,7 +70,11 @@ fn new_object(props: Vec<(&str, Value)>) -> Value {
 fn obj_prop(value: &Value, key: &str) -> Value {
     if let Value::Object(o) = value {
         let lock = o.lock().unwrap();
-        return lock.properties.get(key).cloned().unwrap_or(Value::Undefined);
+        return lock
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined);
     }
     Value::Undefined
 }
@@ -90,7 +94,10 @@ fn array_strings(value: &Value) -> Vec<String> {
 #[test]
 fn collator_compare_returns_zero_for_equal() {
     let c = invoke("ecma:intl/collator", "new", vec![]);
-    assert_eq!(invoke("ecma:intl/collator", "compare", vec![c, s("abc"), s("abc")]), Value::I32(0));
+    assert_eq!(
+        invoke("ecma:intl/collator", "compare", vec![c, s("abc"), s("abc")]),
+        Value::I32(0)
+    );
 }
 
 #[test]
@@ -127,7 +134,11 @@ fn collator_resolved_options_includes_locale() {
 fn number_format_default_renders_decimal() {
     let nf = invoke("ecma:intl/numberformat", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/numberformat", "format", vec![nf, Value::F64(1234.5)])),
+        as_string(&invoke(
+            "ecma:intl/numberformat",
+            "format",
+            vec![nf, Value::F64(1234.5)]
+        )),
         "1,234.5"
     );
 }
@@ -136,7 +147,11 @@ fn number_format_default_renders_decimal() {
 fn number_format_currency_style() {
     let opts = new_object(vec![("style", s("currency")), ("currency", s("USD"))]);
     let nf = invoke("ecma:intl/numberformat", "new", vec![s("en-US"), opts]);
-    let result = as_string(&invoke("ecma:intl/numberformat", "format", vec![nf, Value::F64(99.0)]));
+    let result = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "format",
+        vec![nf, Value::F64(99.0)],
+    ));
     // en-US default: "$99.00"
     assert!(result.contains("99"));
     assert!(result.contains("$"));
@@ -146,7 +161,11 @@ fn number_format_currency_style() {
 fn number_format_percent_style() {
     let opts = new_object(vec![("style", s("percent"))]);
     let nf = invoke("ecma:intl/numberformat", "new", vec![s("en-US"), opts]);
-    let result = as_string(&invoke("ecma:intl/numberformat", "format", vec![nf, Value::F64(0.25)]));
+    let result = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "format",
+        vec![nf, Value::F64(0.25)],
+    ));
     // en-US default: "25%"
     assert!(result.contains("25"));
     assert!(result.contains("%"));
@@ -162,7 +181,11 @@ fn number_format_resolved_options_locale() {
 #[test]
 fn number_format_format_to_parts_returns_array() {
     let nf = invoke("ecma:intl/numberformat", "new", vec![]);
-    let parts = invoke("ecma:intl/numberformat", "formatToParts", vec![nf, Value::F64(1234.5)]);
+    let parts = invoke(
+        "ecma:intl/numberformat",
+        "formatToParts",
+        vec![nf, Value::F64(1234.5)],
+    );
     // Should be an Array of { type, value } objects
     if let Value::Object(o) = &parts {
         let lock = o.lock().unwrap();
@@ -178,7 +201,11 @@ fn number_format_format_to_parts_returns_array() {
 fn date_time_format_renders_date_for_ms_epoch() {
     let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("en-US")]);
     // Jan 15, 2024 = 1705276800000 ms epoch
-    let result = as_string(&invoke("ecma:intl/datetimeformat", "format", vec![dtf, Value::F64(1705276800000.0)]));
+    let result = as_string(&invoke(
+        "ecma:intl/datetimeformat",
+        "format",
+        vec![dtf, Value::F64(1705276800000.0)],
+    ));
     // en-US default: "1/15/2024" (MM/DD/YYYY)
     assert!(result.contains("2024"));
 }
@@ -230,7 +257,11 @@ fn list_format_disjunction_uses_or() {
 fn plural_rules_select_one_for_singular() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(1)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(1)]
+        )),
         "one"
     );
 }
@@ -239,11 +270,19 @@ fn plural_rules_select_one_for_singular() {
 fn plural_rules_select_other_for_plural() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr.clone(), Value::I32(2)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr.clone(), Value::I32(2)]
+        )),
         "other"
     );
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(0)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(0)]
+        )),
         "other"
     );
 }
@@ -253,9 +292,30 @@ fn plural_rules_ordinal_select() {
     let opts = new_object(vec![("type", s("ordinal"))]);
     let pr = invoke("ecma:intl/pluralrules", "new", vec![s("en-US"), opts]);
     // English ordinals: 1st=one, 2nd=two, 3rd=few, 4th-19th=other, 21st=one, ...
-    assert_eq!(as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr.clone(), Value::I32(1)])), "one");
-    assert_eq!(as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr.clone(), Value::I32(2)])), "two");
-    assert_eq!(as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(3)])), "few");
+    assert_eq!(
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr.clone(), Value::I32(1)]
+        )),
+        "one"
+    );
+    assert_eq!(
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr.clone(), Value::I32(2)]
+        )),
+        "two"
+    );
+    assert_eq!(
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(3)]
+        )),
+        "few"
+    );
 }
 
 // ── Intl.RelativeTimeFormat (ECMA-402 §17) ───────────────────────────
@@ -264,7 +324,11 @@ fn plural_rules_ordinal_select() {
 fn relative_time_format_past_days() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/relativetimeformat", "format", vec![rtf, Value::I32(-3), s("day")])),
+        as_string(&invoke(
+            "ecma:intl/relativetimeformat",
+            "format",
+            vec![rtf, Value::I32(-3), s("day")]
+        )),
         "3 days ago"
     );
 }
@@ -273,7 +337,11 @@ fn relative_time_format_past_days() {
 fn relative_time_format_future_days() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/relativetimeformat", "format", vec![rtf, Value::I32(3), s("day")])),
+        as_string(&invoke(
+            "ecma:intl/relativetimeformat",
+            "format",
+            vec![rtf, Value::I32(3), s("day")]
+        )),
         "in 3 days"
     );
 }
@@ -282,11 +350,19 @@ fn relative_time_format_future_days() {
 fn relative_time_format_singular_unit() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/relativetimeformat", "format", vec![rtf.clone(), Value::I32(1), s("hour")])),
+        as_string(&invoke(
+            "ecma:intl/relativetimeformat",
+            "format",
+            vec![rtf.clone(), Value::I32(1), s("hour")]
+        )),
         "in 1 hour"
     );
     assert_eq!(
-        as_string(&invoke("ecma:intl/relativetimeformat", "format", vec![rtf, Value::I32(-1), s("hour")])),
+        as_string(&invoke(
+            "ecma:intl/relativetimeformat",
+            "format",
+            vec![rtf, Value::I32(-1), s("hour")]
+        )),
         "1 hour ago"
     );
 }
@@ -330,7 +406,10 @@ fn locale_region_extracted() {
 #[test]
 fn locale_to_string_returns_canonical_tag() {
     let loc = invoke("ecma:intl/locale", "new", vec![s("en-US")]);
-    assert_eq!(as_string(&invoke("ecma:intl/locale", "toString", vec![loc])), "en-US");
+    assert_eq!(
+        as_string(&invoke("ecma:intl/locale", "toString", vec![loc])),
+        "en-US"
+    );
 }
 
 // ── Intl.DisplayNames (ECMA-402 §12) ─────────────────────────────────
@@ -360,8 +439,11 @@ fn display_names_french_for_us_region() {
     let dn = invoke("ecma:intl/displaynames", "new", vec![s("fr"), opts]);
     let result = as_string(&invoke("ecma:intl/displaynames", "of", vec![dn, s("US")]));
     // French for "US": "États-Unis"
-    assert!(result.contains("États") || result.contains("Etats"),
-        "Expected French US name, got {:?}", result);
+    assert!(
+        result.contains("États") || result.contains("Etats"),
+        "Expected French US name, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -395,10 +477,7 @@ fn display_names_script_latin_in_english() {
 #[test]
 fn duration_format_basic() {
     let df = invoke("ecma:intl/durationformat", "new", vec![]);
-    let dur = new_object(vec![
-        ("hours", Value::I32(1)),
-        ("minutes", Value::I32(30)),
-    ]);
+    let dur = new_object(vec![("hours", Value::I32(1)), ("minutes", Value::I32(30))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // en-US long: "1 hr, 30 min" (depends on style default; spec says "short")
     // MVP: just verify the numbers appear in the output.
@@ -412,35 +491,58 @@ fn duration_format_basic() {
 fn date_time_format_german_uses_dot_separator() {
     let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("de-DE")]);
     // Jan 15, 2024 = 1705276800000 ms epoch (UTC)
-    let result = as_string(&invoke("ecma:intl/datetimeformat", "format",
-        vec![dtf, Value::F64(1705276800000.0)]));
+    let result = as_string(&invoke(
+        "ecma:intl/datetimeformat",
+        "format",
+        vec![dtf, Value::F64(1705276800000.0)],
+    ));
     // German default medium-length date: "15.01.2024" (CLDR pattern)
-    assert!(result.contains("2024"), "Expected year 2024 in output, got {:?}", result);
-    assert!(result.contains("."), "Expected German dot separator, got {:?}", result);
+    assert!(
+        result.contains("2024"),
+        "Expected year 2024 in output, got {:?}",
+        result
+    );
+    assert!(
+        result.contains("."),
+        "Expected German dot separator, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn date_time_format_french_uses_french_month_names() {
     let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("fr-FR")]);
-    let result = as_string(&invoke("ecma:intl/datetimeformat", "format",
-        vec![dtf, Value::F64(1705276800000.0)]));
+    let result = as_string(&invoke(
+        "ecma:intl/datetimeformat",
+        "format",
+        vec![dtf, Value::F64(1705276800000.0)],
+    ));
     // French default medium date includes localized month name like "janv."
     // (French abbreviated month for January)
-    assert!(result.contains("janv") || result.contains("1"),
-        "Expected French January formatting, got {:?}", result);
+    assert!(
+        result.contains("janv") || result.contains("1"),
+        "Expected French January formatting, got {:?}",
+        result
+    );
     assert!(result.contains("2024"));
 }
 
 #[test]
 fn date_time_format_japanese_uses_japanese_format() {
     let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("ja-JP")]);
-    let result = as_string(&invoke("ecma:intl/datetimeformat", "format",
-        vec![dtf, Value::F64(1705276800000.0)]));
+    let result = as_string(&invoke(
+        "ecma:intl/datetimeformat",
+        "format",
+        vec![dtf, Value::F64(1705276800000.0)],
+    ));
     // Japanese default uses 年 月 日 markers
     assert!(result.contains("2024"));
     // Year-first ordering OR Japanese era markers
-    assert!(result.contains("年") || result.starts_with("2024"),
-        "Expected Japanese formatting, got {:?}", result);
+    assert!(
+        result.contains("年") || result.starts_with("2024"),
+        "Expected Japanese formatting, got {:?}",
+        result
+    );
 }
 
 // ── NON-EN-US LOCALE TESTS — proves real ICU is hooked up ────────────
@@ -455,7 +557,11 @@ fn plural_rules_russian_few() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![s("ru")]);
     // 2 → "few" in Russian (vs "other" in English)
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(2)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(2)]
+        )),
         "few"
     );
 }
@@ -465,7 +571,11 @@ fn plural_rules_russian_many() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![s("ru")]);
     // 5 → "many" in Russian
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(5)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(5)]
+        )),
         "many"
     );
 }
@@ -475,7 +585,11 @@ fn plural_rules_russian_many() {
 fn plural_rules_welsh_two() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![s("cy")]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(2)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(2)]
+        )),
         "two"
     );
 }
@@ -485,7 +599,11 @@ fn plural_rules_welsh_two() {
 fn plural_rules_polish_few() {
     let pr = invoke("ecma:intl/pluralrules", "new", vec![s("pl")]);
     assert_eq!(
-        as_string(&invoke("ecma:intl/pluralrules", "select", vec![pr, Value::I32(3)])),
+        as_string(&invoke(
+            "ecma:intl/pluralrules",
+            "select",
+            vec![pr, Value::I32(3)]
+        )),
         "few"
     );
 }
@@ -502,7 +620,11 @@ fn collator_german_compares_umlauts() {
     let result = invoke("ecma:intl/collator", "compare", vec![c, s("ä"), s("z")]);
     if let Value::I32(n) = result {
         // German DIN: ä < z (sorts as 'a').
-        assert!(n < 0, "German collation: ä should be less than z, got {}", n);
+        assert!(
+            n < 0,
+            "German collation: ä should be less than z, got {}",
+            n
+        );
     } else {
         panic!("compare should return I32");
     }
@@ -513,7 +635,11 @@ fn collator_german_compares_umlauts() {
 #[test]
 fn number_format_german_uses_dot_for_thousands() {
     let nf = invoke("ecma:intl/numberformat", "new", vec![s("de-DE")]);
-    let result = as_string(&invoke("ecma:intl/numberformat", "format", vec![nf, Value::F64(1234.5)]));
+    let result = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "format",
+        vec![nf, Value::F64(1234.5)],
+    ));
     // de-DE: "1.234,5"  (en-US would be "1,234.5")
     assert_eq!(result, "1.234,5");
 }
@@ -521,12 +647,20 @@ fn number_format_german_uses_dot_for_thousands() {
 #[test]
 fn number_format_french_uses_space_for_thousands() {
     let nf = invoke("ecma:intl/numberformat", "new", vec![s("fr-FR")]);
-    let result = as_string(&invoke("ecma:intl/numberformat", "format", vec![nf, Value::F64(1234.5)]));
+    let result = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "format",
+        vec![nf, Value::F64(1234.5)],
+    ));
     // fr-FR uses NARROW NO-BREAK SPACE (U+202F) for thousands and
     // "," for decimal: "1\u{202F}234,5"
     assert!(result.contains("1"));
     assert!(result.contains("234"));
-    assert!(result.contains(",5"), "Expected fr-FR comma decimal, got {:?}", result);
+    assert!(
+        result.contains(",5"),
+        "Expected fr-FR comma decimal, got {:?}",
+        result
+    );
 }
 
 // ListFormat — French uses "et" for conjunction, Spanish uses "y" / "e".
@@ -536,7 +670,11 @@ fn list_format_french_uses_et() {
     let list = new_array(vec![s("a"), s("b"), s("c")]);
     let result = as_string(&invoke("ecma:intl/listformat", "format", vec![lf, list]));
     // French: "a, b et c" (no oxford comma)
-    assert!(result.contains("et"), "Expected French 'et', got {:?}", result);
+    assert!(
+        result.contains("et"),
+        "Expected French 'et', got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -545,7 +683,11 @@ fn list_format_spanish_uses_y() {
     let list = new_array(vec![s("a"), s("b")]);
     let result = as_string(&invoke("ecma:intl/listformat", "format", vec![lf, list]));
     // Spanish 2-item: "a y b"
-    assert!(result.contains(" y "), "Expected Spanish 'y', got {:?}", result);
+    assert!(
+        result.contains(" y "),
+        "Expected Spanish 'y', got {:?}",
+        result
+    );
 }
 
 // Locale parsing — should canonicalize tags.
@@ -567,7 +709,12 @@ fn segmenter_emoji_grapheme_cluster() {
     if let Value::Object(arr) = &result {
         let lock = arr.lock().unwrap();
         if let ObjectKind::Array(elems) = &lock.kind {
-            assert_eq!(elems.len(), 1, "Family emoji should be 1 grapheme cluster, got {}", elems.len());
+            assert_eq!(
+                elems.len(),
+                1,
+                "Family emoji should be 1 grapheme cluster, got {}",
+                elems.len()
+            );
         }
     }
 }
@@ -576,12 +723,20 @@ fn segmenter_emoji_grapheme_cluster() {
 fn segmenter_word_granularity_skips_punctuation_correctly() {
     let opts = new_object(vec![("granularity", s("word"))]);
     let seg = invoke("ecma:intl/segmenter", "new", vec![s("en"), opts]);
-    let result = invoke("ecma:intl/segmenter", "segment", vec![seg, s("hello, world")]);
+    let result = invoke(
+        "ecma:intl/segmenter",
+        "segment",
+        vec![seg, s("hello, world")],
+    );
     if let Value::Object(arr) = &result {
         let lock = arr.lock().unwrap();
         if let ObjectKind::Array(elems) = &lock.kind {
             // word boundaries: "hello" + "," + " " + "world" → at least 4 segments
-            assert!(elems.len() >= 3, "Expected word boundaries, got {} elements", elems.len());
+            assert!(
+                elems.len() >= 3,
+                "Expected word boundaries, got {} elements",
+                elems.len()
+            );
         }
     }
 }
@@ -591,156 +746,239 @@ fn segmenter_word_granularity_skips_punctuation_correctly() {
 #[test]
 fn relative_time_format_french_past() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![s("fr")]);
-    let result = as_string(&invoke("ecma:intl/relativetimeformat", "format",
-        vec![rtf, Value::I32(-3), s("day")]));
+    let result = as_string(&invoke(
+        "ecma:intl/relativetimeformat",
+        "format",
+        vec![rtf, Value::I32(-3), s("day")],
+    ));
     // French: "il y a 3 jours"
-    assert!(result.contains("3"), "Expected 3 in output, got {:?}", result);
-    assert!(result.contains("jour") || result.contains("il y a"),
-        "Expected French past phrasing, got {:?}", result);
+    assert!(
+        result.contains("3"),
+        "Expected 3 in output, got {:?}",
+        result
+    );
+    assert!(
+        result.contains("jour") || result.contains("il y a"),
+        "Expected French past phrasing, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn relative_time_format_german_future() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![s("de")]);
-    let result = as_string(&invoke("ecma:intl/relativetimeformat", "format",
-        vec![rtf, Value::I32(3), s("day")]));
+    let result = as_string(&invoke(
+        "ecma:intl/relativetimeformat",
+        "format",
+        vec![rtf, Value::I32(3), s("day")],
+    ));
     // German: "in 3 Tagen"
     assert!(result.contains("3"));
-    assert!(result.contains("Tag") || result.contains("in "),
-        "Expected German future phrasing, got {:?}", result);
+    assert!(
+        result.contains("Tag") || result.contains("in "),
+        "Expected German future phrasing, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn relative_time_format_japanese_minutes() {
     let rtf = invoke("ecma:intl/relativetimeformat", "new", vec![s("ja")]);
-    let result = as_string(&invoke("ecma:intl/relativetimeformat", "format",
-        vec![rtf, Value::I32(-5), s("minute")]));
+    let result = as_string(&invoke(
+        "ecma:intl/relativetimeformat",
+        "format",
+        vec![rtf, Value::I32(-5), s("minute")],
+    ));
     // Japanese: "5 分前" (5 minutes ago)
     assert!(result.contains("5"));
-    assert!(result.contains("分") || result.contains("前"),
-        "Expected Japanese minutes phrasing, got {:?}", result);
+    assert!(
+        result.contains("分") || result.contains("前"),
+        "Expected Japanese minutes phrasing, got {:?}",
+        result
+    );
 }
 
 // ── DurationFormat — top-20 locale text + digital style ─────────────
 
 #[test]
 fn duration_format_german_long() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("de"), new_object(vec![("style", s("long"))])]);
-    let dur = new_object(vec![
-        ("hours", Value::I32(1)),
-        ("minutes", Value::I32(30)),
-    ]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("de"), new_object(vec![("style", s("long"))])],
+    );
+    let dur = new_object(vec![("hours", Value::I32(1)), ("minutes", Value::I32(30))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // German: "1 Stunde, 30 Minuten"
-    assert!(result.contains("Stunde"), "Expected German hours, got {:?}", result);
-    assert!(result.contains("Minuten"), "Expected German minutes plural, got {:?}", result);
+    assert!(
+        result.contains("Stunde"),
+        "Expected German hours, got {:?}",
+        result
+    );
+    assert!(
+        result.contains("Minuten"),
+        "Expected German minutes plural, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_french_long() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("fr"), new_object(vec![("style", s("long"))])]);
-    let dur = new_object(vec![
-        ("hours", Value::I32(2)),
-        ("minutes", Value::I32(15)),
-    ]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("fr"), new_object(vec![("style", s("long"))])],
+    );
+    let dur = new_object(vec![("hours", Value::I32(2)), ("minutes", Value::I32(15))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // French: "2 heures, 15 minutes"
-    assert!(result.contains("heures"), "Expected French hours plural, got {:?}", result);
-    assert!(result.contains("minutes"), "Expected French minutes, got {:?}", result);
+    assert!(
+        result.contains("heures"),
+        "Expected French hours plural, got {:?}",
+        result
+    );
+    assert!(
+        result.contains("minutes"),
+        "Expected French minutes, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_japanese_long() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("ja"), new_object(vec![("style", s("long"))])]);
-    let dur = new_object(vec![
-        ("hours", Value::I32(3)),
-        ("minutes", Value::I32(45)),
-    ]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("ja"), new_object(vec![("style", s("long"))])],
+    );
+    let dur = new_object(vec![("hours", Value::I32(3)), ("minutes", Value::I32(45))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Japanese: "3 時間, 45 分"
-    assert!(result.contains("時間"), "Expected Japanese hours, got {:?}", result);
-    assert!(result.contains("分"), "Expected Japanese minutes, got {:?}", result);
+    assert!(
+        result.contains("時間"),
+        "Expected Japanese hours, got {:?}",
+        result
+    );
+    assert!(
+        result.contains("分"),
+        "Expected Japanese minutes, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_arabic_long() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("ar"), new_object(vec![("style", s("long"))])]);
-    let dur = new_object(vec![
-        ("hours", Value::I32(2)),
-        ("minutes", Value::I32(30)),
-    ]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("ar"), new_object(vec![("style", s("long"))])],
+    );
+    let dur = new_object(vec![("hours", Value::I32(2)), ("minutes", Value::I32(30))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Arabic: 2 hours = "ساعتان" (dual form), 30 minutes = "دقيقة" (many)
-    assert!(result.contains("ساع") || result.contains("دق"),
-        "Expected Arabic hours/minutes, got {:?}", result);
+    assert!(
+        result.contains("ساع") || result.contains("دق"),
+        "Expected Arabic hours/minutes, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_arabic_dual_form_for_two() {
     // Arabic has a special "two" plural category — distinct from singular and plural.
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("ar"), new_object(vec![("style", s("long"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("ar"), new_object(vec![("style", s("long"))])],
+    );
     let dur = new_object(vec![("hours", Value::I32(2))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Arabic dual for hours: "ساعتان"
-    assert!(result.contains("ساعتان"),
-        "Expected Arabic dual form 'ساعتان' for 2 hours, got {:?}", result);
+    assert!(
+        result.contains("ساعتان"),
+        "Expected Arabic dual form 'ساعتان' for 2 hours, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_russian_few_form() {
     // Russian: 3 hours uses "few" plural form.
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("ru"), new_object(vec![("style", s("long"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("ru"), new_object(vec![("style", s("long"))])],
+    );
     let dur = new_object(vec![("hours", Value::I32(3))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Russian "few" form for hours: "часа"
-    assert!(result.contains("часа"),
-        "Expected Russian few form 'часа' for 3 hours, got {:?}", result);
+    assert!(
+        result.contains("часа"),
+        "Expected Russian few form 'часа' for 3 hours, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_russian_many_form() {
     // Russian: 5 hours uses "many" plural form.
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("ru"), new_object(vec![("style", s("long"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("ru"), new_object(vec![("style", s("long"))])],
+    );
     let dur = new_object(vec![("hours", Value::I32(5))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Russian "many" form for hours: "часов"
-    assert!(result.contains("часов"),
-        "Expected Russian many form 'часов' for 5 hours, got {:?}", result);
+    assert!(
+        result.contains("часов"),
+        "Expected Russian many form 'часов' for 5 hours, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_polish_few_form() {
     // Polish: 3 hours uses "few" plural form.
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("pl"), new_object(vec![("style", s("long"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("pl"), new_object(vec![("style", s("long"))])],
+    );
     let dur = new_object(vec![("hours", Value::I32(3))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Polish "few" form for hours: "godziny"
-    assert!(result.contains("godziny"),
-        "Expected Polish few form 'godziny' for 3 hours, got {:?}", result);
+    assert!(
+        result.contains("godziny"),
+        "Expected Polish few form 'godziny' for 3 hours, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_chinese_no_inflection() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("zh"), new_object(vec![("style", s("long"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("zh"), new_object(vec![("style", s("long"))])],
+    );
     let dur = new_object(vec![("hours", Value::I32(2))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // Chinese: "2 小时"
-    assert!(result.contains("小时"), "Expected Chinese hours, got {:?}", result);
+    assert!(
+        result.contains("小时"),
+        "Expected Chinese hours, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn duration_format_digital_style() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("en"), new_object(vec![("style", s("digital"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("en"), new_object(vec![("style", s("digital"))])],
+    );
     let dur = new_object(vec![
         ("hours", Value::I32(1)),
         ("minutes", Value::I32(30)),
@@ -753,8 +991,11 @@ fn duration_format_digital_style() {
 
 #[test]
 fn duration_format_digital_pads_single_digit_seconds() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("en"), new_object(vec![("style", s("digital"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("en"), new_object(vec![("style", s("digital"))])],
+    );
     let dur = new_object(vec![
         ("hours", Value::I32(0)),
         ("minutes", Value::I32(5)),
@@ -767,8 +1008,11 @@ fn duration_format_digital_pads_single_digit_seconds() {
 
 #[test]
 fn duration_format_microseconds_supported() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("en"), new_object(vec![("style", s("short"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("en"), new_object(vec![("style", s("short"))])],
+    );
     let dur = new_object(vec![("microseconds", Value::I32(500))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     // English short: "500 μs"
@@ -777,8 +1021,11 @@ fn duration_format_microseconds_supported() {
 
 #[test]
 fn duration_format_nanoseconds_supported() {
-    let df = invoke("ecma:intl/durationformat", "new",
-        vec![s("en"), new_object(vec![("style", s("short"))])]);
+    let df = invoke(
+        "ecma:intl/durationformat",
+        "new",
+        vec![s("en"), new_object(vec![("style", s("short"))])],
+    );
     let dur = new_object(vec![("nanoseconds", Value::I32(999))]);
     let result = as_string(&invoke("ecma:intl/durationformat", "format", vec![df, dur]));
     assert_eq!(result, "999 ns");

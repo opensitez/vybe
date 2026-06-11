@@ -30,11 +30,11 @@ pub fn register(vm: &mut VM) {
     let app = ensure_namespace(vm, &["App"]);
 
     let (exe_dir, exe_name) = exe_path_and_name();
-    set_prop(&app, "path",           Value::String(Arc::from(exe_dir.as_str())));
-    set_prop(&app, "exename",        Value::String(Arc::from(exe_name.as_str())));
-    set_prop(&app, "title",          Value::String(Arc::from(exe_name.as_str())));
-    set_prop(&app, "hinstance",      Value::F64(0.0));
-    set_prop(&app, "previnstance",   Value::F64(0.0));  // False
+    set_prop(&app, "path", Value::String(Arc::from(exe_dir.as_str())));
+    set_prop(&app, "exename", Value::String(Arc::from(exe_name.as_str())));
+    set_prop(&app, "title", Value::String(Arc::from(exe_name.as_str())));
+    set_prop(&app, "hinstance", Value::F64(0.0));
+    set_prop(&app, "previnstance", Value::F64(0.0)); // False
     set_prop(&app, "nonmodalallowed", Value::F64(1.0)); // True
 
     // ── Screen ──────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ pub fn register(vm: &mut VM) {
     // The defaults (1920×1080) get overwritten by the GUI backend at
     // startup via `set_property` if a real display is available.
     let screen = ensure_namespace(vm, &["Screen"]);
-    set_prop(&screen, "width",  Value::F64(1920.0));
+    set_prop(&screen, "width", Value::F64(1920.0));
     set_prop(&screen, "height", Value::F64(1080.0));
     set_prop(&screen, "twipsperpixelx", Value::F64(15.0));
     set_prop(&screen, "twipsperpixely", Value::F64(15.0));
@@ -60,13 +60,14 @@ pub fn register(vm: &mut VM) {
 /// when the binary was deleted out from under us), falls back to the
 /// current working directory and an empty stem rather than panicking.
 fn exe_path_and_name() -> (String, String) {
-    let exe: PathBuf = std::env::current_exe().unwrap_or_else(|_| {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    });
-    let dir = exe.parent()
+    let exe: PathBuf = std::env::current_exe()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let dir = exe
+        .parent()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem = exe.file_stem()
+    let stem = exe
+        .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     (dir, stem)

@@ -24,14 +24,22 @@ pub struct RequestBodyReader {
 impl RequestBodyReader {
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         let length = Some(bytes.len());
-        Self { inner: Cursor::new(bytes), length }
+        Self {
+            inner: Cursor::new(bytes),
+            length,
+        }
     }
 
     pub fn empty() -> Self {
-        Self { inner: Cursor::new(Vec::new()), length: Some(0) }
+        Self {
+            inner: Cursor::new(Vec::new()),
+            length: Some(0),
+        }
     }
 
-    pub fn length(&self) -> Option<usize> { self.length }
+    pub fn length(&self) -> Option<usize> {
+        self.length
+    }
 
     pub fn eof(&self) -> bool {
         self.inner.position() as usize >= self.inner.get_ref().len()
@@ -41,7 +49,10 @@ impl RequestBodyReader {
         use std::io::Read;
         let mut buf = vec![0u8; max];
         match self.inner.read(&mut buf) {
-            Ok(n) => { buf.truncate(n); buf }
+            Ok(n) => {
+                buf.truncate(n);
+                buf
+            }
             Err(_) => Vec::new(),
         }
     }
@@ -61,7 +72,10 @@ impl RequestBodyReader {
 /// calls `response.end()`, at which point the hyper body stream closes.
 #[derive(Debug)]
 pub enum ResponseMessage {
-    Headers { status: u16, headers: Vec<(String, String)> },
+    Headers {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
     Data(Vec<u8>),
 }
 
@@ -93,10 +107,15 @@ impl ResponseState {
 
     /// Flush status + headers on first body write. Idempotent.
     fn flush_headers(&mut self) {
-        if self.headers_sent { return; }
+        if self.headers_sent {
+            return;
+        }
         // Default Content-Type when the script didn't set one. Matches
         // PHP's default of `text/html; charset=UTF-8`.
-        let has_ct = self.headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+        let has_ct = self
+            .headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
         if !has_ct {
             self.headers.push((
                 "Content-Type".to_string(),
@@ -113,7 +132,9 @@ impl ResponseState {
     }
 
     pub fn write_bytes(&mut self, bytes: Vec<u8>) {
-        if self.ended { return; }
+        if self.ended {
+            return;
+        }
         self.flush_headers();
         if let Some(tx) = &self.sender {
             let _ = tx.send(ResponseMessage::Data(bytes));
@@ -121,7 +142,9 @@ impl ResponseState {
     }
 
     pub fn end(&mut self) {
-        if self.ended { return; }
+        if self.ended {
+            return;
+        }
         self.flush_headers();
         self.ended = true;
         self.sender = None; // drop sender; hyper sees body EOF

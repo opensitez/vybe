@@ -13,7 +13,9 @@ pub static DEF: ControlDef = ControlDef {
 };
 
 fn css(props: &Props) -> String {
-    let mut s = String::from("display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; ");
+    let mut s = String::from(
+        "display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; ",
+    );
     s.push_str(&base_css(props));
     s
 }

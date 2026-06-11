@@ -26,8 +26,12 @@ fn invoke(ns: &str, name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn ab(name: &str, args: Vec<Value>) -> Value  { invoke("ecma:arraybuffer", name, args) }
-fn sab(name: &str, args: Vec<Value>) -> Value { invoke("ecma:sharedarraybuffer", name, args) }
+fn ab(name: &str, args: Vec<Value>) -> Value {
+    invoke("ecma:arraybuffer", name, args)
+}
+fn sab(name: &str, args: Vec<Value>) -> Value {
+    invoke("ecma:sharedarraybuffer", name, args)
+}
 
 fn plain_obj() -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new())))
@@ -72,9 +76,18 @@ fn is_view_false_for_null() {
 fn slice_returns_new_buffer_with_different_pointer() {
     let buf = ab("newWithLength", vec![Value::I32(8)]);
     let sliced = ab("slice", vec![buf.clone(), Value::I32(0), Value::I32(4)]);
-    let a_ptr = match &buf    { Value::Object(o) => Arc::as_ptr(o) as usize, _ => 0 };
-    let b_ptr = match &sliced { Value::Object(o) => Arc::as_ptr(o) as usize, _ => 1 };
-    assert_ne!(a_ptr, b_ptr, "slice must return an independent buffer, not the same Arc");
+    let a_ptr = match &buf {
+        Value::Object(o) => Arc::as_ptr(o) as usize,
+        _ => 0,
+    };
+    let b_ptr = match &sliced {
+        Value::Object(o) => Arc::as_ptr(o) as usize,
+        _ => 1,
+    };
+    assert_ne!(
+        a_ptr, b_ptr,
+        "slice must return an independent buffer, not the same Arc"
+    );
 }
 
 #[test]

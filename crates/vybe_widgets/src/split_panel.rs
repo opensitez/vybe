@@ -3,8 +3,8 @@
 //! Handles splitter drag internally. The IDE only needs to set the two
 //! child panels and an initial split position.
 
-use tiny_skia::*;
 use crate::layout::*;
+use tiny_skia::*;
 
 /// Two panels separated by a draggable splitter.
 pub struct SplitPanel {
@@ -59,22 +59,34 @@ impl SplitPanel {
         self.relayout();
     }
 
-    pub fn split_pos(&self) -> f32 { self.split_pos }
-    pub fn is_dragging(&self) -> bool { self.dragging }
-    pub fn is_hovering(&self) -> bool { self.hovering }
+    pub fn split_pos(&self) -> f32 {
+        self.split_pos
+    }
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+    pub fn is_hovering(&self) -> bool {
+        self.hovering
+    }
 
     pub fn set_min_sizes(&mut self, min1: f32, min2: f32) {
         self.min_size1 = min1;
         self.min_size2 = min2;
     }
 
-    pub fn set_splitter_width(&mut self, w: f32) { self.splitter_width = w; }
+    pub fn set_splitter_width(&mut self, w: f32) {
+        self.splitter_width = w;
+    }
 
-    pub fn panel1_ref(&self) -> Option<&dyn PanelWidget> { self.panel1.as_deref() }
+    pub fn panel1_ref(&self) -> Option<&dyn PanelWidget> {
+        self.panel1.as_deref()
+    }
     pub fn panel1_mut(&mut self) -> Option<&mut (dyn PanelWidget + 'static)> {
         self.panel1.as_deref_mut()
     }
-    pub fn panel2_ref(&self) -> Option<&dyn PanelWidget> { self.panel2.as_deref() }
+    pub fn panel2_ref(&self) -> Option<&dyn PanelWidget> {
+        self.panel2.as_deref()
+    }
     pub fn panel2_mut(&mut self) -> Option<&mut (dyn PanelWidget + 'static)> {
         self.panel2.as_deref_mut()
     }
@@ -95,8 +107,10 @@ impl SplitPanel {
             self.split_pos = self.split_pos.clamp(self.min_size1, max_pos);
             if let Some(p1) = &mut self.panel1 {
                 p1.set_rect(LayoutRect::new(
-                    self.rect.x, self.rect.y,
-                    self.split_pos, self.rect.h,
+                    self.rect.x,
+                    self.rect.y,
+                    self.split_pos,
+                    self.rect.h,
                 ));
             }
             if let Some(p2) = &mut self.panel2 {
@@ -109,8 +123,10 @@ impl SplitPanel {
             self.split_pos = self.split_pos.clamp(self.min_size1, max_pos);
             if let Some(p1) = &mut self.panel1 {
                 p1.set_rect(LayoutRect::new(
-                    self.rect.x, self.rect.y,
-                    self.rect.w, self.split_pos,
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.w,
+                    self.split_pos,
                 ));
             }
             if let Some(p2) = &mut self.panel2 {
@@ -128,8 +144,12 @@ impl PanelWidget for SplitPanel {
         self.relayout();
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         if let Some(p1) = &mut self.panel1 {
@@ -149,7 +169,8 @@ impl PanelWidget for SplitPanel {
         };
         paint.set_color_rgba8(c.0, c.1, c.2, c.3);
         if let Some(rect) = Rect::from_xywh(sr.x * s, sr.y * s, sr.w * s, sr.h * s) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
     }
 
@@ -199,10 +220,14 @@ impl PanelWidget for SplitPanel {
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
         if let Some(p1) = &mut self.panel1 {
-            if p1.handle_key(event) { return true; }
+            if p1.handle_key(event) {
+                return true;
+            }
         }
         if let Some(p2) = &mut self.panel2 {
-            if p2.handle_key(event) { return true; }
+            if p2.handle_key(event) {
+                return true;
+            }
         }
         false
     }
@@ -231,10 +256,14 @@ impl PanelWidget for SplitPanel {
             };
         }
         if let Some(p1) = &self.panel1 {
-            if p1.rect().contains(x, y) { return p1.cursor_at(x, y); }
+            if p1.rect().contains(x, y) {
+                return p1.cursor_at(x, y);
+            }
         }
         if let Some(p2) = &self.panel2 {
-            if p2.rect().contains(x, y) { return p2.cursor_at(x, y); }
+            if p2.rect().contains(x, y) {
+                return p2.cursor_at(x, y);
+            }
         }
         winit::window::CursorIcon::Default
     }

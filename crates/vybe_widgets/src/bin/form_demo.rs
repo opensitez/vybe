@@ -7,9 +7,9 @@ use tiny_skia::Pixmap;
 use winit::window::CursorIcon;
 
 use vybe_widgets::{
-    Application, run_app, Form, Button, Label, TextInput, Checkbox,
-    PanelWidget, WidgetEvent,
-    layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext},
+    Application, Button, Checkbox, Form, Label, PanelWidget, TextInput, WidgetEvent,
+    layout::{KeyEvent, LayoutRect, MouseEvent, RenderContext},
+    run_app,
 };
 
 struct FormDemoApp {
@@ -35,7 +35,8 @@ impl FormDemoApp {
 
     fn build_form(&mut self) {
         self.form = Form::new("Demo Form");
-        self.form.set_rect(LayoutRect::new(0.0, 0.0, self.width, self.height));
+        self.form
+            .set_rect(LayoutRect::new(0.0, 0.0, self.width, self.height));
 
         // Title label
         let mut title = Label::new("Vybe Toolkit Demo");
@@ -44,34 +45,59 @@ impl FormDemoApp {
         self.form.add_control(title, 20.0, 15.0, 300.0, 30.0);
 
         // Name label + text input
-        self.form.add_control(Label::new("Name:"), 20.0, 60.0, 60.0, 24.0);
+        self.form
+            .add_control(Label::new("Name:"), 20.0, 60.0, 60.0, 24.0);
         self.form.add_control(
-            TextInput::new().with_name("name").with_placeholder("Enter your name"),
-            90.0, 60.0, 250.0, 26.0,
+            TextInput::new()
+                .with_name("name")
+                .with_placeholder("Enter your name"),
+            90.0,
+            60.0,
+            250.0,
+            26.0,
         );
 
         // Email label + text input
-        self.form.add_control(Label::new("Email:"), 20.0, 100.0, 60.0, 24.0);
+        self.form
+            .add_control(Label::new("Email:"), 20.0, 100.0, 60.0, 24.0);
         self.form.add_control(
-            TextInput::new().with_name("email").with_placeholder("you@example.com"),
-            90.0, 100.0, 250.0, 26.0,
+            TextInput::new()
+                .with_name("email")
+                .with_placeholder("you@example.com"),
+            90.0,
+            100.0,
+            250.0,
+            26.0,
         );
 
         // Password label + text input
-        self.form.add_control(Label::new("Password:"), 20.0, 140.0, 80.0, 24.0);
+        self.form
+            .add_control(Label::new("Password:"), 20.0, 140.0, 80.0, 24.0);
         self.form.add_control(
-            TextInput::new().with_name("password").with_placeholder("••••••••").with_password(),
-            110.0, 140.0, 230.0, 26.0,
+            TextInput::new()
+                .with_name("password")
+                .with_placeholder("••••••••")
+                .with_password(),
+            110.0,
+            140.0,
+            230.0,
+            26.0,
         );
 
         // Checkboxes
         self.form.add_control(
             Checkbox::new("Remember me").with_name("remember"),
-            20.0, 185.0, 160.0, 22.0,
+            20.0,
+            185.0,
+            160.0,
+            22.0,
         );
         self.form.add_control(
             Checkbox::new("Accept terms").with_name("terms"),
-            20.0, 215.0, 160.0, 22.0,
+            20.0,
+            215.0,
+            160.0,
+            22.0,
         );
 
         // Buttons

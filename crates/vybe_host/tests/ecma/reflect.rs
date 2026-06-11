@@ -26,11 +26,15 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
-    for (k, v) in pairs { o.properties.insert(k.to_string(), v); }
+    for (k, v) in pairs {
+        o.properties.insert(k.to_string(), v);
+    }
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -51,7 +55,10 @@ fn get_returns_undefined_for_absent_property() {
 #[test]
 fn set_returns_true_on_success() {
     let o = obj(vec![]);
-    assert_eq!(invoke("set", vec![o, s("k"), Value::I32(1)]), Value::Bool(true));
+    assert_eq!(
+        invoke("set", vec![o, s("k"), Value::I32(1)]),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -75,12 +82,25 @@ fn has_false_for_absent_property() {
     assert_eq!(invoke("has", vec![o, s("gone")]), Value::Bool(false));
 }
 
+#[test]
+fn has_true_for_inherited_property() {
+    let proto = obj(vec![("inherited", Value::Bool(true))]);
+    let child = obj(vec![("own", Value::Bool(true)), ("__proto__", proto)]);
+    assert_eq!(
+        invoke("has", vec![child, s("inherited")]),
+        Value::Bool(true)
+    );
+}
+
 // ── Reflect.deleteProperty ────────────────────────────────────────────────────
 
 #[test]
 fn delete_property_returns_true_and_removes_it() {
     let o = obj(vec![("d", Value::I32(1))]);
-    assert_eq!(invoke("deleteProperty", vec![o.clone(), s("d")]), Value::Bool(true));
+    assert_eq!(
+        invoke("deleteProperty", vec![o.clone(), s("d")]),
+        Value::Bool(true)
+    );
     assert_eq!(invoke("get", vec![o, s("d")]), Value::Undefined);
 }
 
@@ -88,7 +108,10 @@ fn delete_property_returns_true_and_removes_it() {
 fn delete_property_returns_true_for_non_existent_key() {
     // Reflect.deleteProperty on a non-existent key returns true (nothing to prevent).
     let o = obj(vec![]);
-    assert_eq!(invoke("deleteProperty", vec![o, s("nope")]), Value::Bool(true));
+    assert_eq!(
+        invoke("deleteProperty", vec![o, s("nope")]),
+        Value::Bool(true)
+    );
 }
 
 // ── Reflect.ownKeys ───────────────────────────────────────────────────────────
@@ -131,10 +154,32 @@ fn get_own_property_descriptor_returns_undefined_for_absent_key() {
 #[test]
 fn define_property_returns_bool_and_property_is_readable() {
     let o = obj(vec![]);
-    let desc = obj(vec![("value", Value::I32(55)), ("writable", Value::Bool(true))]);
+    let desc = obj(vec![
+        ("value", Value::I32(55)),
+        ("writable", Value::Bool(true)),
+    ]);
     let result = invoke("defineProperty", vec![o.clone(), s("q"), desc]);
     assert!(matches!(result, Value::Bool(true)));
     assert_eq!(invoke("get", vec![o, s("q")]), Value::I32(55));
+}
+
+#[test]
+fn define_property_non_writable_blocks_reflect_set() {
+    let o = obj(vec![]);
+    let desc = obj(vec![
+        ("value", Value::I32(42)),
+        ("writable", Value::Bool(false)),
+        ("configurable", Value::Bool(false)),
+    ]);
+    assert_eq!(
+        invoke("defineProperty", vec![o.clone(), s("x"), desc]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("set", vec![o.clone(), s("x"), Value::I32(99)]),
+        Value::Bool(false)
+    );
+    assert_eq!(invoke("get", vec![o, s("x")]), Value::I32(42));
 }
 
 // ── Reflect.getPrototypeOf / setPrototypeOf ───────────────────────────────────
@@ -170,6 +215,25 @@ fn prevent_extensions_returns_the_object() {
     assert!(matches!(result, Value::Object(_) | Value::Bool(true)));
 }
 
+#[test]
+fn prevent_extensions_blocks_new_properties() {
+    let o = obj(vec![("x", Value::I32(1))]);
+    assert_eq!(
+        invoke("preventExtensions", vec![o.clone()]),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        invoke("set", vec![o.clone(), s("y"), Value::I32(2)]),
+        Value::Bool(false)
+    );
+    assert_eq!(invoke("has", vec![o.clone(), s("y")]), Value::Bool(false));
+    assert_eq!(
+        invoke("set", vec![o.clone(), s("x"), Value::I32(99)]),
+        Value::Bool(true)
+    );
+    assert_eq!(invoke("get", vec![o, s("x")]), Value::I32(99));
+}
+
 // ── Reflect.apply ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -180,12 +244,18 @@ fn apply_invokes_target_and_returns_result() {
     use vybe_bytecode::value::Object;
     let fn_obj = {
         let mut o = Object::new();
-        o.properties.insert("__callable_echo".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__callable_echo".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
-    let args = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::I32(42)]))));
+    let args = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::I32(
+        42,
+    )]))));
     let result = invoke("apply", vec![fn_obj, Value::Null, args]);
-    assert!(matches!(result, Value::I32(_) | Value::F64(_) | Value::Object(_) | Value::Undefined));
+    assert!(matches!(
+        result,
+        Value::I32(_) | Value::F64(_) | Value::Object(_) | Value::Undefined
+    ));
 }
 
 // ── Reflect.construct ─────────────────────────────────────────────────────────
@@ -197,10 +267,14 @@ fn construct_produces_a_new_object_instance() {
     use vybe_bytecode::value::Object;
     let ctor = {
         let mut o = Object::new();
-        o.properties.insert("__ctor_point".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__ctor_point".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
-    let args = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::I32(1), Value::I32(2)]))));
+    let args = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+        Value::I32(1),
+        Value::I32(2),
+    ]))));
     let result = invoke("construct", vec![ctor, args]);
     assert!(matches!(result, Value::Object(_) | Value::Undefined));
 }

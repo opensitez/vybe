@@ -1,8 +1,11 @@
 //! MenuStrip widget — horizontal menu bar with item areas.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use super::layout::{
+    KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
+    PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 pub struct MenuStrip {
     pub items: Vec<String>,
@@ -39,7 +42,10 @@ impl MenuStrip {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Default item width when item_widths is not set.
     fn default_item_width(&self) -> f32 {
@@ -119,7 +125,9 @@ impl MenuStrip {
 
     /// Hit test — returns item index at position.
     pub fn hit_test(&self, mx: f32, _my: f32) -> Option<usize> {
-        if _my < 0.0 || _my > self.height { return None; }
+        if _my < 0.0 || _my > self.height {
+            return None;
+        }
         let mut cx = 0.0;
         for i in 0..self.items.len() {
             let iw = self.get_item_width(i);
@@ -138,21 +146,43 @@ impl MenuStrip {
 }
 
 impl PanelWidget for MenuStrip {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw item text
         let (fr, fg, fb, _) = self.colors.foreground;
         let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
         for (i, item) in self.items.iter().enumerate() {
             let ix = r.x + self.item_x(i) + 8.0;
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, ix, r.y + 4.0, 12.0, col, ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                item,
+                ix,
+                r.y + 4.0,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
     }
 
@@ -171,7 +201,8 @@ impl PanelWidget for MenuStrip {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 if let Some(idx) = self.hit_test(lx, ly) {
                     self.active_index = Some(idx);
-                    self.pending_events.push(WidgetEvent::MenuItemClicked(self.name.clone(), idx));
+                    self.pending_events
+                        .push(WidgetEvent::MenuItemClicked(self.name.clone(), idx));
                     return true;
                 }
             }
@@ -180,6 +211,10 @@ impl PanelWidget for MenuStrip {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

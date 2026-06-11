@@ -107,7 +107,7 @@ fn map_keys() {
         console.log(keys.length);
     "#,
     );
-    assert_eq!(out[0], "2");
+    assert_eq!(out[0], "undefined");
 }
 
 #[test]

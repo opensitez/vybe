@@ -80,7 +80,10 @@ fn get_servers_entries_are_strings() {
             let obj = obj.lock().unwrap();
             if let ObjectKind::Array(elems) = &obj.kind {
                 for elem in elems {
-                    assert!(matches!(elem, Value::String(_)), "each server must be a string");
+                    assert!(
+                        matches!(elem, Value::String(_)),
+                        "each server must be a string"
+                    );
                 }
             }
         }
@@ -180,7 +183,10 @@ fn resolver_set_servers_accepts_array() {
 fn lookup_with_null_callback_returns_promise_or_object() {
     // lookup(hostname, callback) — with null cb, host returns a Promise-like or object
     let result = call_dns("lookup", vec![s("localhost"), Value::Null]);
-    assert!(!matches!(result, Value::Undefined), "lookup must return something");
+    assert!(
+        !matches!(result, Value::Undefined),
+        "lookup must return something"
+    );
 }
 
 #[test]
@@ -245,7 +251,10 @@ fn reverse_with_null_callback_returns_promise_or_object() {
 
 #[test]
 fn lookup_service_with_null_callback_returns_promise_or_object() {
-    let result = call_dns("lookupService", vec![s("127.0.0.1"), Value::I32(80), Value::Null]);
+    let result = call_dns(
+        "lookupService",
+        vec![s("127.0.0.1"), Value::I32(80), Value::Null],
+    );
     assert!(!matches!(result, Value::Undefined));
 }
 

@@ -21,8 +21,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{Object, ObjectKind, Value};
 
 /// Property marker denoting "this array's length is immutable".
 /// Mutation handlers (push/pop/shift/splice/setLength) check this
@@ -42,16 +42,24 @@ fn array_of(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 
 pub fn register(vm: &mut VM) {
     // newWithLength(n) — null-filled, frozen.
-    vm.register_host_fn("ecma:fixedarray", "newWithLength",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "newWithLength",
         Box::new(|_ctx, args| {
-            let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let n = args
+                .first()
+                .map(|v| v.as_i32().max(0) as usize)
+                .unwrap_or(0);
             let mut obj = Object::new_array(vec![Value::Null; n]);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
             Value::Object(Arc::new(Mutex::new(obj)))
-        }));
+        }),
+    );
 
     // fromArray(src) — snapshot elements into a new frozen Array.
-    vm.register_host_fn("ecma:fixedarray", "fromArray",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "fromArray",
         Box::new(|_ctx, args| {
             let elements: Vec<Value> = match args.first() {
                 Some(Value::Object(src)) => {
@@ -67,10 +75,13 @@ pub fn register(vm: &mut VM) {
             let mut obj = Object::new_array(elements);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
             Value::Object(Arc::new(Mutex::new(obj)))
-        }));
+        }),
+    );
 
     // toArray(fixed) — unfreeze copy into a new growable Array.
-    vm.register_host_fn("ecma:fixedarray", "toArray",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "toArray",
         Box::new(|_ctx, args| {
             let elements: Vec<Value> = match args.first() {
                 Some(Value::Object(src)) => {
@@ -85,9 +96,12 @@ pub fn register(vm: &mut VM) {
             };
             // No FROZEN_MARK — growable.
             Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:fixedarray", "length",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "length",
         Box::new(|_ctx, args| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -96,12 +110,17 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:fixedarray", "get",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "get",
         Box::new(|_ctx, args| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 { return Value::Undefined; }
+            if i < 0 {
+                return Value::Undefined;
+            }
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
@@ -109,21 +128,30 @@ pub fn register(vm: &mut VM) {
                 }
             }
             Value::Undefined
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:fixedarray", "isFixedArray",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "isFixedArray",
         Box::new(|_ctx, args| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
-                return Value::I32(
-                    if o.properties.get(FROZEN_MARK).is_some() { 1 } else { 0 });
+                return Value::I32(if o.properties.get(FROZEN_MARK).is_some() {
+                    1
+                } else {
+                    0
+                });
             }
             Value::I32(0)
-        }));
+        }),
+    );
 
     // freeze(arr) — mark an existing growable Array as fixed. Returns
     // the same array (frozen in place).
-    vm.register_host_fn("ecma:fixedarray", "freeze",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "freeze",
         Box::new(|_ctx, args| {
             if let Some(arr) = array_of(args, 0) {
                 let mut o = arr.lock().unwrap();
@@ -132,15 +160,22 @@ pub fn register(vm: &mut VM) {
                 return Value::Object(arr);
             }
             args.first().cloned().unwrap_or(Value::Null)
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:fixedarray", "isFrozen",
+    vm.register_host_fn(
+        "ecma:fixedarray",
+        "isFrozen",
         Box::new(|_ctx, args| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
-                return Value::I32(
-                    if o.properties.get(FROZEN_MARK).is_some() { 1 } else { 0 });
+                return Value::I32(if o.properties.get(FROZEN_MARK).is_some() {
+                    1
+                } else {
+                    0
+                });
             }
             Value::I32(0)
-        }));
+        }),
+    );
 }

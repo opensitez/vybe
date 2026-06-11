@@ -7,8 +7,8 @@
 //! detect its existence and bind properties on it.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
+use vybe_bytecode::{HostContext, VM, Value};
 
 /// Process-global singleton — initialised on first request and
 /// returned identically forever after. Matches §19.3.1 "the same
@@ -16,17 +16,19 @@ use vybe_bytecode::value::Object;
 static GLOBAL_THIS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 fn global_this() -> Value {
-    GLOBAL_THIS.get_or_init(|| {
-        Value::Object(Arc::new(Mutex::new(Object::new())))
-    }).clone()
+    GLOBAL_THIS
+        .get_or_init(|| Value::Object(Arc::new(Mutex::new(Object::new()))))
+        .clone()
 }
 
 pub fn register(vm: &mut VM) {
     // 0-arg getter — see the existing constants pattern in
     // `ecma:number.MAX_SAFE_INTEGER` etc.
-    vm.register_host_fn("ecma:globalThis", "get", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        global_this()
-    }));
+    vm.register_host_fn(
+        "ecma:globalThis",
+        "get",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| global_this()),
+    );
 }
 
 /// Returned to namespaces wiring so the existing `vm.globals.insert("globalThis", ...)`

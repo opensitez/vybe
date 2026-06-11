@@ -1,9 +1,14 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
 use super::driver::SqlDriver;
+use std::collections::HashMap;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-pub(super) fn next_id() -> u64 { NEXT_ID.fetch_add(1, Ordering::Relaxed) }
+pub(super) fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 pub(super) struct ConnEntry {
     pub driver: Arc<dyn SqlDriver>,
@@ -22,8 +27,11 @@ pub(super) struct SqlState {
 
 pub(super) fn state() -> Arc<Mutex<SqlState>> {
     static S: OnceLock<Arc<Mutex<SqlState>>> = OnceLock::new();
-    S.get_or_init(|| Arc::new(Mutex::new(SqlState {
-        conns: HashMap::new(),
-        stmts: HashMap::new(),
-    }))).clone()
+    S.get_or_init(|| {
+        Arc::new(Mutex::new(SqlState {
+            conns: HashMap::new(),
+            stmts: HashMap::new(),
+        }))
+    })
+    .clone()
 }

@@ -129,7 +129,10 @@ fn async_local_storage_run_returns_callback_result() {
     // run(store_value, callback) — callback is null but host should return null (or sentinel)
     let result = call_ah("alsRun", vec![als, s("ctx-value"), Value::Null]);
     // If callback is null the host returns null or undefined — just must not panic
-    assert!(matches!(result, Value::Null | Value::Undefined | Value::String(_)));
+    assert!(matches!(
+        result,
+        Value::Null | Value::Undefined | Value::String(_)
+    ));
 }
 
 #[test]
@@ -159,7 +162,10 @@ fn async_resource_constructor_returns_object() {
 fn async_resource_has_async_id() {
     let resource = call_ah("AsyncResource", vec![s("res")]);
     let aid = call_ah("asyncResourceAsyncId", vec![resource]);
-    assert!(as_i64(&aid).map_or(false, |n| n >= 1), "asyncId must be >= 1");
+    assert!(
+        as_i64(&aid).map_or(false, |n| n >= 1),
+        "asyncId must be >= 1"
+    );
 }
 
 #[test]
@@ -209,7 +215,8 @@ fn async_resource_bind_returns_non_undefined() {
     // bind wraps the function — may return null (no-op on null fn) or an object
     assert!(
         matches!(result, Value::Object(_) | Value::Null | Value::Undefined),
-        "asyncResourceBind must return object/null/undefined, got {:?}", result
+        "asyncResourceBind must return object/null/undefined, got {:?}",
+        result
     );
 }
 
@@ -235,7 +242,8 @@ fn async_wrap_providers_returns_object() {
     let result = call_ah("asyncWrapProviders", vec![]);
     assert!(
         matches!(result, Value::Object(_)),
-        "asyncWrapProviders must return an object, got {:?}", result
+        "asyncWrapProviders must return an object, got {:?}",
+        result
     );
 }
 
@@ -244,7 +252,10 @@ fn async_wrap_providers_has_at_least_one_entry() {
     let result = call_ah("asyncWrapProviders", vec![]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
-        assert!(!o.properties.is_empty(), "asyncWrapProviders must have at least one entry");
+        assert!(
+            !o.properties.is_empty(),
+            "asyncWrapProviders must have at least one entry"
+        );
     }
 }
 
@@ -256,7 +267,8 @@ fn async_wrap_providers_tcp_wrap_is_numeric() {
         if let Some(val) = o.properties.get("TCPWRAP") {
             assert!(
                 matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-                "TCPWRAP must be numeric, got {:?}", val
+                "TCPWRAP must be numeric, got {:?}",
+                val
             );
         }
     }
@@ -268,9 +280,15 @@ fn async_wrap_providers_tcp_wrap_is_numeric() {
 fn create_hook_with_callbacks_object_does_not_panic() {
     let mut callbacks = Object::new();
     callbacks.properties.insert("init".to_string(), Value::Null);
-    callbacks.properties.insert("before".to_string(), Value::Null);
-    callbacks.properties.insert("after".to_string(), Value::Null);
-    callbacks.properties.insert("destroy".to_string(), Value::Null);
+    callbacks
+        .properties
+        .insert("before".to_string(), Value::Null);
+    callbacks
+        .properties
+        .insert("after".to_string(), Value::Null);
+    callbacks
+        .properties
+        .insert("destroy".to_string(), Value::Null);
     let cb_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(callbacks)));
     let hook = call_ah("createHook", vec![cb_val]);
     assert!(matches!(hook, Value::Object(_)));
@@ -315,5 +333,8 @@ fn proposal_node_async_hooks_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:async_hooks imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:async_hooks imports: {missing:?}"
+    );
 }

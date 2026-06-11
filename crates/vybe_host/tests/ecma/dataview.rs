@@ -65,7 +65,10 @@ fn byte_offset_reflects_constructor_offset() {
 #[test]
 fn byte_length_respects_explicit_length_argument() {
     let buf = ab(16);
-    let dv = invoke("newWithOffsetAndLength", vec![buf, Value::I32(2), Value::I32(8)]);
+    let dv = invoke(
+        "newWithOffsetAndLength",
+        vec![buf, Value::I32(2), Value::I32(8)],
+    );
     assert_eq!(invoke("byteLength", vec![dv]), Value::I32(8));
 }
 
@@ -96,11 +99,17 @@ fn get_int16_little_endian_differs_from_big_endian() {
     // Reading back as big-endian gives 0x0201 = 513, not 258.
     let buf = ab(4);
     let dv = invoke("new", vec![buf]);
-    invoke("setInt16LE", vec![dv.clone(), Value::I32(0), Value::I32(0x0102)]);
+    invoke(
+        "setInt16LE",
+        vec![dv.clone(), Value::I32(0), Value::I32(0x0102)],
+    );
     let le = invoke("getInt16LE", vec![dv.clone(), Value::I32(0)]);
     let be = invoke("getInt16BE", vec![dv, Value::I32(0)]);
     assert_eq!(le, Value::I32(0x0102));
-    assert_ne!(le, be, "little-endian and big-endian reads of same bytes must differ");
+    assert_ne!(
+        le, be,
+        "little-endian and big-endian reads of same bytes must differ"
+    );
 }
 
 // ── Int32 ─────────────────────────────────────────────────────────────────────
@@ -109,8 +118,14 @@ fn get_int16_little_endian_differs_from_big_endian() {
 fn set_int32_and_get_int32_little_endian_round_trip() {
     let buf = ab(8);
     let dv = invoke("new", vec![buf]);
-    invoke("setInt32LE", vec![dv.clone(), Value::I32(0), Value::I32(0x01020304)]);
-    assert_eq!(invoke("getInt32LE", vec![dv, Value::I32(0)]), Value::I32(0x01020304));
+    invoke(
+        "setInt32LE",
+        vec![dv.clone(), Value::I32(0), Value::I32(0x01020304)],
+    );
+    assert_eq!(
+        invoke("getInt32LE", vec![dv, Value::I32(0)]),
+        Value::I32(0x01020304)
+    );
 }
 
 #[test]
@@ -118,7 +133,10 @@ fn set_uint32_stores_values_above_i32_max() {
     // 0xDEADBEEF = 3735928559 — only fits in u32, not i32.
     let buf = ab(8);
     let dv = invoke("new", vec![buf]);
-    invoke("setUint32LE", vec![dv.clone(), Value::I32(0), Value::F64(3735928559.0)]);
+    invoke(
+        "setUint32LE",
+        vec![dv.clone(), Value::I32(0), Value::F64(3735928559.0)],
+    );
     if let Value::F64(v) = invoke("getUint32LE", vec![dv, Value::I32(0)]) {
         assert!((v - 3735928559.0).abs() < 1.0);
     } else {
@@ -132,7 +150,10 @@ fn set_uint32_stores_values_above_i32_max() {
 fn set_float64_and_get_float64_little_endian_round_trip() {
     let buf = ab(16);
     let dv = invoke("new", vec![buf]);
-    invoke("setFloat64LE", vec![dv.clone(), Value::I32(0), Value::F64(3.14)]);
+    invoke(
+        "setFloat64LE",
+        vec![dv.clone(), Value::I32(0), Value::F64(3.14)],
+    );
     if let Value::F64(v) = invoke("getFloat64LE", vec![dv, Value::I32(0)]) {
         assert!((v - 3.14).abs() < 1e-10);
     } else {
@@ -145,11 +166,17 @@ fn float32_loses_precision_compared_to_float64() {
     // f32 has ~7 significant decimal digits; 1.23456789 rounded.
     let buf = ab(8);
     let dv = invoke("new", vec![buf]);
-    invoke("setFloat32LE", vec![dv.clone(), Value::I32(0), Value::F64(1.23456789)]);
+    invoke(
+        "setFloat32LE",
+        vec![dv.clone(), Value::I32(0), Value::F64(1.23456789)],
+    );
     if let Value::F64(v) = invoke("getFloat32LE", vec![dv, Value::I32(0)]) {
         // The read-back value must differ from the original due to f32 precision.
         // f32 has ~7 sig figs; the round-trip differs from the f64 original
-        assert!(v != 1.23456789, "f32 read-back must differ from original f64");
+        assert!(
+            v != 1.23456789,
+            "f32 read-back must differ from original f64"
+        );
     } else {
         panic!("expected F64");
     }
@@ -161,8 +188,14 @@ fn float32_loses_precision_compared_to_float64() {
 fn set_big_int64_and_get_big_int64_little_endian_round_trip() {
     let buf = ab(16);
     let dv = invoke("new", vec![buf]);
-    invoke("setBigInt64LE", vec![dv.clone(), Value::I32(0), Value::I64(i64::MAX)]);
-    assert_eq!(invoke("getBigInt64LE", vec![dv, Value::I32(0)]), Value::I64(i64::MAX));
+    invoke(
+        "setBigInt64LE",
+        vec![dv.clone(), Value::I32(0), Value::I64(i64::MAX)],
+    );
+    assert_eq!(
+        invoke("getBigInt64LE", vec![dv, Value::I32(0)]),
+        Value::I64(i64::MAX)
+    );
 }
 
 #[test]
@@ -170,9 +203,15 @@ fn set_big_uint64_round_trip() {
     // u64::MAX cannot be stored as i64; the host must handle the raw bits.
     let buf = ab(16);
     let dv = invoke("new", vec![buf]);
-    invoke("setBigUint64LE", vec![dv.clone(), Value::I32(0), Value::I64(-1)]);
+    invoke(
+        "setBigUint64LE",
+        vec![dv.clone(), Value::I32(0), Value::I64(-1)],
+    );
     // -1 as i64 bits = 0xFFFF_FFFF_FFFF_FFFF = u64::MAX; reading back as I64(-1).
-    assert_eq!(invoke("getBigUint64LE", vec![dv, Value::I32(0)]), Value::I64(-1));
+    assert_eq!(
+        invoke("getBigUint64LE", vec![dv, Value::I32(0)]),
+        Value::I64(-1)
+    );
 }
 
 // ── Writes at non-zero offsets don't corrupt neighbours ───────────────────────
@@ -184,8 +223,14 @@ fn write_at_offset_does_not_touch_adjacent_bytes() {
     invoke("setInt8", vec![dv.clone(), Value::I32(0), Value::I32(1)]);
     invoke("setInt8", vec![dv.clone(), Value::I32(1), Value::I32(2)]);
     invoke("setInt8", vec![dv.clone(), Value::I32(2), Value::I32(3)]);
-    assert_eq!(invoke("getInt8", vec![dv.clone(), Value::I32(0)]), Value::I32(1));
-    assert_eq!(invoke("getInt8", vec![dv.clone(), Value::I32(1)]), Value::I32(2));
+    assert_eq!(
+        invoke("getInt8", vec![dv.clone(), Value::I32(0)]),
+        Value::I32(1)
+    );
+    assert_eq!(
+        invoke("getInt8", vec![dv.clone(), Value::I32(1)]),
+        Value::I32(2)
+    );
     assert_eq!(invoke("getInt8", vec![dv, Value::I32(2)]), Value::I32(3));
 }
 
@@ -197,7 +242,15 @@ fn set_float16_get_float16_round_trip_little_endian() {
     // Float16 has ~3 decimal digits of precision.
     let buf = ab(4);
     let dv = invoke("new", vec![buf]);
-    invoke("setFloat16", vec![dv.clone(), Value::I32(0), Value::F64(1.5), Value::Bool(true)]);
+    invoke(
+        "setFloat16",
+        vec![
+            dv.clone(),
+            Value::I32(0),
+            Value::F64(1.5),
+            Value::Bool(true),
+        ],
+    );
     let result = invoke("getFloat16", vec![dv, Value::I32(0), Value::Bool(true)]);
     match result {
         Value::F64(f) => assert!((f - 1.5).abs() < 0.01, "expected 1.5, got {f}"),
@@ -210,7 +263,15 @@ fn set_float16_get_float16_round_trip_little_endian() {
 fn set_float16_zero_reads_back_as_zero() {
     let buf = ab(4);
     let dv = invoke("new", vec![buf]);
-    invoke("setFloat16", vec![dv.clone(), Value::I32(0), Value::F64(0.0), Value::Bool(true)]);
+    invoke(
+        "setFloat16",
+        vec![
+            dv.clone(),
+            Value::I32(0),
+            Value::F64(0.0),
+            Value::Bool(true),
+        ],
+    );
     let result = invoke("getFloat16", vec![dv, Value::I32(0), Value::Bool(true)]);
     assert!(matches!(result, Value::F64(f) if f == 0.0) || matches!(result, Value::Undefined));
 }
@@ -221,10 +282,21 @@ fn float16_cannot_represent_float64_full_precision() {
     // This is the key behavioral difference from setFloat32 and setFloat64.
     let buf = ab(4);
     let dv = invoke("new", vec![buf]);
-    invoke("setFloat16", vec![dv.clone(), Value::I32(0), Value::F64(1.3378), Value::Bool(true)]);
+    invoke(
+        "setFloat16",
+        vec![
+            dv.clone(),
+            Value::I32(0),
+            Value::F64(1.3378),
+            Value::Bool(true),
+        ],
+    );
     let result = invoke("getFloat16", vec![dv, Value::I32(0), Value::Bool(true)]);
     match result {
-        Value::F64(f) => assert!((f - 1.3378).abs() > 1e-4 || f == 1.3378, "float16 loses precision vs float64"),
+        Value::F64(f) => assert!(
+            (f - 1.3378).abs() > 1e-4 || f == 1.3378,
+            "float16 loses precision vs float64"
+        ),
         Value::Undefined => {}
         other => panic!("unexpected: {:?}", other),
     }

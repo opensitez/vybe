@@ -31,7 +31,9 @@ fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 // ── Promise.resolve — wraps a value in an already-resolved promise ────────────
 
@@ -220,7 +222,8 @@ fn catch_handles_rejection_and_recovers() {
     // { __catch_return: value } means "recover with this value".
     let handler = {
         let mut o = Object::new();
-        o.properties.insert("__catch_return".to_string(), Value::I32(0));
+        o.properties
+            .insert("__catch_return".to_string(), Value::I32(0));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let recovered = invoke("catch", vec![p, handler]);
@@ -241,7 +244,8 @@ fn finally_runs_regardless_of_outcome_and_preserves_value() {
     let p = invoke("resolve", vec![Value::I32(42)]);
     let side_effect_tracker = {
         let mut o = Object::new();
-        o.properties.insert("__finally_noop".to_string(), Value::Bool(true));
+        o.properties
+            .insert("__finally_noop".to_string(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let after = invoke("finally", vec![p, side_effect_tracker]);
@@ -263,7 +267,8 @@ fn new_with_resolve_executor_creates_fulfilled_promise() {
     // Encoded as { __executor_resolve: value }.
     let executor = {
         let mut o = Object::new();
-        o.properties.insert("__executor_resolve".to_string(), Value::I32(99));
+        o.properties
+            .insert("__executor_resolve".to_string(), Value::I32(99));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let p = invoke("new", vec![executor]);
@@ -281,7 +286,8 @@ fn new_with_resolve_executor_creates_fulfilled_promise() {
 fn new_with_reject_executor_creates_rejected_promise() {
     let executor = {
         let mut o = Object::new();
-        o.properties.insert("__executor_reject".to_string(), s("err"));
+        o.properties
+            .insert("__executor_reject".to_string(), s("err"));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let p = invoke("new", vec![executor]);
@@ -323,12 +329,24 @@ fn with_resolvers_promise_starts_pending() {
     // The returned promise is initially neither fulfilled nor rejected.
     let result = invoke("withResolvers", vec![]);
     if let Value::Object(o) = &result {
-        let promise = o.lock().unwrap().properties.get("promise").cloned().unwrap_or(Value::Undefined);
+        let promise = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("promise")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         let settled = invoke("settled", vec![promise]);
         // Pending promises are reported with status "pending" or return Undefined.
         match settled {
             Value::Object(s) => {
-                let status = s.lock().unwrap().properties.get("status").cloned().unwrap_or(Value::Undefined);
+                let status = s
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("status")
+                    .cloned()
+                    .unwrap_or(Value::Undefined);
                 assert_eq!(status, Value::String(Arc::from("pending")));
             }
             Value::Undefined => {}
@@ -344,7 +362,8 @@ fn try_with_returning_callable_creates_fulfilled_promise() {
     // ECMA-262 ES2025: Promise.try(fn) calls fn and wraps result in a fulfilled promise.
     let fn_obj = {
         let mut o = Object::new();
-        o.properties.insert("__executor_resolve".to_string(), Value::I32(7));
+        o.properties
+            .insert("__executor_resolve".to_string(), Value::I32(7));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let result = invoke("try", vec![fn_obj]);
@@ -356,13 +375,20 @@ fn try_with_throwing_callable_creates_rejected_promise() {
     // Promise.try(fn) catches synchronous throws and rejects the promise.
     let fn_obj = {
         let mut o = Object::new();
-        o.properties.insert("__executor_reject".to_string(), s("thrown error"));
+        o.properties
+            .insert("__executor_reject".to_string(), s("thrown error"));
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let p = invoke("try", vec![fn_obj]);
     let settled = invoke("settled", vec![p]);
     if let Value::Object(o) = settled {
-        let status = o.lock().unwrap().properties.get("status").cloned().unwrap_or(Value::Undefined);
+        let status = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("status")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         assert_eq!(status, s("rejected"));
     }
 }

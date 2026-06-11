@@ -11,8 +11,7 @@
 //!   - NaN / Infinity stringify to `"null"` per spec.
 //!   - `undefined` / function / symbol elements in Arrays stringify as
 //!     `"null"`; the same values in Objects are omitted.
-//!   - Circular references are detected via a visited-set. MVP keeps the
-//!     existing non-throwing behavior and serializes the cycle as null.
+//!   - Circular references are detected via a visited-set and throw TypeError.
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
@@ -22,7 +21,9 @@ use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("ecma:json", "stringify",
+    vm.register_host_fn(
+        "ecma:json",
+        "stringify",
         Box::new(|ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             let mut state = StringifyState::new(args.get(1), args.get(2));
@@ -31,24 +32,39 @@ pub fn register(vm: &mut VM) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
                 None => Value::Undefined,
             }
-        }));
+        }),
+    );
 
-    vm.register_host_fn("ecma:json", "parse",
+    vm.register_host_fn(
+        "ecma:json",
+        "parse",
         Box::new(|ctx, args| {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            let parsed = parse_json(&text).unwrap_or(Value::Null);
+            let parsed = match parse_json(&text) {
+                Some(parsed) => parsed,
+                None => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "SyntaxError",
+                        "Unexpected token in JSON",
+                    ));
+                    return Value::Undefined;
+                }
+            };
             match args.get(1).cloned() {
                 Some(reviver) if is_callable(&reviver) => apply_reviver(ctx, parsed, reviver),
                 _ => parsed,
             }
-        }));
+        }),
+    );
 
     // JSON.stringify(value, replacer, space) — replacer as Array filters keys.
-    vm.register_host_fn("ecma:json", "stringifyWithReplacer",
+    vm.register_host_fn(
+        "ecma:json",
+        "stringifyWithReplacer",
         Box::new(|ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             let replacer = args.get(1).cloned();
@@ -59,17 +75,29 @@ pub fn register(vm: &mut VM) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
                 None => Value::Undefined,
             }
-        }));
+        }),
+    );
 
     // JSON.parse(text, reviver) — reviver transforms each member.
-    vm.register_host_fn("ecma:json", "parseWithReviver",
+    vm.register_host_fn(
+        "ecma:json",
+        "parseWithReviver",
         Box::new(|ctx, args| {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            let parsed = parse_json(&text).unwrap_or(Value::Null);
+            let parsed = match parse_json(&text) {
+                Some(parsed) => parsed,
+                None => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "SyntaxError",
+                        "Unexpected token in JSON",
+                    ));
+                    return Value::Undefined;
+                }
+            };
             // Magic reviver: __reviver_double_numbers doubles all numeric values.
             if let Some(reviver) = args.get(1) {
                 if let Value::Object(obj) = reviver {
@@ -84,10 +112,13 @@ pub fn register(vm: &mut VM) {
                 }
             }
             parsed
-        }));
+        }),
+    );
 
     // JSON.rawJSON(text) — ES2025: wraps a raw JSON text in an opaque object.
-    vm.register_host_fn("ecma:json", "rawJSON",
+    vm.register_host_fn(
+        "ecma:json",
+        "rawJSON",
         Box::new(|_ctx, args| {
             let text = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
@@ -95,22 +126,33 @@ pub fn register(vm: &mut VM) {
                 None => return Value::Undefined,
             };
             let mut obj = Object::new();
-            obj.properties.insert("__type".into(), Value::String(Arc::from("RawJSON")));
-            obj.properties.insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
+            obj.properties
+                .insert("__type".into(), Value::String(Arc::from("RawJSON")));
+            obj.properties
+                .insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
             Value::Object(Arc::new(Mutex::new(obj)))
-        }));
+        }),
+    );
 
     // JSON.isRawJSON(value) — ES2025: true iff value was created by JSON.rawJSON().
-    vm.register_host_fn("ecma:json", "isRawJSON",
+    vm.register_host_fn(
+        "ecma:json",
+        "isRawJSON",
         Box::new(|_ctx, args| {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
-                if o.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("RawJSON") {
+                if o.properties
+                    .get("__type")
+                    .map(|v| format!("{}", v))
+                    .as_deref()
+                    == Some("RawJSON")
+                {
                     return Value::Bool(true);
                 }
             }
             Value::Bool(false)
-        }));
+        }),
+    );
 }
 
 // ── Stringify ──────────────────────────────────────────────────────────
@@ -194,7 +236,8 @@ fn serialize_json_value(
         Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
         // ECMA-262 §25.5.2: BigInt values must throw TypeError.
         Value::BigInt(_) => {
-            let err = crate::ecma::error::new_error("TypeError", "Do not know how to serialize a BigInt");
+            let err =
+                crate::ecma::error::new_error("TypeError", "Do not know how to serialize a BigInt");
             ctx.throw_value(err);
             return None;
         }
@@ -209,13 +252,23 @@ fn serialize_object(
 ) -> Option<String> {
     let id = Arc::as_ptr(obj) as usize;
     if !state.visited.insert(id) {
-        return Some("null".to_string());
+        ctx.throw_value(crate::ecma::error::new_error(
+            "TypeError",
+            "Converting circular structure to JSON",
+        ));
+        return None;
     }
 
     let result = {
         let guard = obj.lock().unwrap();
         // RawJSON objects serialize their embedded literal directly.
-        if guard.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("RawJSON") {
+        if guard
+            .properties
+            .get("__type")
+            .map(|v| format!("{}", v))
+            .as_deref()
+            == Some("RawJSON")
+        {
             if let Some(Value::String(raw)) = guard.properties.get("rawJSON") {
                 return Some(raw.to_string());
             }
@@ -226,8 +279,11 @@ fn serialize_object(
             ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
                 Some("{}".to_string())
             }
-            ObjectKind::Function(_) | ObjectKind::HostFunction(_) | ObjectKind::Continuation(_)
-            | ObjectKind::Future { .. } | ObjectKind::Stream { .. } => None,
+            ObjectKind::Function(_)
+            | ObjectKind::HostFunction(_)
+            | ObjectKind::Continuation(_)
+            | ObjectKind::Future { .. }
+            | ObjectKind::Stream { .. } => None,
             ObjectKind::Ordinary | ObjectKind::ModuleNamespace => {
                 let keys = object_serialization_keys(&guard, state.property_list.as_ref());
                 drop(guard);
@@ -282,16 +338,21 @@ fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState) -> String {
     //   JSON.stringify(new Int32Array([1,2,3])) === '{"0":1,"1":2,"2":3}'
     let buf = ta.buffer.lock().unwrap();
     let bpe = ta.elem.bytes_per_element();
-    let available_elems = if ta.byte_offset >= buf.len() { 0 }
-        else { (buf.len() - ta.byte_offset) / bpe };
+    let available_elems = if ta.byte_offset >= buf.len() {
+        0
+    } else {
+        (buf.len() - ta.byte_offset) / bpe
+    };
     let length = ta.length.min(available_elems);
     let mut out = String::from("{");
     for i in 0..length {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         out.push_str(&format!("\"{}\":", i));
         let abs = ta.byte_offset + i * bpe;
         let val_str = match ta.elem {
-            TypedElemKind::I8  => (buf[abs] as i8).to_string(),
+            TypedElemKind::I8 => (buf[abs] as i8).to_string(),
             TypedElemKind::U8 | TypedElemKind::U8Clamped => buf[abs].to_string(),
             TypedElemKind::I16 => {
                 let b = [buf[abs], buf[abs + 1]];
@@ -302,29 +363,43 @@ fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState) -> String {
                 u16::from_le_bytes(b).to_string()
             }
             TypedElemKind::I32 => {
-                let mut b = [0u8; 4]; b.copy_from_slice(&buf[abs..abs + 4]);
+                let mut b = [0u8; 4];
+                b.copy_from_slice(&buf[abs..abs + 4]);
                 i32::from_le_bytes(b).to_string()
             }
             TypedElemKind::U32 => {
-                let mut b = [0u8; 4]; b.copy_from_slice(&buf[abs..abs + 4]);
+                let mut b = [0u8; 4];
+                b.copy_from_slice(&buf[abs..abs + 4]);
                 u32::from_le_bytes(b).to_string()
             }
             TypedElemKind::F32 => {
-                let mut b = [0u8; 4]; b.copy_from_slice(&buf[abs..abs + 4]);
+                let mut b = [0u8; 4];
+                b.copy_from_slice(&buf[abs..abs + 4]);
                 let f = f32::from_le_bytes(b);
-                if f.is_nan() || f.is_infinite() { "null".into() } else { f.to_string() }
+                if f.is_nan() || f.is_infinite() {
+                    "null".into()
+                } else {
+                    f.to_string()
+                }
             }
             TypedElemKind::F64 => {
-                let mut b = [0u8; 8]; b.copy_from_slice(&buf[abs..abs + 8]);
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&buf[abs..abs + 8]);
                 let f = f64::from_le_bytes(b);
-                if f.is_nan() || f.is_infinite() { "null".into() } else { f.to_string() }
+                if f.is_nan() || f.is_infinite() {
+                    "null".into()
+                } else {
+                    f.to_string()
+                }
             }
             TypedElemKind::BigI64 => {
-                let mut b = [0u8; 8]; b.copy_from_slice(&buf[abs..abs + 8]);
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&buf[abs..abs + 8]);
                 i64::from_le_bytes(b).to_string()
             }
             TypedElemKind::BigU64 => {
-                let mut b = [0u8; 8]; b.copy_from_slice(&buf[abs..abs + 8]);
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&buf[abs..abs + 8]);
                 u64::from_le_bytes(b).to_string()
             }
         };
@@ -389,9 +464,12 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
             return None;
         };
         Some(
-            elems.iter()
+            elems
+                .iter()
                 .filter_map(|elem| match elem {
-                    Value::String(key) if o.properties.contains_key(key.as_ref()) => Some(key.to_string()),
+                    Value::String(key) if o.properties.contains_key(key.as_ref()) => {
+                        Some(key.to_string())
+                    }
                     _ => None,
                 })
                 .collect(),
@@ -460,7 +538,9 @@ fn is_non_enumerable(o: &Object, key: &str) -> bool {
             let ObjectKind::Array(ref elems) = guard.kind else {
                 return false;
             };
-            elems.iter().any(|value| matches!(value, Value::String(name) if name.as_ref() == key))
+            elems
+                .iter()
+                .any(|value| matches!(value, Value::String(name) if name.as_ref() == key))
         }
         _ => false,
     }
@@ -563,14 +643,18 @@ fn is_callable(value: &Value) -> bool {
         return false;
     };
     let guard = obj.lock().unwrap();
-    matches!(guard.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
-        || guard.properties.contains_key("__call__")
+    matches!(
+        guard.kind,
+        ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+    ) || guard.properties.contains_key("__call__")
 }
 
 fn is_function_like_object(obj: &Arc<Mutex<Object>>) -> bool {
     let guard = obj.lock().unwrap();
-    matches!(guard.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
-        || guard.properties.contains_key("__call__")
+    matches!(
+        guard.kind,
+        ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+    ) || guard.properties.contains_key("__call__")
 }
 
 fn unbox_json_wrapper(value: Value) -> Value {
@@ -666,17 +750,28 @@ fn double_numbers_revive(value: Value) -> Value {
         Value::Object(obj) => {
             let guard = obj.lock().unwrap();
             if let ObjectKind::Array(ref elems) = guard.kind {
-                let elems2: Vec<Value> = elems.iter().map(|e| double_numbers_revive(e.clone())).collect();
+                let elems2: Vec<Value> = elems
+                    .iter()
+                    .map(|e| double_numbers_revive(e.clone()))
+                    .collect();
                 drop(guard);
                 Value::Object(Arc::new(Mutex::new(Object::new_array(elems2))))
             } else {
                 let keys: Vec<String> = guard.properties.keys().cloned().collect();
-                let vals: Vec<(String, Value)> = keys.iter()
-                    .map(|k| (k.clone(), double_numbers_revive(guard.properties[k].clone())))
+                let vals: Vec<(String, Value)> = keys
+                    .iter()
+                    .map(|k| {
+                        (
+                            k.clone(),
+                            double_numbers_revive(guard.properties[k].clone()),
+                        )
+                    })
                     .collect();
                 drop(guard);
                 let mut new_obj = Object::new();
-                for (k, v) in vals { new_obj.properties.insert(k, v); }
+                for (k, v) in vals {
+                    new_obj.properties.insert(k, v);
+                }
                 Value::Object(Arc::new(Mutex::new(new_obj)))
             }
         }
@@ -707,12 +802,8 @@ fn internalize_json_property(
             };
             for index in 0..len {
                 let idx_key = index.to_string();
-                let revived = internalize_json_property(
-                    ctx,
-                    &Value::Object(obj.clone()),
-                    &idx_key,
-                    reviver,
-                );
+                let revived =
+                    internalize_json_property(ctx, &Value::Object(obj.clone()), &idx_key, reviver);
                 if matches!(revived, Value::Undefined) {
                     delete_holder_property(&Value::Object(obj.clone()), &idx_key);
                 } else {
@@ -805,7 +896,9 @@ fn mark_array_hole(object: &mut Object, index: i32) {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
             let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
-            object.properties.insert("__holes".into(), Value::Object(created.clone()));
+            object
+                .properties
+                .insert("__holes".into(), Value::Object(created.clone()));
             created
         }
     };
@@ -814,7 +907,10 @@ fn mark_array_hole(object: &mut Object, index: i32) {
     let ObjectKind::Array(ref mut elems) = holes_guard.kind else {
         return;
     };
-    if !elems.iter().any(|value| matches!(value, Value::I32(existing) if *existing == index)) {
+    if !elems
+        .iter()
+        .any(|value| matches!(value, Value::I32(existing) if *existing == index))
+    {
         elems.push(Value::I32(index));
     }
 }
@@ -831,12 +927,14 @@ fn clear_array_hole(object: &mut Object, index: i32) {
 }
 
 fn parse_json(text: &str) -> Option<Value> {
-    let mut p = Parser { src: text.as_bytes(), pos: 0 };
+    let mut p = Parser {
+        src: text.as_bytes(),
+        pos: 0,
+    };
     p.skip_whitespace();
     let v = p.parse_value()?;
     p.skip_whitespace();
     if p.pos != p.src.len() {
-        // Trailing content — per spec this is a SyntaxError; MVP returns null.
         return None;
     }
     Some(v)
@@ -861,7 +959,9 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             b'{' => self.parse_object(),
             b'[' => self.parse_array(),
-            b'"' => self.parse_string().map(|s| Value::String(Arc::from(s.as_str()))),
+            b'"' => self
+                .parse_string()
+                .map(|s| Value::String(Arc::from(s.as_str()))),
             b't' | b'f' => self.parse_bool(),
             b'n' => self.parse_null(),
             b'-' | b'0'..=b'9' => self.parse_number(),
@@ -892,11 +992,17 @@ impl<'a> Parser<'a> {
 
     fn parse_number(&mut self) -> Option<Value> {
         let start = self.pos;
-        if self.src.get(self.pos) == Some(&b'-') { self.pos += 1; }
+        if self.src.get(self.pos) == Some(&b'-') {
+            self.pos += 1;
+        }
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
-            if !(c.is_ascii_digit() || c == b'.' || c == b'e' || c == b'E'
-                || c == b'+' || c == b'-')
+            if !(c.is_ascii_digit()
+                || c == b'.'
+                || c == b'e'
+                || c == b'E'
+                || c == b'+'
+                || c == b'-')
             {
                 break;
             }
@@ -921,7 +1027,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_string(&mut self) -> Option<String> {
-        if self.peek()? != b'"' { return None; }
+        if self.peek()? != b'"' {
+            return None;
+        }
         self.pos += 1;
         let mut out = String::new();
         while self.pos < self.src.len() {
@@ -945,8 +1053,11 @@ impl<'a> Parser<'a> {
                         b'b' => out.push('\x08'),
                         b'f' => out.push('\x0C'),
                         b'u' => {
-                            if self.pos + 4 > self.src.len() { return None; }
-                            let hex = std::str::from_utf8(&self.src[self.pos..self.pos + 4]).ok()?;
+                            if self.pos + 4 > self.src.len() {
+                                return None;
+                            }
+                            let hex =
+                                std::str::from_utf8(&self.src[self.pos..self.pos + 4]).ok()?;
                             let code = u32::from_str_radix(hex, 16).ok()?;
                             self.pos += 4;
                             if let Some(ch) = char::from_u32(code) {
@@ -976,28 +1087,41 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(&mut self) -> Option<Value> {
-        if self.peek()? != b'[' { return None; }
+        if self.peek()? != b'[' {
+            return None;
+        }
         self.pos += 1;
         let mut elems: Vec<Value> = Vec::new();
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Some(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))));
+            return Some(Value::Object(Arc::new(Mutex::new(Object::new_array(
+                elems,
+            )))));
         }
         loop {
             elems.push(self.parse_value()?);
             self.skip_whitespace();
             match self.peek()? {
-                b',' => { self.pos += 1; }
-                b']' => { self.pos += 1; break; }
+                b',' => {
+                    self.pos += 1;
+                }
+                b']' => {
+                    self.pos += 1;
+                    break;
+                }
                 _ => return None,
             }
         }
-        Some(Value::Object(Arc::new(Mutex::new(Object::new_array(elems)))))
+        Some(Value::Object(Arc::new(Mutex::new(Object::new_array(
+            elems,
+        )))))
     }
 
     fn parse_object(&mut self) -> Option<Value> {
-        if self.peek()? != b'{' { return None; }
+        if self.peek()? != b'{' {
+            return None;
+        }
         self.pos += 1;
         let mut obj = Object::new();
         let mut tracked_keys: Vec<Value> = Vec::new();
@@ -1011,7 +1135,9 @@ impl<'a> Parser<'a> {
             self.skip_whitespace();
             let key = self.parse_string()?;
             self.skip_whitespace();
-            if self.peek() != Some(b':') { return None; }
+            if self.peek() != Some(b':') {
+                return None;
+            }
             self.pos += 1;
             let val = self.parse_value()?;
             if seen_keys.insert(key.clone()) {
@@ -1020,8 +1146,13 @@ impl<'a> Parser<'a> {
             obj.properties.insert(key, val);
             self.skip_whitespace();
             match self.peek()? {
-                b',' => { self.pos += 1; }
-                b'}' => { self.pos += 1; break; }
+                b',' => {
+                    self.pos += 1;
+                }
+                b'}' => {
+                    self.pos += 1;
+                    break;
+                }
                 _ => return None,
             }
         }
@@ -1035,9 +1166,15 @@ impl<'a> Parser<'a> {
 
 /// UTF-8 leading-byte → sequence length. Returns 0 on invalid.
 fn utf8_char_len(b: u8) -> usize {
-    if b & 0x80 == 0 { 1 }
-    else if b & 0xE0 == 0xC0 { 2 }
-    else if b & 0xF0 == 0xE0 { 3 }
-    else if b & 0xF8 == 0xF0 { 4 }
-    else { 0 }
+    if b & 0x80 == 0 {
+        1
+    } else if b & 0xE0 == 0xC0 {
+        2
+    } else if b & 0xF0 == 0xE0 {
+        3
+    } else if b & 0xF8 == 0xF0 {
+        4
+    } else {
+        0
+    }
 }

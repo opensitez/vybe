@@ -92,91 +92,136 @@ fn event_emitter_constructor_returns_object() {
 #[test]
 fn emitter_has_on_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "on"), "EventEmitter.on must exist on instance");
+    assert!(
+        has_method(&ee, "on"),
+        "EventEmitter.on must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_once_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "once"), "EventEmitter.once must exist on instance");
+    assert!(
+        has_method(&ee, "once"),
+        "EventEmitter.once must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_off_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "off"), "EventEmitter.off must exist on instance");
+    assert!(
+        has_method(&ee, "off"),
+        "EventEmitter.off must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_emit_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "emit"), "EventEmitter.emit must exist on instance");
+    assert!(
+        has_method(&ee, "emit"),
+        "EventEmitter.emit must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_add_listener_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "addListener"), "EventEmitter.addListener must exist on instance");
+    assert!(
+        has_method(&ee, "addListener"),
+        "EventEmitter.addListener must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_remove_listener_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "removeListener"), "EventEmitter.removeListener must exist on instance");
+    assert!(
+        has_method(&ee, "removeListener"),
+        "EventEmitter.removeListener must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_remove_all_listeners_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "removeAllListeners"), "EventEmitter.removeAllListeners must exist on instance");
+    assert!(
+        has_method(&ee, "removeAllListeners"),
+        "EventEmitter.removeAllListeners must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_listener_count_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "listenerCount"), "EventEmitter.listenerCount must exist on instance");
+    assert!(
+        has_method(&ee, "listenerCount"),
+        "EventEmitter.listenerCount must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_listeners_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "listeners"), "EventEmitter.listeners must exist on instance");
+    assert!(
+        has_method(&ee, "listeners"),
+        "EventEmitter.listeners must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_raw_listeners_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "rawListeners"), "EventEmitter.rawListeners must exist on instance");
+    assert!(
+        has_method(&ee, "rawListeners"),
+        "EventEmitter.rawListeners must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_event_names_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "eventNames"), "EventEmitter.eventNames must exist on instance");
+    assert!(
+        has_method(&ee, "eventNames"),
+        "EventEmitter.eventNames must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_set_max_listeners_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "setMaxListeners"), "EventEmitter.setMaxListeners must exist on instance");
+    assert!(
+        has_method(&ee, "setMaxListeners"),
+        "EventEmitter.setMaxListeners must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_get_max_listeners_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "getMaxListeners"), "EventEmitter.getMaxListeners must exist on instance");
+    assert!(
+        has_method(&ee, "getMaxListeners"),
+        "EventEmitter.getMaxListeners must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_prepend_listener_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "prependListener"), "EventEmitter.prependListener must exist on instance");
+    assert!(
+        has_method(&ee, "prependListener"),
+        "EventEmitter.prependListener must exist on instance"
+    );
 }
 
 #[test]
 fn emitter_has_prepend_once_listener_method() {
     let ee = new_emitter();
-    assert!(has_method(&ee, "prependOnceListener"), "EventEmitter.prependOnceListener must exist on instance");
+    assert!(
+        has_method(&ee, "prependOnceListener"),
+        "EventEmitter.prependOnceListener must exist on instance"
+    );
 }
 
 // ── listenerCount ─────────────────────────────────────────────────────────────
@@ -276,14 +321,20 @@ fn prepend_listener_increases_listener_count() {
 #[test]
 fn prepend_once_listener_increases_listener_count() {
     let ee = new_emitter();
-    let _ = call_events("prependOnceListener", vec![ee.clone(), s("data"), Value::Null]);
+    let _ = call_events(
+        "prependOnceListener",
+        vec![ee.clone(), s("data"), Value::Null],
+    );
     assert_eq!(listener_count(ee, "data"), 1);
 }
 
 #[test]
 fn prepend_once_listener_fires_and_is_removed() {
     let ee = new_emitter();
-    let _ = call_events("prependOnceListener", vec![ee.clone(), s("data"), Value::Null]);
+    let _ = call_events(
+        "prependOnceListener",
+        vec![ee.clone(), s("data"), Value::Null],
+    );
     let r = emit_event(ee.clone(), "data");
     assert_eq!(r, Value::Bool(true));
     assert_eq!(listener_count(ee, "data"), 0);
@@ -440,7 +491,9 @@ fn event_names_contains_registered_event() {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
             if let ObjectKind::Array(elems) = &obj.kind {
-                let has_click = elems.iter().any(|v| matches!(v, Value::String(s) if s.as_ref() == "click"));
+                let has_click = elems
+                    .iter()
+                    .any(|v| matches!(v, Value::String(s) if s.as_ref() == "click"));
                 assert!(has_click, "eventNames must include 'click'");
             }
         }
@@ -478,7 +531,10 @@ fn get_event_listeners_empty_for_unknown_event() {
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
         if let ObjectKind::Array(elems) = &o.kind {
-            assert!(elems.is_empty(), "getEventListeners for unknown event must be empty");
+            assert!(
+                elems.is_empty(),
+                "getEventListeners for unknown event must be empty"
+            );
         }
     }
     // TDD
@@ -505,8 +561,12 @@ fn listener_count_static_form_returns_count() {
 fn error_monitor_is_registered() {
     let result = call_events("errorMonitor", vec![]);
     assert!(
-        matches!(result, Value::Object(_) | Value::String(_) | Value::Undefined | Value::Null),
-        "errorMonitor must be registered, got {:?}", result
+        matches!(
+            result,
+            Value::Object(_) | Value::String(_) | Value::Undefined | Value::Null
+        ),
+        "errorMonitor must be registered, got {:?}",
+        result
     );
 }
 
@@ -537,5 +597,8 @@ fn proposal_node_events_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:events imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:events imports: {missing:?}"
+    );
 }

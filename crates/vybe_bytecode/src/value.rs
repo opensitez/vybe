@@ -693,11 +693,15 @@ pub enum ObjectKind {
     /// CM3 / WASI 0.3 future<T> — single-value async result.
     /// `id` indexes into the EventLoop's future registry.
     /// Awaited via FUTURE_AWAIT opcode; resolved/rejected by host via HostContext.
-    Future { id: u64 },
+    Future {
+        id: u64,
+    },
     /// CM3 / WASI 0.3 stream<T> — async sequence of values.
     /// `id` indexes into the EventLoop's stream registry.
     /// Read via STREAM_READ opcode; pushed/closed by host via HostContext.
-    Stream { id: u64 },
+    Stream {
+        id: u64,
+    },
 }
 
 /// Runtime state for an `ObjectKind::Continuation`. Tracks the entry

@@ -12,13 +12,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{
-    ArrayBufferState, Object, ObjectKind, TypedArrayState, Value,
-};
 use vybe_bytecode::VM;
+use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, TypedArrayState, Value};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("ecma:structured-clone", "clone",
+    vm.register_host_fn(
+        "ecma:structured-clone",
+        "clone",
         Box::new(|ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             let mut seen: HashMap<usize, Value> = HashMap::new();
@@ -30,7 +30,8 @@ pub fn register(vm: &mut VM) {
                     Value::Null
                 }
             }
-        }));
+        }),
+    );
 }
 
 fn deep_clone(
@@ -96,16 +97,30 @@ fn clone_object(
         // MVP returns null. Module Namespace Objects are frozen
         // spec-exotic objects — structuredClone on them is not
         // spec-defined; null is the conservative MVP result.
-        KindTag::Function | KindTag::HostFunction | KindTag::Continuation
-            | KindTag::ModuleNamespace | KindTag::Future | KindTag::Stream => Ok(Value::Null),
+        KindTag::Function
+        | KindTag::HostFunction
+        | KindTag::Continuation
+        | KindTag::ModuleNamespace
+        | KindTag::Future
+        | KindTag::Stream => Ok(Value::Null),
     };
     active.remove(&id);
     result
 }
 
 enum KindTag {
-    Ordinary, Array, Map, Set, ArrayBuffer, TypedArray, Function, HostFunction, Continuation,
-    ModuleNamespace, Future, Stream,
+    Ordinary,
+    Array,
+    Map,
+    Set,
+    ArrayBuffer,
+    TypedArray,
+    Function,
+    HostFunction,
+    Continuation,
+    ModuleNamespace,
+    Future,
+    Stream,
 }
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
@@ -139,7 +154,8 @@ fn clone_ordinary(
 
     let entries: Vec<(String, Value)> = {
         let s = src.lock().unwrap();
-        s.properties.iter()
+        s.properties
+            .iter()
             .filter(|(k, _)| {
                 // Skip only __proto__ (prototype chain); keep __type, __time, etc.
                 k.as_str() != "__proto__"
@@ -168,14 +184,16 @@ fn clone_array(
 
     let elems: Vec<Value> = {
         let s = src.lock().unwrap();
-        if let ObjectKind::Array(ref v) = s.kind { v.clone() } else { Vec::new() }
+        if let ObjectKind::Array(ref v) = s.kind {
+            v.clone()
+        } else {
+            Vec::new()
+        }
     };
     {
         let mut t = target_arc.lock().unwrap();
-        let cloned_elems: Result<Vec<Value>, Value> = elems
-            .iter()
-            .map(|e| deep_clone(e, seen, active))
-            .collect();
+        let cloned_elems: Result<Vec<Value>, Value> =
+            elems.iter().map(|e| deep_clone(e, seen, active)).collect();
         let new_len = {
             if let ObjectKind::Array(ref mut v) = t.kind {
                 *v = cloned_elems?;
@@ -184,7 +202,8 @@ fn clone_array(
                 0
             }
         };
-        t.properties.insert("length".into(), Value::F64(new_len as f64));
+        t.properties
+            .insert("length".into(), Value::F64(new_len as f64));
     }
     Ok(target_val)
 }
@@ -198,7 +217,9 @@ fn clone_map(
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Map(indexmap::IndexMap::new());
     target_obj.properties.insert("size".into(), Value::I32(0));
-    target_obj.properties.insert("__type".into(), Value::String(Arc::from("Map")));
+    target_obj
+        .properties
+        .insert("__type".into(), Value::String(Arc::from("Map")));
     let target_arc = Arc::new(Mutex::new(target_obj));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
@@ -224,7 +245,8 @@ fn clone_map(
                 0
             }
         };
-        t.properties.insert("size".into(), Value::I32(new_size as i32));
+        t.properties
+            .insert("size".into(), Value::I32(new_size as i32));
     }
     Ok(target_val)
 }
@@ -238,7 +260,9 @@ fn clone_set(
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Set(indexmap::IndexSet::new());
     target_obj.properties.insert("size".into(), Value::I32(0));
-    target_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+    target_obj
+        .properties
+        .insert("__type".into(), Value::String(Arc::from("Set")));
     let target_arc = Arc::new(Mutex::new(target_obj));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
@@ -263,12 +287,17 @@ fn clone_set(
                 0
             }
         };
-        t.properties.insert("size".into(), Value::I32(new_size as i32));
+        t.properties
+            .insert("size".into(), Value::I32(new_size as i32));
     }
     Ok(target_val)
 }
 
-fn clone_arraybuffer(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usize, Value>) -> Result<Value, Value> {
+fn clone_arraybuffer(
+    src: &Arc<Mutex<Object>>,
+    id: usize,
+    seen: &mut HashMap<usize, Value>,
+) -> Result<Value, Value> {
     // Per spec: ArrayBuffer clones copy bytes into a fresh buffer.
     let (bytes_copy, max_byte_length, resizable, shared) = {
         let s = src.lock().unwrap();
@@ -289,14 +318,20 @@ fn clone_arraybuffer(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usi
     let byte_len = state.bytes.lock().unwrap().len();
     let mut obj = Object::new();
     obj.kind = ObjectKind::ArrayBuffer(state);
-    obj.properties.insert("byteLength".into(), Value::I32(byte_len as i32));
-    obj.properties.insert("maxByteLength".into(), Value::I32(max_byte_length as i32));
+    obj.properties
+        .insert("byteLength".into(), Value::I32(byte_len as i32));
+    obj.properties
+        .insert("maxByteLength".into(), Value::I32(max_byte_length as i32));
     let out = Value::Object(Arc::new(Mutex::new(obj)));
     seen.insert(id, out.clone());
     Ok(out)
 }
 
-fn clone_typedarray(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usize, Value>) -> Result<Value, Value> {
+fn clone_typedarray(
+    src: &Arc<Mutex<Object>>,
+    id: usize,
+    seen: &mut HashMap<usize, Value>,
+) -> Result<Value, Value> {
     // Clone a typed array by cloning its underlying ArrayBuffer and
     // building a fresh view over the copy. The view metadata (elem,
     // byte_offset, length) stays the same.
@@ -322,8 +357,12 @@ fn clone_typedarray(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usiz
     };
     let mut ab_obj = Object::new();
     ab_obj.kind = ObjectKind::ArrayBuffer(ab_state);
-    ab_obj.properties.insert("byteLength".into(), Value::I32(byte_length as i32));
-    ab_obj.properties.insert("maxByteLength".into(), Value::I32(byte_length as i32));
+    ab_obj
+        .properties
+        .insert("byteLength".into(), Value::I32(byte_length as i32));
+    ab_obj
+        .properties
+        .insert("maxByteLength".into(), Value::I32(byte_length as i32));
     let ab_arc = Arc::new(Mutex::new(ab_obj));
 
     let ta_state = TypedArrayState {
@@ -336,10 +375,18 @@ fn clone_typedarray(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usiz
     let bpe = elem.bytes_per_element();
     let mut ta_obj = Object::new();
     ta_obj.kind = ObjectKind::TypedArray(ta_state);
-    ta_obj.properties.insert("length".into(), Value::I32(length as i32));
-    ta_obj.properties.insert("byteLength".into(), Value::I32((length * bpe) as i32));
-    ta_obj.properties.insert("byteOffset".into(), Value::I32(byte_offset as i32));
-    ta_obj.properties.insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
+    ta_obj
+        .properties
+        .insert("length".into(), Value::I32(length as i32));
+    ta_obj
+        .properties
+        .insert("byteLength".into(), Value::I32((length * bpe) as i32));
+    ta_obj
+        .properties
+        .insert("byteOffset".into(), Value::I32(byte_offset as i32));
+    ta_obj
+        .properties
+        .insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
     let out = Value::Object(Arc::new(Mutex::new(ta_obj)));
     seen.insert(id, out.clone());
     Ok(out)

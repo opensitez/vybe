@@ -14,9 +14,9 @@
 //! `vybe_widgets::Pixmap`). No `vybe_host`, no `vybe_bytecode`, no .NET
 //! wrapper layer.
 
-use vybe_widgets::canvas::{Canvas, TinySkiaCanvas, RecordingCanvas, Color, LineCap, LineJoin};
-use vybe_widgets::{Pixmap, Form, Canvas as CanvasWidget, FontSystem, SwashCache};
-use vybe_widgets::layout::{LayoutRect, RenderContext, PanelWidget};
+use vybe_widgets::canvas::{Canvas, Color, LineCap, LineJoin, RecordingCanvas, TinySkiaCanvas};
+use vybe_widgets::layout::{LayoutRect, PanelWidget, RenderContext};
+use vybe_widgets::{Canvas as CanvasWidget, FontSystem, Form, Pixmap, SwashCache};
 
 fn main() {
     let mut pixmap = Pixmap::new(800, 600).expect("create pixmap");

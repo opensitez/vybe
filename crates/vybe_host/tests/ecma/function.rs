@@ -26,14 +26,18 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn fn_obj(name: &str, arity: i32) -> Value {
     // Encodes a callable function descriptor the host recognises.
     let mut o = Object::new();
     o.properties.insert("__fn_name".to_string(), s(name));
-    o.properties.insert("__fn_arity".to_string(), Value::I32(arity));
-    o.properties.insert("__fn_return".to_string(), Value::I32(42));
+    o.properties
+        .insert("__fn_arity".to_string(), Value::I32(arity));
+    o.properties
+        .insert("__fn_return".to_string(), Value::I32(42));
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -75,8 +79,14 @@ fn bind_returns_a_new_function_object() {
     let bound = invoke("bind", vec![f.clone(), this_arg]);
     assert!(matches!(bound, Value::Object(_)));
     // Must be a distinct object.
-    let f_ptr   = match &f     { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let bnd_ptr = match &bound { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let f_ptr = match &f {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let bnd_ptr = match &bound {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_ne!(f_ptr, bnd_ptr);
 }
 
@@ -112,7 +122,7 @@ fn call_invokes_function_with_explicit_this() {
 fn apply_invokes_function_spreading_args_array() {
     let f = fn_obj("f", 0);
     let args_arr = Value::Object(Arc::new(Mutex::new(
-        vybe_bytecode::value::Object::new_array(vec![])
+        vybe_bytecode::value::Object::new_array(vec![]),
     )));
     let result = invoke("apply", vec![f, Value::Null, args_arr]);
     assert_eq!(result, Value::I32(42));
@@ -130,8 +140,11 @@ fn to_string_contains_function_keyword() {
         Value::String(s) => s.to_string(),
         _ => panic!("expected string"),
     };
-    assert!(s_val.contains("function") || s_val.contains("myFn"),
-        "toString should mention function or name, got: {}", s_val);
+    assert!(
+        s_val.contains("function") || s_val.contains("myFn"),
+        "toString should mention function or name, got: {}",
+        s_val
+    );
 }
 
 // ── Function constructor ──────────────────────────────────────────────────────

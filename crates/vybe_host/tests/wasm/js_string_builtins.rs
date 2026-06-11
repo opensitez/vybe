@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{Chunk, Op, Value, VM};
+use vybe_bytecode::{Chunk, Op, VM, Value};
 use vybe_host::register_all;
 
 fn call(module: &str, name: &str, args: Vec<Value>) -> Value {
@@ -41,7 +41,9 @@ fn expect_trap(module: &str, name: &str, args: Vec<Value>) {
     assert!(vm.run(vec![chunk]).is_err(), "{module}.{name} should trap");
 }
 
-fn str(s: &str) -> Value { Value::String(Arc::from(s)) }
+fn str(s: &str) -> Value {
+    Value::String(Arc::from(s))
+}
 
 fn new_i16_array(values: &[i16]) -> Value {
     let elems: Vec<Value> = values.iter().map(|&v| Value::I32(v as i32)).collect();
@@ -117,8 +119,14 @@ fn length_traps_on_null() {
 
 #[test]
 fn concat_joins_strings() {
-    assert_eq!(format!("{}", call(MOD, "concat", vec![str("foo"), str("bar")])), "foobar");
-    assert_eq!(format!("{}", call(MOD, "concat", vec![str(""), str("x")])), "x");
+    assert_eq!(
+        format!("{}", call(MOD, "concat", vec![str("foo"), str("bar")])),
+        "foobar"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "concat", vec![str(""), str("x")])),
+        "x"
+    );
 }
 
 #[test]
@@ -131,44 +139,95 @@ fn concat_traps_on_non_string() {
 
 #[test]
 fn substring_basic_slice() {
-    assert_eq!(format!("{}", call(MOD, "substring", vec![str("hello"), Value::I32(1), Value::I32(4)])), "ell");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "substring",
+                vec![str("hello"), Value::I32(1), Value::I32(4)]
+            )
+        ),
+        "ell"
+    );
 }
 
 #[test]
 fn substring_clamps_to_length() {
-    assert_eq!(format!("{}", call(MOD, "substring", vec![str("hi"), Value::I32(0), Value::I32(100)])), "hi");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "substring",
+                vec![str("hi"), Value::I32(0), Value::I32(100)]
+            )
+        ),
+        "hi"
+    );
 }
 
 #[test]
 fn substring_swaps_if_start_greater_than_end() {
     // JS substring swaps start/end if start > end
-    assert_eq!(format!("{}", call(MOD, "substring", vec![str("hello"), Value::I32(4), Value::I32(1)])), "ell");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "substring",
+                vec![str("hello"), Value::I32(4), Value::I32(1)]
+            )
+        ),
+        "ell"
+    );
 }
 
 #[test]
 fn substring_treats_indices_as_u32() {
     // Negative i32 treated as u32 (large number) → clamped to length
-    assert_eq!(format!("{}", call(MOD, "substring", vec![str("hi"), Value::I32(0), Value::I32(-1_i32)])), "hi");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "substring",
+                vec![str("hi"), Value::I32(0), Value::I32(-1_i32)]
+            )
+        ),
+        "hi"
+    );
 }
 
 #[test]
 fn substring_works_on_utf16_units() {
     // U+1F600 is 2 UTF-16 units; substring(0, 2) should return the full emoji
     let emoji = "\u{1F600}";
-    let result = call(MOD, "substring", vec![str(emoji), Value::I32(0), Value::I32(2)]);
+    let result = call(
+        MOD,
+        "substring",
+        vec![str(emoji), Value::I32(0), Value::I32(2)],
+    );
     assert_eq!(format!("{}", result), emoji);
 }
 
 #[test]
 fn substring_traps_on_non_string() {
-    expect_trap(MOD, "substring", vec![Value::Null, Value::I32(0), Value::I32(1)]);
+    expect_trap(
+        MOD,
+        "substring",
+        vec![Value::Null, Value::I32(0), Value::I32(1)],
+    );
 }
 
 // ── equals ───────────────────────────────────────────────────────────
 
 #[test]
 fn equals_same_string_is_1() {
-    assert_eq!(call(MOD, "equals", vec![str("hello"), str("hello")]).as_i32(), 1);
+    assert_eq!(
+        call(MOD, "equals", vec![str("hello"), str("hello")]).as_i32(),
+        1
+    );
 }
 
 #[test]
@@ -178,7 +237,10 @@ fn equals_different_strings_is_0() {
 
 #[test]
 fn equals_null_null_is_1() {
-    assert_eq!(call(MOD, "equals", vec![Value::Null, Value::Null]).as_i32(), 1);
+    assert_eq!(
+        call(MOD, "equals", vec![Value::Null, Value::Null]).as_i32(),
+        1
+    );
 }
 
 #[test]
@@ -195,7 +257,10 @@ fn equals_traps_on_non_string_non_null() {
 
 #[test]
 fn compare_returns_0_for_equal() {
-    assert_eq!(call(MOD, "compare", vec![str("abc"), str("abc")]).as_i32(), 0);
+    assert_eq!(
+        call(MOD, "compare", vec![str("abc"), str("abc")]).as_i32(),
+        0
+    );
 }
 
 #[test]
@@ -218,16 +283,28 @@ fn compare_traps_on_null() {
 
 #[test]
 fn char_code_at_ascii() {
-    assert_eq!(call(MOD, "charCodeAt", vec![str("ABC"), Value::I32(0)]).as_i32(), 65); // 'A'
-    assert_eq!(call(MOD, "charCodeAt", vec![str("ABC"), Value::I32(2)]).as_i32(), 67); // 'C'
+    assert_eq!(
+        call(MOD, "charCodeAt", vec![str("ABC"), Value::I32(0)]).as_i32(),
+        65
+    ); // 'A'
+    assert_eq!(
+        call(MOD, "charCodeAt", vec![str("ABC"), Value::I32(2)]).as_i32(),
+        67
+    ); // 'C'
 }
 
 #[test]
 fn char_code_at_returns_utf16_unit() {
     // U+1F600 encodes as surrogate pair: 0xD83D, 0xDE00
     let emoji = "\u{1F600}";
-    assert_eq!(call(MOD, "charCodeAt", vec![str(emoji), Value::I32(0)]).as_i32(), 0xD83D);
-    assert_eq!(call(MOD, "charCodeAt", vec![str(emoji), Value::I32(1)]).as_i32(), 0xDE00);
+    assert_eq!(
+        call(MOD, "charCodeAt", vec![str(emoji), Value::I32(0)]).as_i32(),
+        0xD83D
+    );
+    assert_eq!(
+        call(MOD, "charCodeAt", vec![str(emoji), Value::I32(1)]).as_i32(),
+        0xDE00
+    );
 }
 
 #[test]
@@ -244,21 +321,30 @@ fn char_code_at_traps_on_non_string() {
 
 #[test]
 fn code_point_at_ascii() {
-    assert_eq!(call(MOD, "codePointAt", vec![str("A"), Value::I32(0)]).as_i32(), 65);
+    assert_eq!(
+        call(MOD, "codePointAt", vec![str("A"), Value::I32(0)]).as_i32(),
+        65
+    );
 }
 
 #[test]
 fn code_point_at_returns_full_supplementary_codepoint() {
     // U+1F600 at index 0 — should return 0x1F600, not the surrogate
     let emoji = "\u{1F600}";
-    assert_eq!(call(MOD, "codePointAt", vec![str(emoji), Value::I32(0)]).as_i32(), 0x1F600);
+    assert_eq!(
+        call(MOD, "codePointAt", vec![str(emoji), Value::I32(0)]).as_i32(),
+        0x1F600
+    );
 }
 
 #[test]
 fn code_point_at_lone_surrogate_at_index_1() {
     // Index 1 is the low surrogate — returned as-is (no pair to complete)
     let emoji = "\u{1F600}";
-    assert_eq!(call(MOD, "codePointAt", vec![str(emoji), Value::I32(1)]).as_i32(), 0xDE00);
+    assert_eq!(
+        call(MOD, "codePointAt", vec![str(emoji), Value::I32(1)]).as_i32(),
+        0xDE00
+    );
 }
 
 #[test]
@@ -270,13 +356,19 @@ fn code_point_at_traps_out_of_bounds() {
 
 #[test]
 fn from_char_code_ascii() {
-    assert_eq!(format!("{}", call(MOD, "fromCharCode", vec![Value::I32(65)])), "A");
+    assert_eq!(
+        format!("{}", call(MOD, "fromCharCode", vec![Value::I32(65)])),
+        "A"
+    );
 }
 
 #[test]
 fn from_char_code_treats_as_u16() {
     // 0xE9 = 233 = 'é'
-    assert_eq!(format!("{}", call(MOD, "fromCharCode", vec![Value::I32(0xE9)])), "é");
+    assert_eq!(
+        format!("{}", call(MOD, "fromCharCode", vec![Value::I32(0xE9)])),
+        "é"
+    );
 }
 
 #[test]
@@ -292,12 +384,18 @@ fn from_char_code_wraps_negative_to_u16() {
 
 #[test]
 fn from_code_point_ascii() {
-    assert_eq!(format!("{}", call(MOD, "fromCodePoint", vec![Value::I32(65)])), "A");
+    assert_eq!(
+        format!("{}", call(MOD, "fromCodePoint", vec![Value::I32(65)])),
+        "A"
+    );
 }
 
 #[test]
 fn from_code_point_supplementary() {
-    assert_eq!(format!("{}", call(MOD, "fromCodePoint", vec![Value::I32(0x1F600)])), "\u{1F600}");
+    assert_eq!(
+        format!("{}", call(MOD, "fromCodePoint", vec![Value::I32(0x1F600)])),
+        "\u{1F600}"
+    );
 }
 
 #[test]
@@ -310,19 +408,43 @@ fn from_code_point_traps_above_max() {
 #[test]
 fn from_char_code_array_basic() {
     let arr = new_i16_array(&[72, 101, 108, 108, 111]); // "Hello"
-    assert_eq!(format!("{}", call(MOD, "fromCharCodeArray", vec![arr, Value::I32(0), Value::I32(5)])), "Hello");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "fromCharCodeArray",
+                vec![arr, Value::I32(0), Value::I32(5)]
+            )
+        ),
+        "Hello"
+    );
 }
 
 #[test]
 fn from_char_code_array_sub_range() {
     let arr = new_i16_array(&[65, 66, 67, 68]); // "ABCD"
-    assert_eq!(format!("{}", call(MOD, "fromCharCodeArray", vec![arr, Value::I32(1), Value::I32(3)])), "BC");
+    assert_eq!(
+        format!(
+            "{}",
+            call(
+                MOD,
+                "fromCharCodeArray",
+                vec![arr, Value::I32(1), Value::I32(3)]
+            )
+        ),
+        "BC"
+    );
 }
 
 #[test]
 fn from_char_code_array_traps_on_invalid_range() {
     let arr = new_i16_array(&[65, 66]);
-    expect_trap(MOD, "fromCharCodeArray", vec![arr.clone(), Value::I32(0), Value::I32(10)]);
+    expect_trap(
+        MOD,
+        "fromCharCodeArray",
+        vec![arr.clone(), Value::I32(0), Value::I32(10)],
+    );
 }
 
 // ── intoCharCodeArray ────────────────────────────────────────────────
@@ -330,7 +452,12 @@ fn from_char_code_array_traps_on_invalid_range() {
 #[test]
 fn into_char_code_array_writes_and_returns_count() {
     let arr = new_i16_array(&[0, 0, 0, 0, 0]);
-    let count = call(MOD, "intoCharCodeArray", vec![str("Hello"), arr.clone(), Value::I32(0)]).as_i32();
+    let count = call(
+        MOD,
+        "intoCharCodeArray",
+        vec![str("Hello"), arr.clone(), Value::I32(0)],
+    )
+    .as_i32();
     assert_eq!(count, 5);
     assert_eq!(read_i16_array(&arr), vec![72, 101, 108, 108, 111]);
 }
@@ -338,50 +465,97 @@ fn into_char_code_array_writes_and_returns_count() {
 #[test]
 fn into_char_code_array_writes_at_offset() {
     let arr = new_i16_array(&[0, 0, 0, 0, 0]);
-    call(MOD, "intoCharCodeArray", vec![str("Hi"), arr.clone(), Value::I32(2)]);
+    call(
+        MOD,
+        "intoCharCodeArray",
+        vec![str("Hi"), arr.clone(), Value::I32(2)],
+    );
     assert_eq!(read_i16_array(&arr)[2..4], [72i16, 105]);
 }
 
 #[test]
 fn into_char_code_array_traps_if_no_fit() {
     let arr = new_i16_array(&[0, 0]);
-    expect_trap(MOD, "intoCharCodeArray", vec![str("Hello"), arr, Value::I32(0)]);
+    expect_trap(
+        MOD,
+        "intoCharCodeArray",
+        vec![str("Hello"), arr, Value::I32(0)],
+    );
 }
 
 // ── fromI32 / fromU32 / fromI64 / fromU64 / fromF64 (js-primitive-builtins extensions) ──
 
 #[test]
 fn from_i32_signed_decimal() {
-    assert_eq!(format!("{}", call(MOD, "fromI32", vec![Value::I32(-7)])), "-7");
-    assert_eq!(format!("{}", call(MOD, "fromI32", vec![Value::I32(0)])), "0");
+    assert_eq!(
+        format!("{}", call(MOD, "fromI32", vec![Value::I32(-7)])),
+        "-7"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "fromI32", vec![Value::I32(0)])),
+        "0"
+    );
 }
 
 #[test]
 fn from_u32_unsigned_decimal() {
-    assert_eq!(format!("{}", call(MOD, "fromU32", vec![Value::I32(-1)])), "4294967295");
-    assert_eq!(format!("{}", call(MOD, "fromU32", vec![Value::I32(0)])), "0");
+    assert_eq!(
+        format!("{}", call(MOD, "fromU32", vec![Value::I32(-1)])),
+        "4294967295"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "fromU32", vec![Value::I32(0)])),
+        "0"
+    );
 }
 
 #[test]
 fn from_i64_signed_decimal() {
-    assert_eq!(format!("{}", call(MOD, "fromI64", vec![Value::I64(-1)])), "-1");
-    assert_eq!(format!("{}", call(MOD, "fromI64", vec![Value::I64(i64::MAX)])), "9223372036854775807");
+    assert_eq!(
+        format!("{}", call(MOD, "fromI64", vec![Value::I64(-1)])),
+        "-1"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "fromI64", vec![Value::I64(i64::MAX)])),
+        "9223372036854775807"
+    );
 }
 
 #[test]
 fn from_u64_unsigned_decimal() {
-    assert_eq!(format!("{}", call(MOD, "fromU64", vec![Value::I64(-1_i64)])), "18446744073709551615");
+    assert_eq!(
+        format!("{}", call(MOD, "fromU64", vec![Value::I64(-1_i64)])),
+        "18446744073709551615"
+    );
 }
 
 #[test]
 fn from_f64_finite() {
-    assert_eq!(format!("{}", call(MOD, "fromF64", vec![Value::F64(3.14)])), "3.14");
-    assert_eq!(format!("{}", call(MOD, "fromF64", vec![Value::F64(0.0)])), "0");
+    assert_eq!(
+        format!("{}", call(MOD, "fromF64", vec![Value::F64(3.14)])),
+        "3.14"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "fromF64", vec![Value::F64(0.0)])),
+        "0"
+    );
 }
 
 #[test]
 fn from_f64_special_values() {
-    assert_eq!(format!("{}", call(MOD, "fromF64", vec![Value::F64(f64::NAN)])), "NaN");
-    assert_eq!(format!("{}", call(MOD, "fromF64", vec![Value::F64(f64::INFINITY)])), "Infinity");
-    assert_eq!(format!("{}", call(MOD, "fromF64", vec![Value::F64(f64::NEG_INFINITY)])), "-Infinity");
+    assert_eq!(
+        format!("{}", call(MOD, "fromF64", vec![Value::F64(f64::NAN)])),
+        "NaN"
+    );
+    assert_eq!(
+        format!("{}", call(MOD, "fromF64", vec![Value::F64(f64::INFINITY)])),
+        "Infinity"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            call(MOD, "fromF64", vec![Value::F64(f64::NEG_INFINITY)])
+        ),
+        "-Infinity"
+    );
 }

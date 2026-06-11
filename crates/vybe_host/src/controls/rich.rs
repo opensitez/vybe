@@ -3,7 +3,15 @@ use super::{ControlDef, Props, base_css};
 pub static RICHTEXTBOX_DEF: ControlDef = ControlDef {
     tag: "div",
     inner_tag: None,
-    props: &["Text", "Rtf", "ReadOnly", "Enabled", "Visible", "BackColor", "ForeColor"],
+    props: &[
+        "Text",
+        "Rtf",
+        "ReadOnly",
+        "Enabled",
+        "Visible",
+        "BackColor",
+        "ForeColor",
+    ],
     events: &["TextChanged", "LinkClicked"],
     default_size: (100, 96),
     css_fn: rich_css,
@@ -27,7 +35,14 @@ pub static WEBBROWSER_DEF: ControlDef = ControlDef {
 pub static PICTUREBOX_DEF: ControlDef = ControlDef {
     tag: "img",
     inner_tag: None,
-    props: &["Image", "ImageLocation", "SizeMode", "Visible", "BackColor", "BorderStyle"],
+    props: &[
+        "Image",
+        "ImageLocation",
+        "SizeMode",
+        "Visible",
+        "BackColor",
+        "BorderStyle",
+    ],
     events: &["Click", "Paint"],
     default_size: (100, 50),
     css_fn: picture_css,
@@ -37,7 +52,9 @@ pub static PICTUREBOX_DEF: ControlDef = ControlDef {
 };
 
 fn rich_css(props: &Props) -> String {
-    let mut s = String::from("border: 1px solid #999; padding: 4px; overflow: auto; white-space: pre-wrap; ");
+    let mut s = String::from(
+        "border: 1px solid #999; padding: 4px; overflow: auto; white-space: pre-wrap; ",
+    );
     if props.get("ReadOnly").map(|v| v == "True").unwrap_or(false) {
         s.push_str("background: #f8f8f8; ");
     }

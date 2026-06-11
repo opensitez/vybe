@@ -52,8 +52,21 @@ pub fn build<B>(
     }
 
     let env = build_cgi_env(
-        &method, &uri_raw, &path, &query, &host_hdr, &host, local_addr, port,
-        &protocol, &headers, remote, script_filename, script_name, document_root, scheme,
+        &method,
+        &uri_raw,
+        &path,
+        &query,
+        &host_hdr,
+        &host,
+        local_addr,
+        port,
+        &protocol,
+        &headers,
+        remote,
+        script_filename,
+        script_name,
+        document_root,
+        scheme,
         body_bytes.len(),
     );
 
@@ -81,7 +94,10 @@ pub fn build<B>(
         query_pairs: std::sync::OnceLock::new(),
     };
 
-    BuiltContext { ctx: Arc::new(ctx), response_rx: rx }
+    BuiltContext {
+        ctx: Arc::new(ctx),
+        response_rx: rx,
+    }
 }
 
 fn split_host_port(host_hdr: &str, default_port: u16) -> (String, u16) {
@@ -136,7 +152,10 @@ fn build_cgi_env(
     let script_path = script_name.unwrap_or(path);
     let script_uri = absolute_request_uri(uri_raw, scheme, &http_host);
 
-    env.insert("SERVER_SOFTWARE".into(), format!("vybex/{}", env!("CARGO_PKG_VERSION")));
+    env.insert(
+        "SERVER_SOFTWARE".into(),
+        format!("vybex/{}", env!("CARGO_PKG_VERSION")),
+    );
     env.insert("SERVER_NAME".into(), host.into());
     env.insert("SERVER_ADDR".into(), local_addr.ip().to_string());
     env.insert("SERVER_ADMIN".into(), String::new());
@@ -180,7 +199,8 @@ fn build_cgi_env(
     for (n, v) in headers {
         let key = n.as_str();
         if key.eq_ignore_ascii_case("content-type") {
-            env.entry("CONTENT_TYPE".into()).or_insert_with(|| v.clone());
+            env.entry("CONTENT_TYPE".into())
+                .or_insert_with(|| v.clone());
             continue;
         }
         if key.eq_ignore_ascii_case("content-length") {
@@ -216,10 +236,15 @@ fn absolute_request_uri(uri_raw: &str, scheme: &str, http_host: &str) -> String 
 }
 
 fn new_request_id<B>(req: &Request<B>) -> String {
-    if let Some(v) = req.headers().get("x-request-id").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+    {
         // Honor inbound if it's a sane length + charset.
         if (8..=128).contains(&v.len())
-            && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return v.to_string();
         }

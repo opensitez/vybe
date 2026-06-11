@@ -1,8 +1,11 @@
 //! ContextMenu widget — popup menu with shadow and hover highlight.
 
-use tiny_skia::*;
+use super::layout::{
+    KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
+    PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId};
+use tiny_skia::*;
 
 pub struct ContextMenu {
     pub items: Vec<String>,
@@ -33,7 +36,10 @@ impl ContextMenu {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Computed height based on item count.
     pub fn height(&self) -> f32 {
@@ -44,7 +50,9 @@ impl ContextMenu {
     /// Paint the context menu — white popup with shadow, items with hover highlight.
     /// Item text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
 
         let ts = Transform::from_scale(scale, scale);
         let mut paint = Paint::default();
@@ -69,7 +77,9 @@ impl ContextMenu {
                 let item_y = y + 2.0 + idx as f32 * self.item_height;
                 let (r, g, b, _) = self.colors.accent;
                 paint.set_color_rgba8(r, g, b, 30);
-                if let Some(rect) = Rect::from_xywh(x + 2.0, item_y, self.width - 4.0, self.item_height) {
+                if let Some(rect) =
+                    Rect::from_xywh(x + 2.0, item_y, self.width - 4.0, self.item_height)
+                {
                     pixmap.fill_rect(rect, &paint, ts, None);
                 }
             }
@@ -102,12 +112,18 @@ impl ContextMenu {
 
     /// Hit test — returns item index at (mx, my) relative to menu origin.
     pub fn hit_test(&self, mx: f32, my: f32) -> Option<usize> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         if mx < 0.0 || mx > self.width || my < 2.0 || my > self.height() - 2.0 {
             return None;
         }
         let idx = ((my - 2.0) / self.item_height) as usize;
-        if idx < self.items.len() { Some(idx) } else { None }
+        if idx < self.items.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 
     /// Update hover on mouse move.
@@ -122,13 +138,23 @@ impl ContextMenu {
 }
 
 impl PanelWidget for ContextMenu {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         let r = self.rect;
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw item text
@@ -136,12 +162,24 @@ impl PanelWidget for ContextMenu {
         let col = cosmic_text::Color::rgba(fr, fg, fb, 255);
         for (i, item) in self.items.iter().enumerate() {
             let iy = r.y + self.item_y(i) + 4.0;
-            super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, item, r.x + 8.0, iy, 12.0, col, ctx.scale);
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                item,
+                r.x + 8.0,
+                iy,
+                12.0,
+                col,
+                ctx.scale,
+            );
         }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.visible { return false; }
+        if !self.visible {
+            return false;
+        }
         let r = self.rect;
         let lx = event.x - r.x;
         let ly = event.y - r.y;
@@ -152,7 +190,8 @@ impl PanelWidget for ContextMenu {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 if let Some(idx) = self.hit_test(lx, ly) {
                     self.visible = false;
-                    self.pending_events.push(WidgetEvent::ContextMenuItemClicked(self.name.clone(), idx));
+                    self.pending_events
+                        .push(WidgetEvent::ContextMenuItemClicked(self.name.clone(), idx));
                     return true;
                 } else {
                     self.visible = false;
@@ -163,6 +202,10 @@ impl PanelWidget for ContextMenu {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 }

@@ -3,9 +3,12 @@
 //! Children are assigned to cells via (col, row) coordinates. Each cell can hold
 //! one widget. Column widths and row heights can be fixed or proportional.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 /// How a column or row is sized.
 #[derive(Clone, Copy, Debug)]
@@ -63,7 +66,10 @@ impl TableLayoutPanel {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Set column sizing. `sizes` length should match `cols`.
     pub fn set_col_sizes(&mut self, sizes: Vec<SizeMode>) {
@@ -82,17 +88,38 @@ impl TableLayoutPanel {
 
     /// Add a child to a specific cell.
     pub fn add(&mut self, col: usize, row: usize, widget: Box<dyn PanelWidget>) {
-        self.children.push(CellChild { col, row, col_span: 1, row_span: 1, widget });
+        self.children.push(CellChild {
+            col,
+            row,
+            col_span: 1,
+            row_span: 1,
+            widget,
+        });
         self.relayout();
     }
 
     /// Add a child spanning multiple cells.
-    pub fn add_span(&mut self, col: usize, row: usize, col_span: usize, row_span: usize, widget: Box<dyn PanelWidget>) {
-        self.children.push(CellChild { col, row, col_span: col_span.max(1), row_span: row_span.max(1), widget });
+    pub fn add_span(
+        &mut self,
+        col: usize,
+        row: usize,
+        col_span: usize,
+        row_span: usize,
+        widget: Box<dyn PanelWidget>,
+    ) {
+        self.children.push(CellChild {
+            col,
+            row,
+            col_span: col_span.max(1),
+            row_span: row_span.max(1),
+            widget,
+        });
         self.relayout();
     }
 
-    pub fn child_count(&self) -> usize { self.children.len() }
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
 
     /// Resolve sizes into pixel offsets. Returns cumulative offsets (len = count+1).
     fn resolve_sizes(modes: &[SizeMode], total: f32) -> Vec<f32> {
@@ -113,7 +140,11 @@ impl TableLayoutPanel {
             let size = match m {
                 SizeMode::Absolute(px) => *px,
                 SizeMode::Percent(w) => {
-                    if pct_total > 0.0 { remaining * w / pct_total } else { 0.0 }
+                    if pct_total > 0.0 {
+                        remaining * w / pct_total
+                    } else {
+                        0.0
+                    }
                 }
             };
             pos += size;
@@ -124,7 +155,9 @@ impl TableLayoutPanel {
 
     fn relayout(&mut self) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         let col_offsets = Self::resolve_sizes(&self.col_sizes, r.w);
         let row_offsets = Self::resolve_sizes(&self.row_sizes, r.h);
@@ -228,19 +261,27 @@ impl TableLayoutPanel {
 }
 
 impl PanelWidget for TableLayoutPanel {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;
         self.height = rect.h;
         self.relayout();
     }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         for child in &mut self.children {
             child.widget.render(ctx);

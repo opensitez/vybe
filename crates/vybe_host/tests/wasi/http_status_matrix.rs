@@ -75,7 +75,9 @@ fn start_server(status_line: &str, body: &str) -> String {
             body.len(),
             body,
         );
-        stream.write_all(response.as_bytes()).expect("write response");
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
     });
 
     format!("{}", address)
@@ -85,7 +87,13 @@ fn request_status(status_line: &str, body: &str) -> f64 {
     let authority = start_server(status_line, body);
     let headers = types("[constructor]fields", vec![]);
     let request = types("[constructor]outgoing-request", vec![headers]);
-    assert!(is_error(&types("[method]outgoing-request.set-authority", vec![request.clone(), s(&authority)])).is_none());
+    assert!(
+        is_error(&types(
+            "[method]outgoing-request.set-authority",
+            vec![request.clone(), s(&authority)]
+        ))
+        .is_none()
+    );
     let future = outgoing("handle", vec![request, Value::Null]);
     let response = types("[method]future-incoming-response.get", vec![future]);
     types("[method]incoming-response.status", vec![response]).as_f64()
@@ -93,7 +101,14 @@ fn request_status(status_line: &str, body: &str) -> f64 {
 
 fn legacy_fetch(status_line: &str, body: &str) -> Value {
     let authority = start_server(status_line, body);
-    legacy("fetch", vec![s(&format!("http://{}/status", authority)), s("GET"), Value::Null])
+    legacy(
+        "fetch",
+        vec![
+            s(&format!("http://{}/status", authority)),
+            s("GET"),
+            Value::Null,
+        ],
+    )
 }
 
 macro_rules! outgoing_status_test {
@@ -119,18 +134,53 @@ macro_rules! legacy_fetch_status_test {
 
 outgoing_status_test!(outgoing_status_reports_ok_200, "200 OK", 200.0);
 outgoing_status_test!(outgoing_status_reports_created_201, "201 Created", 201.0);
-outgoing_status_test!(outgoing_status_reports_no_content_204, "204 No Content", 204.0);
-outgoing_status_test!(outgoing_status_reports_moved_permanently_301, "301 Moved Permanently", 301.0);
+outgoing_status_test!(
+    outgoing_status_reports_no_content_204,
+    "204 No Content",
+    204.0
+);
+outgoing_status_test!(
+    outgoing_status_reports_moved_permanently_301,
+    "301 Moved Permanently",
+    301.0
+);
 outgoing_status_test!(outgoing_status_reports_found_302, "302 Found", 302.0);
-outgoing_status_test!(outgoing_status_reports_not_found_404, "404 Not Found", 404.0);
-outgoing_status_test!(outgoing_status_reports_internal_server_error_500, "500 Internal Server Error", 500.0);
-outgoing_status_test!(outgoing_status_reports_service_unavailable_503, "503 Service Unavailable", 503.0);
+outgoing_status_test!(
+    outgoing_status_reports_not_found_404,
+    "404 Not Found",
+    404.0
+);
+outgoing_status_test!(
+    outgoing_status_reports_internal_server_error_500,
+    "500 Internal Server Error",
+    500.0
+);
+outgoing_status_test!(
+    outgoing_status_reports_service_unavailable_503,
+    "503 Service Unavailable",
+    503.0
+);
 
 legacy_fetch_status_test!(legacy_fetch_ok_for_200, "200 OK", 200.0, true);
 legacy_fetch_status_test!(legacy_fetch_ok_for_201, "201 Created", 201.0, true);
 legacy_fetch_status_test!(legacy_fetch_ok_for_204, "204 No Content", 204.0, true);
-legacy_fetch_status_test!(legacy_fetch_not_ok_for_301, "301 Moved Permanently", 301.0, false);
+legacy_fetch_status_test!(
+    legacy_fetch_not_ok_for_301,
+    "301 Moved Permanently",
+    301.0,
+    false
+);
 legacy_fetch_status_test!(legacy_fetch_not_ok_for_302, "302 Found", 302.0, false);
 legacy_fetch_status_test!(legacy_fetch_not_ok_for_404, "404 Not Found", 404.0, false);
-legacy_fetch_status_test!(legacy_fetch_not_ok_for_500, "500 Internal Server Error", 500.0, false);
-legacy_fetch_status_test!(legacy_fetch_not_ok_for_503, "503 Service Unavailable", 503.0, false);
+legacy_fetch_status_test!(
+    legacy_fetch_not_ok_for_500,
+    "500 Internal Server Error",
+    500.0,
+    false
+);
+legacy_fetch_status_test!(
+    legacy_fetch_not_ok_for_503,
+    "503 Service Unavailable",
+    503.0,
+    false
+);

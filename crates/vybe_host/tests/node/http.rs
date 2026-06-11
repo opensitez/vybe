@@ -48,7 +48,8 @@ fn call_http(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:http"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:http"), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -57,7 +58,13 @@ fn s(text: &str) -> Value {
 
 fn prop(obj: &Value, key: &str) -> Value {
     match obj {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -85,92 +92,146 @@ fn has_method(obj: &Value, name: &str) -> bool {
 
 #[test]
 fn status_codes_returns_object() {
-    assert!(matches!(call_http("STATUS_CODES", vec![]), Value::Object(_)));
+    assert!(matches!(
+        call_http("STATUS_CODES", vec![]),
+        Value::Object(_)
+    ));
 }
 
 #[test]
 fn status_codes_200_is_ok() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "200")), "OK");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "200")),
+        "OK"
+    );
 }
 
 #[test]
 fn status_codes_201_is_created() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "201")), "Created");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "201")),
+        "Created"
+    );
 }
 
 #[test]
 fn status_codes_204_is_no_content() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "204")), "No Content");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "204")),
+        "No Content"
+    );
 }
 
 #[test]
 fn status_codes_301_is_moved_permanently() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "301")), "Moved Permanently");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "301")),
+        "Moved Permanently"
+    );
 }
 
 #[test]
 fn status_codes_302_is_found() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "302")), "Found");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "302")),
+        "Found"
+    );
 }
 
 #[test]
 fn status_codes_304_is_not_modified() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "304")), "Not Modified");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "304")),
+        "Not Modified"
+    );
 }
 
 #[test]
 fn status_codes_400_is_bad_request() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "400")), "Bad Request");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "400")),
+        "Bad Request"
+    );
 }
 
 #[test]
 fn status_codes_401_is_unauthorized() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "401")), "Unauthorized");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "401")),
+        "Unauthorized"
+    );
 }
 
 #[test]
 fn status_codes_403_is_forbidden() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "403")), "Forbidden");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "403")),
+        "Forbidden"
+    );
 }
 
 #[test]
 fn status_codes_404_is_not_found() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "404")), "Not Found");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "404")),
+        "Not Found"
+    );
 }
 
 #[test]
 fn status_codes_405_is_method_not_allowed() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "405")), "Method Not Allowed");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "405")),
+        "Method Not Allowed"
+    );
 }
 
 #[test]
 fn status_codes_409_is_conflict() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "409")), "Conflict");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "409")),
+        "Conflict"
+    );
 }
 
 #[test]
 fn status_codes_422_is_unprocessable_entity() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "422")), "Unprocessable Entity");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "422")),
+        "Unprocessable Entity"
+    );
 }
 
 #[test]
 fn status_codes_429_is_too_many_requests() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "429")), "Too Many Requests");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "429")),
+        "Too Many Requests"
+    );
 }
 
 #[test]
 fn status_codes_500_is_internal_server_error() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "500")), "Internal Server Error");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "500")),
+        "Internal Server Error"
+    );
 }
 
 #[test]
 fn status_codes_502_is_bad_gateway() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "502")), "Bad Gateway");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "502")),
+        "Bad Gateway"
+    );
 }
 
 #[test]
 fn status_codes_503_is_service_unavailable() {
-    assert_eq!(as_string(&prop(&call_http("STATUS_CODES", vec![]), "503")), "Service Unavailable");
+    assert_eq!(
+        as_string(&prop(&call_http("STATUS_CODES", vec![]), "503")),
+        "Service Unavailable"
+    );
 }
 
 #[test]
@@ -178,7 +239,11 @@ fn status_codes_contains_at_least_forty_entries() {
     let codes = call_http("STATUS_CODES", vec![]);
     if let Value::Object(obj) = &codes {
         let o = obj.lock().unwrap();
-        assert!(o.properties.len() >= 40, "STATUS_CODES must have >= 40 entries, got {}", o.properties.len());
+        assert!(
+            o.properties.len() >= 40,
+            "STATUS_CODES must have >= 40 entries, got {}",
+            o.properties.len()
+        );
     }
 }
 
@@ -189,7 +254,10 @@ fn methods_returns_array() {
     let result = call_http("METHODS", vec![]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
-        assert!(matches!(&o.kind, ObjectKind::Array(_)), "METHODS must be an Array");
+        assert!(
+            matches!(&o.kind, ObjectKind::Array(_)),
+            "METHODS must be an Array"
+        );
     } else {
         panic!("METHODS must be an object, got {:?}", result);
     }
@@ -202,7 +270,9 @@ fn methods_contains_all_standard_verbs() {
         let o = obj.lock().unwrap();
         if let ObjectKind::Array(elems) = &o.kind {
             let methods: Vec<String> = elems.iter().map(as_string).collect();
-            for m in ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE"] {
+            for m in [
+                "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE",
+            ] {
                 assert!(methods.contains(&m.to_string()), "METHODS must contain {m}");
             }
             return;
@@ -246,7 +316,10 @@ fn max_header_size_is_16384_by_default() {
 #[test]
 fn validate_header_name_valid_name_does_not_panic() {
     let result = call_http("validateHeaderName", vec![s("Content-Type")]);
-    assert!(matches!(result, Value::Undefined | Value::Null | Value::Bool(true)));
+    assert!(matches!(
+        result,
+        Value::Undefined | Value::Null | Value::Bool(true)
+    ));
 }
 
 #[test]
@@ -257,7 +330,8 @@ fn validate_header_name_invalid_name_returns_error_or_throws() {
     // Accept: error object, bool false, or string (error message)
     assert!(
         !matches!(result, Value::Bool(true) | Value::Undefined),
-        "invalid header name must signal an error, got {:?}", result
+        "invalid header name must signal an error, got {:?}",
+        result
     );
 }
 
@@ -265,8 +339,14 @@ fn validate_header_name_invalid_name_returns_error_or_throws() {
 
 #[test]
 fn validate_header_value_valid_value_does_not_panic() {
-    let result = call_http("validateHeaderValue", vec![s("Content-Type"), s("application/json")]);
-    assert!(matches!(result, Value::Undefined | Value::Null | Value::Bool(true)));
+    let result = call_http(
+        "validateHeaderValue",
+        vec![s("Content-Type"), s("application/json")],
+    );
+    assert!(matches!(
+        result,
+        Value::Undefined | Value::Null | Value::Bool(true)
+    ));
 }
 
 // ── globalAgent ───────────────────────────────────────────────────────────────
@@ -282,45 +362,64 @@ fn global_agent_has_max_sockets() {
     let val = prop(&agent, "maxSockets");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "globalAgent.maxSockets must be a number, got {:?}", val
+        "globalAgent.maxSockets must be a number, got {:?}",
+        val
     );
 }
 
 #[test]
 fn global_agent_has_sockets_object() {
     let agent = call_http("globalAgent", vec![]);
-    assert!(matches!(prop(&agent, "sockets"), Value::Object(_)), "globalAgent.sockets must be an object");
+    assert!(
+        matches!(prop(&agent, "sockets"), Value::Object(_)),
+        "globalAgent.sockets must be an object"
+    );
 }
 
 #[test]
 fn global_agent_has_requests_object() {
     let agent = call_http("globalAgent", vec![]);
-    assert!(matches!(prop(&agent, "requests"), Value::Object(_)), "globalAgent.requests must be an object");
+    assert!(
+        matches!(prop(&agent, "requests"), Value::Object(_)),
+        "globalAgent.requests must be an object"
+    );
 }
 
 #[test]
 fn global_agent_has_free_sockets_object() {
     let agent = call_http("globalAgent", vec![]);
-    assert!(matches!(prop(&agent, "freeSockets"), Value::Object(_)), "globalAgent.freeSockets must be an object");
+    assert!(
+        matches!(prop(&agent, "freeSockets"), Value::Object(_)),
+        "globalAgent.freeSockets must be an object"
+    );
 }
 
 #[test]
 fn global_agent_has_destroy_method() {
     let agent = call_http("globalAgent", vec![]);
-    assert!(has_method(&agent, "destroy"), "globalAgent must have destroy()");
+    assert!(
+        has_method(&agent, "destroy"),
+        "globalAgent must have destroy()"
+    );
 }
 
 #[test]
 fn global_agent_has_get_name_method() {
     let agent = call_http("globalAgent", vec![]);
-    assert!(has_method(&agent, "getName"), "globalAgent must have getName()");
+    assert!(
+        has_method(&agent, "getName"),
+        "globalAgent must have getName()"
+    );
 }
 
 // ── Agent constructor ─────────────────────────────────────────────────────────
 
 #[test]
 fn agent_constructor_returns_object() {
-    assert!(matches!(call_http("Agent", vec![Value::Null]), Value::Object(_)));
+    assert!(matches!(
+        call_http("Agent", vec![Value::Null]),
+        Value::Object(_)
+    ));
 }
 
 #[test]
@@ -328,7 +427,12 @@ fn agent_max_sockets_option_is_applied() {
     let opts = new_obj(vec![("maxSockets", Value::I32(5))]);
     let agent = call_http("Agent", vec![opts]);
     let val = prop(&agent, "maxSockets");
-    assert_eq!(val, Value::I32(5), "Agent({{maxSockets:5}}).maxSockets must be 5, got {:?}", val);
+    assert_eq!(
+        val,
+        Value::I32(5),
+        "Agent({{maxSockets:5}}).maxSockets must be 5, got {:?}",
+        val
+    );
 }
 
 #[test]
@@ -337,7 +441,8 @@ fn agent_has_max_free_sockets() {
     let val = prop(&agent, "maxFreeSockets");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "agent.maxFreeSockets must be a number, got {:?}", val
+        "agent.maxFreeSockets must be a number, got {:?}",
+        val
     );
 }
 
@@ -346,8 +451,12 @@ fn agent_has_max_total_sockets() {
     let agent = call_http("Agent", vec![Value::Null]);
     let val = prop(&agent, "maxTotalSockets");
     assert!(
-        matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined),
-        "agent.maxTotalSockets must be a number or Infinity, got {:?}", val
+        matches!(
+            val,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined
+        ),
+        "agent.maxTotalSockets must be a number or Infinity, got {:?}",
+        val
     );
 }
 
@@ -367,7 +476,10 @@ fn agent_get_name_method_exists() {
 
 #[test]
 fn create_server_returns_object() {
-    assert!(matches!(call_http("createServer", vec![Value::Null]), Value::Object(_)));
+    assert!(matches!(
+        call_http("createServer", vec![Value::Null]),
+        Value::Object(_)
+    ));
 }
 
 #[test]
@@ -391,7 +503,10 @@ fn create_server_has_address() {
 #[test]
 fn create_server_has_set_timeout() {
     let srv = call_http("createServer", vec![Value::Null]);
-    assert!(has_method(&srv, "setTimeout"), "server must have setTimeout()");
+    assert!(
+        has_method(&srv, "setTimeout"),
+        "server must have setTimeout()"
+    );
 }
 
 #[test]
@@ -400,7 +515,8 @@ fn create_server_timeout_property_is_number() {
     let val = prop(&srv, "timeout");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "server.timeout must be a number, got {:?}", val
+        "server.timeout must be a number, got {:?}",
+        val
     );
 }
 
@@ -410,7 +526,8 @@ fn create_server_keep_alive_timeout_is_number() {
     let val = prop(&srv, "keepAliveTimeout");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "server.keepAliveTimeout must be a number, got {:?}", val
+        "server.keepAliveTimeout must be a number, got {:?}",
+        val
     );
 }
 
@@ -420,7 +537,8 @@ fn create_server_headers_timeout_is_number() {
     let val = prop(&srv, "headersTimeout");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "server.headersTimeout must be a number, got {:?}", val
+        "server.headersTimeout must be a number, got {:?}",
+        val
     );
 }
 
@@ -430,7 +548,8 @@ fn create_server_request_timeout_is_number() {
     let val = prop(&srv, "requestTimeout");
     assert!(
         matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "server.requestTimeout must be a number, got {:?}", val
+        "server.requestTimeout must be a number, got {:?}",
+        val
     );
 }
 
@@ -439,8 +558,12 @@ fn create_server_max_connections_is_number_or_infinity() {
     let srv = call_http("createServer", vec![Value::Null]);
     let val = prop(&srv, "maxConnections");
     assert!(
-        matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined),
-        "server.maxConnections must be a number, got {:?}", val
+        matches!(
+            val,
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Undefined
+        ),
+        "server.maxConnections must be a number, got {:?}",
+        val
     );
 }
 
@@ -448,7 +571,11 @@ fn create_server_max_connections_is_number_or_infinity() {
 
 #[test]
 fn request_returns_object() {
-    let opts = new_obj(vec![("host", s("example.com")), ("path", s("/")), ("method", s("GET"))]);
+    let opts = new_obj(vec![
+        ("host", s("example.com")),
+        ("path", s("/")),
+        ("method", s("GET")),
+    ]);
     assert!(matches!(call_http("request", vec![opts]), Value::Object(_)));
 }
 
@@ -470,40 +597,59 @@ fn client_request_has_write() {
 fn client_request_has_set_header() {
     let opts = new_obj(vec![("host", s("example.com")), ("path", s("/"))]);
     let req = call_http("request", vec![opts]);
-    assert!(has_method(&req, "setHeader"), "ClientRequest must have setHeader()");
+    assert!(
+        has_method(&req, "setHeader"),
+        "ClientRequest must have setHeader()"
+    );
 }
 
 #[test]
 fn client_request_has_get_header() {
     let opts = new_obj(vec![("host", s("example.com")), ("path", s("/"))]);
     let req = call_http("request", vec![opts]);
-    assert!(has_method(&req, "getHeader"), "ClientRequest must have getHeader()");
+    assert!(
+        has_method(&req, "getHeader"),
+        "ClientRequest must have getHeader()"
+    );
 }
 
 #[test]
 fn client_request_has_remove_header() {
     let opts = new_obj(vec![("host", s("example.com")), ("path", s("/"))]);
     let req = call_http("request", vec![opts]);
-    assert!(has_method(&req, "removeHeader"), "ClientRequest must have removeHeader()");
+    assert!(
+        has_method(&req, "removeHeader"),
+        "ClientRequest must have removeHeader()"
+    );
 }
 
 #[test]
 fn client_request_has_destroy() {
     let opts = new_obj(vec![("host", s("example.com")), ("path", s("/"))]);
     let req = call_http("request", vec![opts]);
-    assert!(has_method(&req, "destroy"), "ClientRequest must have destroy()");
+    assert!(
+        has_method(&req, "destroy"),
+        "ClientRequest must have destroy()"
+    );
 }
 
 #[test]
 fn client_request_has_set_timeout() {
     let opts = new_obj(vec![("host", s("example.com")), ("path", s("/"))]);
     let req = call_http("request", vec![opts]);
-    assert!(has_method(&req, "setTimeout"), "ClientRequest must have setTimeout()");
+    assert!(
+        has_method(&req, "setTimeout"),
+        "ClientRequest must have setTimeout()"
+    );
 }
 
 #[test]
 fn client_request_method_reflects_options() {
-    let opts = new_obj(vec![("host", s("example.com")), ("path", s("/")), ("method", s("POST"))]);
+    let opts = new_obj(vec![
+        ("host", s("example.com")),
+        ("path", s("/")),
+        ("method", s("POST")),
+    ]);
     let req = call_http("request", vec![opts]);
     assert_eq!(as_string(&prop(&req, "method")), "POST");
 }
@@ -533,13 +679,19 @@ fn client_request_protocol_is_http() {
 
 #[test]
 fn get_returns_client_request_object() {
-    assert!(matches!(call_http("get", vec![s("http://example.com/")]), Value::Object(_)));
+    assert!(matches!(
+        call_http("get", vec![s("http://example.com/")]),
+        Value::Object(_)
+    ));
 }
 
 #[test]
 fn get_request_has_end_method() {
     let req = call_http("get", vec![s("http://example.com/")]);
-    assert!(has_method(&req, "end"), "get() ClientRequest must have end()");
+    assert!(
+        has_method(&req, "end"),
+        "get() ClientRequest must have end()"
+    );
 }
 
 #[test]
@@ -552,7 +704,10 @@ fn get_parses_url_into_host() {
 fn get_parses_url_into_path() {
     let req = call_http("get", vec![s("http://example.com/path?q=1")]);
     let path = as_string(&prop(&req, "path"));
-    assert!(path.starts_with("/path"), "path must start with /path, got {path}");
+    assert!(
+        path.starts_with("/path"),
+        "path must start with /path, got {path}"
+    );
 }
 
 // ── IncomingMessage surface ───────────────────────────────────────────────────
@@ -560,14 +715,20 @@ fn get_parses_url_into_path() {
 #[test]
 fn incoming_message_constructor_returns_object() {
     let result = call_http("IncomingMessage", vec![Value::Null]);
-    assert!(matches!(result, Value::Object(_)), "IncomingMessage() must return an object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "IncomingMessage() must return an object"
+    );
 }
 
 #[test]
 fn incoming_message_has_method_property() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "method"), Value::String(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "method"),
+            Value::String(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.method must be a string"
     );
 }
@@ -576,7 +737,10 @@ fn incoming_message_has_method_property() {
 fn incoming_message_has_url_property() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "url"), Value::String(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "url"),
+            Value::String(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.url must be a string"
     );
 }
@@ -585,7 +749,10 @@ fn incoming_message_has_url_property() {
 fn incoming_message_has_headers_object() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "headers"), Value::Object(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "headers"),
+            Value::Object(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.headers must be an object"
     );
 }
@@ -594,7 +761,10 @@ fn incoming_message_has_headers_object() {
 fn incoming_message_has_raw_headers_array() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "rawHeaders"), Value::Object(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "rawHeaders"),
+            Value::Object(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.rawHeaders must be an array"
     );
 }
@@ -603,7 +773,10 @@ fn incoming_message_has_raw_headers_array() {
 fn incoming_message_has_http_version() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "httpVersion"), Value::String(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "httpVersion"),
+            Value::String(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.httpVersion must be a string"
     );
 }
@@ -612,7 +785,10 @@ fn incoming_message_has_http_version() {
 fn incoming_message_has_status_code() {
     let msg = call_http("IncomingMessage", vec![Value::Null]);
     assert!(
-        matches!(prop(&msg, "statusCode"), Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null | Value::Undefined),
+        matches!(
+            prop(&msg, "statusCode"),
+            Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null | Value::Undefined
+        ),
         "IncomingMessage.statusCode must be a number"
     );
 }
@@ -640,55 +816,82 @@ fn incoming_message_has_trailers_object() {
 #[test]
 fn server_response_constructor_returns_object() {
     let result = call_http("ServerResponse", vec![Value::Null]);
-    assert!(matches!(result, Value::Object(_)), "ServerResponse() must return an object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "ServerResponse() must return an object"
+    );
 }
 
 #[test]
 fn server_response_has_write_head() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "writeHead"), "ServerResponse must have writeHead()");
+    assert!(
+        has_method(&res, "writeHead"),
+        "ServerResponse must have writeHead()"
+    );
 }
 
 #[test]
 fn server_response_has_set_header() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "setHeader"), "ServerResponse must have setHeader()");
+    assert!(
+        has_method(&res, "setHeader"),
+        "ServerResponse must have setHeader()"
+    );
 }
 
 #[test]
 fn server_response_has_get_header() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "getHeader"), "ServerResponse must have getHeader()");
+    assert!(
+        has_method(&res, "getHeader"),
+        "ServerResponse must have getHeader()"
+    );
 }
 
 #[test]
 fn server_response_has_get_headers() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "getHeaders"), "ServerResponse must have getHeaders()");
+    assert!(
+        has_method(&res, "getHeaders"),
+        "ServerResponse must have getHeaders()"
+    );
 }
 
 #[test]
 fn server_response_has_get_header_names() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "getHeaderNames"), "ServerResponse must have getHeaderNames()");
+    assert!(
+        has_method(&res, "getHeaderNames"),
+        "ServerResponse must have getHeaderNames()"
+    );
 }
 
 #[test]
 fn server_response_has_has_header() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "hasHeader"), "ServerResponse must have hasHeader()");
+    assert!(
+        has_method(&res, "hasHeader"),
+        "ServerResponse must have hasHeader()"
+    );
 }
 
 #[test]
 fn server_response_has_remove_header() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "removeHeader"), "ServerResponse must have removeHeader()");
+    assert!(
+        has_method(&res, "removeHeader"),
+        "ServerResponse must have removeHeader()"
+    );
 }
 
 #[test]
 fn server_response_has_write() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "write"), "ServerResponse must have write()");
+    assert!(
+        has_method(&res, "write"),
+        "ServerResponse must have write()"
+    );
 }
 
 #[test]
@@ -700,14 +903,22 @@ fn server_response_has_end() {
 #[test]
 fn server_response_has_flush_headers() {
     let res = call_http("ServerResponse", vec![Value::Null]);
-    assert!(has_method(&res, "flushHeaders"), "ServerResponse must have flushHeaders()");
+    assert!(
+        has_method(&res, "flushHeaders"),
+        "ServerResponse must have flushHeaders()"
+    );
 }
 
 #[test]
 fn server_response_status_code_defaults_to_200() {
     let res = call_http("ServerResponse", vec![Value::Null]);
     let code = prop(&res, "statusCode");
-    assert_eq!(code, Value::I32(200), "ServerResponse.statusCode must default to 200, got {:?}", code);
+    assert_eq!(
+        code,
+        Value::I32(200),
+        "ServerResponse.statusCode must default to 200, got {:?}",
+        code
+    );
 }
 
 #[test]
@@ -726,7 +937,10 @@ fn server_response_writable_ended_defaults_to_false() {
 fn server_response_status_message_is_string() {
     let res = call_http("ServerResponse", vec![Value::Null]);
     assert!(
-        matches!(prop(&res, "statusMessage"), Value::String(_) | Value::Undefined),
+        matches!(
+            prop(&res, "statusMessage"),
+            Value::String(_) | Value::Undefined
+        ),
         "ServerResponse.statusMessage must be a string"
     );
 }

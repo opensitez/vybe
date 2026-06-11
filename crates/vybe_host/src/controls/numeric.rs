@@ -3,7 +3,15 @@ use super::{ControlDef, Props, base_css};
 pub static DEF: ControlDef = ControlDef {
     tag: "input",
     inner_tag: None,
-    props: &["Value", "Minimum", "Maximum", "DecimalPlaces", "Increment", "Enabled", "Visible"],
+    props: &[
+        "Value",
+        "Minimum",
+        "Maximum",
+        "DecimalPlaces",
+        "Increment",
+        "Enabled",
+        "Visible",
+    ],
     events: &["ValueChanged"],
     default_size: (120, 23),
     css_fn: css,

@@ -1,27 +1,27 @@
-mod dialogs;
-mod app_render;
 mod app_commands;
 mod app_keyboard;
 mod app_mouse;
+mod app_render;
+mod dialogs;
 
-use std::time::Instant;
-use std::sync::Arc;
-use std::fs;
-use vybe_widgets::{FontSystem, SwashCache, TextColor};
-use tiny_skia::{Pixmap, Rect};
-use winit::event::ElementState;
 use arboard::Clipboard;
+use std::fs;
+use std::sync::Arc;
+use std::time::Instant;
+use tiny_skia::{Pixmap, Rect};
+use vybe_widgets::{FontSystem, SwashCache, TextColor};
+use winit::event::ElementState;
 
 use serde::{Deserialize, Serialize};
 
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::{LspClient, LspRequest};
-use vybe_widgets::{TreeView, Dropdown};
-use vybe_widgets::code_editor_widget::{Theme, CodeEditorWidget};
-use vybe_widgets::{SplitPanel, TabPanel, StatusBarPanel, LayoutRect, PanelWidget};
+use vybe_widgets::code_editor_widget::{CodeEditorWidget, Theme};
 use vybe_widgets::layout::WidgetEvent;
 use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent};
+use vybe_widgets::{Dropdown, TreeView};
+use vybe_widgets::{LayoutRect, PanelWidget, SplitPanel, StatusBarPanel, TabPanel};
 
 use dialogs::ProjectPropsDialog;
 
@@ -30,9 +30,12 @@ use dialogs::ProjectPropsDialog;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Keybinding {
     pub key: String,
-    #[serde(default)] pub cmd: bool,
-    #[serde(default)] pub shift: bool,
-    #[serde(default)] pub alt: bool,
+    #[serde(default)]
+    pub cmd: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub alt: bool,
     pub action: String,
 }
 
@@ -51,14 +54,27 @@ pub(crate) const SIDEBAR_TAB_H: f32 = 28.0;
 // ── Enums ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum SidebarTab { Files, Project }
+pub(crate) enum SidebarTab {
+    Files,
+    Project,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 #[allow(dead_code)]
-pub(crate) enum BottomPanelTab { Output, Problems }
+pub(crate) enum BottomPanelTab {
+    Output,
+    Problems,
+}
 
 #[derive(Clone, Copy)]
-pub(crate) enum EditAction { Undo, Redo, Cut, Copy, Paste, Delete }
+pub(crate) enum EditAction {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+}
 
 /// A single action runnable from the command palette.
 #[derive(Clone)]
@@ -87,35 +103,122 @@ pub(crate) fn palette_commands() -> &'static [PaletteCommand] {
     use crate::form_designer_tab::MenuAction::*;
     use PaletteAction::*;
     &[
-        PaletteCommand { label: "File: New Project",              action: Menu(NewProject) },
-        PaletteCommand { label: "File: Open Project…",            action: Menu(OpenProject) },
-        PaletteCommand { label: "File: Save Project",             action: Menu(SaveProject) },
-        PaletteCommand { label: "File: Save Project As…",         action: Menu(SaveAs) },
-        PaletteCommand { label: "File: Exit",                     action: Menu(Exit) },
-        PaletteCommand { label: "Edit: Undo",                     action: Edit(EditAction::Undo) },
-        PaletteCommand { label: "Edit: Redo",                     action: Edit(EditAction::Redo) },
-        PaletteCommand { label: "Edit: Cut",                      action: Edit(EditAction::Cut) },
-        PaletteCommand { label: "Edit: Copy",                     action: Edit(EditAction::Copy) },
-        PaletteCommand { label: "Edit: Paste",                    action: Edit(EditAction::Paste) },
-        PaletteCommand { label: "Edit: Delete",                   action: Edit(EditAction::Delete) },
-        PaletteCommand { label: "Project: Add Form",              action: Menu(AddForm) },
-        PaletteCommand { label: "Project: Add Module",            action: Menu(AddModule) },
-        PaletteCommand { label: "Project: Add Existing Form…",    action: Menu(AddExistingForm) },
-        PaletteCommand { label: "Project: Add Existing Code…",    action: Menu(AddExistingCode) },
-        PaletteCommand { label: "Project: Add Resource File",     action: Menu(AddResourceFile) },
-        PaletteCommand { label: "Project: Properties…",           action: Menu(ProjectProperties) },
-        PaletteCommand { label: "Run: Start",                     action: Menu(RunProject) },
-        PaletteCommand { label: "Run: Stop",                      action: Menu(StopProject) },
-        PaletteCommand { label: "View: Toggle Output Panel",      action: ToggleOutput },
-        PaletteCommand { label: "View: Show Problems",            action: ToggleProblems },
-        PaletteCommand { label: "View: Close Tab",                action: CloseTab },
-        PaletteCommand { label: "View: Close Other Tabs",         action: CloseOthers },
-        PaletteCommand { label: "View: Close All Tabs",           action: CloseAll },
-        PaletteCommand { label: "View: Next Tab",                 action: NextTab },
-        PaletteCommand { label: "View: Previous Tab",             action: PrevTab },
-        PaletteCommand { label: "Find: In File",                  action: FindInFile },
-        PaletteCommand { label: "Find: In Project",               action: FindInProject },
-        PaletteCommand { label: "Go: To Line",                    action: GoToLine },
+        PaletteCommand {
+            label: "File: New Project",
+            action: Menu(NewProject),
+        },
+        PaletteCommand {
+            label: "File: Open Project…",
+            action: Menu(OpenProject),
+        },
+        PaletteCommand {
+            label: "File: Save Project",
+            action: Menu(SaveProject),
+        },
+        PaletteCommand {
+            label: "File: Save Project As…",
+            action: Menu(SaveAs),
+        },
+        PaletteCommand {
+            label: "File: Exit",
+            action: Menu(Exit),
+        },
+        PaletteCommand {
+            label: "Edit: Undo",
+            action: Edit(EditAction::Undo),
+        },
+        PaletteCommand {
+            label: "Edit: Redo",
+            action: Edit(EditAction::Redo),
+        },
+        PaletteCommand {
+            label: "Edit: Cut",
+            action: Edit(EditAction::Cut),
+        },
+        PaletteCommand {
+            label: "Edit: Copy",
+            action: Edit(EditAction::Copy),
+        },
+        PaletteCommand {
+            label: "Edit: Paste",
+            action: Edit(EditAction::Paste),
+        },
+        PaletteCommand {
+            label: "Edit: Delete",
+            action: Edit(EditAction::Delete),
+        },
+        PaletteCommand {
+            label: "Project: Add Form",
+            action: Menu(AddForm),
+        },
+        PaletteCommand {
+            label: "Project: Add Module",
+            action: Menu(AddModule),
+        },
+        PaletteCommand {
+            label: "Project: Add Existing Form…",
+            action: Menu(AddExistingForm),
+        },
+        PaletteCommand {
+            label: "Project: Add Existing Code…",
+            action: Menu(AddExistingCode),
+        },
+        PaletteCommand {
+            label: "Project: Add Resource File",
+            action: Menu(AddResourceFile),
+        },
+        PaletteCommand {
+            label: "Project: Properties…",
+            action: Menu(ProjectProperties),
+        },
+        PaletteCommand {
+            label: "Run: Start",
+            action: Menu(RunProject),
+        },
+        PaletteCommand {
+            label: "Run: Stop",
+            action: Menu(StopProject),
+        },
+        PaletteCommand {
+            label: "View: Toggle Output Panel",
+            action: ToggleOutput,
+        },
+        PaletteCommand {
+            label: "View: Show Problems",
+            action: ToggleProblems,
+        },
+        PaletteCommand {
+            label: "View: Close Tab",
+            action: CloseTab,
+        },
+        PaletteCommand {
+            label: "View: Close Other Tabs",
+            action: CloseOthers,
+        },
+        PaletteCommand {
+            label: "View: Close All Tabs",
+            action: CloseAll,
+        },
+        PaletteCommand {
+            label: "View: Next Tab",
+            action: NextTab,
+        },
+        PaletteCommand {
+            label: "View: Previous Tab",
+            action: PrevTab,
+        },
+        PaletteCommand {
+            label: "Find: In File",
+            action: FindInFile,
+        },
+        PaletteCommand {
+            label: "Find: In Project",
+            action: FindInProject,
+        },
+        PaletteCommand {
+            label: "Go: To Line",
+            action: GoToLine,
+        },
     ]
 }
 
@@ -138,7 +241,15 @@ pub(crate) struct ProjectExplorerState {
 }
 
 impl ProjectExplorerState {
-    fn new() -> Self { Self { scroll_y: 0.0, forms_collapsed: false, code_collapsed: false, refs_collapsed: false, resources_collapsed: false } }
+    fn new() -> Self {
+        Self {
+            scroll_y: 0.0,
+            forms_collapsed: false,
+            code_collapsed: false,
+            refs_collapsed: false,
+            resources_collapsed: false,
+        }
+    }
 }
 
 // ── Tab Types ──────────────────────────────────────────────────────────
@@ -234,14 +345,17 @@ pub(crate) struct App {
     // Build configuration
     pub(crate) build_config: BuildConfig,
     // ── Toolkit Containers ──────────────────────────────────────────
-    pub(crate) split_panel: SplitPanel,   // sidebar | editor area
-    pub(crate) tab_panel: TabPanel,       // editor tab bar
+    pub(crate) split_panel: SplitPanel,    // sidebar | editor area
+    pub(crate) tab_panel: TabPanel,        // editor tab bar
     pub(crate) status_bar: StatusBarPanel, // footer status bar
-    pub(crate) sidebar_tabs: TabPanel,    // sidebar Files|Project tabs
+    pub(crate) sidebar_tabs: TabPanel,     // sidebar Files|Project tabs
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum BuildConfig { Debug, Release }
+pub(crate) enum BuildConfig {
+    Debug,
+    Release,
+}
 
 impl App {
     fn new(_my_editor: MyEditor, open_form: bool) -> Self {
@@ -254,8 +368,14 @@ impl App {
         if let Ok(exe) = std::env::current_exe() {
             let mut dir_opt = exe.parent();
             while let Some(dir) = dir_opt {
-                let cand = dir.join("crates").join("code_editor").join("basic-languages");
-                if cand.exists() { candidates.insert(0, cand); break; }
+                let cand = dir
+                    .join("crates")
+                    .join("code_editor")
+                    .join("basic-languages");
+                if cand.exists() {
+                    candidates.insert(0, cand);
+                    break;
+                }
                 dir_opt = dir.parent();
             }
         }
@@ -263,27 +383,59 @@ impl App {
             if let Ok(es) = std::fs::read_dir(path) {
                 for e in es.flatten() {
                     if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        if let Some(n) = e.file_name().to_str() { langs.push(n.to_string()); }
+                        if let Some(n) = e.file_name().to_str() {
+                            langs.push(n.to_string());
+                        }
                     }
                 }
-                if !langs.is_empty() { break; }
+                if !langs.is_empty() {
+                    break;
+                }
             }
         }
         if langs.is_empty() {
-            langs = vec!["rust".into(), "javascript".into(), "typescript".into(), "python".into(), "vb".into(), "csharp".into(), "text".into()];
+            langs = vec![
+                "rust".into(),
+                "javascript".into(),
+                "typescript".into(),
+                "python".into(),
+                "vb".into(),
+                "csharp".into(),
+                "text".into(),
+            ];
         }
         langs.sort();
         let root_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let _root_uri = format!("file://{}", root_dir.to_string_lossy());
-        Self { 
-            font_system: FontSystem::new(), swash_cache: SwashCache::new(),
-            win_width: 0.0, win_height: 0.0, display_scale: SCALE, cursor: winit::window::CursorIcon::Default,
-            tabs: Vec::new(), active_tab: 0, 
-            tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, theme_dropdown: None, clipboard: Clipboard::new().ok(), 
-            cmd_held: false, shift_held: false, alt_held: false, last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
-            explorer_width: EXPLORER_WIDTH, is_dragging_splitter: false, hovering_splitter: false, hovering_tab_close: None,
-            is_dragging: false, needs_redraw: true,
-            last_lsp_update: Instant::now(), pending_lsp_update: false,
+        Self {
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            win_width: 0.0,
+            win_height: 0.0,
+            display_scale: SCALE,
+            cursor: winit::window::CursorIcon::Default,
+            tabs: Vec::new(),
+            active_tab: 0,
+            tree_view: TreeView::new(".", 2.0),
+            all_languages: langs,
+            current_lang: "rust".to_string(),
+            lang_dropdown: None,
+            theme_dropdown: None,
+            clipboard: Clipboard::new().ok(),
+            cmd_held: false,
+            shift_held: false,
+            alt_held: false,
+            last_click_time: Instant::now(),
+            click_count: 0,
+            mouse_pos: (0.0, 0.0),
+            explorer_width: EXPLORER_WIDTH,
+            is_dragging_splitter: false,
+            hovering_splitter: false,
+            hovering_tab_close: None,
+            is_dragging: false,
+            needs_redraw: true,
+            last_lsp_update: Instant::now(),
+            pending_lsp_update: false,
             lsp: Arc::new(LspClient::new()),
             is_quick_open: false,
             quick_open_query: String::new(),
@@ -313,22 +465,118 @@ impl App {
                 }
                 if kb.is_empty() {
                     kb = vec![
-                        Keybinding { key: "z".into(), cmd: true, shift: false, alt: false, action: "Undo".into() },
-                        Keybinding { key: "z".into(), cmd: true, shift: true, alt: false, action: "Redo".into() },
-                        Keybinding { key: "a".into(), cmd: true, shift: false, alt: false, action: "SelectAll".into() },
-                        Keybinding { key: "s".into(), cmd: true, shift: false, alt: false, action: "Save".into() },
-                        Keybinding { key: "f".into(), cmd: true, shift: false, alt: false, action: "Find".into() },
-                        Keybinding { key: "h".into(), cmd: true, shift: false, alt: false, action: "Replace".into() },
-                        Keybinding { key: "/".into(), cmd: true, shift: false, alt: false, action: "ToggleComment".into() },
-                        Keybinding { key: "Tab".into(), cmd: false, shift: false, alt: false, action: "Indent".into() },
-                        Keybinding { key: "Tab".into(), cmd: false, shift: true, alt: false, action: "Unindent".into() },
-                        Keybinding { key: "`".into(), cmd: true, shift: false, alt: false, action: "ToggleOutput".into() },
-                        Keybinding { key: "ArrowUp".into(), cmd: true, shift: false, alt: false, action: "MoveBufferStart".into() },
-                        Keybinding { key: "ArrowDown".into(), cmd: true, shift: false, alt: false, action: "MoveBufferEnd".into() },
-                        Keybinding { key: "ArrowLeft".into(), cmd: true, shift: false, alt: false, action: "MoveLineStart".into() },
-                        Keybinding { key: "ArrowRight".into(), cmd: true, shift: false, alt: false, action: "MoveLineEnd".into() },
-                        Keybinding { key: "ArrowLeft".into(), cmd: false, shift: false, alt: true, action: "MoveWordLeft".into() },
-                        Keybinding { key: "ArrowRight".into(), cmd: false, shift: false, alt: true, action: "MoveWordRight".into() },
+                        Keybinding {
+                            key: "z".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "Undo".into(),
+                        },
+                        Keybinding {
+                            key: "z".into(),
+                            cmd: true,
+                            shift: true,
+                            alt: false,
+                            action: "Redo".into(),
+                        },
+                        Keybinding {
+                            key: "a".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "SelectAll".into(),
+                        },
+                        Keybinding {
+                            key: "s".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "Save".into(),
+                        },
+                        Keybinding {
+                            key: "f".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "Find".into(),
+                        },
+                        Keybinding {
+                            key: "h".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "Replace".into(),
+                        },
+                        Keybinding {
+                            key: "/".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "ToggleComment".into(),
+                        },
+                        Keybinding {
+                            key: "Tab".into(),
+                            cmd: false,
+                            shift: false,
+                            alt: false,
+                            action: "Indent".into(),
+                        },
+                        Keybinding {
+                            key: "Tab".into(),
+                            cmd: false,
+                            shift: true,
+                            alt: false,
+                            action: "Unindent".into(),
+                        },
+                        Keybinding {
+                            key: "`".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "ToggleOutput".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowUp".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "MoveBufferStart".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowDown".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "MoveBufferEnd".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowLeft".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "MoveLineStart".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowRight".into(),
+                            cmd: true,
+                            shift: false,
+                            alt: false,
+                            action: "MoveLineEnd".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowLeft".into(),
+                            cmd: false,
+                            shift: false,
+                            alt: true,
+                            action: "MoveWordLeft".into(),
+                        },
+                        Keybinding {
+                            key: "ArrowRight".into(),
+                            cmd: false,
+                            shift: false,
+                            alt: true,
+                            action: "MoveWordRight".into(),
+                        },
                     ];
                 }
                 kb
@@ -337,9 +585,14 @@ impl App {
             project: {
                 let mut p = vybe_compiler::projects::project::Project::new("Project1".to_string());
                 let mut form = vybe_compiler::projects::Form::new("Form1".to_string());
-                form.width = 640; form.height = 480;
-                p.forms.push(vybe_compiler::projects::project::FormModule::new_classic(form));
-                p.startup_object = vybe_compiler::projects::project::StartupObject::Form("Form1".to_string());
+                form.width = 640;
+                form.height = 480;
+                p.forms
+                    .push(vybe_compiler::projects::project::FormModule::new_classic(
+                        form,
+                    ));
+                p.startup_object =
+                    vybe_compiler::projects::project::StartupObject::Form("Form1".to_string());
                 p
             },
             project_explorer: ProjectExplorerState::new(),
@@ -385,7 +638,11 @@ impl App {
 
     /// Height in logical pixels of menu bar + toolbar (always present if any Form tab exists).
     pub(crate) fn top_chrome_h(&self) -> f32 {
-        if self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(_))) {
+        if self
+            .tabs
+            .iter()
+            .any(|t| matches!(&t.content, TabContent::Form(_)))
+        {
             28.0 + 36.0
         } else {
             0.0
@@ -399,24 +656,41 @@ impl App {
         let tch = self.top_chrome_h();
 
         // Status bar at bottom
-        self.status_bar.set_rect(LayoutRect::new(0.0, h - FOOTER_HEIGHT, w, FOOTER_HEIGHT));
+        self.status_bar
+            .set_rect(LayoutRect::new(0.0, h - FOOTER_HEIGHT, w, FOOTER_HEIGHT));
 
         // Split panel fills area between top chrome and status bar
         let main_h = h - tch - FOOTER_HEIGHT;
-        self.split_panel.set_rect(LayoutRect::new(0.0, tch, w, main_h));
+        self.split_panel
+            .set_rect(LayoutRect::new(0.0, tch, w, main_h));
         self.split_panel.set_split_pos(self.explorer_width);
 
         // Tab panel occupies the right side of the split (panel2 area)
         let tab_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
         let tab_w = (w - tab_x).max(0.0);
-        let output_h = if self.output_panel.visible() { self.output_panel_height } else { 0.0 };
-        self.tab_panel.set_rect(LayoutRect::new(tab_x, tch, tab_w, TAB_BAR_HEIGHT));
+        let output_h = if self.output_panel.visible() {
+            self.output_panel_height
+        } else {
+            0.0
+        };
+        self.tab_panel
+            .set_rect(LayoutRect::new(tab_x, tch, tab_w, TAB_BAR_HEIGHT));
 
         // Output panel (above footer, right of sidebar)
-        self.output_panel.set_rect(LayoutRect::new(tab_x, h - FOOTER_HEIGHT - output_h, tab_w, output_h));
+        self.output_panel.set_rect(LayoutRect::new(
+            tab_x,
+            h - FOOTER_HEIGHT - output_h,
+            tab_w,
+            output_h,
+        ));
 
         // Sidebar tabs at top of sidebar
-        self.sidebar_tabs.set_rect(LayoutRect::new(0.0, tch, self.explorer_width, SIDEBAR_TAB_H));
+        self.sidebar_tabs.set_rect(LayoutRect::new(
+            0.0,
+            tch,
+            self.explorer_width,
+            SIDEBAR_TAB_H,
+        ));
         self.sidebar_tabs.set_tab_width(self.explorer_width / 2.0);
     }
 
@@ -452,8 +726,12 @@ impl App {
                 WidgetEvent::TabChanged(idx) => {
                     if idx < self.tabs.len() {
                         self.active_tab = idx;
-                        let ext = self.tabs[idx].name.rsplitn(2, '.').next()
-                            .unwrap_or("").to_lowercase();
+                        let ext = self.tabs[idx]
+                            .name
+                            .rsplitn(2, '.')
+                            .next()
+                            .unwrap_or("")
+                            .to_lowercase();
                         self.current_lang = App::lang_from_ext(&ext).to_string();
                     }
                 }
@@ -472,37 +750,61 @@ impl App {
         let status_events = self.status_bar.drain_events();
         for event in status_events {
             match event {
-                WidgetEvent::StatusBarClick(id) => {
-                    match id.as_str() {
-                        "lang" => {
-                            let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
-                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, self.display_scale, None));
-                        }
-                        "theme" => {
-                            let theme_names = vec![
-                                "Silicon Green".into(), "Cloud Blue".into(), "Coffee Cream".into(), "Sakura Pink".into(),
-                                "One Dark".into(), "Monokai".into(), "GitHub Light".into(), "Solarized Light".into(),
-                                "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
-                                "Cyber".into(), "Titanium".into(), "Indigo Night".into()
-                            ];
-                            let mut d = Dropdown::new(theme_names, self.current_theme_idx, self.display_scale, None);
-                            d.num_cols = 2; d.col_w = 160.0;
-                            self.theme_dropdown = Some(d);
-                        }
-                        "config" => {
-                            self.build_config = match self.build_config {
-                                BuildConfig::Debug => BuildConfig::Release,
-                                BuildConfig::Release => BuildConfig::Debug,
-                            };
-                        }
-                        "diagnostics" => {
-                            self.output_panel.set_visible(true);
-                            self.output_panel.set_active_tab(
-                                vybe_widgets::output_panel::OutputTab::Problems);
-                        }
-                        _ => {}
+                WidgetEvent::StatusBarClick(id) => match id.as_str() {
+                    "lang" => {
+                        let active_idx = self
+                            .all_languages
+                            .iter()
+                            .position(|l| l == &self.current_lang)
+                            .unwrap_or(0);
+                        self.lang_dropdown = Some(Dropdown::new(
+                            self.all_languages.clone(),
+                            active_idx,
+                            self.display_scale,
+                            None,
+                        ));
                     }
-                }
+                    "theme" => {
+                        let theme_names = vec![
+                            "Silicon Green".into(),
+                            "Cloud Blue".into(),
+                            "Coffee Cream".into(),
+                            "Sakura Pink".into(),
+                            "One Dark".into(),
+                            "Monokai".into(),
+                            "GitHub Light".into(),
+                            "Solarized Light".into(),
+                            "Midnight".into(),
+                            "Aura".into(),
+                            "Veridian".into(),
+                            "Rose".into(),
+                            "Cyber".into(),
+                            "Titanium".into(),
+                            "Indigo Night".into(),
+                        ];
+                        let mut d = Dropdown::new(
+                            theme_names,
+                            self.current_theme_idx,
+                            self.display_scale,
+                            None,
+                        );
+                        d.num_cols = 2;
+                        d.col_w = 160.0;
+                        self.theme_dropdown = Some(d);
+                    }
+                    "config" => {
+                        self.build_config = match self.build_config {
+                            BuildConfig::Debug => BuildConfig::Release,
+                            BuildConfig::Release => BuildConfig::Debug,
+                        };
+                    }
+                    "diagnostics" => {
+                        self.output_panel.set_visible(true);
+                        self.output_panel
+                            .set_active_tab(vybe_widgets::output_panel::OutputTab::Problems);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -580,15 +882,35 @@ impl App {
     }
 
     pub fn get_theme_name(&self) -> &str {
-        match self.current_theme_idx { 
-            0 => "Silicon Green", 1 => "Cloud Blue", 2 => "Coffee Cream", 3 => "Sakura Pink", 
-            4 => "One Dark", 5 => "Monokai", 6 => "Frost Light", 7 => "Solarized Light", 
-            8 => "Midnight", 9 => "Aura", 10 => "Veridian", 11 => "Rose",
-            12 => "Cyber", 13 => "Titanium", 14 => "Indigo Night", _ => "One Dark" 
+        match self.current_theme_idx {
+            0 => "Silicon Green",
+            1 => "Cloud Blue",
+            2 => "Coffee Cream",
+            3 => "Sakura Pink",
+            4 => "One Dark",
+            5 => "Monokai",
+            6 => "Frost Light",
+            7 => "Solarized Light",
+            8 => "Midnight",
+            9 => "Aura",
+            10 => "Veridian",
+            11 => "Rose",
+            12 => "Cyber",
+            13 => "Titanium",
+            14 => "Indigo Night",
+            _ => "One Dark",
         }
     }
 
-    fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: TextColor) {
+    fn draw_ui_text(
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        text: &str,
+        x: f32,
+        y: f32,
+        col: TextColor,
+    ) {
         crate::ide_text::draw_mono(pix, fs, sc, text, x / SCALE, y / SCALE, 14.0, col, SCALE);
     }
 
@@ -627,7 +949,8 @@ impl App {
     /// Build a file URI for a tab: uses `tab.path` when set, otherwise
     /// derives one from the current working directory.
     pub(crate) fn tab_uri(tab: &Tab) -> String {
-        tab.path.as_deref()
+        tab.path
+            .as_deref()
             .map(|p| format!("file://{}", p))
             .unwrap_or_else(|| {
                 let cwd = std::env::current_dir()
@@ -642,10 +965,14 @@ impl App {
 
 impl vybe_widgets::Application for App {
     fn title(&self) -> String {
-        let tab_part = self.tabs.get(self.active_tab).map(|t| {
-            let dot = if t.is_modified { " •" } else { "" };
-            format!("{}{} — ", t.name, dot)
-        }).unwrap_or_default();
+        let tab_part = self
+            .tabs
+            .get(self.active_tab)
+            .map(|t| {
+                let dot = if t.is_modified { " •" } else { "" };
+                format!("{}{} — ", t.name, dot)
+            })
+            .unwrap_or_default();
         let project = &self.project.name;
         format!("{}{}  —  Vybe IDE", tab_part, project)
     }
@@ -685,7 +1012,7 @@ impl vybe_widgets::Application for App {
     }
 
     fn handle_mouse(&mut self, event: vybe_widgets::MouseEvent) -> bool {
-        use vybe_widgets::layout::{MouseEventKind, MouseButton as WMouseButton};
+        use vybe_widgets::layout::{MouseButton as WMouseButton, MouseEventKind};
         self.cmd_held = event.cmd;
         self.shift_held = event.shift;
         self.alt_held = event.alt;
@@ -748,7 +1075,7 @@ impl vybe_widgets::Application for App {
 
         // Fall through to legacy scroll handler
         let winit_delta = winit::event::MouseScrollDelta::PixelDelta(
-            winit::dpi::PhysicalPosition::new(0.0, delta as f64 / 2.0)
+            winit::dpi::PhysicalPosition::new(0.0, delta as f64 / 2.0),
         );
         self.handle_mouse_wheel(winit_delta);
         true

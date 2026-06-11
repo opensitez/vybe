@@ -57,10 +57,17 @@ fn capture_request_line() -> (String, Arc<Mutex<Option<String>>>) {
         let mut buffer = [0u8; 2048];
         let read = stream.read(&mut buffer).expect("read request");
         let raw = String::from_utf8_lossy(&buffer[..read]).to_string();
-        let first_line = raw.lines().next().unwrap_or_default().trim_end().to_string();
+        let first_line = raw
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_end()
+            .to_string();
         *request_line_clone.lock().unwrap() = Some(first_line);
         let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok";
-        stream.write_all(response.as_bytes()).expect("write response");
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
     });
 
     (format!("{}", address), request_line)
@@ -71,12 +78,30 @@ fn perform_request(method: Option<&str>, path: Option<&str>) -> String {
     let headers = types("[constructor]fields", vec![]);
     let request = types("[constructor]outgoing-request", vec![headers]);
     if let Some(method) = method {
-        assert!(is_error(&types("[method]outgoing-request.set-method", vec![request.clone(), s(method)])).is_none());
+        assert!(
+            is_error(&types(
+                "[method]outgoing-request.set-method",
+                vec![request.clone(), s(method)]
+            ))
+            .is_none()
+        );
     }
     if let Some(path) = path {
-        assert!(is_error(&types("[method]outgoing-request.set-path-with-query", vec![request.clone(), s(path)])).is_none());
+        assert!(
+            is_error(&types(
+                "[method]outgoing-request.set-path-with-query",
+                vec![request.clone(), s(path)]
+            ))
+            .is_none()
+        );
     }
-    assert!(is_error(&types("[method]outgoing-request.set-authority", vec![request.clone(), s(&authority)])).is_none());
+    assert!(
+        is_error(&types(
+            "[method]outgoing-request.set-authority",
+            vec![request.clone(), s(&authority)]
+        ))
+        .is_none()
+    );
     let future = outgoing("handle", vec![request, Value::Null]);
     let response = types("[method]future-incoming-response.get", vec![future]);
     assert!(is_error(&response).is_none());
@@ -101,18 +126,54 @@ macro_rules! path_case {
     };
 }
 
-method_case!(request_line_uses_uppercase_get_method, "get", "GET /matrix HTTP/1.1");
-method_case!(request_line_uses_uppercase_post_method, "post", "POST /matrix HTTP/1.1");
-method_case!(request_line_uses_uppercase_put_method, "put", "PUT /matrix HTTP/1.1");
-method_case!(request_line_uses_uppercase_patch_method, "patch", "PATCH /matrix HTTP/1.1");
-method_case!(request_line_uses_uppercase_delete_method, "delete", "DELETE /matrix HTTP/1.1");
-method_case!(request_line_uses_uppercase_head_method, "head", "HEAD /matrix HTTP/1.1");
+method_case!(
+    request_line_uses_uppercase_get_method,
+    "get",
+    "GET /matrix HTTP/1.1"
+);
+method_case!(
+    request_line_uses_uppercase_post_method,
+    "post",
+    "POST /matrix HTTP/1.1"
+);
+method_case!(
+    request_line_uses_uppercase_put_method,
+    "put",
+    "PUT /matrix HTTP/1.1"
+);
+method_case!(
+    request_line_uses_uppercase_patch_method,
+    "patch",
+    "PATCH /matrix HTTP/1.1"
+);
+method_case!(
+    request_line_uses_uppercase_delete_method,
+    "delete",
+    "DELETE /matrix HTTP/1.1"
+);
+method_case!(
+    request_line_uses_uppercase_head_method,
+    "head",
+    "HEAD /matrix HTTP/1.1"
+);
 
 path_case!(empty_path_string_normalizes_to_slash, "", "GET / HTTP/1.1");
 path_case!(root_path_stays_root, "/", "GET / HTTP/1.1");
-path_case!(relative_path_gains_leading_slash, "items", "GET /items HTTP/1.1");
-path_case!(relative_path_with_query_gains_leading_slash, "items?page=1", "GET /items?page=1 HTTP/1.1");
-path_case!(absolute_path_with_query_is_preserved, "/items?page=1", "GET /items?page=1 HTTP/1.1");
+path_case!(
+    relative_path_gains_leading_slash,
+    "items",
+    "GET /items HTTP/1.1"
+);
+path_case!(
+    relative_path_with_query_gains_leading_slash,
+    "items?page=1",
+    "GET /items?page=1 HTTP/1.1"
+);
+path_case!(
+    absolute_path_with_query_is_preserved,
+    "/items?page=1",
+    "GET /items?page=1 HTTP/1.1"
+);
 
 #[test]
 fn default_request_line_is_get_slash_when_method_and_path_are_unset() {

@@ -6,7 +6,13 @@ use super::ControlDef;
 pub static OPEN_FILE_DEF: ControlDef = ControlDef {
     tag: "div",
     inner_tag: None,
-    props: &["Filter", "Title", "FileName", "Multiselect", "InitialDirectory"],
+    props: &[
+        "Filter",
+        "Title",
+        "FileName",
+        "Multiselect",
+        "InitialDirectory",
+    ],
     events: &["FileOk"],
     default_size: (0, 0),
     css_fn: |_| String::new(),
@@ -18,7 +24,13 @@ pub static OPEN_FILE_DEF: ControlDef = ControlDef {
 pub static SAVE_FILE_DEF: ControlDef = ControlDef {
     tag: "div",
     inner_tag: None,
-    props: &["Filter", "Title", "FileName", "DefaultExt", "InitialDirectory"],
+    props: &[
+        "Filter",
+        "Title",
+        "FileName",
+        "DefaultExt",
+        "InitialDirectory",
+    ],
     events: &["FileOk"],
     default_size: (0, 0),
     css_fn: |_| String::new(),

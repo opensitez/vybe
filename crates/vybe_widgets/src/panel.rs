@@ -1,8 +1,11 @@
 //! Panel widget — container with optional border.
 
-use tiny_skia::*;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetId,
+};
 use super::{WidgetColors, rounded_rect_path};
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue};
+use tiny_skia::*;
 
 /// Parse a color string like "#C8C8C8" or "Red" into (r, g, b, a).
 fn parse_color_string(s: &str) -> Option<(u8, u8, u8, u8)> {
@@ -60,7 +63,10 @@ impl Panel {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Paint the panel — light background with optional border.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -114,42 +120,56 @@ impl Panel {
 }
 
 impl PanelWidget for Panel {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
     }
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::Custom(key, val) => {
-                match key.as_str() {
-                    "SetBackColor" => {
-                        if let CommandValue::Text(color_str) = val {
-                            if let Some(rgba) = parse_color_string(color_str) {
-                                self.colors.background = rgba;
-                            }
+            WidgetCommand::Custom(key, val) => match key.as_str() {
+                "SetBackColor" => {
+                    if let CommandValue::Text(color_str) = val {
+                        if let Some(rgba) = parse_color_string(color_str) {
+                            self.colors.background = rgba;
                         }
-                        CommandValue::None
                     }
-                    "SetBorderStyle" => {
-                        if let CommandValue::Text(s) = val {
-                            match s.to_lowercase().as_str() {
-                                "fixedsingle" | "1" => self.border_style = BorderStyle::FixedSingle,
-                                "fixed3d" | "2" => self.border_style = BorderStyle::Fixed3D,
-                                _ => self.border_style = BorderStyle::None,
-                            }
-                        }
-                        CommandValue::None
-                    }
-                    _ => CommandValue::None,
+                    CommandValue::None
                 }
-            }
+                "SetBorderStyle" => {
+                    if let CommandValue::Text(s) = val {
+                        match s.to_lowercase().as_str() {
+                            "fixedsingle" | "1" => self.border_style = BorderStyle::FixedSingle,
+                            "fixed3d" | "2" => self.border_style = BorderStyle::Fixed3D,
+                            _ => self.border_style = BorderStyle::None,
+                        }
+                    }
+                    CommandValue::None
+                }
+                _ => CommandValue::None,
+            },
             _ => CommandValue::None,
         }
     }

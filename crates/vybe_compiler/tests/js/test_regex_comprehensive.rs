@@ -37,13 +37,13 @@ fn negative_lookahead_pattern() {
     assert_eq!(
         run_js(
             r#"
-// Match words not followed by a comma
+// Match words not followed by a comma. "world" is followed by "," and is excluded.
 const text = "hello, world, foo bar baz";
 const words = text.match(/\b\w+\b(?!,)/g);
 console.log(words.join(","));
 "#
         ),
-        vec!["world,foo,bar,baz"]
+        vec!["foo,bar,baz"]
     );
 }
 

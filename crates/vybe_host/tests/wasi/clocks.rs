@@ -43,7 +43,8 @@ fn invoke_result(module: &str, name: &str, args: Vec<Value>) -> Result<Value, St
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn prop(value: &Value, key: &str) -> Value {
@@ -66,15 +67,30 @@ fn s(text: &str) -> Value {
 
 #[test]
 fn wall_clock_now_returns_current_datetime_record() {
-    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
     let now = invoke("wasi:clocks/wall-clock", "now", vec![]);
-    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
 
     let seconds = f64_prop(&now, "seconds");
     let nanos = f64_prop(&now, "nanoseconds");
-    assert!(seconds >= before.floor(), "seconds should be current epoch seconds");
-    assert!(seconds <= after.ceil(), "seconds should not be in the future");
-    assert!((0.0..1_000_000_000.0).contains(&nanos), "nanoseconds should be a u32 tick");
+    assert!(
+        seconds >= before.floor(),
+        "seconds should be current epoch seconds"
+    );
+    assert!(
+        seconds <= after.ceil(),
+        "seconds should not be in the future"
+    );
+    assert!(
+        (0.0..1_000_000_000.0).contains(&nanos),
+        "nanoseconds should be a u32 tick"
+    );
 }
 
 #[test]
@@ -97,11 +113,20 @@ fn monotonic_clock_now_is_non_decreasing() {
 
 #[test]
 fn legacy_now_returns_milliseconds_near_system_clock() {
-    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as f64;
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as f64;
     let now = invoke("wasi:clocks", "now", vec![]).as_f64();
-    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as f64;
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as f64;
 
-    assert!(now >= before, "legacy now should not predate the call window");
+    assert!(
+        now >= before,
+        "legacy now should not predate the call window"
+    );
     assert!(now <= after, "legacy now should be within the call window");
 }
 
@@ -112,7 +137,10 @@ fn legacy_sleep_blocks_for_requested_duration() {
     let elapsed = start.elapsed();
 
     assert!(matches!(result, Value::Null));
-    assert!(elapsed >= Duration::from_millis(15), "sleep should block for roughly the requested duration");
+    assert!(
+        elapsed >= Duration::from_millis(15),
+        "sleep should block for roughly the requested duration"
+    );
 }
 
 #[test]
@@ -146,7 +174,10 @@ fn stopwatch_new_starts_stopped_with_zero_elapsed() {
 #[test]
 fn stopwatch_start_then_elapsed_becomes_positive() {
     let stopwatch = invoke("wasi:clocks", "stopwatchNew", vec![]);
-    assert!(matches!(invoke("wasi:clocks", "stopwatchStart", vec![stopwatch.clone()]), Value::Null));
+    assert!(matches!(
+        invoke("wasi:clocks", "stopwatchStart", vec![stopwatch.clone()]),
+        Value::Null
+    ));
     std::thread::sleep(Duration::from_millis(10));
     let elapsed = invoke("wasi:clocks", "stopwatchElapsed", vec![stopwatch.clone()]).as_f64();
     assert!(elapsed >= 5.0);
@@ -163,7 +194,10 @@ fn stopwatch_stop_freezes_elapsed_value() {
     std::thread::sleep(Duration::from_millis(10));
     let second = invoke("wasi:clocks", "stopwatchElapsed", vec![stopwatch.clone()]).as_f64();
     assert_eq!(prop(&stopwatch, "isrunning"), Value::Bool(false));
-    assert!((second - first).abs() < 5.0, "elapsed should stop increasing once stopped");
+    assert!(
+        (second - first).abs() < 5.0,
+        "elapsed should stop increasing once stopped"
+    );
 }
 
 #[test]
@@ -174,7 +208,10 @@ fn stopwatch_reset_clears_accumulated_elapsed() {
     let _ = invoke("wasi:clocks", "stopwatchStop", vec![stopwatch.clone()]);
     let _ = invoke("wasi:clocks", "stopwatchReset", vec![stopwatch.clone()]);
     assert_eq!(prop(&stopwatch, "isrunning"), Value::Bool(false));
-    assert_eq!(invoke("wasi:clocks", "stopwatchElapsed", vec![stopwatch]), Value::F64(0.0));
+    assert_eq!(
+        invoke("wasi:clocks", "stopwatchElapsed", vec![stopwatch]),
+        Value::F64(0.0)
+    );
 }
 
 #[test]
@@ -190,24 +227,46 @@ fn stopwatch_start_while_running_preserves_original_start_time() {
 
 #[test]
 fn to_iso_string_formats_known_leap_day_timestamp() {
-    let result = invoke("wasi:clocks", "toISOString", vec![Value::F64(951_827_696_789.0)]);
+    let result = invoke(
+        "wasi:clocks",
+        "toISOString",
+        vec![Value::F64(951_827_696_789.0)],
+    );
     assert_eq!(result, s("2000-02-29T12:34:56.789Z"));
 }
 
 #[test]
 fn vb_date_extractors_read_epoch_timestamp_components() {
     let timestamp = Value::F64(0.0);
-    assert_eq!(invoke("wasi:clocks", "vbYear", vec![timestamp.clone()]), Value::F64(1970.0));
-    assert_eq!(invoke("wasi:clocks", "vbMonth", vec![timestamp.clone()]), Value::F64(1.0));
-    assert_eq!(invoke("wasi:clocks", "vbDay", vec![timestamp]), Value::F64(1.0));
+    assert_eq!(
+        invoke("wasi:clocks", "vbYear", vec![timestamp.clone()]),
+        Value::F64(1970.0)
+    );
+    assert_eq!(
+        invoke("wasi:clocks", "vbMonth", vec![timestamp.clone()]),
+        Value::F64(1.0)
+    );
+    assert_eq!(
+        invoke("wasi:clocks", "vbDay", vec![timestamp]),
+        Value::F64(1.0)
+    );
 }
 
 #[test]
 fn vb_time_extractors_read_numeric_timestamp_components() {
     let timestamp = Value::F64(3_661.0);
-    assert_eq!(invoke("wasi:clocks", "vbHour", vec![timestamp.clone()]), Value::F64(1.0));
-    assert_eq!(invoke("wasi:clocks", "vbMinute", vec![timestamp.clone()]), Value::F64(1.0));
-    assert_eq!(invoke("wasi:clocks", "vbSecond", vec![timestamp]), Value::F64(1.0));
+    assert_eq!(
+        invoke("wasi:clocks", "vbHour", vec![timestamp.clone()]),
+        Value::F64(1.0)
+    );
+    assert_eq!(
+        invoke("wasi:clocks", "vbMinute", vec![timestamp.clone()]),
+        Value::F64(1.0)
+    );
+    assert_eq!(
+        invoke("wasi:clocks", "vbSecond", vec![timestamp]),
+        Value::F64(1.0)
+    );
 }
 
 #[test]
@@ -216,9 +275,15 @@ fn vb_now_date_and_time_return_string_shapes() {
     let date = invoke("wasi:clocks", "vbDate", vec![]);
     let time = invoke("wasi:clocks", "vbTime", vec![]);
 
-    let Value::String(now_text) = now else { panic!("vbNow should return string") };
-    let Value::String(date_text) = date else { panic!("vbDate should return string") };
-    let Value::String(time_text) = time else { panic!("vbTime should return string") };
+    let Value::String(now_text) = now else {
+        panic!("vbNow should return string")
+    };
+    let Value::String(date_text) = date else {
+        panic!("vbDate should return string")
+    };
+    let Value::String(time_text) = time else {
+        panic!("vbTime should return string")
+    };
 
     assert_eq!(now_text.len(), 19);
     assert_eq!(&now_text[4..5], "-");
@@ -254,24 +319,100 @@ macro_rules! vb_component_test {
     };
 }
 
-iso_fixture_test!(to_iso_string_formats_one_hour_one_minute_one_second, 3_661_000.0, "1970-01-01T01:01:01.000Z");
-iso_fixture_test!(to_iso_string_formats_y2k_leap_day_without_millis, 951_827_696_000.0, "2000-02-29T12:34:56.000Z");
-iso_fixture_test!(to_iso_string_formats_one_billion_second_timestamp, 1_000_000_000_000.0, "2001-09-09T01:46:40.000Z");
-iso_fixture_test!(to_iso_string_formats_recent_leap_day_without_millis, 1_709_210_096_000.0, "2024-02-29T12:34:56.000Z");
+iso_fixture_test!(
+    to_iso_string_formats_one_hour_one_minute_one_second,
+    3_661_000.0,
+    "1970-01-01T01:01:01.000Z"
+);
+iso_fixture_test!(
+    to_iso_string_formats_y2k_leap_day_without_millis,
+    951_827_696_000.0,
+    "2000-02-29T12:34:56.000Z"
+);
+iso_fixture_test!(
+    to_iso_string_formats_one_billion_second_timestamp,
+    1_000_000_000_000.0,
+    "2001-09-09T01:46:40.000Z"
+);
+iso_fixture_test!(
+    to_iso_string_formats_recent_leap_day_without_millis,
+    1_709_210_096_000.0,
+    "2024-02-29T12:34:56.000Z"
+);
 
-vb_component_test!(vb_year_extracts_2000_from_leap_day_fixture, "vbYear", 951_827_696.0, 2000.0);
-vb_component_test!(vb_month_extracts_february_from_leap_day_fixture, "vbMonth", 951_827_696.0, 2.0);
-vb_component_test!(vb_day_extracts_twenty_nine_from_leap_day_fixture, "vbDay", 951_827_696.0, 29.0);
-vb_component_test!(vb_hour_extracts_twelve_from_leap_day_fixture, "vbHour", 951_827_696.0, 12.0);
-vb_component_test!(vb_minute_extracts_thirty_four_from_leap_day_fixture, "vbMinute", 951_827_696.0, 34.0);
-vb_component_test!(vb_second_extracts_fifty_six_from_leap_day_fixture, "vbSecond", 951_827_696.0, 56.0);
+vb_component_test!(
+    vb_year_extracts_2000_from_leap_day_fixture,
+    "vbYear",
+    951_827_696.0,
+    2000.0
+);
+vb_component_test!(
+    vb_month_extracts_february_from_leap_day_fixture,
+    "vbMonth",
+    951_827_696.0,
+    2.0
+);
+vb_component_test!(
+    vb_day_extracts_twenty_nine_from_leap_day_fixture,
+    "vbDay",
+    951_827_696.0,
+    29.0
+);
+vb_component_test!(
+    vb_hour_extracts_twelve_from_leap_day_fixture,
+    "vbHour",
+    951_827_696.0,
+    12.0
+);
+vb_component_test!(
+    vb_minute_extracts_thirty_four_from_leap_day_fixture,
+    "vbMinute",
+    951_827_696.0,
+    34.0
+);
+vb_component_test!(
+    vb_second_extracts_fifty_six_from_leap_day_fixture,
+    "vbSecond",
+    951_827_696.0,
+    56.0
+);
 
-vb_component_test!(vb_year_extracts_2024_from_recent_leap_day_fixture, "vbYear", 1_709_210_096.0, 2024.0);
-vb_component_test!(vb_month_extracts_february_from_recent_leap_day_fixture, "vbMonth", 1_709_210_096.0, 2.0);
-vb_component_test!(vb_day_extracts_twenty_nine_from_recent_leap_day_fixture, "vbDay", 1_709_210_096.0, 29.0);
-vb_component_test!(vb_hour_extracts_twelve_from_recent_leap_day_fixture, "vbHour", 1_709_210_096.0, 12.0);
-vb_component_test!(vb_minute_extracts_thirty_four_from_recent_leap_day_fixture, "vbMinute", 1_709_210_096.0, 34.0);
-vb_component_test!(vb_second_extracts_fifty_six_from_recent_leap_day_fixture, "vbSecond", 1_709_210_096.0, 56.0);
+vb_component_test!(
+    vb_year_extracts_2024_from_recent_leap_day_fixture,
+    "vbYear",
+    1_709_210_096.0,
+    2024.0
+);
+vb_component_test!(
+    vb_month_extracts_february_from_recent_leap_day_fixture,
+    "vbMonth",
+    1_709_210_096.0,
+    2.0
+);
+vb_component_test!(
+    vb_day_extracts_twenty_nine_from_recent_leap_day_fixture,
+    "vbDay",
+    1_709_210_096.0,
+    29.0
+);
+vb_component_test!(
+    vb_hour_extracts_twelve_from_recent_leap_day_fixture,
+    "vbHour",
+    1_709_210_096.0,
+    12.0
+);
+vb_component_test!(
+    vb_minute_extracts_thirty_four_from_recent_leap_day_fixture,
+    "vbMinute",
+    1_709_210_096.0,
+    34.0
+);
+vb_component_test!(
+    vb_second_extracts_fifty_six_from_recent_leap_day_fixture,
+    "vbSecond",
+    1_709_210_096.0,
+    56.0
+);
 
 #[test]
 fn proposal_system_clock_now_import_resolves() {

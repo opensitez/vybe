@@ -9,15 +9,15 @@
 //! module — this file does NOT know PHP from Python.
 
 pub mod config;
-pub mod request_context;
-pub mod response_stream;
-pub mod hyper_service;
 pub mod directory;
-pub mod static_files;
-pub mod script;
 pub mod errors;
+pub mod hyper_service;
 pub mod logging;
 pub mod programmatic;
+pub mod request_context;
+pub mod response_stream;
+pub mod script;
+pub mod static_files;
 
 pub use config::ServeConfig;
 
@@ -53,12 +53,17 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
     } else {
         config.bind.clone()
     };
-    let addr: SocketAddr = bind_normalized.parse()
+    let addr: SocketAddr = bind_normalized
+        .parse()
         .map_err(|e| format!("invalid bind address {:?}: {e}", config.bind))?;
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    eprintln!("[vybex] serving {} on http://{}", config.root.display(), addr);
+    eprintln!(
+        "[vybex] serving {} on http://{}",
+        config.root.display(),
+        addr
+    );
     eprintln!("[vybex] press Ctrl+C to stop");
 
     // Shutdown notification shared with every in-flight request handler.

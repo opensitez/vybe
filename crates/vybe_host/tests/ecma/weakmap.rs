@@ -64,8 +64,14 @@ fn get_returns_undefined_for_missing_key() {
 fn set_returns_the_weakmap_itself() {
     let wm = invoke("new", vec![]);
     let result = invoke("set", vec![wm.clone(), key(), Value::Null]);
-    let wm_ptr = match &wm { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let r_ptr  = match &result { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
+    let wm_ptr = match &wm {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let r_ptr = match &result {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
     assert_eq!(wm_ptr, r_ptr);
 }
 

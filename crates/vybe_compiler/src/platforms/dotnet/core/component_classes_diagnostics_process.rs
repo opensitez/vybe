@@ -1,8 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::{common_constructor_class, static_only_class};
-use vybe_bytecode::component_model::{
-    ClassType, ConstructorDef, MethodBody, MethodDef,
-};
+use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -10,8 +8,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Diagnostics",
             ClassType::new("Stopwatch")
                 .with_constructor(
-                    ConstructorDef::new(0)
-                        .with_common_backing("dotnet.stopwatch_new"),
+                    ConstructorDef::new(0).with_common_backing("dotnet.stopwatch_new"),
                 )
                 .with_method(MethodDef::static_method(
                     "StartNew",

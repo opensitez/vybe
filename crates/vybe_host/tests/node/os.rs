@@ -29,7 +29,8 @@ fn call_os(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:os"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:os"), name.to_string()))
 }
 
 fn as_string(value: &Value) -> String {
@@ -46,7 +47,10 @@ fn platform_returns_recognized_string() {
     let v = call_os("platform", vec![]);
     let s = as_string(&v);
     assert!(
-        matches!(s.as_str(), "darwin" | "linux" | "win32" | "freebsd" | "openbsd" | "sunos" | "aix"),
+        matches!(
+            s.as_str(),
+            "darwin" | "linux" | "win32" | "freebsd" | "openbsd" | "sunos" | "aix"
+        ),
         "platform() should return a Node-recognized string, got {}",
         s
     );
@@ -110,7 +114,11 @@ fn homedir_returns_existing_directory() {
 fn endianness_returns_be_or_le() {
     let v = call_os("endianness", vec![]);
     let s = as_string(&v);
-    assert!(s == "BE" || s == "LE", "endianness() should be BE or LE, got {}", s);
+    assert!(
+        s == "BE" || s == "LE",
+        "endianness() should be BE or LE, got {}",
+        s
+    );
 }
 
 #[test]
@@ -118,7 +126,11 @@ fn eol_returns_unix_or_windows_newline() {
     // EOL is a property in Node, exposed here as a 0-arg fn.
     let v = call_os("EOL", vec![]);
     let s = as_string(&v);
-    assert!(s == "\n" || s == "\r\n", "EOL should be \\n or \\r\\n, got {:?}", s);
+    assert!(
+        s == "\n" || s == "\r\n",
+        "EOL should be \\n or \\r\\n, got {:?}",
+        s
+    );
 }
 
 // ── totalmem / freemem / uptime ───────────────────────────────────
@@ -127,7 +139,11 @@ fn eol_returns_unix_or_windows_newline() {
 fn totalmem_returns_positive_number() {
     let v = call_os("totalmem", vec![]);
     if let Value::F64(n) = v {
-        assert!(n > 0.0 && n.is_finite(), "totalmem() should be positive finite, got {}", n);
+        assert!(
+            n > 0.0 && n.is_finite(),
+            "totalmem() should be positive finite, got {}",
+            n
+        );
     } else {
         panic!("totalmem() expected number, got {:?}", v);
     }
@@ -137,7 +153,11 @@ fn totalmem_returns_positive_number() {
 fn freemem_returns_non_negative_number() {
     let v = call_os("freemem", vec![]);
     if let Value::F64(n) = v {
-        assert!(n >= 0.0 && n.is_finite(), "freemem() should be non-negative finite, got {}", n);
+        assert!(
+            n >= 0.0 && n.is_finite(),
+            "freemem() should be non-negative finite, got {}",
+            n
+        );
     } else {
         panic!("freemem() expected number, got {:?}", v);
     }
@@ -147,7 +167,11 @@ fn freemem_returns_non_negative_number() {
 fn uptime_returns_non_negative_number() {
     let v = call_os("uptime", vec![]);
     if let Value::F64(n) = v {
-        assert!(n >= 0.0 && n.is_finite(), "uptime() should be non-negative finite, got {}", n);
+        assert!(
+            n >= 0.0 && n.is_finite(),
+            "uptime() should be non-negative finite, got {}",
+            n
+        );
     } else {
         panic!("uptime() expected number, got {:?}", v);
     }
@@ -204,7 +228,8 @@ fn loadavg_returns_array_of_three_numbers() {
             for elem in elems {
                 assert!(
                     matches!(elem, Value::F64(_) | Value::I32(_) | Value::I64(_)),
-                    "each loadavg element must be a number, got {:?}", elem
+                    "each loadavg element must be a number, got {:?}",
+                    elem
                 );
             }
             return;
@@ -235,7 +260,11 @@ fn loadavg_values_are_non_negative() {
 #[test]
 fn network_interfaces_returns_object() {
     let v = call_os("networkInterfaces", vec![]);
-    assert!(matches!(v, Value::Object(_)), "networkInterfaces() must return an object, got {:?}", v);
+    assert!(
+        matches!(v, Value::Object(_)),
+        "networkInterfaces() must return an object, got {:?}",
+        v
+    );
 }
 
 // ── release ───────────────────────────────────────────────────────────────────
@@ -263,7 +292,8 @@ fn get_priority_returns_number() {
     let v = call_os("getPriority", vec![]);
     assert!(
         matches!(v, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-        "getPriority() must return a number, got {:?}", v
+        "getPriority() must return a number, got {:?}",
+        v
     );
 }
 
@@ -272,7 +302,8 @@ fn set_priority_returns_undefined() {
     let result = call_os("setPriority", vec![Value::I32(0)]);
     assert!(
         matches!(result, Value::Undefined | Value::Null),
-        "setPriority(0) must return undefined/null, got {:?}", result
+        "setPriority(0) must return undefined/null, got {:?}",
+        result
     );
 }
 
@@ -285,7 +316,11 @@ fn os_constants_signals_sigint_is_2() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(signals)) = o.properties.get("signals") {
             let s = signals.lock().unwrap();
-            let sigint = s.properties.get("SIGINT").cloned().unwrap_or(Value::Undefined);
+            let sigint = s
+                .properties
+                .get("SIGINT")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(sigint, Value::I32(2), "SIGINT must be 2");
         }
     }
@@ -298,7 +333,11 @@ fn os_constants_signals_sigkill_is_9() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(signals)) = o.properties.get("signals") {
             let s = signals.lock().unwrap();
-            let sigkill = s.properties.get("SIGKILL").cloned().unwrap_or(Value::Undefined);
+            let sigkill = s
+                .properties
+                .get("SIGKILL")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(sigkill, Value::I32(9), "SIGKILL must be 9");
         }
     }
@@ -311,10 +350,15 @@ fn os_constants_errno_enoent_is_present() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(errno)) = o.properties.get("errno") {
             let e = errno.lock().unwrap();
-            let val = e.properties.get("ENOENT").cloned().unwrap_or(Value::Undefined);
+            let val = e
+                .properties
+                .get("ENOENT")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert!(
                 matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-                "errno.ENOENT must be a number, got {:?}", val
+                "errno.ENOENT must be a number, got {:?}",
+                val
             );
         } else {
             panic!("os.constants.errno must be an object");
@@ -329,10 +373,15 @@ fn os_constants_errno_eacces_is_present() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(errno)) = o.properties.get("errno") {
             let e = errno.lock().unwrap();
-            let val = e.properties.get("EACCES").cloned().unwrap_or(Value::Undefined);
+            let val = e
+                .properties
+                .get("EACCES")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert!(
                 matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-                "errno.EACCES must be a number, got {:?}", val
+                "errno.EACCES must be a number, got {:?}",
+                val
             );
         }
     }
@@ -357,8 +406,17 @@ fn os_constants_priority_normal_is_zero() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(prio)) = o.properties.get("priority") {
             let p = prio.lock().unwrap();
-            let val = p.properties.get("PRIORITY_NORMAL").cloned().unwrap_or(Value::Undefined);
-            assert_eq!(val, Value::I32(0), "PRIORITY_NORMAL must be 0, got {:?}", val);
+            let val = p
+                .properties
+                .get("PRIORITY_NORMAL")
+                .cloned()
+                .unwrap_or(Value::Undefined);
+            assert_eq!(
+                val,
+                Value::I32(0),
+                "PRIORITY_NORMAL must be 0, got {:?}",
+                val
+            );
         }
     }
 }
@@ -373,8 +431,15 @@ fn cpus_first_cpu_has_times_object() {
         if let ObjectKind::Array(elems) = &o.kind {
             if let Value::Object(cpu) = &elems[0] {
                 let c = cpu.lock().unwrap();
-                let times = c.properties.get("times").cloned().unwrap_or(Value::Undefined);
-                assert!(matches!(times, Value::Object(_)), "cpu.times must be an object");
+                let times = c
+                    .properties
+                    .get("times")
+                    .cloned()
+                    .unwrap_or(Value::Undefined);
+                assert!(
+                    matches!(times, Value::Object(_)),
+                    "cpu.times must be an object"
+                );
                 return;
             }
         }
@@ -397,12 +462,18 @@ fn cpus_times_has_user_sys_idle_fields() {
                     for field in &["user", "sys", "idle"] {
                         assert!(
                             t.properties.contains_key(*field),
-                            "cpu.times.{} must exist", field
+                            "cpu.times.{} must exist",
+                            field
                         );
-                        let val = t.properties.get(*field).cloned().unwrap_or(Value::Undefined);
+                        let val = t
+                            .properties
+                            .get(*field)
+                            .cloned()
+                            .unwrap_or(Value::Undefined);
                         assert!(
                             matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-                            "cpu.times.{} must be a number", field
+                            "cpu.times.{} must be a number",
+                            field
                         );
                     }
                     return;
@@ -442,7 +513,10 @@ fn cpus_times_has_nice_field() {
                 let c = cpu.lock().unwrap();
                 if let Some(Value::Object(times)) = c.properties.get("times") {
                     let t = times.lock().unwrap();
-                    assert!(t.properties.contains_key("nice"), "cpu.times.nice must exist");
+                    assert!(
+                        t.properties.contains_key("nice"),
+                        "cpu.times.nice must exist"
+                    );
                     return;
                 }
             }
@@ -575,10 +649,15 @@ fn os_constants_errno_ebusy_is_present() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(errno)) = o.properties.get("errno") {
             let e = errno.lock().unwrap();
-            let val = e.properties.get("EBUSY").cloned().unwrap_or(Value::Undefined);
+            let val = e
+                .properties
+                .get("EBUSY")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert!(
                 matches!(val, Value::I32(_) | Value::I64(_) | Value::F64(_)),
-                "errno.EBUSY must be a number, got {:?}", val
+                "errno.EBUSY must be a number, got {:?}",
+                val
             );
         }
     }
@@ -633,8 +712,14 @@ fn user_info_has_uid_and_gid() {
     let v = call_os("userInfo", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("uid"), "userInfo().uid must exist");
-        assert!(o.properties.contains_key("gid"), "userInfo().gid must exist");
+        assert!(
+            o.properties.contains_key("uid"),
+            "userInfo().uid must exist"
+        );
+        assert!(
+            o.properties.contains_key("gid"),
+            "userInfo().gid must exist"
+        );
         return;
     }
     panic!("userInfo() expected object");
@@ -646,7 +731,11 @@ fn user_info_has_homedir() {
     let v = call_os("userInfo", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        let homedir = o.properties.get("homedir").cloned().unwrap_or(Value::Undefined);
+        let homedir = o
+            .properties
+            .get("homedir")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         if let Value::String(s) = homedir {
             assert!(!s.is_empty(), "userInfo().homedir must be non-empty");
             return;
@@ -662,8 +751,15 @@ fn user_info_has_shell() {
     let v = call_os("userInfo", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("shell"), "userInfo().shell must exist on Unix");
-        let shell = o.properties.get("shell").cloned().unwrap_or(Value::Undefined);
+        assert!(
+            o.properties.contains_key("shell"),
+            "userInfo().shell must exist on Unix"
+        );
+        let shell = o
+            .properties
+            .get("shell")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         match shell {
             Value::String(s) => assert!(!s.is_empty(), "userInfo().shell must be non-empty"),
             Value::Null => {} // TDD: acceptable if not yet implemented
@@ -684,7 +780,8 @@ fn network_interfaces_values_are_arrays() {
         for (_name, val) in &o.properties {
             assert!(
                 matches!(val, Value::Object(_)),
-                "each networkInterface entry must be an array, got {:?}", val
+                "each networkInterface entry must be an array, got {:?}",
+                val
             );
         }
         return;
@@ -709,7 +806,10 @@ fn _force_object_use(_: Object) {}
 #[test]
 fn os_constants_returns_object() {
     let v = call_os("constants", vec![]);
-    assert!(matches!(v, Value::Object(_)), "os.constants must be an object");
+    assert!(
+        matches!(v, Value::Object(_)),
+        "os.constants must be an object"
+    );
 }
 
 #[test]
@@ -717,7 +817,10 @@ fn os_constants_has_signals_object() {
     let v = call_os("constants", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("signals"), "os.constants must have a signals sub-object");
+        assert!(
+            o.properties.contains_key("signals"),
+            "os.constants must have a signals sub-object"
+        );
     } else {
         panic!("os.constants expected object, got {:?}", v);
     }
@@ -730,8 +833,17 @@ fn os_constants_signals_sigterm_is_15() {
         let o = obj.lock().unwrap();
         if let Some(Value::Object(signals)) = o.properties.get("signals") {
             let s = signals.lock().unwrap();
-            let sigterm = s.properties.get("SIGTERM").cloned().unwrap_or(Value::Undefined);
-            assert_eq!(sigterm, Value::I32(15), "SIGTERM must be 15, got {:?}", sigterm);
+            let sigterm = s
+                .properties
+                .get("SIGTERM")
+                .cloned()
+                .unwrap_or(Value::Undefined);
+            assert_eq!(
+                sigterm,
+                Value::I32(15),
+                "SIGTERM must be 15, got {:?}",
+                sigterm
+            );
         } else {
             panic!("os.constants.signals expected object");
         }
@@ -743,7 +855,10 @@ fn os_constants_has_errno_object() {
     let v = call_os("constants", vec![]);
     if let Value::Object(obj) = &v {
         let o = obj.lock().unwrap();
-        assert!(o.properties.contains_key("errno"), "os.constants must have an errno sub-object");
+        assert!(
+            o.properties.contains_key("errno"),
+            "os.constants must have an errno sub-object"
+        );
     } else {
         panic!("os.constants expected object, got {:?}", v);
     }

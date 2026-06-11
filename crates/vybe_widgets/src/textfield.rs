@@ -1,8 +1,11 @@
 //! Text input widget — standalone tiny-skia rendered text field.
 
 use super::WidgetColors;
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use cosmic_text::Color as CosmicColor;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
 
 pub struct TextInput {
     pub value: String,
@@ -53,11 +56,26 @@ impl TextInput {
         }
     }
 
-    pub fn with_placeholder(mut self, p: &str) -> Self { self.placeholder = p.to_string(); self }
-    pub fn with_password(mut self) -> Self { self.password = true; self }
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
-    pub fn with_read_only(mut self) -> Self { self.read_only = true; self }
-    pub fn with_max_length(mut self, max: usize) -> Self { self.max_length = Some(max); self }
+    pub fn with_placeholder(mut self, p: &str) -> Self {
+        self.placeholder = p.to_string();
+        self
+    }
+    pub fn with_password(mut self) -> Self {
+        self.password = true;
+        self
+    }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    pub fn with_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+    pub fn with_max_length(mut self, max: usize) -> Self {
+        self.max_length = Some(max);
+        self
+    }
 
     /// Paint renders the border only. Text rendering requires a font system
     /// and is handled by the caller (browser engine uses cosmic_text,
@@ -75,7 +93,11 @@ impl TextInput {
         }
 
         // Border
-        let (r, g, b, a) = if self.focused { self.colors.focus_ring } else { self.colors.border };
+        let (r, g, b, a) = if self.focused {
+            self.colors.focus_ring
+        } else {
+            self.colors.border
+        };
         paint.set_color_rgba8(r, g, b, a);
         let mut stroke = tiny_skia::Stroke::default();
         stroke.width = if self.focused { 2.0 } else { 1.0 };
@@ -106,7 +128,9 @@ impl TextInput {
 
     /// Insert text at cursor position (replaces selection if any).
     pub fn insert(&mut self, text: &str) {
-        if self.disabled || self.read_only { return; }
+        if self.disabled || self.read_only {
+            return;
+        }
         self.delete_selection();
         let insert_text = if let Some(max) = self.max_length {
             let remaining = max.saturating_sub(self.value.chars().count());
@@ -122,28 +146,42 @@ impl TextInput {
 
     /// Delete character before cursor (backspace). If selection active, delete selection.
     pub fn backspace(&mut self) {
-        if self.disabled || self.read_only { return; }
+        if self.disabled || self.read_only {
+            return;
+        }
         if self.has_selection() {
             self.delete_selection();
             return;
         }
-        if self.cursor == 0 { return; }
+        if self.cursor == 0 {
+            return;
+        }
         let mut idx = self.cursor - 1;
-        while idx > 0 && !self.value.is_char_boundary(idx) { idx -= 1; }
+        while idx > 0 && !self.value.is_char_boundary(idx) {
+            idx -= 1;
+        }
         self.value.drain(idx..self.cursor);
         self.cursor = idx;
     }
 
     /// Delete character after cursor. If selection active, delete selection.
     pub fn delete(&mut self) {
-        if self.disabled || self.read_only { return; }
+        if self.disabled || self.read_only {
+            return;
+        }
         if self.has_selection() {
             self.delete_selection();
             return;
         }
-        if self.cursor >= self.value.len() { return; }
+        if self.cursor >= self.value.len() {
+            return;
+        }
         let end = self.cursor + 1;
-        let end = if end <= self.value.len() { end } else { self.value.len() };
+        let end = if end <= self.value.len() {
+            end
+        } else {
+            self.value.len()
+        };
         self.value.drain(self.cursor..end);
     }
 
@@ -172,7 +210,9 @@ impl TextInput {
 
     /// Select all text.
     pub fn select_all(&mut self) {
-        if self.value.is_empty() { return; }
+        if self.value.is_empty() {
+            return;
+        }
         self.selection_anchor = Some(0);
         self.cursor = self.value.len();
     }
@@ -195,13 +235,20 @@ impl TextInput {
 
     /// Hit-test: given an x position (in widget-local coords), return byte offset in value.
     #[allow(dead_code)]
-    fn hit_test_cursor(&self, font_system: &mut cosmic_text::FontSystem, local_x: f32, scale: f32) -> usize {
+    fn hit_test_cursor(
+        &self,
+        font_system: &mut cosmic_text::FontSystem,
+        local_x: f32,
+        scale: f32,
+    ) -> usize {
         let text = if self.password {
             "\u{2022}".repeat(self.value.len())
         } else {
             self.value.clone()
         };
-        if text.is_empty() { return 0; }
+        if text.is_empty() {
+            return 0;
+        }
         // Find the byte position whose rendered width is closest to local_x
         let mut best_pos = 0;
         let mut best_dist = local_x.abs();
@@ -220,7 +267,10 @@ impl TextInput {
         if self.password {
             // Each bullet is 3 bytes in UTF-8; map back to character index
             let char_idx = best_pos / "\u{2022}".len();
-            self.value.char_indices().nth(char_idx).map_or(self.value.len(), |(i, _)| i)
+            self.value
+                .char_indices()
+                .nth(char_idx)
+                .map_or(self.value.len(), |(i, _)| i)
         } else {
             best_pos.min(self.value.len())
         }
@@ -250,22 +300,36 @@ impl TextInput {
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for TextInput {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_focused(&mut self, focused: bool) { self.focused = focused; }
-    fn hovered(&self) -> bool { self.hovered }
-    fn set_hovered(&mut self, hovered: bool) { self.hovered = hovered; }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn hovered(&self) -> bool {
+        self.hovered
+    }
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.width = rect.w;
         self.height = rect.h;
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Border + background via existing method
         self.paint_border(ctx.pixmap, r.x, r.y, ctx.scale);
@@ -274,7 +338,11 @@ impl PanelWidget for TextInput {
         let padding = 4.0;
         let display = self.display_text();
         let is_ph = self.is_placeholder();
-        let (cr, cg, cb, _) = if is_ph { self.colors.placeholder } else { self.colors.foreground };
+        let (cr, cg, cb, _) = if is_ph {
+            self.colors.placeholder
+        } else {
+            self.colors.foreground
+        };
         let ty = r.y + (r.h - self.font_size) / 2.0 - 1.0;
 
         // Selection highlight
@@ -294,12 +362,22 @@ impl PanelWidget for TextInput {
                     let x_start = if sel_display_start.is_empty() {
                         0.0
                     } else {
-                        super::ide_text::measure_text(ctx.font_system, &sel_display_start, self.font_size, ctx.scale)
+                        super::ide_text::measure_text(
+                            ctx.font_system,
+                            &sel_display_start,
+                            self.font_size,
+                            ctx.scale,
+                        )
                     };
                     let x_end = if sel_display_end.is_empty() {
                         0.0
                     } else {
-                        super::ide_text::measure_text(ctx.font_system, &sel_display_end, self.font_size, ctx.scale)
+                        super::ide_text::measure_text(
+                            ctx.font_system,
+                            &sel_display_end,
+                            self.font_size,
+                            ctx.scale,
+                        )
                     };
                     // Draw selection rectangle
                     let sx = (r.x + padding + x_start) * ctx.scale;
@@ -309,16 +387,23 @@ impl PanelWidget for TextInput {
                     if let Some(rect) = tiny_skia::Rect::from_xywh(sx, sy, sw.max(1.0), sh) {
                         let mut paint = tiny_skia::Paint::default();
                         paint.set_color_rgba8(51, 153, 255, 100); // blue selection highlight
-                        ctx.pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                        ctx.pixmap
+                            .fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
                     }
                 }
             }
         }
 
         super::ide_text::draw_text(
-            ctx.pixmap, ctx.font_system, ctx.swash_cache,
-            &display, r.x + padding, ty, self.font_size,
-            CosmicColor::rgba(cr, cg, cb, 255), ctx.scale,
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &display,
+            r.x + padding,
+            ty,
+            self.font_size,
+            CosmicColor::rgba(cr, cg, cb, 255),
+            ctx.scale,
         );
 
         // Cursor
@@ -345,7 +430,13 @@ impl PanelWidget for TextInput {
             pb.move_to(cx, cy_top);
             pb.line_to(cx, cy_bot);
             if let Some(path) = pb.finish() {
-                ctx.pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+                ctx.pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &stroke,
+                    tiny_skia::Transform::identity(),
+                    None,
+                );
             }
         }
     }
@@ -372,7 +463,11 @@ impl PanelWidget for TextInput {
                     let avg_char_width = self.width / char_count.max(1) as f32;
                     let char_idx = ((local_x / avg_char_width).round() as usize).min(char_count);
                     // Convert char index to byte position
-                    self.cursor = self.value.char_indices().nth(char_idx).map_or(self.value.len(), |(i, _)| i);
+                    self.cursor = self
+                        .value
+                        .char_indices()
+                        .nth(char_idx)
+                        .map_or(self.value.len(), |(i, _)| i);
                 }
                 if event.shift {
                     // Shift+click: extend selection
@@ -397,8 +492,13 @@ impl PanelWidget for TextInput {
                     } else {
                         let char_count = self.value.chars().count();
                         let avg_char_width = self.width / char_count.max(1) as f32;
-                        let char_idx = ((local_x / avg_char_width).round() as usize).min(char_count);
-                        self.cursor = self.value.char_indices().nth(char_idx).map_or(self.value.len(), |(i, _)| i);
+                        let char_idx =
+                            ((local_x / avg_char_width).round() as usize).min(char_count);
+                        self.cursor = self
+                            .value
+                            .char_indices()
+                            .nth(char_idx)
+                            .map_or(self.value.len(), |(i, _)| i);
                     }
                     return true;
                 }
@@ -412,10 +512,14 @@ impl PanelWidget for TextInput {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
-        if !self.focused || self.disabled { return false; }
-        use winit::keyboard::{Key, NamedKey};
+        if !self.focused || self.disabled {
+            return false;
+        }
         use winit::event::ElementState;
-        if event.state != ElementState::Pressed { return false; }
+        use winit::keyboard::{Key, NamedKey};
+        if event.state != ElementState::Pressed {
+            return false;
+        }
 
         let is_shift = event.shift;
         let is_cmd = event.cmd; // Cmd on macOS, Ctrl on others
@@ -440,7 +544,10 @@ impl PanelWidget for TextInput {
                         if let Ok(mut cb) = arboard::Clipboard::new() {
                             if let Ok(text) = cb.get_text() {
                                 self.insert(&text);
-                                self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                                self.pending_events.push(WidgetEvent::TextChanged(
+                                    self.name.clone(),
+                                    self.value.clone(),
+                                ));
                             }
                         }
                     }
@@ -453,7 +560,10 @@ impl PanelWidget for TextInput {
                         }
                         if !self.read_only {
                             self.delete_selection();
-                            self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                            self.pending_events.push(WidgetEvent::TextChanged(
+                                self.name.clone(),
+                                self.value.clone(),
+                            ));
                         }
                     }
                     return true;
@@ -465,12 +575,18 @@ impl PanelWidget for TextInput {
         match &event.key_without_modifiers {
             Key::Named(NamedKey::Backspace) => {
                 self.backspace();
-                self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                self.pending_events.push(WidgetEvent::TextChanged(
+                    self.name.clone(),
+                    self.value.clone(),
+                ));
                 true
             }
             Key::Named(NamedKey::Delete) => {
                 self.delete();
-                self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                self.pending_events.push(WidgetEvent::TextChanged(
+                    self.name.clone(),
+                    self.value.clone(),
+                ));
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
@@ -533,7 +649,10 @@ impl PanelWidget for TextInput {
                 if let Some(ref text) = event.text {
                     if !text.is_empty() && text.chars().all(|c| !c.is_control()) {
                         self.insert(text);
-                        self.pending_events.push(WidgetEvent::TextChanged(self.name.clone(), self.value.clone()));
+                        self.pending_events.push(WidgetEvent::TextChanged(
+                            self.name.clone(),
+                            self.value.clone(),
+                        ));
                         return true;
                     }
                 }
@@ -571,7 +690,10 @@ impl PanelWidget for TextInput {
             }
             WidgetCommand::GetText => CommandValue::Text(self.value.clone()),
             WidgetCommand::GetValue => CommandValue::Text(self.value.clone()),
-            WidgetCommand::SetEnabled(e) => { self.disabled = !e; CommandValue::None }
+            WidgetCommand::SetEnabled(e) => {
+                self.disabled = !e;
+                CommandValue::None
+            }
             _ => CommandValue::None,
         }
     }
@@ -580,5 +702,7 @@ impl PanelWidget for TextInput {
         std::mem::take(&mut self.pending_events)
     }
 
-    fn focusable(&self) -> bool { !self.disabled }
+    fn focusable(&self) -> bool {
+        !self.disabled
+    }
 }

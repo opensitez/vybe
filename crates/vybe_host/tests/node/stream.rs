@@ -65,7 +65,13 @@ fn has_method(v: &Value, key: &str) -> bool {
 
 fn prop(v: &Value, key: &str) -> Value {
     match v {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -146,13 +152,19 @@ fn readable_has_emit_method() {
 #[test]
 fn readable_has_remove_listener_method() {
     let s = call_stream("Readable", vec![]);
-    assert!(has_method(&s, "removeListener"), "Readable.removeListener must exist");
+    assert!(
+        has_method(&s, "removeListener"),
+        "Readable.removeListener must exist"
+    );
 }
 
 #[test]
 fn readable_has_add_listener_method() {
     let s = call_stream("Readable", vec![]);
-    assert!(has_method(&s, "addListener"), "Readable.addListener must exist");
+    assert!(
+        has_method(&s, "addListener"),
+        "Readable.addListener must exist"
+    );
 }
 
 // ── Readable stream-specific methods ─────────────────────────────────────────
@@ -202,7 +214,10 @@ fn readable_has_push_method() {
 #[test]
 fn readable_has_set_encoding_method() {
     let s = call_stream("Readable", vec![]);
-    assert!(has_method(&s, "setEncoding"), "Readable.setEncoding must exist");
+    assert!(
+        has_method(&s, "setEncoding"),
+        "Readable.setEncoding must exist"
+    );
 }
 
 // ── Readable state properties ─────────────────────────────────────────────────
@@ -211,7 +226,10 @@ fn readable_has_set_encoding_method() {
 fn readable_has_readable_property() {
     let s = call_stream("Readable", vec![]);
     let v = prop(&s, "readable");
-    assert!(matches!(v, Value::Bool(_) | Value::Undefined), "readable must be bool or undefined");
+    assert!(
+        matches!(v, Value::Bool(_) | Value::Undefined),
+        "readable must be bool or undefined"
+    );
 }
 
 #[test]
@@ -401,14 +419,20 @@ fn is_disturbed_false_for_null() {
 fn readable_from_array_returns_readable() {
     let input = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
     let stream = call_stream("readableFrom", vec![input]);
-    assert!(matches!(stream, Value::Object(_)), "Readable.from must return a stream");
+    assert!(
+        matches!(stream, Value::Object(_)),
+        "Readable.from must return a stream"
+    );
 }
 
 // ── pipeline surface ──────────────────────────────────────────────────────────
 
 #[test]
 fn pipeline_is_registered_as_import() {
-    assert!(has_import("pipeline"), "node:stream pipeline must be registered");
+    assert!(
+        has_import("pipeline"),
+        "node:stream pipeline must be registered"
+    );
 }
 
 #[test]
@@ -422,7 +446,10 @@ fn pipeline_with_null_callback_does_not_panic() {
 
 #[test]
 fn finished_is_registered_as_import() {
-    assert!(has_import("finished"), "node:stream finished must be registered");
+    assert!(
+        has_import("finished"),
+        "node:stream finished must be registered"
+    );
 }
 
 #[test]
@@ -443,7 +470,10 @@ fn add_abort_signal_does_not_panic() {
 
 #[test]
 fn compose_is_registered_as_import() {
-    assert!(has_import("compose"), "node:stream compose must be registered");
+    assert!(
+        has_import("compose"),
+        "node:stream compose must be registered"
+    );
 }
 
 // ── Surface check ─────────────────────────────────────────────────────────────
@@ -470,5 +500,8 @@ fn proposal_node_stream_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:stream imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:stream imports: {missing:?}"
+    );
 }

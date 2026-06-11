@@ -39,7 +39,8 @@ fn invoke_result(module: &str, name: &str, args: Vec<Value>) -> Result<Value, St
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -47,16 +48,24 @@ fn s(text: &str) -> Value {
 }
 
 fn array_len(value: &Value) -> usize {
-    let Value::Object(object) = value else { return 0 };
+    let Value::Object(object) = value else {
+        return 0;
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else { return 0 };
+    let ObjectKind::Array(values) = &object.kind else {
+        return 0;
+    };
     values.len()
 }
 
 fn array_strings(value: &Value) -> Vec<String> {
-    let Value::Object(object) = value else { return Vec::new() };
+    let Value::Object(object) = value else {
+        return Vec::new();
+    };
     let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else { return Vec::new() };
+    let ObjectKind::Array(values) = &object.kind else {
+        return Vec::new();
+    };
     values
         .iter()
         .filter_map(|value| match value {
@@ -77,7 +86,9 @@ fn get_environment_returns_array_of_string_pairs() {
             for entry in entries {
                 let Value::Object(pair) = entry else { continue };
                 let pair = pair.lock().unwrap();
-                let ObjectKind::Array(values) = &pair.kind else { continue };
+                let ObjectKind::Array(values) = &pair.kind else {
+                    continue;
+                };
                 assert_eq!(values.len(), 2);
                 assert!(matches!(values.first(), Some(Value::String(_))));
                 assert!(matches!(values.get(1), Some(Value::String(_))));
@@ -86,12 +97,19 @@ fn get_environment_returns_array_of_string_pairs() {
             return;
         }
     }
-    panic!("get-environment should return list<(string, string)>, got {:?}", result);
+    panic!(
+        "get-environment should return list<(string, string)>, got {:?}",
+        result
+    );
 }
 
 #[test]
 fn get_environment_with_key_returns_value() {
-    let key = if std::env::var("HOME").is_ok() { "HOME" } else { "USERPROFILE" };
+    let key = if std::env::var("HOME").is_ok() {
+        "HOME"
+    } else {
+        "USERPROFILE"
+    };
     let expected = std::env::var(key).unwrap_or_else(|_| String::from("."));
     let result = invoke("wasi:cli/environment", "get-environment", vec![s(key)]);
     assert_eq!(result, s(&expected));
@@ -99,7 +117,11 @@ fn get_environment_with_key_returns_value() {
 
 #[test]
 fn get_environment_with_missing_key_returns_null() {
-    let result = invoke("wasi:cli/environment", "get-environment", vec![s("VYBE_TEST_ENV_SHOULD_NOT_EXIST")]);
+    let result = invoke(
+        "wasi:cli/environment",
+        "get-environment",
+        vec![s("VYBE_TEST_ENV_SHOULD_NOT_EXIST")],
+    );
     assert!(matches!(result, Value::Null));
 }
 
@@ -121,7 +143,10 @@ fn initial_cwd_matches_get_initial_cwd() {
     let initial = invoke("wasi:cli/environment", "initial-cwd", vec![]);
     let renamed = invoke("wasi:cli/environment", "get-initial-cwd", vec![]);
     assert_eq!(initial, renamed);
-    assert_eq!(initial, s(std::env::current_dir().unwrap().to_string_lossy().as_ref()));
+    assert_eq!(
+        initial,
+        s(std::env::current_dir().unwrap().to_string_lossy().as_ref())
+    );
 }
 
 #[test]
@@ -135,7 +160,11 @@ fn get_initial_cwd_returns_non_empty_string() {
 
 #[test]
 fn get_environment_contains_home_or_userprofile_when_present() {
-    let key = if std::env::var("HOME").is_ok() { "HOME" } else { "USERPROFILE" };
+    let key = if std::env::var("HOME").is_ok() {
+        "HOME"
+    } else {
+        "USERPROFILE"
+    };
     let expected = std::env::var(key).unwrap_or_else(|_| String::from("."));
     let result = invoke("wasi:cli/environment", "get-environment", vec![]);
 
@@ -148,9 +177,13 @@ fn get_environment_contains_home_or_userprofile_when_present() {
     };
 
     let found = entries.iter().any(|entry| {
-        let Value::Object(pair) = entry else { return false };
+        let Value::Object(pair) = entry else {
+            return false;
+        };
         let pair = pair.lock().unwrap();
-        let ObjectKind::Array(values) = &pair.kind else { return false };
+        let ObjectKind::Array(values) = &pair.kind else {
+            return false;
+        };
         matches!(values.first(), Some(Value::String(name)) if name.as_ref() == key)
             && matches!(values.get(1), Some(Value::String(value)) if value.as_ref() == expected)
     });
@@ -168,13 +201,21 @@ fn logging_log_1_arg_returns_null() {
 
 #[test]
 fn logging_log_2_args_level_and_message_returns_null() {
-    let result = invoke("wasi:logging/logging", "log", vec![s("error"), s("something failed")]);
+    let result = invoke(
+        "wasi:logging/logging",
+        "log",
+        vec![s("error"), s("something failed")],
+    );
     assert!(matches!(result, Value::Null));
 }
 
 #[test]
 fn logging_log_3_args_level_context_message_returns_null() {
-    let result = invoke("wasi:logging/logging", "log", vec![s("warn"), s("mymodule"), s("low disk")]);
+    let result = invoke(
+        "wasi:logging/logging",
+        "log",
+        vec![s("warn"), s("mymodule"), s("low disk")],
+    );
     assert!(matches!(result, Value::Null));
 }
 
@@ -186,7 +227,11 @@ fn logging_log_0_args_returns_null() {
 
 #[test]
 fn logging_log_variadic_returns_null() {
-    let result = invoke("wasi:logging/logging", "log", vec![s("a"), s("b"), s("c"), s("d")]);
+    let result = invoke(
+        "wasi:logging/logging",
+        "log",
+        vec![s("a"), s("b"), s("c"), s("d")],
+    );
     assert!(matches!(result, Value::Null));
 }
 

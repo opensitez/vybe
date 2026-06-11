@@ -11,8 +11,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data",
             ClassType::new("DataTable")
                 .with_constructor(
-                    ConstructorDef::new(1)
-                        .with_common_backing("dotnet.datatable_new"),
+                    ConstructorDef::new(1).with_common_backing("dotnet.datatable_new"),
                 )
                 .with_method(MethodDef::new(
                     "NewRow",
@@ -34,10 +33,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataSet")
-                .with_constructor(
-                    ConstructorDef::new(1)
-                        .with_common_backing("dotnet.dataset_new"),
-                )
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.dataset_new"))
                 .with_method(MethodDef::new(
                     "Tables",
                     0,

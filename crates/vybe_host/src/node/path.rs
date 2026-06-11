@@ -74,7 +74,7 @@ fn dirname(path: &str) -> String {
 fn extname(path: &str) -> String {
     let base = basename(path, None);
     match base.rfind('.') {
-        Some(0) => String::new(),    // ".bashrc" → ""
+        Some(0) => String::new(), // ".bashrc" → ""
         Some(idx) => base[idx..].to_string(),
         None => String::new(),
     }
@@ -83,7 +83,11 @@ fn extname(path: &str) -> String {
 /// Node `join(...paths)` — concatenate with the platform separator and
 /// normalize. Empty segments are skipped (per Node).
 fn join(parts: &[String]) -> String {
-    let parts: Vec<&str> = parts.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = parts
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         return ".".to_string();
     }
@@ -91,7 +95,10 @@ fn join(parts: &[String]) -> String {
     let normalized = normalize(&raw);
     // Preserve a trailing separator if the original last segment had one
     // (Node's behaviour).
-    if parts.last().map(|s| s.ends_with('/') || s.ends_with('\\')).unwrap_or(false)
+    if parts
+        .last()
+        .map(|s| s.ends_with('/') || s.ends_with('\\'))
+        .unwrap_or(false)
         && !normalized.ends_with('/')
         && !normalized.ends_with('\\')
     {
@@ -134,7 +141,11 @@ fn normalize(path: &str) -> String {
         joined.insert_str(0, sep());
     }
     if joined.is_empty() {
-        return if is_abs { sep().to_string() } else { ".".to_string() };
+        return if is_abs {
+            sep().to_string()
+        } else {
+            ".".to_string()
+        };
     }
     if trailing_sep && !joined.ends_with('/') && !joined.ends_with('\\') {
         joined.push_str(sep());
@@ -147,7 +158,9 @@ fn is_absolute(path: &str) -> bool {
     if cfg!(windows) {
         // Drive letter (`C:\foo`) or UNC (`\\srv\share`) — punt on
         // exact Windows rules; cover the common case.
-        path.starts_with('\\') || path.starts_with('/') || (path.len() >= 2 && path.as_bytes()[1] == b':')
+        path.starts_with('\\')
+            || path.starts_with('/')
+            || (path.len() >= 2 && path.as_bytes()[1] == b':')
     } else {
         path.starts_with('/')
     }
@@ -160,7 +173,9 @@ fn resolve(parts: &[String]) -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
     for part in parts {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if is_absolute(part) {
             acc = part.clone();
         } else {
@@ -207,7 +222,11 @@ fn parse(path: &str) -> Value {
     let dir = dirname(path);
     let base = basename(path, None);
     let ext = extname(path);
-    let name = if ext.is_empty() { base.clone() } else { base[..base.len() - ext.len()].to_string() };
+    let name = if ext.is_empty() {
+        base.clone()
+    } else {
+        base[..base.len() - ext.len()].to_string()
+    };
     let root = if path.starts_with('/') {
         "/".to_string()
     } else if cfg!(windows) && path.len() >= 2 && path.as_bytes()[1] == b':' {
@@ -225,7 +244,9 @@ fn parse(path: &str) -> Value {
 
 /// Node `format(pathObject)` — opposite of parse.
 fn format(obj: &Value) -> String {
-    let Value::Object(object) = obj else { return String::new(); };
+    let Value::Object(object) = obj else {
+        return String::new();
+    };
     let object = object.lock().unwrap();
     let dir = match object.properties.get("dir") {
         Some(Value::String(text)) => text.to_string(),
@@ -258,95 +279,155 @@ fn format(obj: &Value) -> String {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("node:path", "basename", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        let ext = match args.get(1) {
-            Some(Value::String(text)) => Some(text.to_string()),
-            _ => None,
-        };
-        s_val(&basename(&path, ext.as_deref()))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "basename",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            let ext = match args.get(1) {
+                Some(Value::String(text)) => Some(text.to_string()),
+                _ => None,
+            };
+            s_val(&basename(&path, ext.as_deref()))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "dirname", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        s_val(&dirname(&path))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "dirname",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            s_val(&dirname(&path))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "extname", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        s_val(&extname(&path))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "extname",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            s_val(&extname(&path))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "join", Box::new(|_ctx, args| {
-        let parts = collect_string_args(args);
-        s_val(&join(&parts))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "join",
+        Box::new(|_ctx, args| {
+            let parts = collect_string_args(args);
+            s_val(&join(&parts))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "normalize", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        s_val(&normalize(&path))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "normalize",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            s_val(&normalize(&path))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "isAbsolute", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        Value::Bool(is_absolute(&path))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "isAbsolute",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            Value::Bool(is_absolute(&path))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "resolve", Box::new(|_ctx, args| {
-        let parts = collect_string_args(args);
-        s_val(&resolve(&parts))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "resolve",
+        Box::new(|_ctx, args| {
+            let parts = collect_string_args(args);
+            s_val(&resolve(&parts))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "relative", Box::new(|_ctx, args| {
-        let from = s_arg(args, 0, "");
-        let to = s_arg(args, 1, "");
-        s_val(&relative(&from, &to))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "relative",
+        Box::new(|_ctx, args| {
+            let from = s_arg(args, 0, "");
+            let to = s_arg(args, 1, "");
+            s_val(&relative(&from, &to))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "parse", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        parse(&path)
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "parse",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            parse(&path)
+        }),
+    );
 
-    vm.register_host_fn("node:path", "format", Box::new(|_ctx, args| {
-        if let Some(obj) = args.first() {
-            s_val(&format(obj))
-        } else {
-            s_val("")
-        }
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "format",
+        Box::new(|_ctx, args| {
+            if let Some(obj) = args.first() {
+                s_val(&format(obj))
+            } else {
+                s_val("")
+            }
+        }),
+    );
 
     vm.register_host_fn("node:path", "sep", Box::new(|_ctx, _args| s_val(sep())));
-    vm.register_host_fn("node:path", "delimiter", Box::new(|_ctx, _args| s_val(delimiter())));
+    vm.register_host_fn(
+        "node:path",
+        "delimiter",
+        Box::new(|_ctx, _args| s_val(delimiter())),
+    );
 
-    vm.register_host_fn("node:path", "toNamespacedPath", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        if cfg!(windows) && path.starts_with("\\\\") {
-            s_val(&format!("\\\\?\\{}", &path[2..]))
-        } else {
-            s_val(&path)
-        }
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "toNamespacedPath",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            if cfg!(windows) && path.starts_with("\\\\") {
+                s_val(&format!("\\\\?\\{}", &path[2..]))
+            } else {
+                s_val(&path)
+            }
+        }),
+    );
 
-    vm.register_host_fn("node:path", "posix", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("sep".into(), s_val("/"));
-        o.properties.insert("delimiter".into(), s_val(":"));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "posix",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            o.properties.insert("sep".into(), s_val("/"));
+            o.properties.insert("delimiter".into(), s_val(":"));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "win32", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("sep".into(), s_val("\\"));
-        o.properties.insert("delimiter".into(), s_val(";"));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "win32",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            o.properties.insert("sep".into(), s_val("\\"));
+            o.properties.insert("delimiter".into(), s_val(";"));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn("node:path", "matchesGlob", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, "");
-        let pattern = s_arg(args, 1, "");
-        Value::Bool(glob_matches(&pattern, &path))
-    }));
+    vm.register_host_fn(
+        "node:path",
+        "matchesGlob",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, "");
+            let pattern = s_arg(args, 1, "");
+            Value::Bool(glob_matches(&pattern, &path))
+        }),
+    );
 }
 
 fn glob_matches(pattern: &str, path: &str) -> bool {
@@ -355,7 +436,10 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     let mut chars = pattern.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '*' if chars.peek() == Some(&'*') => { chars.next(); re.push_str(".*"); }
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                re.push_str(".*");
+            }
             '*' => re.push_str("[^/]*"),
             '?' => re.push_str("[^/]"),
             '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
@@ -366,7 +450,9 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
         }
     }
     re.push('$');
-    regex::Regex::new(&re).map(|r| r.is_match(path)).unwrap_or(false)
+    regex::Regex::new(&re)
+        .map(|r| r.is_match(path))
+        .unwrap_or(false)
 }
 
 #[allow(dead_code)]

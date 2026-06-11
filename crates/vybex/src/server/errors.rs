@@ -1,7 +1,7 @@
 //! Dev error pages. Phase 1: minimal HTML; Phase 2+ gets source snippets
 //! with highlighted line numbers.
 
-use super::response_stream::{bytes_response, BoxBody};
+use super::response_stream::{BoxBody, bytes_response};
 use http::Response;
 
 pub fn error_404(path: &str) -> Response<BoxBody> {

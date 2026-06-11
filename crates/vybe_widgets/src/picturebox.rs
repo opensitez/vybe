@@ -1,8 +1,8 @@
 //! PictureBox widget — image placeholder with X cross and icon.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId};
+use super::layout::{KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetId};
+use tiny_skia::*;
 
 pub struct PictureBox {
     pub has_image: bool,
@@ -27,7 +27,10 @@ impl PictureBox {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Paint — gray background with X cross lines as placeholder and a small image icon.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -121,15 +124,31 @@ impl PictureBox {
 }
 
 impl PanelWidget for PictureBox {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
     }
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 }

@@ -35,10 +35,14 @@ static SEGMENTER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Vec<Value>) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
-    obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
-    obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
-    obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    obj.properties
+        .insert("__host_module".into(), Value::String(Arc::from(module)));
+    obj.properties
+        .insert("__host_name".into(), Value::String(Arc::from(name)));
+    obj.properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from(name)));
     obj.properties.insert(
         "__bound_args".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
@@ -68,29 +72,53 @@ fn s_val(text: &str) -> Value {
 }
 
 pub(crate) fn shared_collator_prototype() -> Value {
-    Value::Object(COLLATOR_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+    Value::Object(
+        COLLATOR_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
 }
 
 pub(crate) fn shared_number_format_prototype() -> Value {
-    Value::Object(NUMBER_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+    Value::Object(
+        NUMBER_FORMAT_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
 }
 
 pub(crate) fn shared_date_time_format_prototype() -> Value {
-    Value::Object(DATE_TIME_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+    Value::Object(
+        DATE_TIME_FORMAT_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
 }
 
 pub(crate) fn shared_relative_time_format_prototype() -> Value {
-    Value::Object(RELATIVE_TIME_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+    Value::Object(
+        RELATIVE_TIME_FORMAT_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
 }
 
 pub(crate) fn shared_segmenter_prototype() -> Value {
-    Value::Object(SEGMENTER_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+    Value::Object(
+        SEGMENTER_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elements);
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
-    obj.properties.insert("__proto__".into(), crate::ecma::array::shared_array_prototype());
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Array")));
+    obj.properties.insert(
+        "__proto__".into(),
+        crate::ecma::array::shared_array_prototype(),
+    );
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -165,184 +193,263 @@ fn parse_icu_locale(tag: &str) -> icu::locale::Locale {
 
 fn register_collator(vm: &mut VM) {
     // Register compare first so we can look up its index for bound instances.
-    vm.register_host_fn("ecma:intl/collator", "compare", Box::new(|_ctx, args| {
-        use icu::collator::{Collator, options::CollatorOptions};
-        let collator = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return Value::I32(0),
-        };
-        let a = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(o) => format!("{}", o),
-            None => String::new(),
-        };
-        let b = match args.get(2) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(o) => format!("{}", o),
-            None => String::new(),
-        };
-        let locale = obj_string_prop(&collator, "locale").unwrap_or_else(|| "en-US".into());
-        let sensitivity = obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
-        if sensitivity == "base" && a.to_lowercase() == b.to_lowercase() {
-            return Value::I32(0);
-        }
-        let icu_loc = parse_icu_locale(&locale);
-        let prefs = (&icu_loc).into();
-        let coll = match Collator::try_new(prefs, CollatorOptions::default()) {
-            Ok(c) => c,
-            Err(_) => {
-                return Value::I32(match a.as_str().cmp(b.as_str()) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                });
+    vm.register_host_fn(
+        "ecma:intl/collator",
+        "compare",
+        Box::new(|_ctx, args| {
+            use icu::collator::{Collator, options::CollatorOptions};
+            let collator = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return Value::I32(0),
+            };
+            let a = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(o) => format!("{}", o),
+                None => String::new(),
+            };
+            let b = match args.get(2) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(o) => format!("{}", o),
+                None => String::new(),
+            };
+            let locale = obj_string_prop(&collator, "locale").unwrap_or_else(|| "en-US".into());
+            let sensitivity =
+                obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
+            if sensitivity == "base" && a.to_lowercase() == b.to_lowercase() {
+                return Value::I32(0);
             }
-        };
-        Value::I32(match coll.compare(&a, &b) {
-            std::cmp::Ordering::Less => -1,
-            std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => 1,
-        })
-    }));
+            let icu_loc = parse_icu_locale(&locale);
+            let prefs = (&icu_loc).into();
+            let coll = match Collator::try_new(prefs, CollatorOptions::default()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return Value::I32(match a.as_str().cmp(b.as_str()) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    });
+                }
+            };
+            Value::I32(match coll.compare(&a, &b) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            })
+        }),
+    );
 
-    let compare_idx = *vm.host_registry
+    let compare_idx = *vm
+        .host_registry
         .get(&("ecma:intl/collator".to_string(), "compare".to_string()))
         .expect("ecma:intl/collator.compare must be registered");
 
-    vm.register_host_fn("ecma:intl/collator", "new", Box::new(move |_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let opts_lock = options.lock().unwrap();
-        let usage = opts_lock.properties.get("usage")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "sort".into());
-        let sensitivity = opts_lock.properties.get("sensitivity")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "variant".into());
-        drop(opts_lock);
-        let result = make_object(vec![
-            ("__type", s_val("Collator")),
-            ("__proto__", shared_collator_prototype()),
-            ("locale", s_val(&locale)),
-            ("usage", s_val(&usage)),
-            ("sensitivity", s_val(&sensitivity)),
-        ]);
-        // Attach a bound compare so `coll.compare` passed to Array.sort retains the collator.
-        if let Value::Object(coll_arc) = &result {
-            let bound = bound_host_fn_ref_by_idx(
-                "ecma:intl/collator", "compare", compare_idx,
-                vec![Value::Object(coll_arc.clone())],
-            );
-            coll_arc.lock().unwrap().properties.insert("compare".into(), bound);
-        }
-        result
-    }));
-
-    vm.register_host_fn("ecma:intl/collator", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(c)) = args.first() {
-            let locale = obj_string_prop(c, "locale").unwrap_or_else(|| "en-US".into());
-            let usage = obj_string_prop(c, "usage").unwrap_or_else(|| "sort".into());
-            let sensitivity = obj_string_prop(c, "sensitivity").unwrap_or_else(|| "variant".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/collator",
+        "new",
+        Box::new(move |_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let opts_lock = options.lock().unwrap();
+            let usage = opts_lock
+                .properties
+                .get("usage")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "sort".into());
+            let sensitivity = opts_lock
+                .properties
+                .get("sensitivity")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "variant".into());
+            drop(opts_lock);
+            let result = make_object(vec![
+                ("__type", s_val("Collator")),
+                ("__proto__", shared_collator_prototype()),
                 ("locale", s_val(&locale)),
                 ("usage", s_val(&usage)),
                 ("sensitivity", s_val(&sensitivity)),
-                ("ignorePunctuation", Value::Bool(false)),
-                ("collation", s_val("default")),
-                ("numeric", Value::Bool(false)),
-                ("caseFirst", s_val("false")),
             ]);
-        }
-        make_object(vec![])
-    }));
+            // Attach a bound compare so `coll.compare` passed to Array.sort retains the collator.
+            if let Value::Object(coll_arc) = &result {
+                let bound = bound_host_fn_ref_by_idx(
+                    "ecma:intl/collator",
+                    "compare",
+                    compare_idx,
+                    vec![Value::Object(coll_arc.clone())],
+                );
+                coll_arc
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .insert("compare".into(), bound);
+            }
+            result
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/collator", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/collator",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(c)) = args.first() {
+                let locale = obj_string_prop(c, "locale").unwrap_or_else(|| "en-US".into());
+                let usage = obj_string_prop(c, "usage").unwrap_or_else(|| "sort".into());
+                let sensitivity =
+                    obj_string_prop(c, "sensitivity").unwrap_or_else(|| "variant".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("usage", s_val(&usage)),
+                    ("sensitivity", s_val(&sensitivity)),
+                    ("ignorePunctuation", Value::Bool(false)),
+                    ("collation", s_val("default")),
+                    ("numeric", Value::Bool(false)),
+                    ("caseFirst", s_val("false")),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/collator",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 // ── Intl.NumberFormat (ECMA-402 §15) ─────────────────────────────────
 
 fn register_number_format(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/numberformat", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let style = ol.properties.get("style")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "decimal".into());
-        let currency = ol.properties.get("currency")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_default();
-        let min_frac = ol.properties.get("minimumFractionDigits")
-            .map(|v| v.as_i32()).unwrap_or(if style == "currency" { 2 } else { 0 });
-        let max_frac = ol.properties.get("maximumFractionDigits")
-            .map(|v| v.as_i32()).unwrap_or(if style == "currency" { 2 } else { 3 });
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("NumberFormat")),
-            ("__proto__", shared_number_format_prototype()),
-            ("locale", s_val(&locale)),
-            ("style", s_val(&style)),
-            ("currency", s_val(&currency)),
-            ("minimumFractionDigits", Value::I32(min_frac)),
-            ("maximumFractionDigits", Value::I32(max_frac)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/numberformat", "format", Box::new(|_ctx, args| {
-        let nf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let value = match args.get(1) {
-            Some(v) => v.as_f64(),
-            None => f64::NAN,
-        };
-        s_val(&format_number_real(&nf, value))
-    }));
-
-    vm.register_host_fn("ecma:intl/numberformat", "formatToParts", Box::new(|_ctx, args| {
-        let nf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let value = match args.get(1) {
-            Some(v) => v.as_f64(),
-            None => f64::NAN,
-        };
-        make_array(format_number_parts_real(&nf, value))
-    }));
-
-    vm.register_host_fn("ecma:intl/numberformat", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(nf)) = args.first() {
-            let locale = obj_string_prop(nf, "locale").unwrap_or_else(|| "en-US".into());
-            let style = obj_string_prop(nf, "style").unwrap_or_else(|| "decimal".into());
-            let currency = obj_string_prop(nf, "currency").unwrap_or_default();
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let style = ol
+                .properties
+                .get("style")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "decimal".into());
+            let currency = ol
+                .properties
+                .get("currency")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            let min_frac = ol
+                .properties
+                .get("minimumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(if style == "currency" { 2 } else { 0 });
+            let max_frac = ol
+                .properties
+                .get("maximumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(if style == "currency" { 2 } else { 3 });
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("NumberFormat")),
+                ("__proto__", shared_number_format_prototype()),
                 ("locale", s_val(&locale)),
-                ("numberingSystem", s_val("latn")),
                 ("style", s_val(&style)),
                 ("currency", s_val(&currency)),
-                ("currencyDisplay", s_val("symbol")),
-                ("minimumIntegerDigits", Value::I32(1)),
-                ("useGrouping", Value::Bool(true)),
-            ]);
-        }
-        make_object(vec![])
-    }));
+                ("minimumFractionDigits", Value::I32(min_frac)),
+                ("maximumFractionDigits", Value::I32(max_frac)),
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/numberformat", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "format",
+        Box::new(|_ctx, args| {
+            let nf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let value = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => f64::NAN,
+            };
+            s_val(&format_number_real(&nf, value))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "formatToParts",
+        Box::new(|_ctx, args| {
+            let nf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let value = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => f64::NAN,
+            };
+            make_array(format_number_parts_real(&nf, value))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(nf)) = args.first() {
+                let locale = obj_string_prop(nf, "locale").unwrap_or_else(|| "en-US".into());
+                let style = obj_string_prop(nf, "style").unwrap_or_else(|| "decimal".into());
+                let currency = obj_string_prop(nf, "currency").unwrap_or_default();
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("numberingSystem", s_val("latn")),
+                    ("style", s_val(&style)),
+                    ("currency", s_val(&currency)),
+                    ("currencyDisplay", s_val("symbol")),
+                    ("minimumIntegerDigits", Value::I32(1)),
+                    ("useGrouping", Value::Bool(true)),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 /// Format a number using `icu::decimal::DecimalFormatter` for the
@@ -357,11 +464,22 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     let locale = obj_string_prop(nf, "locale").unwrap_or_else(|| "en-US".into());
     let max_frac = {
         let lock = nf.lock().unwrap();
-        lock.properties.get("maximumFractionDigits").map(|v| v.as_i32()).unwrap_or(3)
+        lock.properties
+            .get("maximumFractionDigits")
+            .map(|v| v.as_i32())
+            .unwrap_or(3)
     };
 
-    if value.is_nan() { return "NaN".into(); }
-    if value.is_infinite() { return if value < 0.0 { "-∞".into() } else { "∞".into() }; }
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value.is_infinite() {
+        return if value < 0.0 {
+            "-∞".into()
+        } else {
+            "∞".into()
+        };
+    }
 
     let icu_loc = parse_icu_locale(&locale);
     let formatter = match DecimalFormatter::try_new((&icu_loc).into(), Default::default()) {
@@ -375,7 +493,11 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     // zeros down to (effectively) min_frac. ECMA-402 §15 default is
     // min_frac=0 for decimal style — trailing-zero stripping makes
     // 1234.5 render as "1,234.5" rather than "1,234.500".
-    let scaled_value = if style == "percent" { value * 100.0 } else { value };
+    let scaled_value = if style == "percent" {
+        value * 100.0
+    } else {
+        value
+    };
     let mult = 10f64.powi(max_frac);
     let int_form = (scaled_value * mult).round() as i64;
     let mut fd: Decimal = int_form.into();
@@ -384,7 +506,10 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     }
     let min_frac = {
         let lock = nf.lock().unwrap();
-        lock.properties.get("minimumFractionDigits").map(|v| v.as_i32()).unwrap_or(0)
+        lock.properties
+            .get("minimumFractionDigits")
+            .map(|v| v.as_i32())
+            .unwrap_or(0)
     };
     fd.trim_end();
     // After trim, pad back up to min_frac if needed (e.g. currency
@@ -406,8 +531,12 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
 
 fn currency_symbol(code: &str) -> &'static str {
     match code {
-        "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "¥",
-        "CHF" => "CHF ", "CAD" | "AUD" | "NZD" => "$",
+        "USD" => "$",
+        "EUR" => "€",
+        "GBP" => "£",
+        "JPY" => "¥",
+        "CHF" => "CHF ",
+        "CAD" | "AUD" | "NZD" => "$",
         _ => "¤",
     }
 }
@@ -415,74 +544,116 @@ fn currency_symbol(code: &str) -> &'static str {
 // ── Intl.DateTimeFormat (ECMA-402 §13) ───────────────────────────────
 
 fn register_date_time_format(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/datetimeformat", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let year = ol.properties.get("year")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_default();
-        let month = ol.properties.get("month")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_default();
-        let day = ol.properties.get("day")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_default();
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("DateTimeFormat")),
-            ("__proto__", shared_date_time_format_prototype()),
-            ("locale", s_val(&locale)),
-            ("year", s_val(&year)),
-            ("month", s_val(&month)),
-            ("day", s_val(&day)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/datetimeformat", "format", Box::new(|_ctx, args| {
-        let dtf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let ms = match resolve_date_ms(args.get(1)) {
-            Some(ms) => ms,
-            None => return s_val(""),
-        };
-        s_val(&format_date_real(&dtf, ms))
-    }));
-
-    vm.register_host_fn("ecma:intl/datetimeformat", "formatToParts", Box::new(|_ctx, args| {
-        let dtf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let ms = match resolve_date_ms(args.get(1)) {
-            Some(ms) => ms,
-            None => return make_array(vec![]),
-        };
-        make_array(format_date_parts_real(&dtf, ms))
-    }));
-
-    vm.register_host_fn("ecma:intl/datetimeformat", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(dtf)) = args.first() {
-            let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let year = ol
+                .properties
+                .get("year")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            let month = ol
+                .properties
+                .get("month")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            let day = ol
+                .properties
+                .get("day")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("DateTimeFormat")),
+                ("__proto__", shared_date_time_format_prototype()),
                 ("locale", s_val(&locale)),
-                ("calendar", s_val("gregory")),
-                ("numberingSystem", s_val("latn")),
-                ("timeZone", s_val("UTC")),
-            ]);
-        }
-        make_object(vec![])
-    }));
+                ("year", s_val(&year)),
+                ("month", s_val(&month)),
+                ("day", s_val(&day)),
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/datetimeformat", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "format",
+        Box::new(|_ctx, args| {
+            let dtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let ms = match resolve_date_ms(args.get(1)) {
+                Some(ms) => ms,
+                None => return s_val(""),
+            };
+            s_val(&format_date_real(&dtf, ms))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "formatToParts",
+        Box::new(|_ctx, args| {
+            let dtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let ms = match resolve_date_ms(args.get(1)) {
+                Some(ms) => ms,
+                None => return make_array(vec![]),
+            };
+            make_array(format_date_parts_real(&dtf, ms))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(dtf)) = args.first() {
+                let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("calendar", s_val("gregory")),
+                    ("numberingSystem", s_val("latn")),
+                    ("timeZone", s_val("UTC")),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 /// Format ms-since-epoch into a locale-aware date string using
@@ -490,8 +661,8 @@ fn register_date_time_format(vm: &mut VM) {
 /// set per ECMA-402 §13.1.2 default behaviour (year, month, day —
 /// no time without explicit options).
 fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
-    use icu::datetime::{DateTimeFormatter, fieldsets};
     use icu::datetime::input::Date;
+    use icu::datetime::{DateTimeFormatter, fieldsets};
 
     let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
     let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
@@ -534,10 +705,7 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         Ok(d) => d,
         Err(_) => return String::new(),
     };
-    let formatter = match DateTimeFormatter::try_new(
-        (&icu_loc).into(),
-        fieldsets::YMD::medium(),
-    ) {
+    let formatter = match DateTimeFormatter::try_new((&icu_loc).into(), fieldsets::YMD::medium()) {
         Ok(f) => f,
         Err(_) => return format!("{}/{}/{}", mo, d, y),
     };
@@ -551,15 +719,32 @@ fn epoch_to_ymd(secs: i64) -> (i32, i32, i32) {
     loop {
         let leap = is_leap(year);
         let year_days = if leap { 366 } else { 365 };
-        if remaining < year_days as i64 { break; }
+        if remaining < year_days as i64 {
+            break;
+        }
         remaining -= year_days as i64;
         year += 1;
     }
     let leap = is_leap(year);
-    let months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1;
     for &m in &months {
-        if remaining < m as i64 { break; }
+        if remaining < m as i64 {
+            break;
+        }
         remaining -= m as i64;
         month += 1;
     }
@@ -574,109 +759,162 @@ fn is_leap(y: i32) -> bool {
 // ── Intl.ListFormat (ECMA-402 §14) ───────────────────────────────────
 
 fn register_list_format(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/listformat", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let lf_type = ol.properties.get("type")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "conjunction".into());
-        let style = ol.properties.get("style")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "long".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("ListFormat")),
-            ("locale", s_val(&locale)),
-            ("type", s_val(&lf_type)),
-            ("style", s_val(&style)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/listformat", "format", Box::new(|_ctx, args| {
-        use icu::list::{ListFormatter, options::{ListFormatterOptions, ListLength}};
-        let lf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let items: Vec<String> = match args.get(1) {
-            Some(Value::Object(o)) => {
-                let lock = o.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = lock.kind {
-                    elems.iter().map(|v| match v { Value::String(s) => s.to_string(), o => format!("{}", o) }).collect()
-                } else { Vec::new() }
-            }
-            _ => Vec::new(),
-        };
-        let locale = obj_string_prop(&lf, "locale").unwrap_or_else(|| "en-US".into());
-        let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
-        let style = obj_string_prop(&lf, "style").unwrap_or_else(|| "long".into());
-
-        let icu_loc = parse_icu_locale(&locale);
-        let length = match style.as_str() {
-            "short" => ListLength::Short,
-            "narrow" => ListLength::Narrow,
-            _ => ListLength::Wide,
-        };
-        let opts = ListFormatterOptions::default().with_length(length);
-        // ICU 2.x uses separate constructors per list type rather than
-        // a unified type-enum option.
-        let prefs = (&icu_loc).into();
-        let formatter = match lf_type.as_str() {
-            "disjunction" => ListFormatter::try_new_or(prefs, opts),
-            "unit"        => ListFormatter::try_new_unit(prefs, opts),
-            _             => ListFormatter::try_new_and(prefs, opts),
-        };
-        let formatter = match formatter {
-            Ok(f) => f,
-            Err(_) => return s_val(&fallback_format_list(&items, &lf_type)),
-        };
-        s_val(&formatter.format_to_string(items.iter()))
-    }));
-
-    vm.register_host_fn("ecma:intl/listformat", "formatToParts", Box::new(|_ctx, args| {
-        let lf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let items: Vec<String> = match args.get(1) {
-            Some(Value::Object(o)) => {
-                let lock = o.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = lock.kind {
-                    elems.iter().map(|v| match v { Value::String(s) => s.to_string(), o => format!("{}", o) }).collect()
-                } else { Vec::new() }
-            }
-            _ => Vec::new(),
-        };
-        let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
-        // MVP: single literal part; full breakdown is a future enhancement.
-        make_array(vec![make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&fallback_format_list(&items, &lf_type))),
-        ])])
-    }));
-
-    vm.register_host_fn("ecma:intl/listformat", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(lf)) = args.first() {
-            let locale = obj_string_prop(lf, "locale").unwrap_or_else(|| "en-US".into());
-            let lf_type = obj_string_prop(lf, "type").unwrap_or_else(|| "conjunction".into());
-            let style = obj_string_prop(lf, "style").unwrap_or_else(|| "long".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/listformat",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let lf_type = ol
+                .properties
+                .get("type")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "conjunction".into());
+            let style = ol
+                .properties
+                .get("style")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "long".into());
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("ListFormat")),
                 ("locale", s_val(&locale)),
                 ("type", s_val(&lf_type)),
                 ("style", s_val(&style)),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/listformat", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/listformat",
+        "format",
+        Box::new(|_ctx, args| {
+            use icu::list::{
+                ListFormatter,
+                options::{ListFormatterOptions, ListLength},
+            };
+            let lf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let items: Vec<String> = match args.get(1) {
+                Some(Value::Object(o)) => {
+                    let lock = o.lock().unwrap();
+                    if let ObjectKind::Array(ref elems) = lock.kind {
+                        elems
+                            .iter()
+                            .map(|v| match v {
+                                Value::String(s) => s.to_string(),
+                                o => format!("{}", o),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            };
+            let locale = obj_string_prop(&lf, "locale").unwrap_or_else(|| "en-US".into());
+            let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
+            let style = obj_string_prop(&lf, "style").unwrap_or_else(|| "long".into());
+
+            let icu_loc = parse_icu_locale(&locale);
+            let length = match style.as_str() {
+                "short" => ListLength::Short,
+                "narrow" => ListLength::Narrow,
+                _ => ListLength::Wide,
+            };
+            let opts = ListFormatterOptions::default().with_length(length);
+            // ICU 2.x uses separate constructors per list type rather than
+            // a unified type-enum option.
+            let prefs = (&icu_loc).into();
+            let formatter = match lf_type.as_str() {
+                "disjunction" => ListFormatter::try_new_or(prefs, opts),
+                "unit" => ListFormatter::try_new_unit(prefs, opts),
+                _ => ListFormatter::try_new_and(prefs, opts),
+            };
+            let formatter = match formatter {
+                Ok(f) => f,
+                Err(_) => return s_val(&fallback_format_list(&items, &lf_type)),
+            };
+            s_val(&formatter.format_to_string(items.iter()))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/listformat",
+        "formatToParts",
+        Box::new(|_ctx, args| {
+            let lf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let items: Vec<String> = match args.get(1) {
+                Some(Value::Object(o)) => {
+                    let lock = o.lock().unwrap();
+                    if let ObjectKind::Array(ref elems) = lock.kind {
+                        elems
+                            .iter()
+                            .map(|v| match v {
+                                Value::String(s) => s.to_string(),
+                                o => format!("{}", o),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            };
+            let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
+            // MVP: single literal part; full breakdown is a future enhancement.
+            make_array(vec![make_object(vec![
+                ("type", s_val("literal")),
+                ("value", s_val(&fallback_format_list(&items, &lf_type))),
+            ])])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/listformat",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(lf)) = args.first() {
+                let locale = obj_string_prop(lf, "locale").unwrap_or_else(|| "en-US".into());
+                let lf_type = obj_string_prop(lf, "type").unwrap_or_else(|| "conjunction".into());
+                let style = obj_string_prop(lf, "style").unwrap_or_else(|| "long".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("type", s_val(&lf_type)),
+                    ("style", s_val(&style)),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/listformat",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 fn fallback_format_list(items: &[String], lf_type: &str) -> String {
@@ -713,75 +951,108 @@ fn fallback_format_list(items: &[String], lf_type: &str) -> String {
 // categories, etc.). No locale fallback needed.
 
 fn register_plural_rules(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/pluralrules", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let pr_type = ol.properties.get("type")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "cardinal".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("PluralRules")),
-            ("locale", s_val(&locale)),
-            ("type", s_val(&pr_type)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/pluralrules", "select", Box::new(|_ctx, args| {
-        let pr = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val("other"),
-        };
-        let n = match args.get(1) {
-            Some(v) => v.as_f64(),
-            None => 0.0,
-        };
-        let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
-        let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
-        s_val(plural_select_real(&locale, &pr_type, n))
-    }));
-
-    vm.register_host_fn("ecma:intl/pluralrules", "selectRange", Box::new(|_ctx, args| {
-        let pr = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val("other"),
-        };
-        // ECMA-402 selectRange returns the plural category for the
-        // formatted range. Without locale-specific range rules, return
-        // the end value's category (good enough approximation).
-        let end = args.get(2).map(|v| v.as_f64()).unwrap_or(0.0);
-        let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
-        let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
-        s_val(plural_select_real(&locale, &pr_type, end))
-    }));
-
-    vm.register_host_fn("ecma:intl/pluralrules", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(pr)) = args.first() {
-            let locale = obj_string_prop(pr, "locale").unwrap_or_else(|| "en-US".into());
-            let pr_type = obj_string_prop(pr, "type").unwrap_or_else(|| "cardinal".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/pluralrules",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let pr_type = ol
+                .properties
+                .get("type")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "cardinal".into());
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("PluralRules")),
                 ("locale", s_val(&locale)),
                 ("type", s_val(&pr_type)),
-                ("minimumIntegerDigits", Value::I32(1)),
-                ("minimumFractionDigits", Value::I32(0)),
-                ("maximumFractionDigits", Value::I32(3)),
-                ("pluralCategories", make_array(vec![
-                    s_val("zero"), s_val("one"), s_val("two"),
-                    s_val("few"), s_val("many"), s_val("other"),
-                ])),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/pluralrules", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/pluralrules",
+        "select",
+        Box::new(|_ctx, args| {
+            let pr = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val("other"),
+            };
+            let n = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => 0.0,
+            };
+            let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
+            let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
+            s_val(plural_select_real(&locale, &pr_type, n))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/pluralrules",
+        "selectRange",
+        Box::new(|_ctx, args| {
+            let pr = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val("other"),
+            };
+            // ECMA-402 selectRange returns the plural category for the
+            // formatted range. Without locale-specific range rules, return
+            // the end value's category (good enough approximation).
+            let end = args.get(2).map(|v| v.as_f64()).unwrap_or(0.0);
+            let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
+            let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
+            s_val(plural_select_real(&locale, &pr_type, end))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/pluralrules",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(pr)) = args.first() {
+                let locale = obj_string_prop(pr, "locale").unwrap_or_else(|| "en-US".into());
+                let pr_type = obj_string_prop(pr, "type").unwrap_or_else(|| "cardinal".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("type", s_val(&pr_type)),
+                    ("minimumIntegerDigits", Value::I32(1)),
+                    ("minimumFractionDigits", Value::I32(0)),
+                    ("maximumFractionDigits", Value::I32(3)),
+                    (
+                        "pluralCategories",
+                        make_array(vec![
+                            s_val("zero"),
+                            s_val("one"),
+                            s_val("two"),
+                            s_val("few"),
+                            s_val("many"),
+                            s_val("other"),
+                        ]),
+                    ),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/pluralrules",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
@@ -789,9 +1060,7 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
     // intl_pluralrules indexes rules by BASE LANGUAGE only ("en", "fr",
     // ...). Strip region/script so "en-US" still finds the "en" table.
     let parsed = parse_langid(locale);
-    let langid = unic_langid::LanguageIdentifier::from_parts(
-        parsed.language, None, None, &[],
-    );
+    let langid = unic_langid::LanguageIdentifier::from_parts(parsed.language, None, None, &[]);
     let rule_type = match pr_type {
         "ordinal" => PluralRuleType::ORDINAL,
         _ => PluralRuleType::CARDINAL,
@@ -821,86 +1090,145 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
 // ── Intl.RelativeTimeFormat (ECMA-402 §17) ───────────────────────────
 
 fn register_relative_time_format(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/relativetimeformat", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let numeric = ol.properties.get("numeric")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "always".into());
-        let style = ol.properties.get("style")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "long".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("RelativeTimeFormat")),
-            ("__proto__", shared_relative_time_format_prototype()),
-            ("locale", s_val(&locale)),
-            ("numeric", s_val(&numeric)),
-            ("style", s_val(&style)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/relativetimeformat", "format", Box::new(|_ctx, args| {
-        let rtf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let value = match args.get(1) { Some(v) => v.as_f64(), None => 0.0 };
-        let unit = match args.get(2) { Some(Value::String(s)) => s.to_string(), _ => "second".into() };
-        let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
-        let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
-        let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
-        s_val(&format_relative_time_real(&locale, &style, &numeric, value, &unit))
-    }));
-
-    vm.register_host_fn("ecma:intl/relativetimeformat", "formatToParts", Box::new(|_ctx, args| {
-        let rtf = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let value = match args.get(1) { Some(v) => v.as_f64(), None => 0.0 };
-        let unit = match args.get(2) { Some(Value::String(s)) => s.to_string(), _ => "second".into() };
-        let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
-        let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
-        let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
-        make_array(vec![make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&format_relative_time_real(&locale, &style, &numeric, value, &unit))),
-        ])])
-    }));
-
-    vm.register_host_fn("ecma:intl/relativetimeformat", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(rtf)) = args.first() {
-            let locale = obj_string_prop(rtf, "locale").unwrap_or_else(|| "en-US".into());
-            let numeric = obj_string_prop(rtf, "numeric").unwrap_or_else(|| "always".into());
-            let style = obj_string_prop(rtf, "style").unwrap_or_else(|| "long".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/relativetimeformat",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let numeric = ol
+                .properties
+                .get("numeric")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "always".into());
+            let style = ol
+                .properties
+                .get("style")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "long".into());
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("RelativeTimeFormat")),
+                ("__proto__", shared_relative_time_format_prototype()),
                 ("locale", s_val(&locale)),
-                ("numberingSystem", s_val("latn")),
                 ("numeric", s_val(&numeric)),
                 ("style", s_val(&style)),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/relativetimeformat", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/relativetimeformat",
+        "format",
+        Box::new(|_ctx, args| {
+            let rtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let value = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => 0.0,
+            };
+            let unit = match args.get(2) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => "second".into(),
+            };
+            let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
+            let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
+            let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
+            s_val(&format_relative_time_real(
+                &locale, &style, &numeric, value, &unit,
+            ))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/relativetimeformat",
+        "formatToParts",
+        Box::new(|_ctx, args| {
+            let rtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let value = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => 0.0,
+            };
+            let unit = match args.get(2) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => "second".into(),
+            };
+            let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
+            let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
+            let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
+            make_array(vec![make_object(vec![
+                ("type", s_val("literal")),
+                (
+                    "value",
+                    s_val(&format_relative_time_real(
+                        &locale, &style, &numeric, value, &unit,
+                    )),
+                ),
+            ])])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/relativetimeformat",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(rtf)) = args.first() {
+                let locale = obj_string_prop(rtf, "locale").unwrap_or_else(|| "en-US".into());
+                let numeric = obj_string_prop(rtf, "numeric").unwrap_or_else(|| "always".into());
+                let style = obj_string_prop(rtf, "style").unwrap_or_else(|| "long".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("numberingSystem", s_val("latn")),
+                    ("numeric", s_val(&numeric)),
+                    ("style", s_val(&style)),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/relativetimeformat",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 /// Format relative time using `icu_relativetime`. Constructor variants
 /// per (style × unit) — pick the right one and format. Falls back to
 /// a plain English form on locale/unit data miss.
-fn format_relative_time_real(locale: &str, style: &str, numeric: &str, value: f64, unit: &str) -> String {
-    use icu_relativetime::{RelativeTimeFormatter, RelativeTimeFormatterOptions};
-    use icu_relativetime::options::Numeric;
+fn format_relative_time_real(
+    locale: &str,
+    style: &str,
+    numeric: &str,
+    value: f64,
+    unit: &str,
+) -> String {
     use fixed_decimal::FixedDecimal;
+    use icu_relativetime::options::Numeric;
+    use icu_relativetime::{RelativeTimeFormatter, RelativeTimeFormatterOptions};
 
     if numeric == "auto" {
         let rounded = value.round() as i64;
@@ -917,35 +1245,39 @@ fn format_relative_time_real(locale: &str, style: &str, numeric: &str, value: f6
         Err(_) => return fallback_relative_time(value, unit),
     };
 
-    let opts = RelativeTimeFormatterOptions { numeric: Numeric::Always };
+    let opts = RelativeTimeFormatterOptions {
+        numeric: Numeric::Always,
+    };
     let unit_norm = unit.trim_end_matches('s'); // "days" → "day"
 
     let formatter_result = match (style, unit_norm) {
-        ("short", "second")  => RelativeTimeFormatter::try_new_short_second(&icu_loc.into(), opts),
-        ("short", "minute")  => RelativeTimeFormatter::try_new_short_minute(&icu_loc.into(), opts),
-        ("short", "hour")    => RelativeTimeFormatter::try_new_short_hour(&icu_loc.into(), opts),
-        ("short", "day")     => RelativeTimeFormatter::try_new_short_day(&icu_loc.into(), opts),
-        ("short", "week")    => RelativeTimeFormatter::try_new_short_week(&icu_loc.into(), opts),
-        ("short", "month")   => RelativeTimeFormatter::try_new_short_month(&icu_loc.into(), opts),
+        ("short", "second") => RelativeTimeFormatter::try_new_short_second(&icu_loc.into(), opts),
+        ("short", "minute") => RelativeTimeFormatter::try_new_short_minute(&icu_loc.into(), opts),
+        ("short", "hour") => RelativeTimeFormatter::try_new_short_hour(&icu_loc.into(), opts),
+        ("short", "day") => RelativeTimeFormatter::try_new_short_day(&icu_loc.into(), opts),
+        ("short", "week") => RelativeTimeFormatter::try_new_short_week(&icu_loc.into(), opts),
+        ("short", "month") => RelativeTimeFormatter::try_new_short_month(&icu_loc.into(), opts),
         ("short", "quarter") => RelativeTimeFormatter::try_new_short_quarter(&icu_loc.into(), opts),
-        ("short", "year")    => RelativeTimeFormatter::try_new_short_year(&icu_loc.into(), opts),
-        ("narrow", "second")  => RelativeTimeFormatter::try_new_narrow_second(&icu_loc.into(), opts),
-        ("narrow", "minute")  => RelativeTimeFormatter::try_new_narrow_minute(&icu_loc.into(), opts),
-        ("narrow", "hour")    => RelativeTimeFormatter::try_new_narrow_hour(&icu_loc.into(), opts),
-        ("narrow", "day")     => RelativeTimeFormatter::try_new_narrow_day(&icu_loc.into(), opts),
-        ("narrow", "week")    => RelativeTimeFormatter::try_new_narrow_week(&icu_loc.into(), opts),
-        ("narrow", "month")   => RelativeTimeFormatter::try_new_narrow_month(&icu_loc.into(), opts),
-        ("narrow", "quarter") => RelativeTimeFormatter::try_new_narrow_quarter(&icu_loc.into(), opts),
-        ("narrow", "year")    => RelativeTimeFormatter::try_new_narrow_year(&icu_loc.into(), opts),
+        ("short", "year") => RelativeTimeFormatter::try_new_short_year(&icu_loc.into(), opts),
+        ("narrow", "second") => RelativeTimeFormatter::try_new_narrow_second(&icu_loc.into(), opts),
+        ("narrow", "minute") => RelativeTimeFormatter::try_new_narrow_minute(&icu_loc.into(), opts),
+        ("narrow", "hour") => RelativeTimeFormatter::try_new_narrow_hour(&icu_loc.into(), opts),
+        ("narrow", "day") => RelativeTimeFormatter::try_new_narrow_day(&icu_loc.into(), opts),
+        ("narrow", "week") => RelativeTimeFormatter::try_new_narrow_week(&icu_loc.into(), opts),
+        ("narrow", "month") => RelativeTimeFormatter::try_new_narrow_month(&icu_loc.into(), opts),
+        ("narrow", "quarter") => {
+            RelativeTimeFormatter::try_new_narrow_quarter(&icu_loc.into(), opts)
+        }
+        ("narrow", "year") => RelativeTimeFormatter::try_new_narrow_year(&icu_loc.into(), opts),
         // Default style "long" or unknown.
-        (_, "second")  => RelativeTimeFormatter::try_new_long_second(&icu_loc.into(), opts),
-        (_, "minute")  => RelativeTimeFormatter::try_new_long_minute(&icu_loc.into(), opts),
-        (_, "hour")    => RelativeTimeFormatter::try_new_long_hour(&icu_loc.into(), opts),
-        (_, "day")     => RelativeTimeFormatter::try_new_long_day(&icu_loc.into(), opts),
-        (_, "week")    => RelativeTimeFormatter::try_new_long_week(&icu_loc.into(), opts),
-        (_, "month")   => RelativeTimeFormatter::try_new_long_month(&icu_loc.into(), opts),
+        (_, "second") => RelativeTimeFormatter::try_new_long_second(&icu_loc.into(), opts),
+        (_, "minute") => RelativeTimeFormatter::try_new_long_minute(&icu_loc.into(), opts),
+        (_, "hour") => RelativeTimeFormatter::try_new_long_hour(&icu_loc.into(), opts),
+        (_, "day") => RelativeTimeFormatter::try_new_long_day(&icu_loc.into(), opts),
+        (_, "week") => RelativeTimeFormatter::try_new_long_week(&icu_loc.into(), opts),
+        (_, "month") => RelativeTimeFormatter::try_new_long_month(&icu_loc.into(), opts),
         (_, "quarter") => RelativeTimeFormatter::try_new_long_quarter(&icu_loc.into(), opts),
-        (_, "year")    => RelativeTimeFormatter::try_new_long_year(&icu_loc.into(), opts),
+        (_, "year") => RelativeTimeFormatter::try_new_long_year(&icu_loc.into(), opts),
         _ => return fallback_relative_time(value, unit),
     };
 
@@ -963,7 +1295,11 @@ fn format_relative_time_real(locale: &str, style: &str, numeric: &str, value: f6
 fn fallback_relative_time(value: f64, unit: &str) -> String {
     let abs = value.abs() as i64;
     let stem = unit.trim_end_matches('s');
-    let unit_str = if abs == 1 { stem.to_string() } else { format!("{}s", stem) };
+    let unit_str = if abs == 1 {
+        stem.to_string()
+    } else {
+        format!("{}s", stem)
+    };
     if value < 0.0 {
         format!("{} {} ago", abs, unit_str)
     } else {
@@ -978,78 +1314,108 @@ fn fallback_relative_time(value: f64, unit: &str) -> String {
 // text including emoji, CJK, RTL).
 
 fn register_segmenter(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/segmenter", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let granularity = ol.properties.get("granularity")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "grapheme".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("Segmenter")),
-            ("__proto__", shared_segmenter_prototype()),
-            ("locale", s_val(&locale)),
-            ("granularity", s_val(&granularity)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/segmenter", "segment", Box::new(|_ctx, args| {
-        use unicode_segmentation::UnicodeSegmentation;
-        let seg = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let input = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(o) => format!("{}", o),
-            None => String::new(),
-        };
-        let granularity = obj_string_prop(&seg, "granularity").unwrap_or_else(|| "grapheme".into());
-
-        let segments: Vec<(String, usize)> = match granularity.as_str() {
-            "word" => input.split_word_bound_indices()
-                .map(|(i, s)| (s.to_string(), i))
-                .collect(),
-            "sentence" => input.split_sentence_bound_indices()
-                .map(|(i, s)| (s.to_string(), i))
-                .collect(),
-            _ => input.grapheme_indices(true)
-                .map(|(i, s)| (s.to_string(), i))
-                .collect(),
-        };
-
-        let elems: Vec<Value> = segments.into_iter().map(|(seg_str, idx)| {
-            let is_word_like = granularity == "word" && segment_is_word_like(&seg_str);
+    vm.register_host_fn(
+        "ecma:intl/segmenter",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let granularity = ol
+                .properties
+                .get("granularity")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "grapheme".into());
+            drop(ol);
             make_object(vec![
-                ("segment", s_val(&seg_str)),
-                ("index", Value::I32(idx as i32)),
-                ("input", s_val(&input)),
-                ("isWordLike", Value::Bool(is_word_like)),
-            ])
-        }).collect();
-        make_array(elems)
-    }));
-
-    vm.register_host_fn("ecma:intl/segmenter", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(seg)) = args.first() {
-            let locale = obj_string_prop(seg, "locale").unwrap_or_else(|| "en-US".into());
-            let granularity = obj_string_prop(seg, "granularity").unwrap_or_else(|| "grapheme".into());
-            return make_object(vec![
+                ("__type", s_val("Segmenter")),
+                ("__proto__", shared_segmenter_prototype()),
                 ("locale", s_val(&locale)),
                 ("granularity", s_val(&granularity)),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/segmenter", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/segmenter",
+        "segment",
+        Box::new(|_ctx, args| {
+            use unicode_segmentation::UnicodeSegmentation;
+            let seg = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let input = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(o) => format!("{}", o),
+                None => String::new(),
+            };
+            let granularity =
+                obj_string_prop(&seg, "granularity").unwrap_or_else(|| "grapheme".into());
+
+            let segments: Vec<(String, usize)> = match granularity.as_str() {
+                "word" => input
+                    .split_word_bound_indices()
+                    .map(|(i, s)| (s.to_string(), i))
+                    .collect(),
+                "sentence" => input
+                    .split_sentence_bound_indices()
+                    .map(|(i, s)| (s.to_string(), i))
+                    .collect(),
+                _ => input
+                    .grapheme_indices(true)
+                    .map(|(i, s)| (s.to_string(), i))
+                    .collect(),
+            };
+
+            let elems: Vec<Value> = segments
+                .into_iter()
+                .map(|(seg_str, idx)| {
+                    let is_word_like = granularity == "word" && segment_is_word_like(&seg_str);
+                    make_object(vec![
+                        ("segment", s_val(&seg_str)),
+                        ("index", Value::I32(idx as i32)),
+                        ("input", s_val(&input)),
+                        ("isWordLike", Value::Bool(is_word_like)),
+                    ])
+                })
+                .collect();
+            make_array(elems)
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/segmenter",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(seg)) = args.first() {
+                let locale = obj_string_prop(seg, "locale").unwrap_or_else(|| "en-US".into());
+                let granularity =
+                    obj_string_prop(seg, "granularity").unwrap_or_else(|| "grapheme".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("granularity", s_val(&granularity)),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/segmenter",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
@@ -1068,7 +1434,10 @@ fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
             }
             let value: String = chars[start..index].iter().collect();
             parts.push(make_object(vec![
-                ("type", s_val(if seen_decimal { "fraction" } else { "integer" })),
+                (
+                    "type",
+                    s_val(if seen_decimal { "fraction" } else { "integer" }),
+                ),
                 ("value", s_val(&value)),
             ]));
             continue;
@@ -1123,7 +1492,10 @@ fn format_date_parts_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> Vec<Value> {
     }
     if !day_opt.is_empty() {
         if !parts.is_empty() {
-            parts.push(make_object(vec![("type", s_val("literal")), ("value", s_val(" "))]));
+            parts.push(make_object(vec![
+                ("type", s_val("literal")),
+                ("value", s_val(" ")),
+            ]));
         }
         parts.push(make_object(vec![
             ("type", s_val("day")),
@@ -1132,7 +1504,10 @@ fn format_date_parts_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> Vec<Value> {
     }
     if !year_opt.is_empty() {
         if !parts.is_empty() {
-            parts.push(make_object(vec![("type", s_val("literal")), ("value", s_val(", "))]));
+            parts.push(make_object(vec![
+                ("type", s_val("literal")),
+                ("value", s_val(", ")),
+            ]));
         }
         parts.push(make_object(vec![
             ("type", s_val("year")),
@@ -1224,49 +1599,69 @@ fn segment_is_word_like(segment: &str) -> bool {
 // representation with proper subtag normalization.
 
 fn register_locale(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/locale", "new", Box::new(|_ctx, args| {
-        let tag = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            Some(o) => format!("{}", o),
-            None => "en".into(),
-        };
-        let langid = parse_langid(&tag);
-        let language = langid.language.as_str().to_string();
-        let region = langid.region.map(|r| r.as_str().to_string()).unwrap_or_default();
-        let script = langid.script.map(|s| s.as_str().to_string()).unwrap_or_default();
-        let base_name = langid.to_string();
-        make_object(vec![
-            ("__type", s_val("Locale")),
-            ("baseName", s_val(&base_name)),
-            ("language", s_val(&language)),
-            ("region", s_val(&region)),
-            ("script", s_val(&script)),
-            ("calendar", s_val("")),
-            ("numberingSystem", s_val("")),
-            ("collation", s_val("")),
-            ("caseFirst", s_val("")),
-            ("hourCycle", s_val("")),
-            ("numeric", Value::Bool(false)),
-        ])
-    }));
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "new",
+        Box::new(|_ctx, args| {
+            let tag = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(o) => format!("{}", o),
+                None => "en".into(),
+            };
+            let langid = parse_langid(&tag);
+            let language = langid.language.as_str().to_string();
+            let region = langid
+                .region
+                .map(|r| r.as_str().to_string())
+                .unwrap_or_default();
+            let script = langid
+                .script
+                .map(|s| s.as_str().to_string())
+                .unwrap_or_default();
+            let base_name = langid.to_string();
+            make_object(vec![
+                ("__type", s_val("Locale")),
+                ("baseName", s_val(&base_name)),
+                ("language", s_val(&language)),
+                ("region", s_val(&region)),
+                ("script", s_val(&script)),
+                ("calendar", s_val("")),
+                ("numberingSystem", s_val("")),
+                ("collation", s_val("")),
+                ("caseFirst", s_val("")),
+                ("hourCycle", s_val("")),
+                ("numeric", Value::Bool(false)),
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/locale", "toString", Box::new(|_ctx, args| {
-        if let Some(Value::Object(loc)) = args.first() {
-            return s_val(&obj_string_prop(loc, "baseName").unwrap_or_default());
-        }
-        s_val("")
-    }));
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "toString",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(loc)) = args.first() {
+                return s_val(&obj_string_prop(loc, "baseName").unwrap_or_default());
+            }
+            s_val("")
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/locale", "maximize", Box::new(|_ctx, args| {
-        // Likely-subtag expansion needs CLDR data; unic-langid 0.9
-        // alone doesn't provide it. Return as-is — full expansion is
-        // a future enhancement (could use icu::locale::Locale::maximize).
-        args.first().cloned().unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "maximize",
+        Box::new(|_ctx, args| {
+            // Likely-subtag expansion needs CLDR data; unic-langid 0.9
+            // alone doesn't provide it. Return as-is — full expansion is
+            // a future enhancement (could use icu::locale::Locale::maximize).
+            args.first().cloned().unwrap_or(Value::Null)
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/locale", "minimize", Box::new(|_ctx, args| {
-        args.first().cloned().unwrap_or(Value::Null)
-    }));
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "minimize",
+        Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Null)),
+    );
 }
 
 // ── Intl.DisplayNames (ECMA-402 §12) ─────────────────────────────────
@@ -1274,62 +1669,92 @@ fn register_locale(vm: &mut VM) {
 // Backed by `icu_displaynames` — full CLDR translation tables.
 
 fn register_display_names(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/displaynames", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let dn_type = ol.properties.get("type")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "language".into());
-        let style = ol.properties.get("style")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "long".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("DisplayNames")),
-            ("locale", s_val(&locale)),
-            ("type", s_val(&dn_type)),
-            ("style", s_val(&style)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/displaynames", "of", Box::new(|_ctx, args| {
-        let dn = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return Value::Undefined,
-        };
-        let code = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(o) => format!("{}", o),
-            None => return Value::Undefined,
-        };
-        let locale = obj_string_prop(&dn, "locale").unwrap_or_else(|| "en-US".into());
-        let dn_type = obj_string_prop(&dn, "type").unwrap_or_else(|| "language".into());
-        s_val(&display_name_of(&locale, &dn_type, &code))
-    }));
-
-    vm.register_host_fn("ecma:intl/displaynames", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(dn)) = args.first() {
-            let locale = obj_string_prop(dn, "locale").unwrap_or_else(|| "en-US".into());
-            let dn_type = obj_string_prop(dn, "type").unwrap_or_else(|| "language".into());
-            let style = obj_string_prop(dn, "style").unwrap_or_else(|| "long".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/displaynames",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let dn_type = ol
+                .properties
+                .get("type")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "language".into());
+            let style = ol
+                .properties
+                .get("style")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "long".into());
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("DisplayNames")),
                 ("locale", s_val(&locale)),
                 ("type", s_val(&dn_type)),
                 ("style", s_val(&style)),
-                ("fallback", s_val("code")),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/displaynames", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/displaynames",
+        "of",
+        Box::new(|_ctx, args| {
+            let dn = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return Value::Undefined,
+            };
+            let code = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(o) => format!("{}", o),
+                None => return Value::Undefined,
+            };
+            let locale = obj_string_prop(&dn, "locale").unwrap_or_else(|| "en-US".into());
+            let dn_type = obj_string_prop(&dn, "type").unwrap_or_else(|| "language".into());
+            s_val(&display_name_of(&locale, &dn_type, &code))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/displaynames",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(dn)) = args.first() {
+                let locale = obj_string_prop(dn, "locale").unwrap_or_else(|| "en-US".into());
+                let dn_type = obj_string_prop(dn, "type").unwrap_or_else(|| "language".into());
+                let style = obj_string_prop(dn, "style").unwrap_or_else(|| "long".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("type", s_val(&dn_type)),
+                    ("style", s_val(&style)),
+                    ("fallback", s_val("code")),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/displaynames",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 /// Return the display name for `code` in the given locale's perspective.
@@ -1339,7 +1764,9 @@ fn register_display_names(vm: &mut VM) {
 /// the older `icu_locid` (transitive dep). We bridge by parsing the
 /// tag through that crate.
 fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
-    use icu_displaynames::{DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames};
+    use icu_displaynames::{
+        DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames,
+    };
 
     let icu_loc: icu_locid::Locale = match locale.parse() {
         Ok(l) => l,
@@ -1388,72 +1815,98 @@ fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
 // hand-rolled English formatter until that crate stabilises.
 
 fn register_duration_format(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/durationformat", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let ol = options.lock().unwrap();
-        let style = ol.properties.get("style")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "short".into());
-        drop(ol);
-        make_object(vec![
-            ("__type", s_val("DurationFormat")),
-            ("locale", s_val(&locale)),
-            ("style", s_val(&style)),
-        ])
-    }));
-
-    vm.register_host_fn("ecma:intl/durationformat", "format", Box::new(|_ctx, args| {
-        let df = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let dur = match args.get(1) {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return s_val(""),
-        };
-        let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
-        let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
-        s_val(&format_duration(&dur, &style, &locale))
-    }));
-
-    vm.register_host_fn("ecma:intl/durationformat", "formatToParts", Box::new(|_ctx, args| {
-        let df = match args.first() {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let dur = match args.get(1) {
-            Some(Value::Object(o)) => o.clone(),
-            _ => return make_array(vec![]),
-        };
-        let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
-        let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
-        make_array(vec![make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&format_duration(&dur, &style, &locale))),
-        ])])
-    }));
-
-    vm.register_host_fn("ecma:intl/durationformat", "resolvedOptions", Box::new(|_ctx, args| {
-        if let Some(Value::Object(df)) = args.first() {
-            let locale = obj_string_prop(df, "locale").unwrap_or_else(|| "en-US".into());
-            let style = obj_string_prop(df, "style").unwrap_or_else(|| "short".into());
-            return make_object(vec![
+    vm.register_host_fn(
+        "ecma:intl/durationformat",
+        "new",
+        Box::new(|_ctx, args| {
+            let locale = resolve_locale(args.first());
+            let options = resolve_options(args.get(1));
+            let ol = options.lock().unwrap();
+            let style = ol
+                .properties
+                .get("style")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "short".into());
+            drop(ol);
+            make_object(vec![
+                ("__type", s_val("DurationFormat")),
                 ("locale", s_val(&locale)),
                 ("style", s_val(&style)),
-                ("numberingSystem", s_val("latn")),
-            ]);
-        }
-        make_object(vec![])
-    }));
+            ])
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl/durationformat", "supportedLocalesOf", Box::new(|_ctx, args| {
-        match args.first() {
+    vm.register_host_fn(
+        "ecma:intl/durationformat",
+        "format",
+        Box::new(|_ctx, args| {
+            let df = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let dur = match args.get(1) {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
+            let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
+            s_val(&format_duration(&dur, &style, &locale))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/durationformat",
+        "formatToParts",
+        Box::new(|_ctx, args| {
+            let df = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let dur = match args.get(1) {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
+            let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
+            make_array(vec![make_object(vec![
+                ("type", s_val("literal")),
+                ("value", s_val(&format_duration(&dur, &style, &locale))),
+            ])])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/durationformat",
+        "resolvedOptions",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(df)) = args.first() {
+                let locale = obj_string_prop(df, "locale").unwrap_or_else(|| "en-US".into());
+                let style = obj_string_prop(df, "style").unwrap_or_else(|| "short".into());
+                return make_object(vec![
+                    ("locale", s_val(&locale)),
+                    ("style", s_val(&style)),
+                    ("numberingSystem", s_val("latn")),
+                ]);
+            }
+            make_object(vec![])
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/durationformat",
+        "supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
             _ => make_array(vec![]),
-        }
-    }));
+        }),
+    );
 }
 
 /// Format a duration object per ECMA-402 §19 Intl.DurationFormat.
@@ -1472,9 +1925,7 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
     // localized unit names (Russian few/many, Welsh two, Arabic 6
     // categories, etc. all need the right form).
     let parsed = parse_langid(locale);
-    let langid = unic_langid::LanguageIdentifier::from_parts(
-        parsed.language, None, None, &[],
-    );
+    let langid = unic_langid::LanguageIdentifier::from_parts(parsed.language, None, None, &[]);
     let lang_code = parsed.language.as_str();
     let plural_for = |n: i64| -> PluralCategory {
         match PluralRules::create(langid.clone(), PluralRuleType::CARDINAL) {
@@ -1488,12 +1939,32 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
     // Digital style: H:MM:SS for hours/minutes/seconds, then short
     // text-form for any other non-zero units.
     if style == "digital" {
-        let h = lock.properties.get("hours").map(|v| v.as_i32()).unwrap_or(0);
-        let m = lock.properties.get("minutes").map(|v| v.as_i32()).unwrap_or(0);
-        let s = lock.properties.get("seconds").map(|v| v.as_i32()).unwrap_or(0);
+        let h = lock
+            .properties
+            .get("hours")
+            .map(|v| v.as_i32())
+            .unwrap_or(0);
+        let m = lock
+            .properties
+            .get("minutes")
+            .map(|v| v.as_i32())
+            .unwrap_or(0);
+        let s = lock
+            .properties
+            .get("seconds")
+            .map(|v| v.as_i32())
+            .unwrap_or(0);
         let mut clock = format!("{}:{:02}:{:02}", h, m.abs(), s.abs());
         let mut extras = Vec::new();
-        for key in &["years", "months", "weeks", "days", "milliseconds", "microseconds", "nanoseconds"] {
+        for key in &[
+            "years",
+            "months",
+            "weeks",
+            "days",
+            "milliseconds",
+            "microseconds",
+            "nanoseconds",
+        ] {
             if let Some(v) = lock.properties.get(*key) {
                 let n = v.as_i32() as i64;
                 if n != 0 {
@@ -1511,7 +1982,18 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
     // Long / short / narrow — concat all non-zero units with the
     // localized form for the count's plural category.
     let mut parts = Vec::new();
-    for key in &["years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"] {
+    for key in &[
+        "years",
+        "months",
+        "weeks",
+        "days",
+        "hours",
+        "minutes",
+        "seconds",
+        "milliseconds",
+        "microseconds",
+        "nanoseconds",
+    ] {
         if let Some(v) = lock.properties.get(*key) {
             let n = v.as_i32() as i64;
             if n != 0 {
@@ -1532,13 +2014,23 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
 ///
 /// Falls back to English if the locale isn't in the table (ECMA-402
 /// "best fit" behaviour).
-fn duration_unit_text(lang: &str, unit: &str, style: &str, category: intl_pluralrules::PluralCategory) -> &'static str {
+fn duration_unit_text(
+    lang: &str,
+    unit: &str,
+    style: &str,
+    category: intl_pluralrules::PluralCategory,
+) -> &'static str {
     use intl_pluralrules::PluralCategory::*;
     // Table layout: each (lang, unit, style) entry is an array of forms
     // ordered by category index. We use a closure for lookup so the
     // match is contiguous and the table stays readable.
     let cat_idx = match category {
-        ZERO => 0, ONE => 1, TWO => 2, FEW => 3, MANY => 4, OTHER => 5,
+        ZERO => 0,
+        ONE => 1,
+        TWO => 2,
+        FEW => 3,
+        MANY => 4,
+        OTHER => 5,
     };
     let forms = duration_forms(lang, unit, style)
         .or_else(|| duration_forms("en", unit, style))
@@ -1570,119 +2062,107 @@ fn duration_unit_text(lang: &str, unit: &str, style: &str, category: intl_plural
 fn duration_forms(lang: &str, unit: &str, style: &str) -> Option<&'static [&'static str; 6]> {
     Some(match (lang, unit, style) {
         // ─── English (en) ─────────────────────────────────────────
-        ("en", "years",        "long")   => &["", "year", "", "", "", "years"],
-        ("en", "years",        "short")  => &["", "yr", "", "", "", "yrs"],
-        ("en", "years",        "narrow") => &["", "y", "", "", "", "y"],
-        ("en", "months",       "long")   => &["", "month", "", "", "", "months"],
-        ("en", "months",       "short")  => &["", "mo", "", "", "", "mo"],
-        ("en", "months",       "narrow") => &["", "mo", "", "", "", "mo"],
-        ("en", "weeks",        "long")   => &["", "week", "", "", "", "weeks"],
-        ("en", "weeks",        "short")  => &["", "wk", "", "", "", "wks"],
-        ("en", "weeks",        "narrow") => &["", "w", "", "", "", "w"],
-        ("en", "days",         "long")   => &["", "day", "", "", "", "days"],
-        ("en", "days",         "short")  => &["", "day", "", "", "", "days"],
-        ("en", "days",         "narrow") => &["", "d", "", "", "", "d"],
-        ("en", "hours",        "long")   => &["", "hour", "", "", "", "hours"],
-        ("en", "hours",        "short")  => &["", "hr", "", "", "", "hr"],
-        ("en", "hours",        "narrow") => &["", "h", "", "", "", "h"],
-        ("en", "minutes",      "long")   => &["", "minute", "", "", "", "minutes"],
-        ("en", "minutes",      "short")  => &["", "min", "", "", "", "min"],
-        ("en", "minutes",      "narrow") => &["", "m", "", "", "", "m"],
-        ("en", "seconds",      "long")   => &["", "second", "", "", "", "seconds"],
-        ("en", "seconds",      "short")  => &["", "sec", "", "", "", "sec"],
-        ("en", "seconds",      "narrow") => &["", "s", "", "", "", "s"],
-        ("en", "milliseconds", "long")   => &["", "millisecond", "", "", "", "milliseconds"],
-        ("en", "milliseconds", "short")  => &["", "ms", "", "", "", "ms"],
+        ("en", "years", "long") => &["", "year", "", "", "", "years"],
+        ("en", "years", "short") => &["", "yr", "", "", "", "yrs"],
+        ("en", "years", "narrow") => &["", "y", "", "", "", "y"],
+        ("en", "months", "long") => &["", "month", "", "", "", "months"],
+        ("en", "months", "short") => &["", "mo", "", "", "", "mo"],
+        ("en", "months", "narrow") => &["", "mo", "", "", "", "mo"],
+        ("en", "weeks", "long") => &["", "week", "", "", "", "weeks"],
+        ("en", "weeks", "short") => &["", "wk", "", "", "", "wks"],
+        ("en", "weeks", "narrow") => &["", "w", "", "", "", "w"],
+        ("en", "days", "long") => &["", "day", "", "", "", "days"],
+        ("en", "days", "short") => &["", "day", "", "", "", "days"],
+        ("en", "days", "narrow") => &["", "d", "", "", "", "d"],
+        ("en", "hours", "long") => &["", "hour", "", "", "", "hours"],
+        ("en", "hours", "short") => &["", "hr", "", "", "", "hr"],
+        ("en", "hours", "narrow") => &["", "h", "", "", "", "h"],
+        ("en", "minutes", "long") => &["", "minute", "", "", "", "minutes"],
+        ("en", "minutes", "short") => &["", "min", "", "", "", "min"],
+        ("en", "minutes", "narrow") => &["", "m", "", "", "", "m"],
+        ("en", "seconds", "long") => &["", "second", "", "", "", "seconds"],
+        ("en", "seconds", "short") => &["", "sec", "", "", "", "sec"],
+        ("en", "seconds", "narrow") => &["", "s", "", "", "", "s"],
+        ("en", "milliseconds", "long") => &["", "millisecond", "", "", "", "milliseconds"],
+        ("en", "milliseconds", "short") => &["", "ms", "", "", "", "ms"],
         ("en", "milliseconds", "narrow") => &["", "ms", "", "", "", "ms"],
-        ("en", "microseconds", "long")   => &["", "microsecond", "", "", "", "microseconds"],
-        ("en", "microseconds", "short")  => &["", "μs", "", "", "", "μs"],
+        ("en", "microseconds", "long") => &["", "microsecond", "", "", "", "microseconds"],
+        ("en", "microseconds", "short") => &["", "μs", "", "", "", "μs"],
         ("en", "microseconds", "narrow") => &["", "μs", "", "", "", "μs"],
-        ("en", "nanoseconds",  "long")   => &["", "nanosecond", "", "", "", "nanoseconds"],
-        ("en", "nanoseconds",  "short")  => &["", "ns", "", "", "", "ns"],
-        ("en", "nanoseconds",  "narrow") => &["", "ns", "", "", "", "ns"],
+        ("en", "nanoseconds", "long") => &["", "nanosecond", "", "", "", "nanoseconds"],
+        ("en", "nanoseconds", "short") => &["", "ns", "", "", "", "ns"],
+        ("en", "nanoseconds", "narrow") => &["", "ns", "", "", "", "ns"],
 
         // ─── Mandarin Chinese (zh) — no plural inflection ─────────
-        ("zh", "years", _)        => &["", "年", "", "", "", "年"],
-        ("zh", "months", _)       => &["", "个月", "", "", "", "个月"],
-        ("zh", "weeks", _)        => &["", "周", "", "", "", "周"],
-        ("zh", "days", _)         => &["", "天", "", "", "", "天"],
-        ("zh", "hours", _)        => &["", "小时", "", "", "", "小时"],
-        ("zh", "minutes", _)      => &["", "分钟", "", "", "", "分钟"],
-        ("zh", "seconds", _)      => &["", "秒", "", "", "", "秒"],
+        ("zh", "years", _) => &["", "年", "", "", "", "年"],
+        ("zh", "months", _) => &["", "个月", "", "", "", "个月"],
+        ("zh", "weeks", _) => &["", "周", "", "", "", "周"],
+        ("zh", "days", _) => &["", "天", "", "", "", "天"],
+        ("zh", "hours", _) => &["", "小时", "", "", "", "小时"],
+        ("zh", "minutes", _) => &["", "分钟", "", "", "", "分钟"],
+        ("zh", "seconds", _) => &["", "秒", "", "", "", "秒"],
         ("zh", "milliseconds", _) => &["", "毫秒", "", "", "", "毫秒"],
         ("zh", "microseconds", _) => &["", "微秒", "", "", "", "微秒"],
-        ("zh", "nanoseconds", _)  => &["", "纳秒", "", "", "", "纳秒"],
+        ("zh", "nanoseconds", _) => &["", "纳秒", "", "", "", "纳秒"],
 
         // ─── Spanish (es) ─────────────────────────────────────────
-        ("es", "years",        "long")   => &["", "año", "", "", "", "años"],
-        ("es", "years",        "short")  => &["", "a", "", "", "", "a"],
-        ("es", "years",        "narrow") => &["", "a", "", "", "", "a"],
-        ("es", "months",       "long")   => &["", "mes", "", "", "", "meses"],
-        ("es", "months",       _)        => &["", "m", "", "", "", "m"],
-        ("es", "weeks",        "long")   => &["", "semana", "", "", "", "semanas"],
-        ("es", "weeks",        _)        => &["", "sem.", "", "", "", "sem."],
-        ("es", "days",         "long")   => &["", "día", "", "", "", "días"],
-        ("es", "days",         _)        => &["", "d", "", "", "", "d"],
-        ("es", "hours",        "long")   => &["", "hora", "", "", "", "horas"],
-        ("es", "hours",        _)        => &["", "h", "", "", "", "h"],
-        ("es", "minutes",      "long")   => &["", "minuto", "", "", "", "minutos"],
-        ("es", "minutes",      _)        => &["", "min", "", "", "", "min"],
-        ("es", "seconds",      "long")   => &["", "segundo", "", "", "", "segundos"],
-        ("es", "seconds",      _)        => &["", "s", "", "", "", "s"],
-        ("es", "milliseconds", "long")   => &["", "milisegundo", "", "", "", "milisegundos"],
-        ("es", "milliseconds", _)        => &["", "ms", "", "", "", "ms"],
-        ("es", "microseconds", "long")   => &["", "microsegundo", "", "", "", "microsegundos"],
-        ("es", "microseconds", _)        => &["", "μs", "", "", "", "μs"],
-        ("es", "nanoseconds",  "long")   => &["", "nanosegundo", "", "", "", "nanosegundos"],
-        ("es", "nanoseconds",  _)        => &["", "ns", "", "", "", "ns"],
+        ("es", "years", "long") => &["", "año", "", "", "", "años"],
+        ("es", "years", "short") => &["", "a", "", "", "", "a"],
+        ("es", "years", "narrow") => &["", "a", "", "", "", "a"],
+        ("es", "months", "long") => &["", "mes", "", "", "", "meses"],
+        ("es", "months", _) => &["", "m", "", "", "", "m"],
+        ("es", "weeks", "long") => &["", "semana", "", "", "", "semanas"],
+        ("es", "weeks", _) => &["", "sem.", "", "", "", "sem."],
+        ("es", "days", "long") => &["", "día", "", "", "", "días"],
+        ("es", "days", _) => &["", "d", "", "", "", "d"],
+        ("es", "hours", "long") => &["", "hora", "", "", "", "horas"],
+        ("es", "hours", _) => &["", "h", "", "", "", "h"],
+        ("es", "minutes", "long") => &["", "minuto", "", "", "", "minutos"],
+        ("es", "minutes", _) => &["", "min", "", "", "", "min"],
+        ("es", "seconds", "long") => &["", "segundo", "", "", "", "segundos"],
+        ("es", "seconds", _) => &["", "s", "", "", "", "s"],
+        ("es", "milliseconds", "long") => &["", "milisegundo", "", "", "", "milisegundos"],
+        ("es", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
+        ("es", "microseconds", "long") => &["", "microsegundo", "", "", "", "microsegundos"],
+        ("es", "microseconds", _) => &["", "μs", "", "", "", "μs"],
+        ("es", "nanoseconds", "long") => &["", "nanosegundo", "", "", "", "nanosegundos"],
+        ("es", "nanoseconds", _) => &["", "ns", "", "", "", "ns"],
 
         // ─── Hindi (hi) ───────────────────────────────────────────
-        ("hi", "years",        "long")   => &["", "वर्ष", "", "", "", "वर्ष"],
-        ("hi", "months",       "long")   => &["", "महीना", "", "", "", "महीने"],
-        ("hi", "weeks",        "long")   => &["", "सप्ताह", "", "", "", "सप्ताह"],
-        ("hi", "days",         "long")   => &["", "दिन", "", "", "", "दिन"],
-        ("hi", "hours",        "long")   => &["", "घंटा", "", "", "", "घंटे"],
-        ("hi", "minutes",      "long")   => &["", "मिनट", "", "", "", "मिनट"],
-        ("hi", "seconds",      "long")   => &["", "सेकंड", "", "", "", "सेकंड"],
-        ("hi", "milliseconds", "long")   => &["", "मिलीसेकंड", "", "", "", "मिलीसेकंड"],
-        ("hi", "microseconds", "long")   => &["", "माइक्रोसेकंड", "", "", "", "माइक्रोसेकंड"],
-        ("hi", "nanoseconds",  "long")   => &["", "नैनोसेकंड", "", "", "", "नैनोसेकंड"],
+        ("hi", "years", "long") => &["", "वर्ष", "", "", "", "वर्ष"],
+        ("hi", "months", "long") => &["", "महीना", "", "", "", "महीने"],
+        ("hi", "weeks", "long") => &["", "सप्ताह", "", "", "", "सप्ताह"],
+        ("hi", "days", "long") => &["", "दिन", "", "", "", "दिन"],
+        ("hi", "hours", "long") => &["", "घंटा", "", "", "", "घंटे"],
+        ("hi", "minutes", "long") => &["", "मिनट", "", "", "", "मिनट"],
+        ("hi", "seconds", "long") => &["", "सेकंड", "", "", "", "सेकंड"],
+        ("hi", "milliseconds", "long") => &["", "मिलीसेकंड", "", "", "", "मिलीसेकंड"],
+        ("hi", "microseconds", "long") => &["", "माइक्रोसेकंड", "", "", "", "माइक्रोसेकंड"],
+        ("hi", "nanoseconds", "long") => &["", "नैनोसेकंड", "", "", "", "नैनोसेकंड"],
 
         // ─── Arabic (ar) — 6 plural categories ────────────────────
         // CLDR forms: zero, one, two, few (3-10), many (11+), other.
         // Modern Standard Arabic uses different word forms per category.
         ("ar", "years", "long") => &[
-            "سنة",       // zero (لا توجد سنوات)
-            "سنة",       // one (سنة واحدة)
-            "سنتان",     // two (سنتان)
-            "سنوات",     // few (3-10 sanawat)
-            "سنة",       // many (11+ "sana")
-            "سنة",       // other (decimals)
+            "سنة",   // zero (لا توجد سنوات)
+            "سنة",   // one (سنة واحدة)
+            "سنتان", // two (سنتان)
+            "سنوات", // few (3-10 sanawat)
+            "سنة",   // many (11+ "sana")
+            "سنة",   // other (decimals)
         ],
         ("ar", "years", _) => &["", "سنة", "", "", "", "سنة"],
-        ("ar", "months", "long") => &[
-            "شهر", "شهر", "شهران", "أشهر", "شهرًا", "شهر",
-        ],
+        ("ar", "months", "long") => &["شهر", "شهر", "شهران", "أشهر", "شهرًا", "شهر"],
         ("ar", "months", _) => &["", "شهر", "", "", "", "شهر"],
-        ("ar", "weeks", "long") => &[
-            "أسبوع", "أسبوع", "أسبوعان", "أسابيع", "أسبوعًا", "أسبوع",
-        ],
+        ("ar", "weeks", "long") => &["أسبوع", "أسبوع", "أسبوعان", "أسابيع", "أسبوعًا", "أسبوع"],
         ("ar", "weeks", _) => &["", "أسبوع", "", "", "", "أسبوع"],
-        ("ar", "days", "long") => &[
-            "يوم", "يوم", "يومان", "أيام", "يومًا", "يوم",
-        ],
+        ("ar", "days", "long") => &["يوم", "يوم", "يومان", "أيام", "يومًا", "يوم"],
         ("ar", "days", _) => &["", "يوم", "", "", "", "يوم"],
-        ("ar", "hours", "long") => &[
-            "ساعة", "ساعة", "ساعتان", "ساعات", "ساعة", "ساعة",
-        ],
+        ("ar", "hours", "long") => &["ساعة", "ساعة", "ساعتان", "ساعات", "ساعة", "ساعة"],
         ("ar", "hours", _) => &["", "س", "", "", "", "س"],
-        ("ar", "minutes", "long") => &[
-            "دقيقة", "دقيقة", "دقيقتان", "دقائق", "دقيقة", "دقيقة",
-        ],
+        ("ar", "minutes", "long") => &["دقيقة", "دقيقة", "دقيقتان", "دقائق", "دقيقة", "دقيقة"],
         ("ar", "minutes", _) => &["", "د", "", "", "", "د"],
-        ("ar", "seconds", "long") => &[
-            "ثانية", "ثانية", "ثانيتان", "ثوانٍ", "ثانية", "ثانية",
-        ],
+        ("ar", "seconds", "long") => &["ثانية", "ثانية", "ثانيتان", "ثوانٍ", "ثانية", "ثانية"],
         ("ar", "seconds", _) => &["", "ث", "", "", "", "ث"],
         ("ar", "milliseconds", "long") => &["", "ميلي ثانية", "", "", "", "ميلي ثانية"],
         ("ar", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
@@ -1692,205 +2172,212 @@ fn duration_forms(lang: &str, unit: &str, style: &str) -> Option<&'static [&'sta
         ("ar", "nanoseconds", _) => &["", "ns", "", "", "", "ns"],
 
         // ─── Portuguese (pt) ──────────────────────────────────────
-        ("pt", "years",        "long")   => &["", "ano", "", "", "", "anos"],
-        ("pt", "years",        _)        => &["", "a", "", "", "", "a"],
-        ("pt", "months",       "long")   => &["", "mês", "", "", "", "meses"],
-        ("pt", "months",       _)        => &["", "m", "", "", "", "m"],
-        ("pt", "weeks",        "long")   => &["", "semana", "", "", "", "semanas"],
-        ("pt", "weeks",        _)        => &["", "sem.", "", "", "", "sem."],
-        ("pt", "days",         "long")   => &["", "dia", "", "", "", "dias"],
-        ("pt", "days",         _)        => &["", "d", "", "", "", "d"],
-        ("pt", "hours",        "long")   => &["", "hora", "", "", "", "horas"],
-        ("pt", "hours",        _)        => &["", "h", "", "", "", "h"],
-        ("pt", "minutes",      "long")   => &["", "minuto", "", "", "", "minutos"],
-        ("pt", "minutes",      _)        => &["", "min", "", "", "", "min"],
-        ("pt", "seconds",      "long")   => &["", "segundo", "", "", "", "segundos"],
-        ("pt", "seconds",      _)        => &["", "s", "", "", "", "s"],
-        ("pt", "milliseconds", "long")   => &["", "milissegundo", "", "", "", "milissegundos"],
-        ("pt", "milliseconds", _)        => &["", "ms", "", "", "", "ms"],
+        ("pt", "years", "long") => &["", "ano", "", "", "", "anos"],
+        ("pt", "years", _) => &["", "a", "", "", "", "a"],
+        ("pt", "months", "long") => &["", "mês", "", "", "", "meses"],
+        ("pt", "months", _) => &["", "m", "", "", "", "m"],
+        ("pt", "weeks", "long") => &["", "semana", "", "", "", "semanas"],
+        ("pt", "weeks", _) => &["", "sem.", "", "", "", "sem."],
+        ("pt", "days", "long") => &["", "dia", "", "", "", "dias"],
+        ("pt", "days", _) => &["", "d", "", "", "", "d"],
+        ("pt", "hours", "long") => &["", "hora", "", "", "", "horas"],
+        ("pt", "hours", _) => &["", "h", "", "", "", "h"],
+        ("pt", "minutes", "long") => &["", "minuto", "", "", "", "minutos"],
+        ("pt", "minutes", _) => &["", "min", "", "", "", "min"],
+        ("pt", "seconds", "long") => &["", "segundo", "", "", "", "segundos"],
+        ("pt", "seconds", _) => &["", "s", "", "", "", "s"],
+        ("pt", "milliseconds", "long") => &["", "milissegundo", "", "", "", "milissegundos"],
+        ("pt", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
 
         // ─── Bengali (bn) ─────────────────────────────────────────
-        ("bn", "years",        "long")   => &["", "বছর", "", "", "", "বছর"],
-        ("bn", "months",       "long")   => &["", "মাস", "", "", "", "মাস"],
-        ("bn", "weeks",        "long")   => &["", "সপ্তাহ", "", "", "", "সপ্তাহ"],
-        ("bn", "days",         "long")   => &["", "দিন", "", "", "", "দিন"],
-        ("bn", "hours",        "long")   => &["", "ঘণ্টা", "", "", "", "ঘণ্টা"],
-        ("bn", "minutes",      "long")   => &["", "মিনিট", "", "", "", "মিনিট"],
-        ("bn", "seconds",      "long")   => &["", "সেকেন্ড", "", "", "", "সেকেন্ড"],
+        ("bn", "years", "long") => &["", "বছর", "", "", "", "বছর"],
+        ("bn", "months", "long") => &["", "মাস", "", "", "", "মাস"],
+        ("bn", "weeks", "long") => &["", "সপ্তাহ", "", "", "", "সপ্তাহ"],
+        ("bn", "days", "long") => &["", "দিন", "", "", "", "দিন"],
+        ("bn", "hours", "long") => &["", "ঘণ্টা", "", "", "", "ঘণ্টা"],
+        ("bn", "minutes", "long") => &["", "মিনিট", "", "", "", "মিনিট"],
+        ("bn", "seconds", "long") => &["", "সেকেন্ড", "", "", "", "সেকেন্ড"],
 
         // ─── Russian (ru) — 3-way plural ──────────────────────────
         // Forms ordered: [_, one, _, few, many, other]
         // one: 1, 21, 31...   few: 2-4, 22-24...   many: 0, 5-20...
-        ("ru", "years", "long")   => &["", "год", "", "года", "лет", "года"],
-        ("ru", "years", _)        => &["", "г.", "", "г.", "г.", "г."],
-        ("ru", "months", "long")  => &["", "месяц", "", "месяца", "месяцев", "месяца"],
-        ("ru", "months", _)       => &["", "мес.", "", "мес.", "мес.", "мес."],
-        ("ru", "weeks", "long")   => &["", "неделя", "", "недели", "недель", "недели"],
-        ("ru", "weeks", _)        => &["", "нед.", "", "нед.", "нед.", "нед."],
-        ("ru", "days", "long")    => &["", "день", "", "дня", "дней", "дня"],
-        ("ru", "days", _)         => &["", "дн.", "", "дн.", "дн.", "дн."],
-        ("ru", "hours", "long")   => &["", "час", "", "часа", "часов", "часа"],
-        ("ru", "hours", _)        => &["", "ч.", "", "ч.", "ч.", "ч."],
+        ("ru", "years", "long") => &["", "год", "", "года", "лет", "года"],
+        ("ru", "years", _) => &["", "г.", "", "г.", "г.", "г."],
+        ("ru", "months", "long") => &["", "месяц", "", "месяца", "месяцев", "месяца"],
+        ("ru", "months", _) => &["", "мес.", "", "мес.", "мес.", "мес."],
+        ("ru", "weeks", "long") => &["", "неделя", "", "недели", "недель", "недели"],
+        ("ru", "weeks", _) => &["", "нед.", "", "нед.", "нед.", "нед."],
+        ("ru", "days", "long") => &["", "день", "", "дня", "дней", "дня"],
+        ("ru", "days", _) => &["", "дн.", "", "дн.", "дн.", "дн."],
+        ("ru", "hours", "long") => &["", "час", "", "часа", "часов", "часа"],
+        ("ru", "hours", _) => &["", "ч.", "", "ч.", "ч.", "ч."],
         ("ru", "minutes", "long") => &["", "минута", "", "минуты", "минут", "минуты"],
-        ("ru", "minutes", _)      => &["", "мин.", "", "мин.", "мин.", "мин."],
+        ("ru", "minutes", _) => &["", "мин.", "", "мин.", "мин.", "мин."],
         ("ru", "seconds", "long") => &["", "секунда", "", "секунды", "секунд", "секунды"],
-        ("ru", "seconds", _)      => &["", "сек.", "", "сек.", "сек.", "сек."],
-        ("ru", "milliseconds", "long") => &["", "миллисекунда", "", "миллисекунды", "миллисекунд", "миллисекунды"],
+        ("ru", "seconds", _) => &["", "сек.", "", "сек.", "сек.", "сек."],
+        ("ru", "milliseconds", "long") => &[
+            "",
+            "миллисекунда",
+            "",
+            "миллисекунды",
+            "миллисекунд",
+            "миллисекунды",
+        ],
         ("ru", "milliseconds", _) => &["", "мс", "", "мс", "мс", "мс"],
 
         // ─── Japanese (ja) — no plural inflection ─────────────────
-        ("ja", "years", _)        => &["", "年", "", "", "", "年"],
-        ("ja", "months", _)       => &["", "か月", "", "", "", "か月"],
-        ("ja", "weeks", _)        => &["", "週間", "", "", "", "週間"],
-        ("ja", "days", _)         => &["", "日", "", "", "", "日"],
-        ("ja", "hours", _)        => &["", "時間", "", "", "", "時間"],
-        ("ja", "minutes", _)      => &["", "分", "", "", "", "分"],
-        ("ja", "seconds", _)      => &["", "秒", "", "", "", "秒"],
+        ("ja", "years", _) => &["", "年", "", "", "", "年"],
+        ("ja", "months", _) => &["", "か月", "", "", "", "か月"],
+        ("ja", "weeks", _) => &["", "週間", "", "", "", "週間"],
+        ("ja", "days", _) => &["", "日", "", "", "", "日"],
+        ("ja", "hours", _) => &["", "時間", "", "", "", "時間"],
+        ("ja", "minutes", _) => &["", "分", "", "", "", "分"],
+        ("ja", "seconds", _) => &["", "秒", "", "", "", "秒"],
         ("ja", "milliseconds", _) => &["", "ミリ秒", "", "", "", "ミリ秒"],
         ("ja", "microseconds", _) => &["", "マイクロ秒", "", "", "", "マイクロ秒"],
-        ("ja", "nanoseconds", _)  => &["", "ナノ秒", "", "", "", "ナノ秒"],
+        ("ja", "nanoseconds", _) => &["", "ナノ秒", "", "", "", "ナノ秒"],
 
         // ─── German (de) ──────────────────────────────────────────
-        ("de", "years",        "long")   => &["", "Jahr", "", "", "", "Jahre"],
-        ("de", "years",        _)        => &["", "J", "", "", "", "J"],
-        ("de", "months",       "long")   => &["", "Monat", "", "", "", "Monate"],
-        ("de", "months",       _)        => &["", "Mon.", "", "", "", "Mon."],
-        ("de", "weeks",        "long")   => &["", "Woche", "", "", "", "Wochen"],
-        ("de", "weeks",        _)        => &["", "Wo.", "", "", "", "Wo."],
-        ("de", "days",         "long")   => &["", "Tag", "", "", "", "Tage"],
-        ("de", "days",         _)        => &["", "Tg.", "", "", "", "Tg."],
-        ("de", "hours",        "long")   => &["", "Stunde", "", "", "", "Stunden"],
-        ("de", "hours",        _)        => &["", "Std.", "", "", "", "Std."],
-        ("de", "minutes",      "long")   => &["", "Minute", "", "", "", "Minuten"],
-        ("de", "minutes",      _)        => &["", "Min.", "", "", "", "Min."],
-        ("de", "seconds",      "long")   => &["", "Sekunde", "", "", "", "Sekunden"],
-        ("de", "seconds",      _)        => &["", "Sek.", "", "", "", "Sek."],
-        ("de", "milliseconds", "long")   => &["", "Millisekunde", "", "", "", "Millisekunden"],
-        ("de", "milliseconds", _)        => &["", "ms", "", "", "", "ms"],
+        ("de", "years", "long") => &["", "Jahr", "", "", "", "Jahre"],
+        ("de", "years", _) => &["", "J", "", "", "", "J"],
+        ("de", "months", "long") => &["", "Monat", "", "", "", "Monate"],
+        ("de", "months", _) => &["", "Mon.", "", "", "", "Mon."],
+        ("de", "weeks", "long") => &["", "Woche", "", "", "", "Wochen"],
+        ("de", "weeks", _) => &["", "Wo.", "", "", "", "Wo."],
+        ("de", "days", "long") => &["", "Tag", "", "", "", "Tage"],
+        ("de", "days", _) => &["", "Tg.", "", "", "", "Tg."],
+        ("de", "hours", "long") => &["", "Stunde", "", "", "", "Stunden"],
+        ("de", "hours", _) => &["", "Std.", "", "", "", "Std."],
+        ("de", "minutes", "long") => &["", "Minute", "", "", "", "Minuten"],
+        ("de", "minutes", _) => &["", "Min.", "", "", "", "Min."],
+        ("de", "seconds", "long") => &["", "Sekunde", "", "", "", "Sekunden"],
+        ("de", "seconds", _) => &["", "Sek.", "", "", "", "Sek."],
+        ("de", "milliseconds", "long") => &["", "Millisekunde", "", "", "", "Millisekunden"],
+        ("de", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
 
         // ─── French (fr) — `one` covers 0 and 1 ───────────────────
-        ("fr", "years",        "long")   => &["", "an", "", "", "", "ans"],
-        ("fr", "years",        _)        => &["", "an", "", "", "", "ans"],
-        ("fr", "months",       "long")   => &["", "mois", "", "", "", "mois"],
-        ("fr", "months",       _)        => &["", "m.", "", "", "", "m."],
-        ("fr", "weeks",        "long")   => &["", "semaine", "", "", "", "semaines"],
-        ("fr", "weeks",        _)        => &["", "sem.", "", "", "", "sem."],
-        ("fr", "days",         "long")   => &["", "jour", "", "", "", "jours"],
-        ("fr", "days",         _)        => &["", "j", "", "", "", "j"],
-        ("fr", "hours",        "long")   => &["", "heure", "", "", "", "heures"],
-        ("fr", "hours",        _)        => &["", "h", "", "", "", "h"],
-        ("fr", "minutes",      "long")   => &["", "minute", "", "", "", "minutes"],
-        ("fr", "minutes",      _)        => &["", "min", "", "", "", "min"],
-        ("fr", "seconds",      "long")   => &["", "seconde", "", "", "", "secondes"],
-        ("fr", "seconds",      _)        => &["", "s", "", "", "", "s"],
-        ("fr", "milliseconds", "long")   => &["", "milliseconde", "", "", "", "millisecondes"],
-        ("fr", "milliseconds", _)        => &["", "ms", "", "", "", "ms"],
+        ("fr", "years", "long") => &["", "an", "", "", "", "ans"],
+        ("fr", "years", _) => &["", "an", "", "", "", "ans"],
+        ("fr", "months", "long") => &["", "mois", "", "", "", "mois"],
+        ("fr", "months", _) => &["", "m.", "", "", "", "m."],
+        ("fr", "weeks", "long") => &["", "semaine", "", "", "", "semaines"],
+        ("fr", "weeks", _) => &["", "sem.", "", "", "", "sem."],
+        ("fr", "days", "long") => &["", "jour", "", "", "", "jours"],
+        ("fr", "days", _) => &["", "j", "", "", "", "j"],
+        ("fr", "hours", "long") => &["", "heure", "", "", "", "heures"],
+        ("fr", "hours", _) => &["", "h", "", "", "", "h"],
+        ("fr", "minutes", "long") => &["", "minute", "", "", "", "minutes"],
+        ("fr", "minutes", _) => &["", "min", "", "", "", "min"],
+        ("fr", "seconds", "long") => &["", "seconde", "", "", "", "secondes"],
+        ("fr", "seconds", _) => &["", "s", "", "", "", "s"],
+        ("fr", "milliseconds", "long") => &["", "milliseconde", "", "", "", "millisecondes"],
+        ("fr", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
 
         // ─── Korean (ko) — no plural inflection ───────────────────
-        ("ko", "years", _)        => &["", "년", "", "", "", "년"],
-        ("ko", "months", _)       => &["", "개월", "", "", "", "개월"],
-        ("ko", "weeks", _)        => &["", "주", "", "", "", "주"],
-        ("ko", "days", _)         => &["", "일", "", "", "", "일"],
-        ("ko", "hours", _)        => &["", "시간", "", "", "", "시간"],
-        ("ko", "minutes", _)      => &["", "분", "", "", "", "분"],
-        ("ko", "seconds", _)      => &["", "초", "", "", "", "초"],
+        ("ko", "years", _) => &["", "년", "", "", "", "년"],
+        ("ko", "months", _) => &["", "개월", "", "", "", "개월"],
+        ("ko", "weeks", _) => &["", "주", "", "", "", "주"],
+        ("ko", "days", _) => &["", "일", "", "", "", "일"],
+        ("ko", "hours", _) => &["", "시간", "", "", "", "시간"],
+        ("ko", "minutes", _) => &["", "분", "", "", "", "분"],
+        ("ko", "seconds", _) => &["", "초", "", "", "", "초"],
         ("ko", "milliseconds", _) => &["", "밀리초", "", "", "", "밀리초"],
 
         // ─── Italian (it) ─────────────────────────────────────────
-        ("it", "years",        "long")   => &["", "anno", "", "", "", "anni"],
-        ("it", "years",        _)        => &["", "a", "", "", "", "a"],
-        ("it", "months",       "long")   => &["", "mese", "", "", "", "mesi"],
-        ("it", "months",       _)        => &["", "m", "", "", "", "m"],
-        ("it", "weeks",        "long")   => &["", "settimana", "", "", "", "settimane"],
-        ("it", "weeks",        _)        => &["", "sett.", "", "", "", "sett."],
-        ("it", "days",         "long")   => &["", "giorno", "", "", "", "giorni"],
-        ("it", "days",         _)        => &["", "g", "", "", "", "g"],
-        ("it", "hours",        "long")   => &["", "ora", "", "", "", "ore"],
-        ("it", "hours",        _)        => &["", "h", "", "", "", "h"],
-        ("it", "minutes",      "long")   => &["", "minuto", "", "", "", "minuti"],
-        ("it", "minutes",      _)        => &["", "min", "", "", "", "min"],
-        ("it", "seconds",      "long")   => &["", "secondo", "", "", "", "secondi"],
-        ("it", "seconds",      _)        => &["", "s", "", "", "", "s"],
-        ("it", "milliseconds", "long")   => &["", "millisecondo", "", "", "", "millisecondi"],
-        ("it", "milliseconds", _)        => &["", "ms", "", "", "", "ms"],
+        ("it", "years", "long") => &["", "anno", "", "", "", "anni"],
+        ("it", "years", _) => &["", "a", "", "", "", "a"],
+        ("it", "months", "long") => &["", "mese", "", "", "", "mesi"],
+        ("it", "months", _) => &["", "m", "", "", "", "m"],
+        ("it", "weeks", "long") => &["", "settimana", "", "", "", "settimane"],
+        ("it", "weeks", _) => &["", "sett.", "", "", "", "sett."],
+        ("it", "days", "long") => &["", "giorno", "", "", "", "giorni"],
+        ("it", "days", _) => &["", "g", "", "", "", "g"],
+        ("it", "hours", "long") => &["", "ora", "", "", "", "ore"],
+        ("it", "hours", _) => &["", "h", "", "", "", "h"],
+        ("it", "minutes", "long") => &["", "minuto", "", "", "", "minuti"],
+        ("it", "minutes", _) => &["", "min", "", "", "", "min"],
+        ("it", "seconds", "long") => &["", "secondo", "", "", "", "secondi"],
+        ("it", "seconds", _) => &["", "s", "", "", "", "s"],
+        ("it", "milliseconds", "long") => &["", "millisecondo", "", "", "", "millisecondi"],
+        ("it", "milliseconds", _) => &["", "ms", "", "", "", "ms"],
 
         // ─── Turkish (tr) ─────────────────────────────────────────
-        ("tr", "years",        "long")   => &["", "yıl", "", "", "", "yıl"],
-        ("tr", "months",       "long")   => &["", "ay", "", "", "", "ay"],
-        ("tr", "weeks",        "long")   => &["", "hafta", "", "", "", "hafta"],
-        ("tr", "days",         "long")   => &["", "gün", "", "", "", "gün"],
-        ("tr", "hours",        "long")   => &["", "saat", "", "", "", "saat"],
-        ("tr", "minutes",      "long")   => &["", "dakika", "", "", "", "dakika"],
-        ("tr", "seconds",      "long")   => &["", "saniye", "", "", "", "saniye"],
-        ("tr", "milliseconds", "long")   => &["", "milisaniye", "", "", "", "milisaniye"],
+        ("tr", "years", "long") => &["", "yıl", "", "", "", "yıl"],
+        ("tr", "months", "long") => &["", "ay", "", "", "", "ay"],
+        ("tr", "weeks", "long") => &["", "hafta", "", "", "", "hafta"],
+        ("tr", "days", "long") => &["", "gün", "", "", "", "gün"],
+        ("tr", "hours", "long") => &["", "saat", "", "", "", "saat"],
+        ("tr", "minutes", "long") => &["", "dakika", "", "", "", "dakika"],
+        ("tr", "seconds", "long") => &["", "saniye", "", "", "", "saniye"],
+        ("tr", "milliseconds", "long") => &["", "milisaniye", "", "", "", "milisaniye"],
 
         // ─── Vietnamese (vi) — no plural inflection ───────────────
-        ("vi", "years",        "long")   => &["", "năm", "", "", "", "năm"],
-        ("vi", "months",       "long")   => &["", "tháng", "", "", "", "tháng"],
-        ("vi", "weeks",        "long")   => &["", "tuần", "", "", "", "tuần"],
-        ("vi", "days",         "long")   => &["", "ngày", "", "", "", "ngày"],
-        ("vi", "hours",        "long")   => &["", "giờ", "", "", "", "giờ"],
-        ("vi", "minutes",      "long")   => &["", "phút", "", "", "", "phút"],
-        ("vi", "seconds",      "long")   => &["", "giây", "", "", "", "giây"],
-        ("vi", "milliseconds", "long")   => &["", "mili giây", "", "", "", "mili giây"],
+        ("vi", "years", "long") => &["", "năm", "", "", "", "năm"],
+        ("vi", "months", "long") => &["", "tháng", "", "", "", "tháng"],
+        ("vi", "weeks", "long") => &["", "tuần", "", "", "", "tuần"],
+        ("vi", "days", "long") => &["", "ngày", "", "", "", "ngày"],
+        ("vi", "hours", "long") => &["", "giờ", "", "", "", "giờ"],
+        ("vi", "minutes", "long") => &["", "phút", "", "", "", "phút"],
+        ("vi", "seconds", "long") => &["", "giây", "", "", "", "giây"],
+        ("vi", "milliseconds", "long") => &["", "mili giây", "", "", "", "mili giây"],
 
         // ─── Polish (pl) — 3-way plural ──────────────────────────
         // Forms ordered: [_, one, _, few, many, other]
         // one: 1   few: 2-4 (excluding 12-14)   many: 0, 5+, 12-14
-        ("pl", "years", "long")   => &["", "rok", "", "lata", "lat", "lat"],
-        ("pl", "years", _)        => &["", "r.", "", "r.", "r.", "r."],
-        ("pl", "months", "long")  => &["", "miesiąc", "", "miesiące", "miesięcy", "miesięcy"],
-        ("pl", "months", _)       => &["", "mies.", "", "mies.", "mies.", "mies."],
-        ("pl", "weeks", "long")   => &["", "tydzień", "", "tygodnie", "tygodni", "tygodni"],
-        ("pl", "weeks", _)        => &["", "tyg.", "", "tyg.", "tyg.", "tyg."],
-        ("pl", "days", "long")    => &["", "dzień", "", "dni", "dni", "dni"],
-        ("pl", "days", _)         => &["", "dz.", "", "dz.", "dz.", "dz."],
-        ("pl", "hours", "long")   => &["", "godzina", "", "godziny", "godzin", "godzin"],
-        ("pl", "hours", _)        => &["", "godz.", "", "godz.", "godz.", "godz."],
+        ("pl", "years", "long") => &["", "rok", "", "lata", "lat", "lat"],
+        ("pl", "years", _) => &["", "r.", "", "r.", "r.", "r."],
+        ("pl", "months", "long") => &["", "miesiąc", "", "miesiące", "miesięcy", "miesięcy"],
+        ("pl", "months", _) => &["", "mies.", "", "mies.", "mies.", "mies."],
+        ("pl", "weeks", "long") => &["", "tydzień", "", "tygodnie", "tygodni", "tygodni"],
+        ("pl", "weeks", _) => &["", "tyg.", "", "tyg.", "tyg.", "tyg."],
+        ("pl", "days", "long") => &["", "dzień", "", "dni", "dni", "dni"],
+        ("pl", "days", _) => &["", "dz.", "", "dz.", "dz.", "dz."],
+        ("pl", "hours", "long") => &["", "godzina", "", "godziny", "godzin", "godzin"],
+        ("pl", "hours", _) => &["", "godz.", "", "godz.", "godz.", "godz."],
         ("pl", "minutes", "long") => &["", "minuta", "", "minuty", "minut", "minut"],
-        ("pl", "minutes", _)      => &["", "min", "", "min", "min", "min"],
+        ("pl", "minutes", _) => &["", "min", "", "min", "min", "min"],
         ("pl", "seconds", "long") => &["", "sekunda", "", "sekundy", "sekund", "sekund"],
-        ("pl", "seconds", _)      => &["", "s", "", "s", "s", "s"],
+        ("pl", "seconds", _) => &["", "s", "", "s", "s", "s"],
 
         // ─── Indonesian (id) — no plural inflection ──────────────
-        ("id", "years",        "long")   => &["", "tahun", "", "", "", "tahun"],
-        ("id", "months",       "long")   => &["", "bulan", "", "", "", "bulan"],
-        ("id", "weeks",        "long")   => &["", "minggu", "", "", "", "minggu"],
-        ("id", "days",         "long")   => &["", "hari", "", "", "", "hari"],
-        ("id", "hours",        "long")   => &["", "jam", "", "", "", "jam"],
-        ("id", "minutes",      "long")   => &["", "menit", "", "", "", "menit"],
-        ("id", "seconds",      "long")   => &["", "detik", "", "", "", "detik"],
-        ("id", "milliseconds", "long")   => &["", "milidetik", "", "", "", "milidetik"],
+        ("id", "years", "long") => &["", "tahun", "", "", "", "tahun"],
+        ("id", "months", "long") => &["", "bulan", "", "", "", "bulan"],
+        ("id", "weeks", "long") => &["", "minggu", "", "", "", "minggu"],
+        ("id", "days", "long") => &["", "hari", "", "", "", "hari"],
+        ("id", "hours", "long") => &["", "jam", "", "", "", "jam"],
+        ("id", "minutes", "long") => &["", "menit", "", "", "", "menit"],
+        ("id", "seconds", "long") => &["", "detik", "", "", "", "detik"],
+        ("id", "milliseconds", "long") => &["", "milidetik", "", "", "", "milidetik"],
 
         // ─── Dutch (nl) ───────────────────────────────────────────
-        ("nl", "years",        "long")   => &["", "jaar", "", "", "", "jaar"],
-        ("nl", "months",       "long")   => &["", "maand", "", "", "", "maanden"],
-        ("nl", "weeks",        "long")   => &["", "week", "", "", "", "weken"],
-        ("nl", "days",         "long")   => &["", "dag", "", "", "", "dagen"],
-        ("nl", "hours",        "long")   => &["", "uur", "", "", "", "uur"],
-        ("nl", "minutes",      "long")   => &["", "minuut", "", "", "", "minuten"],
-        ("nl", "seconds",      "long")   => &["", "seconde", "", "", "", "seconden"],
-        ("nl", "milliseconds", "long")   => &["", "milliseconde", "", "", "", "milliseconden"],
+        ("nl", "years", "long") => &["", "jaar", "", "", "", "jaar"],
+        ("nl", "months", "long") => &["", "maand", "", "", "", "maanden"],
+        ("nl", "weeks", "long") => &["", "week", "", "", "", "weken"],
+        ("nl", "days", "long") => &["", "dag", "", "", "", "dagen"],
+        ("nl", "hours", "long") => &["", "uur", "", "", "", "uur"],
+        ("nl", "minutes", "long") => &["", "minuut", "", "", "", "minuten"],
+        ("nl", "seconds", "long") => &["", "seconde", "", "", "", "seconden"],
+        ("nl", "milliseconds", "long") => &["", "milliseconde", "", "", "", "milliseconden"],
 
         // ─── Thai (th) — no plural inflection ────────────────────
-        ("th", "years",        "long")   => &["", "ปี", "", "", "", "ปี"],
-        ("th", "months",       "long")   => &["", "เดือน", "", "", "", "เดือน"],
-        ("th", "weeks",        "long")   => &["", "สัปดาห์", "", "", "", "สัปดาห์"],
-        ("th", "days",         "long")   => &["", "วัน", "", "", "", "วัน"],
-        ("th", "hours",        "long")   => &["", "ชั่วโมง", "", "", "", "ชั่วโมง"],
-        ("th", "minutes",      "long")   => &["", "นาที", "", "", "", "นาที"],
-        ("th", "seconds",      "long")   => &["", "วินาที", "", "", "", "วินาที"],
-        ("th", "milliseconds", "long")   => &["", "มิลลิวินาที", "", "", "", "มิลลิวินาที"],
+        ("th", "years", "long") => &["", "ปี", "", "", "", "ปี"],
+        ("th", "months", "long") => &["", "เดือน", "", "", "", "เดือน"],
+        ("th", "weeks", "long") => &["", "สัปดาห์", "", "", "", "สัปดาห์"],
+        ("th", "days", "long") => &["", "วัน", "", "", "", "วัน"],
+        ("th", "hours", "long") => &["", "ชั่วโมง", "", "", "", "ชั่วโมง"],
+        ("th", "minutes", "long") => &["", "นาที", "", "", "", "นาที"],
+        ("th", "seconds", "long") => &["", "วินาที", "", "", "", "วินาที"],
+        ("th", "milliseconds", "long") => &["", "มิลลิวินาที", "", "", "", "มิลลิวินาที"],
 
         // ─── Swedish (sv) ─────────────────────────────────────────
-        ("sv", "years",        "long")   => &["", "år", "", "", "", "år"],
-        ("sv", "months",       "long")   => &["", "månad", "", "", "", "månader"],
-        ("sv", "weeks",        "long")   => &["", "vecka", "", "", "", "veckor"],
-        ("sv", "days",         "long")   => &["", "dag", "", "", "", "dagar"],
-        ("sv", "hours",        "long")   => &["", "timme", "", "", "", "timmar"],
-        ("sv", "minutes",      "long")   => &["", "minut", "", "", "", "minuter"],
-        ("sv", "seconds",      "long")   => &["", "sekund", "", "", "", "sekunder"],
-        ("sv", "milliseconds", "long")   => &["", "millisekund", "", "", "", "millisekunder"],
+        ("sv", "years", "long") => &["", "år", "", "", "", "år"],
+        ("sv", "months", "long") => &["", "månad", "", "", "", "månader"],
+        ("sv", "weeks", "long") => &["", "vecka", "", "", "", "veckor"],
+        ("sv", "days", "long") => &["", "dag", "", "", "", "dagar"],
+        ("sv", "hours", "long") => &["", "timme", "", "", "", "timmar"],
+        ("sv", "minutes", "long") => &["", "minut", "", "", "", "minuter"],
+        ("sv", "seconds", "long") => &["", "sekund", "", "", "", "sekunder"],
+        ("sv", "milliseconds", "long") => &["", "millisekund", "", "", "", "millisekunder"],
 
         _ => return None,
     })
@@ -1899,40 +2386,134 @@ fn duration_forms(lang: &str, unit: &str, style: &str) -> Option<&'static [&'sta
 // ── Intl static methods ──────────────────────────────────────────────
 
 fn register_static(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl", "getCanonicalLocales", Box::new(|_ctx, args| {
-        let tags: Vec<String> = match args.first() {
-            Some(Value::String(s)) => vec![s.to_string()],
-            Some(Value::Object(o)) => {
-                let lock = o.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = lock.kind {
-                    elems.iter().map(|v| match v { Value::String(s) => s.to_string(), o => format!("{}", o) }).collect()
-                } else { Vec::new() }
-            }
-            _ => Vec::new(),
-        };
-        let canon: Vec<Value> = tags.iter().map(|t| {
-            let langid = parse_langid(t);
-            s_val(&langid.to_string())
-        }).collect();
-        make_array(canon)
-    }));
+    vm.register_host_fn(
+        "ecma:intl",
+        "getCanonicalLocales",
+        Box::new(|_ctx, args| {
+            let tags: Vec<String> = match args.first() {
+                Some(Value::String(s)) => vec![s.to_string()],
+                Some(Value::Object(o)) => {
+                    let lock = o.lock().unwrap();
+                    if let ObjectKind::Array(ref elems) = lock.kind {
+                        elems
+                            .iter()
+                            .map(|v| match v {
+                                Value::String(s) => s.to_string(),
+                                o => format!("{}", o),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            };
+            let canon: Vec<Value> = tags
+                .iter()
+                .map(|t| {
+                    let langid = parse_langid(t);
+                    s_val(&langid.to_string())
+                })
+                .collect();
+            make_array(canon)
+        }),
+    );
 
-    vm.register_host_fn("ecma:intl", "supportedValuesOf", Box::new(|_ctx, args| {
-        let key = match args.first() {
-            Some(Value::String(s)) => s.to_string(),
-            _ => return make_array(vec![]),
-        };
-        let values: Vec<&'static str> = match key.as_str() {
-            "calendar" => vec!["gregory", "buddhist", "chinese", "coptic", "ethiopic", "ethioaa", "hebrew", "indian", "islamic", "iso8601", "japanese", "persian", "roc"],
-            "collation" => vec!["compat", "dict", "ducet", "emoji", "eor", "phonebk", "phonetic", "pinyin", "reformed", "searchjl", "stroke", "trad", "unihan", "zhuyin"],
-            "currency" => vec!["USD", "EUR", "GBP", "JPY", "CNY", "AUD", "CAD", "CHF", "HKD", "INR", "KRW", "MXN", "NZD", "SGD"],
-            "numberingSystem" => vec!["arab", "arabext", "bali", "beng", "deva", "fullwide", "gujr", "guru", "hanidec", "hant", "khmr", "knda", "laoo", "latn", "limb", "mlym", "mong", "mymr", "orya", "tamldec", "telu", "thai", "tibt"],
-            "timeZone" => vec!["UTC", "America/New_York", "America/Los_Angeles", "America/Chicago", "America/Denver", "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Moscow", "Asia/Tokyo", "Asia/Shanghai", "Asia/Hong_Kong", "Asia/Singapore", "Asia/Dubai", "Australia/Sydney"],
-            "unit" => vec!["acre", "bit", "byte", "celsius", "centimeter", "day", "degree", "fahrenheit", "fluid-ounce", "foot", "gallon", "gigabit", "gigabyte", "gram", "hectare", "hour", "inch", "kilobit", "kilobyte", "kilogram", "kilometer", "liter", "megabit", "megabyte", "meter", "microsecond", "mile", "mile-scandinavian", "milliliter", "millimeter", "millisecond", "minute", "month", "nanosecond", "ounce", "percent", "petabyte", "pound", "second", "stone", "terabit", "terabyte", "week", "yard", "year"],
-            _ => vec![],
-        };
-        make_array(values.into_iter().map(s_val).collect())
-    }));
+    vm.register_host_fn(
+        "ecma:intl",
+        "supportedValuesOf",
+        Box::new(|_ctx, args| {
+            let key = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => return make_array(vec![]),
+            };
+            let values: Vec<&'static str> = match key.as_str() {
+                "calendar" => vec![
+                    "gregory", "buddhist", "chinese", "coptic", "ethiopic", "ethioaa", "hebrew",
+                    "indian", "islamic", "iso8601", "japanese", "persian", "roc",
+                ],
+                "collation" => vec![
+                    "compat", "dict", "ducet", "emoji", "eor", "phonebk", "phonetic", "pinyin",
+                    "reformed", "searchjl", "stroke", "trad", "unihan", "zhuyin",
+                ],
+                "currency" => vec![
+                    "USD", "EUR", "GBP", "JPY", "CNY", "AUD", "CAD", "CHF", "HKD", "INR", "KRW",
+                    "MXN", "NZD", "SGD",
+                ],
+                "numberingSystem" => vec![
+                    "arab", "arabext", "bali", "beng", "deva", "fullwide", "gujr", "guru",
+                    "hanidec", "hant", "khmr", "knda", "laoo", "latn", "limb", "mlym", "mong",
+                    "mymr", "orya", "tamldec", "telu", "thai", "tibt",
+                ],
+                "timeZone" => vec![
+                    "UTC",
+                    "America/New_York",
+                    "America/Los_Angeles",
+                    "America/Chicago",
+                    "America/Denver",
+                    "Europe/London",
+                    "Europe/Paris",
+                    "Europe/Berlin",
+                    "Europe/Moscow",
+                    "Asia/Tokyo",
+                    "Asia/Shanghai",
+                    "Asia/Hong_Kong",
+                    "Asia/Singapore",
+                    "Asia/Dubai",
+                    "Australia/Sydney",
+                ],
+                "unit" => vec![
+                    "acre",
+                    "bit",
+                    "byte",
+                    "celsius",
+                    "centimeter",
+                    "day",
+                    "degree",
+                    "fahrenheit",
+                    "fluid-ounce",
+                    "foot",
+                    "gallon",
+                    "gigabit",
+                    "gigabyte",
+                    "gram",
+                    "hectare",
+                    "hour",
+                    "inch",
+                    "kilobit",
+                    "kilobyte",
+                    "kilogram",
+                    "kilometer",
+                    "liter",
+                    "megabit",
+                    "megabyte",
+                    "meter",
+                    "microsecond",
+                    "mile",
+                    "mile-scandinavian",
+                    "milliliter",
+                    "millimeter",
+                    "millisecond",
+                    "minute",
+                    "month",
+                    "nanosecond",
+                    "ounce",
+                    "percent",
+                    "petabyte",
+                    "pound",
+                    "second",
+                    "stone",
+                    "terabit",
+                    "terabyte",
+                    "week",
+                    "yard",
+                    "year",
+                ],
+                _ => vec![],
+            };
+            make_array(values.into_iter().map(s_val).collect())
+        }),
+    );
 }
 
 #[allow(dead_code)]

@@ -11,8 +11,8 @@
 //! See `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md` for the
 //! marshaling + error-handling contract every entry must satisfy.
 
-pub mod js_string_builtins;
 pub mod js_primitive_builtins;
+pub mod js_string_builtins;
 
 use vybe_bytecode::VM;
 

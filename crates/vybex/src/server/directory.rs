@@ -78,7 +78,6 @@ pub fn is_script(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(
         ext,
-        "php" | "vb"  | "py"  | "rb"
-            | "cs" | "dart" | "cob" | "cbl" | "f90" | "pas"
+        "php" | "vb" | "py" | "rb" | "cs" | "dart" | "cob" | "cbl" | "f90" | "pas"
     )
 }

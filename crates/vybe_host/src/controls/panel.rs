@@ -55,7 +55,11 @@ fn css(props: &Props) -> String {
         Some("Fixed3D") => s.push_str("border: 2px inset #ccc; "),
         _ => {}
     }
-    if props.get("AutoScroll").map(|v| v == "True").unwrap_or(false) {
+    if props
+        .get("AutoScroll")
+        .map(|v| v == "True")
+        .unwrap_or(false)
+    {
         s.push_str("overflow: auto; ");
     }
     s.push_str(&base_css(props));
@@ -64,7 +68,11 @@ fn css(props: &Props) -> String {
 
 fn split_css(props: &Props) -> String {
     let mut s = String::from("display: flex; ");
-    if props.get("Orientation").map(|v| v == "Horizontal").unwrap_or(false) {
+    if props
+        .get("Orientation")
+        .map(|v| v == "Horizontal")
+        .unwrap_or(false)
+    {
         s.push_str("flex-direction: column; ");
     }
     s.push_str(&base_css(props));
@@ -73,7 +81,11 @@ fn split_css(props: &Props) -> String {
 
 fn flow_css(props: &Props) -> String {
     let mut s = String::from("display: flex; flex-wrap: wrap; gap: 4px; ");
-    if props.get("FlowDirection").map(|v| v == "TopDown").unwrap_or(false) {
+    if props
+        .get("FlowDirection")
+        .map(|v| v == "TopDown")
+        .unwrap_or(false)
+    {
         s.push_str("flex-direction: column; ");
     }
     s.push_str(&base_css(props));
@@ -81,8 +93,14 @@ fn flow_css(props: &Props) -> String {
 }
 
 fn table_css(props: &Props) -> String {
-    let cols = props.get("ColumnCount").and_then(|v| v.parse::<u32>().ok()).unwrap_or(2);
-    let mut s = format!("display: grid; grid-template-columns: repeat({}, 1fr); gap: 2px; ", cols);
+    let cols = props
+        .get("ColumnCount")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(2);
+    let mut s = format!(
+        "display: grid; grid-template-columns: repeat({}, 1fr); gap: 2px; ",
+        cols
+    );
     s.push_str(&base_css(props));
     s
 }

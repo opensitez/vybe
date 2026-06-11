@@ -75,7 +75,10 @@ fn prop(obj: &Value, key: &str) -> Value {
 #[test]
 fn performance_now_returns_non_negative_number() {
     let t = call_perf("performanceNow", vec![]);
-    assert!(as_f64(&t) >= 0.0, "performance.now() must be >= 0, got {t:?}");
+    assert!(
+        as_f64(&t) >= 0.0,
+        "performance.now() must be >= 0, got {t:?}"
+    );
 }
 
 #[test]
@@ -84,7 +87,10 @@ fn performance_now_is_monotonically_increasing() {
     // Small busy-wait to ensure time advances
     let _ = (0..1_000).map(|x| x * x).sum::<i64>();
     let t2 = call_perf("performanceNow", vec![]);
-    assert!(as_f64(&t2) >= as_f64(&t1), "performance.now() must not decrease");
+    assert!(
+        as_f64(&t2) >= as_f64(&t1),
+        "performance.now() must not decrease"
+    );
 }
 
 #[test]
@@ -101,7 +107,10 @@ fn performance_now_has_sub_millisecond_resolution() {
 #[test]
 fn performance_time_origin_is_positive() {
     let origin = call_perf("performanceTimeOrigin", vec![]);
-    assert!(as_f64(&origin) > 0.0, "timeOrigin must be > 0, got {origin:?}");
+    assert!(
+        as_f64(&origin) > 0.0,
+        "timeOrigin must be > 0, got {origin:?}"
+    );
 }
 
 // ── performance.mark ─────────────────────────────────────────────────────────
@@ -156,7 +165,10 @@ fn performance_clear_marks_all_does_not_panic() {
 fn performance_measure_returns_entry_object() {
     let _ = call_perf("performanceMark", vec![s("start")]);
     let _ = call_perf("performanceMark", vec![s("end")]);
-    let entry = call_perf("performanceMeasure", vec![s("my-measure"), s("start"), s("end")]);
+    let entry = call_perf(
+        "performanceMeasure",
+        vec![s("my-measure"), s("start"), s("end")],
+    );
     assert!(matches!(entry, Value::Object(_)));
 }
 
@@ -265,5 +277,8 @@ fn proposal_node_perf_hooks_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:perf_hooks imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:perf_hooks imports: {missing:?}"
+    );
 }

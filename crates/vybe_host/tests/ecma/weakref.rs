@@ -57,7 +57,13 @@ fn deref_result_has_same_tag_property_as_original() {
     let wr = invoke("new", vec![target]);
     let result = invoke("deref", vec![wr]);
     if let Value::Object(o) = result {
-        let tag = o.lock().unwrap().properties.get("tag").cloned().unwrap_or(Value::Undefined);
+        let tag = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("tag")
+            .cloned()
+            .unwrap_or(Value::Undefined);
         assert_eq!(tag, Value::I32(99));
     }
     // If deref returns undefined (GC'd) the test passes vacuously — that is

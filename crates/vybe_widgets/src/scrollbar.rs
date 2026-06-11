@@ -1,8 +1,11 @@
 //! ScrollBar widget — track with draggable thumb and arrow buttons.
 
-use tiny_skia::*;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, MouseEventKind, MouseButton as LayoutMouseButton, KeyEvent, RenderContext, PanelWidget, WidgetEvent, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
+use tiny_skia::*;
 
 pub struct ScrollBar {
     pub vertical: bool,
@@ -39,16 +42,27 @@ impl ScrollBar {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Arrow button size at each end.
     fn arrow_size(&self) -> f32 {
-        if self.vertical { self.width } else { self.height }
+        if self.vertical {
+            self.width
+        } else {
+            self.height
+        }
     }
 
     /// Track length (excluding arrow buttons).
     fn track_length(&self) -> f32 {
-        let total = if self.vertical { self.height } else { self.width };
+        let total = if self.vertical {
+            self.height
+        } else {
+            self.width
+        };
         (total - self.arrow_size() * 2.0).max(0.0)
     }
 
@@ -64,7 +78,9 @@ impl ScrollBar {
     /// Thumb offset within track.
     fn thumb_offset(&self) -> f32 {
         let available = self.track_length() - self.thumb_size();
-        if available <= 0.0 { return 0.0; }
+        if available <= 0.0 {
+            return 0.0;
+        }
         self.pos.clamp(0.0, 1.0) * available
     }
 
@@ -295,12 +311,16 @@ impl ScrollBar {
 
     /// Handle mouse move during drag.
     pub fn mouse_move(&mut self, mx: f32, my: f32) {
-        if !self.dragging { return; }
+        if !self.dragging {
+            return;
+        }
         let arrow = self.arrow_size();
         let track = self.track_length();
         let thumb_sz = self.thumb_size();
         let available = track - thumb_sz;
-        if available <= 0.0 { return; }
+        if available <= 0.0 {
+            return;
+        }
 
         let new_offset = if self.vertical {
             my - self.drag_offset - arrow
@@ -317,20 +337,34 @@ impl ScrollBar {
 
     /// Scroll offset in content pixels.
     pub fn scroll_offset(&self) -> f32 {
-        if self.content_size <= self.viewport_size { return 0.0; }
+        if self.content_size <= self.viewport_size {
+            return 0.0;
+        }
         self.pos.clamp(0.0, 1.0) * (self.content_size - self.viewport_size)
     }
 }
 
 impl PanelWidget for ScrollBar {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
     }
 
@@ -341,14 +375,16 @@ impl PanelWidget for ScrollBar {
         match event.kind {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 if r.contains(event.x, event.y) && self.mouse_down(lx, ly) {
-                    self.pending_events.push(WidgetEvent::ScrollChanged(self.name.clone(), self.pos));
+                    self.pending_events
+                        .push(WidgetEvent::ScrollChanged(self.name.clone(), self.pos));
                     return true;
                 }
             }
             MouseEventKind::Move => {
                 if self.dragging {
                     self.mouse_move(lx, ly);
-                    self.pending_events.push(WidgetEvent::ScrollChanged(self.name.clone(), self.pos));
+                    self.pending_events
+                        .push(WidgetEvent::ScrollChanged(self.name.clone(), self.pos));
                     return true;
                 }
             }
@@ -363,17 +399,17 @@ impl PanelWidget for ScrollBar {
         false
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetValue(v) => {
                 let new_pos = *v as f32;
                 if (self.pos - new_pos).abs() > f32::EPSILON {
                     self.pos = new_pos;
-                    self.pending_events.push(WidgetEvent::ScrollChanged(
-                        self.name.clone(),
-                        self.pos,
-                    ));
+                    self.pending_events
+                        .push(WidgetEvent::ScrollChanged(self.name.clone(), self.pos));
                 }
                 CommandValue::None
             }
@@ -382,7 +418,9 @@ impl PanelWidget for ScrollBar {
         }
     }
 
-    fn drain_events(&mut self) -> Vec<WidgetEvent> { std::mem::take(&mut self.pending_events) }
+    fn drain_events(&mut self) -> Vec<WidgetEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
 
     fn cursor_at(&self, x: f32, y: f32) -> winit::window::CursorIcon {
         let r = self.rect;

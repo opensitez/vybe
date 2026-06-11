@@ -1,9 +1,12 @@
 //! Label widget — standalone tiny-skia rendered label.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue, TextAlign};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, TextAlign,
+    WidgetCommand, WidgetId,
+};
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 pub struct Label {
     pub id: WidgetId,
@@ -41,9 +44,18 @@ impl Label {
         }
     }
 
-    pub fn with_name<S: Into<String>>(mut self, name: S) -> Self { self.name = name.into(); self }
-    pub fn with_text_align(mut self, align: TextAlign) -> Self { self.text_align = align; self }
-    pub fn with_word_wrap(mut self) -> Self { self.word_wrap = true; self }
+    pub fn with_name<S: Into<String>>(mut self, name: S) -> Self {
+        self.name = name.into();
+        self
+    }
+    pub fn with_text_align(mut self, align: TextAlign) -> Self {
+        self.text_align = align;
+        self
+    }
+    pub fn with_word_wrap(mut self) -> Self {
+        self.word_wrap = true;
+        self
+    }
 
     /// Paint the label background (if not transparent). Text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -67,7 +79,14 @@ impl Label {
     }
 
     /// Compute the x position for text given alignment.
-    fn align_x(&self, font_system: &mut cosmic_text::FontSystem, text: &str, left: f32, available_w: f32, scale: f32) -> f32 {
+    fn align_x(
+        &self,
+        font_system: &mut cosmic_text::FontSystem,
+        text: &str,
+        left: f32,
+        available_w: f32,
+        scale: f32,
+    ) -> f32 {
         match self.text_align {
             TextAlign::Left => left,
             TextAlign::Center => {
@@ -82,7 +101,12 @@ impl Label {
     }
 
     /// Word-wrap text into lines fitting within `max_width`.
-    fn wrap_text(&self, font_system: &mut cosmic_text::FontSystem, max_width: f32, scale: f32) -> Vec<String> {
+    fn wrap_text(
+        &self,
+        font_system: &mut cosmic_text::FontSystem,
+        max_width: f32,
+        scale: f32,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         for paragraph in self.text.split('\n') {
             let words: Vec<&str> = paragraph.split_whitespace().collect();
@@ -96,7 +120,12 @@ impl Label {
                     current_line = word.to_string();
                 } else {
                     let candidate = format!("{} {}", current_line, word);
-                    let w = super::ide_text::measure_text(font_system, &candidate, self.font_size, scale);
+                    let w = super::ide_text::measure_text(
+                        font_system,
+                        &candidate,
+                        self.font_size,
+                        scale,
+                    );
                     if w <= max_width {
                         current_line = candidate;
                     } else {
@@ -120,13 +149,21 @@ impl PanelWidget for Label {
         self.height = rect.h;
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn name(&self) -> &str { &self.name }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
 
         // Background (if not transparent)
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
@@ -142,30 +179,59 @@ impl PanelWidget for Label {
             let mut ty = r.y + padding;
             let line_height = self.font_size + 2.0;
             for line in &lines {
-                if ty + line_height > r.y + r.h { break; }
+                if ty + line_height > r.y + r.h {
+                    break;
+                }
                 let tx = self.align_x(ctx.font_system, line, r.x + padding, available_w, ctx.scale);
                 super::ide_text::draw_text(
-                    ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                    line, tx, ty, self.font_size, color, ctx.scale,
+                    ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                    line,
+                    tx,
+                    ty,
+                    self.font_size,
+                    color,
+                    ctx.scale,
                 );
                 ty += line_height;
             }
         } else {
             let ty = r.y + (r.h - self.font_size) / 2.0 - 1.0;
-            let tx = self.align_x(ctx.font_system, &self.text, r.x + padding, available_w, ctx.scale);
+            let tx = self.align_x(
+                ctx.font_system,
+                &self.text,
+                r.x + padding,
+                available_w,
+                ctx.scale,
+            );
             super::ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
-                &self.text, tx, ty, self.font_size, color, ctx.scale,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                &self.text,
+                tx,
+                ty,
+                self.font_size,
+                color,
+                ctx.scale,
             );
         }
     }
 
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.text = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                self.text = t.clone();
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.text.clone()),
             _ => CommandValue::None,
         }

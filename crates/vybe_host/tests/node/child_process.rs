@@ -33,7 +33,8 @@ fn call_cp(name: &str, args: Vec<Value>) -> Value {
 fn has_import(name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(String::from("node:child_process"), name.to_string()))
+    vm.host_registry
+        .contains_key(&(String::from("node:child_process"), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -41,7 +42,9 @@ fn s(text: &str) -> Value {
 }
 
 fn arr(values: Vec<Value>) -> Value {
-    Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object::new_array(values))))
+    Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
+        Object::new_array(values),
+    )))
 }
 
 fn new_obj(pairs: Vec<(&str, Value)>) -> Value {
@@ -90,22 +93,35 @@ fn is_array(value: &Value) -> bool {
 
 #[test]
 fn exec_sync_runs_shell_command_returns_stdout() {
-    let cmd = if cfg!(windows) { "cmd /c echo hello" } else { "echo hello" };
+    let cmd = if cfg!(windows) {
+        "cmd /c echo hello"
+    } else {
+        "echo hello"
+    };
     let v = call_cp("execSync", vec![s(cmd)]);
     let out = as_string(&v);
     assert!(
         out.trim_end() == "hello" || out.contains("hello"),
-        "execSync output should contain 'hello', got {:?}", out
+        "execSync output should contain 'hello', got {:?}",
+        out
     );
 }
 
 #[test]
 fn exec_sync_with_options_uses_encoding() {
-    let cmd = if cfg!(windows) { "cmd /c echo abc" } else { "echo abc" };
+    let cmd = if cfg!(windows) {
+        "cmd /c echo abc"
+    } else {
+        "echo abc"
+    };
     let opts = new_obj(vec![("encoding", s("utf8"))]);
     let v = call_cp("execSync", vec![s(cmd), opts]);
     let out = as_string(&v);
-    assert!(out.contains("abc"), "execSync(utf8) should contain 'abc', got {:?}", out);
+    assert!(
+        out.contains("abc"),
+        "execSync(utf8) should contain 'abc', got {:?}",
+        out
+    );
 }
 
 #[cfg(unix)]
@@ -115,7 +131,11 @@ fn exec_sync_with_cwd_option() {
     let v = call_cp("execSync", vec![s("pwd"), opts]);
     let out = as_string(&v);
     // Should resolve to /tmp (or /private/tmp on macOS)
-    assert!(out.contains("tmp"), "execSync with cwd=/tmp should print tmp path, got {:?}", out);
+    assert!(
+        out.contains("tmp"),
+        "execSync with cwd=/tmp should print tmp path, got {:?}",
+        out
+    );
 }
 
 #[cfg(unix)]
@@ -123,12 +143,13 @@ fn exec_sync_with_cwd_option() {
 fn exec_sync_with_env_option() {
     let env_obj = new_obj(vec![("VYBE_TEST_VAR", s("sentinel_value"))]);
     let opts = new_obj(vec![("env", env_obj), ("encoding", s("utf8"))]);
-    let v = call_cp(
-        "execSync",
-        vec![s("echo $VYBE_TEST_VAR"), opts],
-    );
+    let v = call_cp("execSync", vec![s("echo $VYBE_TEST_VAR"), opts]);
     let out = as_string(&v);
-    assert!(out.contains("sentinel_value"), "execSync should pass env vars, got {:?}", out);
+    assert!(
+        out.contains("sentinel_value"),
+        "execSync should pass env vars, got {:?}",
+        out
+    );
 }
 
 #[cfg(unix)]
@@ -137,7 +158,11 @@ fn exec_sync_with_timeout_option() {
     let opts = new_obj(vec![("timeout", Value::I32(5000)), ("encoding", s("utf8"))]);
     let v = call_cp("execSync", vec![s("echo timeout-test"), opts]);
     let out = as_string(&v);
-    assert!(out.contains("timeout-test"), "execSync with timeout should still run, got {:?}", out);
+    assert!(
+        out.contains("timeout-test"),
+        "execSync with timeout should still run, got {:?}",
+        out
+    );
 }
 
 // ── execFileSync ──────────────────────────────────────────────────────────────
@@ -145,9 +170,16 @@ fn exec_sync_with_timeout_option() {
 #[cfg(unix)]
 #[test]
 fn exec_file_sync_runs_program_with_args() {
-    let v = call_cp("execFileSync", vec![s("echo"), arr(vec![s("hello"), s("world")])]);
+    let v = call_cp(
+        "execFileSync",
+        vec![s("echo"), arr(vec![s("hello"), s("world")])],
+    );
     let out = as_string(&v);
-    assert!(out.contains("hello world"), "execFileSync output should contain args, got {:?}", out);
+    assert!(
+        out.contains("hello world"),
+        "execFileSync output should contain args, got {:?}",
+        out
+    );
 }
 
 #[cfg(unix)]
@@ -161,9 +193,16 @@ fn exec_file_sync_no_args_runs_program() {
 #[test]
 fn exec_file_sync_with_options() {
     let opts = new_obj(vec![("encoding", s("utf8"))]);
-    let v = call_cp("execFileSync", vec![s("echo"), arr(vec![s("opts-test")]), opts]);
+    let v = call_cp(
+        "execFileSync",
+        vec![s("echo"), arr(vec![s("opts-test")]), opts],
+    );
     let out = as_string(&v);
-    assert!(out.contains("opts-test"), "execFileSync with options, got {:?}", out);
+    assert!(
+        out.contains("opts-test"),
+        "execFileSync with options, got {:?}",
+        out
+    );
 }
 
 // ── spawnSync ─────────────────────────────────────────────────────────────────
@@ -172,17 +211,26 @@ fn exec_file_sync_with_options() {
 #[test]
 fn spawn_sync_returns_object_with_status_and_stdout() {
     let result = call_cp("spawnSync", vec![s("echo"), arr(vec![s("from-spawn")])]);
-    assert!(matches!(result, Value::Object(_)), "spawnSync expected object, got {:?}", result);
+    assert!(
+        matches!(result, Value::Object(_)),
+        "spawnSync expected object, got {:?}",
+        result
+    );
     let status = prop(&result, "status");
     if let Value::F64(code) = status {
-        assert_eq!(code, 0.0, "spawnSync status should be 0 for echo, got {}", code);
+        assert_eq!(
+            code, 0.0,
+            "spawnSync status should be 0 for echo, got {}",
+            code
+        );
     } else {
         panic!("spawnSync.status expected number, got {:?}", status);
     }
     let stdout = as_string(&prop(&result, "stdout"));
     assert!(
         stdout.contains("from-spawn"),
-        "spawnSync.stdout should contain 'from-spawn', got {:?}", stdout
+        "spawnSync.stdout should contain 'from-spawn', got {:?}",
+        stdout
     );
 }
 
@@ -218,7 +266,11 @@ fn spawn_sync_captures_stderr() {
         vec![s("sh"), arr(vec![s("-c"), s("echo errmsg 1>&2")])],
     );
     let stderr = as_string(&prop(&result, "stderr"));
-    assert!(stderr.contains("errmsg"), "spawnSync.stderr should contain 'errmsg', got {:?}", stderr);
+    assert!(
+        stderr.contains("errmsg"),
+        "spawnSync.stderr should contain 'errmsg', got {:?}",
+        stderr
+    );
 }
 
 #[cfg(unix)]
@@ -228,7 +280,8 @@ fn spawn_sync_output_field_is_array() {
     let output = prop(&result, "output");
     assert!(
         matches!(output, Value::Object(_)) || matches!(output, Value::Null),
-        "spawnSync.output should be array or null, got {:?}", output
+        "spawnSync.output should be array or null, got {:?}",
+        output
     );
 }
 
@@ -240,7 +293,8 @@ fn spawn_sync_signal_field_exists() {
     let sig = prop(&result, "signal");
     assert!(
         matches!(sig, Value::Null | Value::Undefined | Value::String(_)),
-        "spawnSync.signal should be null or signal string, got {:?}", sig
+        "spawnSync.signal should be null or signal string, got {:?}",
+        sig
     );
 }
 
@@ -261,7 +315,10 @@ fn spawn_sync_with_cwd_option() {
 fn spawn_sync_with_timeout_option() {
     let opts = new_obj(vec![("timeout", Value::I32(5000))]);
     let result = call_cp("spawnSync", vec![s("true"), arr(vec![]), opts]);
-    assert!(matches!(result, Value::Object(_)), "spawnSync with timeout should return object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "spawnSync with timeout should return object"
+    );
 }
 
 // ── spawn (async — returns ChildProcess) ──────────────────────────────────────
@@ -270,7 +327,10 @@ fn spawn_sync_with_timeout_option() {
 #[test]
 fn spawn_returns_object() {
     let cp = call_cp("spawn", vec![s("echo"), arr(vec![s("hello")])]);
-    assert!(matches!(cp, Value::Object(_)), "spawn should return object (ChildProcess)");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "spawn should return object (ChildProcess)"
+    );
 }
 
 #[cfg(unix)]
@@ -280,7 +340,8 @@ fn spawn_child_process_has_pid() {
     let pid = prop(&cp, "pid");
     assert!(
         matches!(pid, Value::F64(_) | Value::I32(_) | Value::I64(_)),
-        "ChildProcess.pid must be a number, got {:?}", pid
+        "ChildProcess.pid must be a number, got {:?}",
+        pid
     );
     match pid {
         Value::F64(n) => assert!(n > 0.0, "ChildProcess.pid must be positive"),
@@ -298,7 +359,8 @@ fn spawn_child_process_has_stdout() {
     let stdout = prop(&cp, "stdout");
     assert!(
         matches!(stdout, Value::Object(_) | Value::Null | Value::Undefined),
-        "ChildProcess.stdout should be stream or null, got {:?}", stdout
+        "ChildProcess.stdout should be stream or null, got {:?}",
+        stdout
     );
 }
 
@@ -309,7 +371,8 @@ fn spawn_child_process_has_stderr() {
     let stderr = prop(&cp, "stderr");
     assert!(
         matches!(stderr, Value::Object(_) | Value::Null | Value::Undefined),
-        "ChildProcess.stderr should be stream or null, got {:?}", stderr
+        "ChildProcess.stderr should be stream or null, got {:?}",
+        stderr
     );
 }
 
@@ -320,7 +383,8 @@ fn spawn_child_process_has_stdin() {
     let stdin = prop(&cp, "stdin");
     assert!(
         matches!(stdin, Value::Object(_) | Value::Null | Value::Undefined),
-        "ChildProcess.stdin should be writable stream or null, got {:?}", stdin
+        "ChildProcess.stdin should be writable stream or null, got {:?}",
+        stdin
     );
 }
 
@@ -329,7 +393,11 @@ fn spawn_child_process_has_stdin() {
 fn spawn_child_process_killed_is_false_initially() {
     let cp = call_cp("spawn", vec![s("sleep"), arr(vec![s("0")])]);
     let killed = prop(&cp, "killed");
-    assert_eq!(killed, Value::Bool(false), "ChildProcess.killed should be false initially");
+    assert_eq!(
+        killed,
+        Value::Bool(false),
+        "ChildProcess.killed should be false initially"
+    );
 }
 
 #[cfg(unix)]
@@ -339,7 +407,8 @@ fn spawn_child_process_connected_field_exists() {
     let connected = prop(&cp, "connected");
     assert!(
         matches!(connected, Value::Bool(_) | Value::Undefined | Value::Null),
-        "ChildProcess.connected should be bool, got {:?}", connected
+        "ChildProcess.connected should be bool, got {:?}",
+        connected
     );
 }
 
@@ -347,7 +416,10 @@ fn spawn_child_process_connected_field_exists() {
 #[test]
 fn spawn_child_process_has_kill_method() {
     let cp = call_cp("spawn", vec![s("sleep"), arr(vec![s("0")])]);
-    assert!(has_method(&cp, "kill"), "ChildProcess must have kill() method");
+    assert!(
+        has_method(&cp, "kill"),
+        "ChildProcess must have kill() method"
+    );
 }
 
 #[cfg(unix)]
@@ -374,7 +446,8 @@ fn spawn_child_process_stdio_field_is_array() {
     let stdio = prop(&cp, "stdio");
     assert!(
         matches!(stdio, Value::Object(_) | Value::Null | Value::Undefined),
-        "ChildProcess.stdio should be array or null, got {:?}", stdio
+        "ChildProcess.stdio should be array or null, got {:?}",
+        stdio
     );
 }
 
@@ -383,7 +456,10 @@ fn spawn_child_process_stdio_field_is_array() {
 fn spawn_with_shell_option() {
     let opts = new_obj(vec![("shell", Value::Bool(true))]);
     let cp = call_cp("spawn", vec![s("echo"), arr(vec![s("shell-ok")]), opts]);
-    assert!(matches!(cp, Value::Object(_)), "spawn with shell:true should return object");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "spawn with shell:true should return object"
+    );
 }
 
 #[cfg(unix)]
@@ -392,35 +468,57 @@ fn spawn_with_env_option() {
     let env = new_obj(vec![("MY_VAR", s("my_value"))]);
     let opts = new_obj(vec![("env", env)]);
     let cp = call_cp("spawn", vec![s("env"), arr(vec![]), opts]);
-    assert!(matches!(cp, Value::Object(_)), "spawn with env should return object");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "spawn with env should return object"
+    );
 }
 
 // ── exec (async — ChildProcess + callback) ────────────────────────────────────
 
 #[test]
 fn exec_returns_child_process_object() {
-    let cmd = if cfg!(windows) { "cmd /c echo hi" } else { "echo hi" };
+    let cmd = if cfg!(windows) {
+        "cmd /c echo hi"
+    } else {
+        "echo hi"
+    };
     // exec takes an optional callback; without it we just want the ChildProcess back
     let cp = call_cp("exec", vec![s(cmd)]);
-    assert!(matches!(cp, Value::Object(_)), "exec should return ChildProcess object");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "exec should return ChildProcess object"
+    );
 }
 
 #[test]
 fn exec_child_process_has_pid() {
-    let cmd = if cfg!(windows) { "cmd /c echo hi" } else { "echo hi" };
+    let cmd = if cfg!(windows) {
+        "cmd /c echo hi"
+    } else {
+        "echo hi"
+    };
     let cp = call_cp("exec", vec![s(cmd)]);
     let pid = prop(&cp, "pid");
     assert!(
         matches!(pid, Value::F64(_) | Value::I32(_) | Value::I64(_)),
-        "exec ChildProcess.pid must be numeric, got {:?}", pid
+        "exec ChildProcess.pid must be numeric, got {:?}",
+        pid
     );
 }
 
 #[test]
 fn exec_child_process_has_kill_method() {
-    let cmd = if cfg!(windows) { "cmd /c echo hi" } else { "echo hi" };
+    let cmd = if cfg!(windows) {
+        "cmd /c echo hi"
+    } else {
+        "echo hi"
+    };
     let cp = call_cp("exec", vec![s(cmd)]);
-    assert!(has_method(&cp, "kill"), "exec ChildProcess must have kill()");
+    assert!(
+        has_method(&cp, "kill"),
+        "exec ChildProcess must have kill()"
+    );
 }
 
 // ── execFile (async) ──────────────────────────────────────────────────────────
@@ -429,7 +527,10 @@ fn exec_child_process_has_kill_method() {
 #[test]
 fn exec_file_returns_child_process_object() {
     let cp = call_cp("execFile", vec![s("echo"), arr(vec![s("hi")])]);
-    assert!(matches!(cp, Value::Object(_)), "execFile should return ChildProcess");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "execFile should return ChildProcess"
+    );
 }
 
 #[cfg(unix)]
@@ -439,7 +540,8 @@ fn exec_file_child_process_has_pid() {
     let pid = prop(&cp, "pid");
     assert!(
         matches!(pid, Value::F64(_) | Value::I32(_) | Value::I64(_)),
-        "execFile ChildProcess.pid must be numeric, got {:?}", pid
+        "execFile ChildProcess.pid must be numeric, got {:?}",
+        pid
     );
 }
 
@@ -449,7 +551,10 @@ fn exec_file_child_process_has_pid() {
 fn fork_returns_child_process_object() {
     // fork requires a JS module path; /dev/null or a temp file works as stub
     let cp = call_cp("fork", vec![s("/dev/null")]);
-    assert!(matches!(cp, Value::Object(_)), "fork should return ChildProcess");
+    assert!(
+        matches!(cp, Value::Object(_)),
+        "fork should return ChildProcess"
+    );
 }
 
 #[test]
@@ -457,8 +562,12 @@ fn fork_child_process_has_pid() {
     let cp = call_cp("fork", vec![s("/dev/null")]);
     let pid = prop(&cp, "pid");
     assert!(
-        matches!(pid, Value::F64(_) | Value::I32(_) | Value::I64(_) | Value::Undefined | Value::Null),
-        "fork ChildProcess.pid must be numeric or null, got {:?}", pid
+        matches!(
+            pid,
+            Value::F64(_) | Value::I32(_) | Value::I64(_) | Value::Undefined | Value::Null
+        ),
+        "fork ChildProcess.pid must be numeric or null, got {:?}",
+        pid
     );
 }
 
@@ -468,14 +577,18 @@ fn fork_child_process_connected_is_bool() {
     let connected = prop(&cp, "connected");
     assert!(
         matches!(connected, Value::Bool(_) | Value::Undefined | Value::Null),
-        "fork ChildProcess.connected must be bool, got {:?}", connected
+        "fork ChildProcess.connected must be bool, got {:?}",
+        connected
     );
 }
 
 #[test]
 fn fork_child_process_has_send_method() {
     let cp = call_cp("fork", vec![s("/dev/null")]);
-    assert!(has_method(&cp, "send"), "fork ChildProcess must have send() method for IPC");
+    assert!(
+        has_method(&cp, "send"),
+        "fork ChildProcess must have send() method for IPC"
+    );
 }
 
 // ── ChildProcess.kill ─────────────────────────────────────────────────────────
@@ -499,7 +612,11 @@ fn child_process_killed_flag_after_kill() {
     // In the real Node API, after kill() is called, .killed becomes true.
     // TDD: we document the expected behavior.
     let killed_before = prop(&cp, "killed");
-    assert_eq!(killed_before, Value::Bool(false), "killed should be false before kill()");
+    assert_eq!(
+        killed_before,
+        Value::Bool(false),
+        "killed should be false before kill()"
+    );
 }
 
 // ── exitCode / signalCode ─────────────────────────────────────────────────────
@@ -511,7 +628,8 @@ fn child_process_exit_code_null_while_running() {
     let exit_code = prop(&cp, "exitCode");
     assert!(
         matches!(exit_code, Value::Null | Value::Undefined | Value::F64(_)),
-        "exitCode should be null while running, got {:?}", exit_code
+        "exitCode should be null while running, got {:?}",
+        exit_code
     );
 }
 
@@ -522,7 +640,8 @@ fn child_process_signal_code_null_while_running() {
     let sig = prop(&cp, "signalCode");
     assert!(
         matches!(sig, Value::Null | Value::Undefined | Value::String(_)),
-        "signalCode should be null while running, got {:?}", sig
+        "signalCode should be null while running, got {:?}",
+        sig
     );
 }
 
@@ -590,7 +709,10 @@ fn exec_sync_no_encoding_returns_buffer() {
 #[test]
 fn fork_child_process_has_disconnect_method() {
     let cp = call_cp("fork", vec![s("/dev/null")]);
-    assert!(has_method(&cp, "disconnect"), "fork ChildProcess must have disconnect()");
+    assert!(
+        has_method(&cp, "disconnect"),
+        "fork ChildProcess must have disconnect()"
+    );
 }
 
 // ── standalone child_process.kill(pid) ───────────────────────────────────────
@@ -602,7 +724,8 @@ fn child_process_kill_function_exists() {
     let result = call_cp("kill", vec![Value::I32(i32::MAX)]);
     assert!(
         matches!(result, Value::Bool(_) | Value::Undefined | Value::Null),
-        "child_process.kill must return bool or undefined, got {:?}", result
+        "child_process.kill must return bool or undefined, got {:?}",
+        result
     );
 }
 
@@ -630,5 +753,8 @@ fn proposal_node_child_process_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:child_process imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:child_process imports: {missing:?}"
+    );
 }

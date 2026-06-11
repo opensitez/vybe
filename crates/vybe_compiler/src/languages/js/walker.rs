@@ -3702,7 +3702,7 @@ fn walk_regex_literal(raw: &str) -> ExprKind {
         .strip_prefix('/')
         .and_then(|s| s.rfind('/').map(|i| (&s[..i], &s[i + 1..])))
     {
-        Some((p, f)) => (p.to_string(), f.to_string()),
+        Some((p, f)) => (unescape_regex_literal_pattern(p), f.to_string()),
         None => (raw.to_string(), String::new()),
     };
     ExprKind::New {
@@ -3712,6 +3712,26 @@ fn walk_regex_literal(raw: &str) -> ExprKind {
             Argument::positional(Expression::string(&flags)),
         ],
     }
+}
+
+fn unescape_regex_literal_pattern(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('/') => out.push('/'),
+            Some(next) => {
+                out.push('\\');
+                out.push(next);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn unquote(s: &str) -> String {

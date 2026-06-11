@@ -162,7 +162,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.resolve_promise(promise_id, value) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -172,7 +174,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.reject_promise(promise_id, reason) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -202,7 +206,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.resolve_future(future_id, value) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -212,7 +218,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.reject_future(future_id, reason) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -240,7 +248,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.stream_push(stream_id, item) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -250,7 +260,9 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.stream_close(stream_id) {
-                el_mut.microtasks.push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                el_mut
+                    .microtasks
+                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
     }
@@ -263,7 +275,11 @@ impl<'a> HostContext<'a> {
         use crate::value::ObjectKind;
         let stream_id = if let Value::Object(obj) = stream_val {
             let o = obj.lock().unwrap();
-            if let ObjectKind::Stream { id } = o.kind { id } else { return Vec::new(); }
+            if let ObjectKind::Stream { id } = o.kind {
+                id
+            } else {
+                return Vec::new();
+            }
         } else {
             return Vec::new();
         };
@@ -279,7 +295,9 @@ impl<'a> HostContext<'a> {
                             let o = inner_obj.lock().unwrap();
                             if let ObjectKind::Array(arr) = &o.kind {
                                 for v in arr {
-                                    if let Value::I32(b) = v { out.push(*b as u8); }
+                                    if let Value::I32(b) = v {
+                                        out.push(*b as u8);
+                                    }
                                 }
                             }
                         }

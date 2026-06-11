@@ -49,25 +49,33 @@ pub static STATUSSTRIP_DEF: ControlDef = ControlDef {
 };
 
 fn menu_css(props: &Props) -> String {
-    let mut s = String::from("display: flex; gap: 0; background: #f0f0f0; border-bottom: 1px solid #ccc; padding: 2px 4px; ");
+    let mut s = String::from(
+        "display: flex; gap: 0; background: #f0f0f0; border-bottom: 1px solid #ccc; padding: 2px 4px; ",
+    );
     s.push_str(&base_css(props));
     s
 }
 
 fn context_css(props: &Props) -> String {
-    let mut s = String::from("position: absolute; background: white; border: 1px solid #ccc; box-shadow: 2px 2px 4px rgba(0,0,0,0.2); z-index: 1000; padding: 4px 0; ");
+    let mut s = String::from(
+        "position: absolute; background: white; border: 1px solid #ccc; box-shadow: 2px 2px 4px rgba(0,0,0,0.2); z-index: 1000; padding: 4px 0; ",
+    );
     s.push_str(&base_css(props));
     s
 }
 
 fn toolbar_css(props: &Props) -> String {
-    let mut s = String::from("display: flex; gap: 2px; align-items: center; background: #f0f0f0; border-bottom: 1px solid #ccc; padding: 2px 4px; ");
+    let mut s = String::from(
+        "display: flex; gap: 2px; align-items: center; background: #f0f0f0; border-bottom: 1px solid #ccc; padding: 2px 4px; ",
+    );
     s.push_str(&base_css(props));
     s
 }
 
 fn status_css(props: &Props) -> String {
-    let mut s = String::from("display: flex; align-items: center; background: #f0f0f0; border-top: 1px solid #ccc; padding: 2px 8px; font-size: 12px; ");
+    let mut s = String::from(
+        "display: flex; align-items: center; background: #f0f0f0; border-top: 1px solid #ccc; padding: 2px 8px; font-size: 12px; ",
+    );
     s.push_str(&base_css(props));
     s
 }

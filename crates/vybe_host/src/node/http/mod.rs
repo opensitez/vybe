@@ -18,15 +18,15 @@
 //! range, negotiate, compress, auth, ws, sse, session, static_serve,
 //! server) will land in subsequent slices.
 
+pub mod client;
 pub mod context;
+pub mod meta;
 pub mod request;
 pub mod response;
-pub mod meta;
-pub mod client;
 
 pub use context::{
-    RequestContext, RequestBodyReader, ResponseState, ResponseMessage,
-    install_context, take_context, with_context,
+    RequestBodyReader, RequestContext, ResponseMessage, ResponseState, install_context,
+    take_context, with_context,
 };
 
 use vybe_bytecode::VM;

@@ -25,11 +25,15 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
-fn s(text: &str) -> Value { Value::String(Arc::from(text)) }
+fn s(text: &str) -> Value {
+    Value::String(Arc::from(text))
+}
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
-    for (k, v) in pairs { o.properties.insert(k.to_string(), v); }
+    for (k, v) in pairs {
+        o.properties.insert(k.to_string(), v);
+    }
     Value::Object(Arc::new(Mutex::new(o)))
 }
 
@@ -37,7 +41,9 @@ fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
 }
 
-fn clone(v: Value) -> Value { invoke("clone", vec![v]) }
+fn clone(v: Value) -> Value {
+    invoke("clone", vec![v])
+}
 
 // ── Primitive pass-through ────────────────────────────────────────────────────
 
@@ -77,9 +83,18 @@ fn clone_string_returns_equal_string() {
 fn clone_object_returns_different_pointer() {
     let original = obj(vec![("x", Value::I32(1))]);
     let cloned = clone(original.clone());
-    let orig_ptr = match &original { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 0 };
-    let clone_ptr = match &cloned  { Value::Object(a) => Arc::as_ptr(a) as usize, _ => 1 };
-    assert_ne!(orig_ptr, clone_ptr, "clone must produce a new object, not share the Arc");
+    let orig_ptr = match &original {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 0,
+    };
+    let clone_ptr = match &cloned {
+        Value::Object(a) => Arc::as_ptr(a) as usize,
+        _ => 1,
+    };
+    assert_ne!(
+        orig_ptr, clone_ptr,
+        "clone must produce a new object, not share the Arc"
+    );
 }
 
 #[test]

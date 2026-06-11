@@ -12,14 +12,14 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use softbuffer::{Context, Surface};
 use tiny_skia::Pixmap;
 use winit::application::ApplicationHandler;
-use winit::event::{WindowEvent, ElementState};
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes, CursorIcon};
-use softbuffer::{Context, Surface};
+use winit::window::{CursorIcon, Window, WindowAttributes};
 
-use crate::layout::{MouseEvent, MouseEventKind, MouseButton, KeyEvent};
+use crate::layout::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
 fn gui_trace_enabled() -> bool {
     std::env::var("VYBE_GUI_TRACE")
@@ -51,14 +51,18 @@ pub trait Application {
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool;
 
     /// Return the desired cursor icon for the current state.
-    fn cursor_icon(&self) -> CursorIcon { CursorIcon::Default }
+    fn cursor_icon(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
 
     /// Called when the window loses focus or cursor leaves.
     fn on_focus_lost(&mut self) {}
 
     /// Return a window title to display. Called after each render; the window
     /// title is updated only when the returned string changes.
-    fn title(&self) -> String { String::new() }
+    fn title(&self) -> String {
+        String::new()
+    }
 }
 
 // ── Internal Runner ────────────────────────────────────────────────────
@@ -138,10 +142,12 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                             s.resize(
                                 NonZeroU32::new(sz.width).unwrap(),
                                 NonZeroU32::new(sz.height).unwrap(),
-                            ).unwrap();
+                            )
+                            .unwrap();
                         }
                         self.pixmap = Some(Pixmap::new(sz.width, sz.height).unwrap());
-                        self.app.on_resize(sz.width as f32 / self.scale, sz.height as f32 / self.scale);
+                        self.app
+                            .on_resize(sz.width as f32 / self.scale, sz.height as f32 / self.scale);
                         w.request_redraw();
                     }
                 }
@@ -223,11 +229,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                 if gui_trace_enabled() {
                     eprintln!(
                         "[gui] window.cursor_moved physical=({:.1},{:.1}) logical=({:.1},{:.1}) scale={:.2}",
-                        position.x,
-                        position.y,
-                        event.x,
-                        event.y,
-                        scale,
+                        position.x, position.y, event.x, event.y, scale,
                     );
                 }
                 if self.app.handle_mouse(event) {
@@ -271,13 +273,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                 if gui_trace_enabled() {
                     eprintln!(
                         "[gui] window.mouse_input state={:?} button={:?} logical=({:.1},{:.1}) physical=({:.1},{:.1}) scale={:.2}",
-                        state,
-                        button,
-                        event.x,
-                        event.y,
-                        self.mouse_pos.0,
-                        self.mouse_pos.1,
-                        scale,
+                        state, button, event.x, event.y, self.mouse_pos.0, self.mouse_pos.1, scale,
                     );
                 }
                 if self.app.handle_mouse(event) {
@@ -288,9 +284,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
             }
 
             WindowEvent::RedrawRequested => {
-                if let (Some(pix), Some(surf)) =
-                    (self.pixmap.as_mut(), self.surface.as_mut())
-                {
+                if let (Some(pix), Some(surf)) = (self.pixmap.as_mut(), self.surface.as_mut()) {
                     self.app.render(pix, scale);
                     // Update window title when the app requests a change
                     let new_title = self.app.title();
@@ -317,13 +311,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
 /// Run a GUI application with a window.
 ///
 /// `scale` is the HiDPI scale factor (e.g. `2.0` for Retina).
-pub fn run_app<A: Application + 'static>(
-    title: &str,
-    width: u32,
-    height: u32,
-    scale: f32,
-    app: A,
-) {
+pub fn run_app<A: Application + 'static>(title: &str, width: u32, height: u32, scale: f32, app: A) {
     let el = EventLoop::new().expect("create event loop");
     el.set_control_flow(ControlFlow::Wait);
     let mut inner = AppWindowInner {

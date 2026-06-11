@@ -22,7 +22,8 @@ fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    vm.host_registry.contains_key(&(module.to_string(), name.to_string()))
+    vm.host_registry
+        .contains_key(&(module.to_string(), name.to_string()))
 }
 
 fn s(text: &str) -> Value {
@@ -84,7 +85,10 @@ fn proposal_wasi_crypto_common_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_common", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto common imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto common imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -115,7 +119,10 @@ fn proposal_wasi_crypto_asymmetric_common_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_asymmetric_common", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto asymmetric-common imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto asymmetric-common imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -154,7 +161,10 @@ fn proposal_wasi_crypto_symmetric_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_symmetric", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto symmetric imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto symmetric imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -176,20 +186,23 @@ fn proposal_wasi_crypto_signatures_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_signatures", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto signatures imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto signatures imports: {missing:?}"
+    );
 }
 
 #[test]
 fn proposal_wasi_crypto_signatures_batch_surface_is_registered() {
-    let expected = [
-        "batch_signature_state_sign",
-        "batch_signature_state_verify",
-    ];
+    let expected = ["batch_signature_state_sign", "batch_signature_state_verify"];
     let missing = expected
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_signatures_batch", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto signatures-batch imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto signatures-batch imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -199,7 +212,10 @@ fn proposal_wasi_crypto_kx_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_kx", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto key-exchange imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto key-exchange imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -216,7 +232,10 @@ fn proposal_wasi_crypto_external_secrets_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_external_secrets", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto external-secrets imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto external-secrets imports: {missing:?}"
+    );
 }
 
 #[test]
@@ -233,5 +252,8 @@ fn proposal_wasi_crypto_symmetric_batch_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import("wasi_ephemeral_crypto_symmetric_batch", name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing wasi-crypto symmetric-batch imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing wasi-crypto symmetric-batch imports: {missing:?}"
+    );
 }

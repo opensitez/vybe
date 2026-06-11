@@ -1,9 +1,12 @@
 //! GroupBox widget — border with title gap at top.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
 use super::WidgetColors;
-use super::layout::{LayoutRect, MouseEvent, KeyEvent, RenderContext, PanelWidget, WidgetId, WidgetCommand, CommandValue};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetId,
+};
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 pub struct GroupBox {
     pub title: String,
@@ -34,7 +37,10 @@ impl GroupBox {
         }
     }
 
-    pub fn with_name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
 
     /// Paint the groupbox — border with gap at top for title. Title text drawn by caller.
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -104,26 +110,56 @@ impl GroupBox {
 }
 
 impl PanelWidget for GroupBox {
-    fn name(&self) -> &str { &self.name }
-    fn widget_id(&self) -> WidgetId { self.id }
-    fn set_rect(&mut self, rect: LayoutRect) { self.rect = rect; self.width = rect.w; self.height = rect.h; }
-    fn rect(&self) -> LayoutRect { self.rect }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.rect = rect;
+        self.width = rect.w;
+        self.height = rect.h;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
-        if r.w <= 0.0 || r.h <= 0.0 { return; }
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
         // Measure title for gap
-        self.title_width = super::ide_text::measure_text(ctx.font_system, &self.title, 12.0, ctx.scale);
+        self.title_width =
+            super::ide_text::measure_text(ctx.font_system, &self.title, 12.0, ctx.scale);
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw title text
         let (fr, fg, fb, _) = self.colors.foreground;
-        super::ide_text::draw_text(ctx.pixmap, ctx.font_system, ctx.swash_cache, &self.title, r.x + 12.0, r.y, 12.0, CosmicColor::rgba(fr, fg, fb, 255), ctx.scale);
+        super::ide_text::draw_text(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            &self.title,
+            r.x + 12.0,
+            r.y,
+            12.0,
+            CosmicColor::rgba(fr, fg, fb, 255),
+            ctx.scale,
+        );
     }
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool { false }
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
-            WidgetCommand::SetText(t) => { self.title = t.clone(); CommandValue::None }
+            WidgetCommand::SetText(t) => {
+                self.title = t.clone();
+                CommandValue::None
+            }
             WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
             _ => CommandValue::None,
         }

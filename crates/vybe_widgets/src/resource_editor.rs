@@ -1,9 +1,11 @@
 //! Resource Editor widget — tabbed grid for managing project resources
 //! (strings, images, icons, audio, files). Matches Visual Studio's resource editor.
 
+use crate::layout::{
+    KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
-use tiny_skia::{Paint, Pixmap, Transform, PathBuilder, Stroke};
-use crate::layout::{LayoutRect, RenderContext, MouseEvent, KeyEvent, PanelWidget, WidgetEvent, WidgetId};
+use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use winit::window::CursorIcon;
 
 const HEADER_H: f32 = 28.0;
@@ -24,7 +26,14 @@ pub enum ResourceTab {
 
 impl ResourceTab {
     pub fn all() -> &'static [ResourceTab] {
-        &[ResourceTab::Strings, ResourceTab::Images, ResourceTab::Icons, ResourceTab::Audio, ResourceTab::Files, ResourceTab::Other]
+        &[
+            ResourceTab::Strings,
+            ResourceTab::Images,
+            ResourceTab::Icons,
+            ResourceTab::Audio,
+            ResourceTab::Files,
+            ResourceTab::Other,
+        ]
     }
 
     pub fn label(&self) -> &'static str {
@@ -49,7 +58,10 @@ impl ResourceTab {
     }
 
     pub fn is_file_based(&self) -> bool {
-        matches!(self, ResourceTab::Images | ResourceTab::Icons | ResourceTab::Audio | ResourceTab::Files)
+        matches!(
+            self,
+            ResourceTab::Images | ResourceTab::Icons | ResourceTab::Audio | ResourceTab::Files
+        )
     }
 }
 
@@ -130,7 +142,9 @@ impl ResourceEditor {
     }
 
     pub fn filtered_indices(&self) -> Vec<usize> {
-        self.entries.iter().enumerate()
+        self.entries
+            .iter()
+            .enumerate()
             .filter(|(_, e)| e.tab == self.active_tab)
             .map(|(i, _)| i)
             .collect()
@@ -142,7 +156,11 @@ impl ResourceEditor {
 
     fn content_h(&self) -> f32 {
         let count = self.filtered_indices().len();
-        let add_row = if !self.active_tab.is_file_based() { 1.0 } else { 0.0 };
+        let add_row = if !self.active_tab.is_file_based() {
+            1.0
+        } else {
+            0.0
+        };
         COL_HEADER_H + (count as f32 + add_row + 1.0) * ROW_H
     }
 
@@ -182,8 +200,15 @@ impl ResourceEditor {
     }
 
     pub fn render_at(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-        x: f32, y: f32, w: f32, h: f32, scale: f32,
+        &self,
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        scale: f32,
     ) {
         let s = scale;
         let mut paint = Paint::default();
@@ -196,7 +221,17 @@ impl ResourceEditor {
         paint.set_color_rgba8(240, 240, 240, 255);
         fill(pix, &paint, x, y, w, HEADER_H, s);
         let title_col = CosmicColor::rgba(50, 50, 50, 255);
-        crate::ide_text::draw_text(pix, fs, sc, "Resource Editor", x + 10.0, y + 6.0, 13.0, title_col, s);
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            "Resource Editor",
+            x + 10.0,
+            y + 6.0,
+            13.0,
+            title_col,
+            s,
+        );
 
         // Add button in title bar for file-based tabs
         if self.active_tab.is_file_based() {
@@ -204,7 +239,17 @@ impl ResourceEditor {
             let btn_x = w - 140.0;
             paint.set_color_rgba8(0, 120, 212, 255);
             fill(pix, &paint, x + btn_x, y + 3.0, 130.0, HEADER_H - 6.0, s);
-            crate::ide_text::draw_text(pix, fs, sc, &btn_label, x + btn_x + 8.0, y + 7.0, 11.0, CosmicColor::rgba(255, 255, 255, 255), s);
+            crate::ide_text::draw_text(
+                pix,
+                fs,
+                sc,
+                &btn_label,
+                x + btn_x + 8.0,
+                y + 7.0,
+                11.0,
+                CosmicColor::rgba(255, 255, 255, 255),
+                s,
+            );
         }
 
         paint.set_color_rgba8(204, 204, 204, 255);
@@ -251,11 +296,55 @@ impl ResourceEditor {
         paint.set_color_rgba8(240, 240, 240, 255);
         fill(pix, &paint, x, grid_y, w, COL_HEADER_H, s);
         let header_col = CosmicColor::rgba(60, 60, 60, 255);
-        crate::ide_text::draw_text(pix, fs, sc, "Name", x + 6.0, grid_y + 4.0, 11.0, header_col, s);
-        let val_header = if self.active_tab.is_file_based() { "File Path" } else { "Value" };
-        crate::ide_text::draw_text(pix, fs, sc, val_header, x + name_w + 6.0, grid_y + 4.0, 11.0, header_col, s);
-        crate::ide_text::draw_text(pix, fs, sc, "Comment", x + name_w + value_w + 6.0, grid_y + 4.0, 11.0, header_col, s);
-        crate::ide_text::draw_text(pix, fs, sc, "Actions", x + name_w + value_w + comment_w + 4.0, grid_y + 4.0, 11.0, header_col, s);
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            "Name",
+            x + 6.0,
+            grid_y + 4.0,
+            11.0,
+            header_col,
+            s,
+        );
+        let val_header = if self.active_tab.is_file_based() {
+            "File Path"
+        } else {
+            "Value"
+        };
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            val_header,
+            x + name_w + 6.0,
+            grid_y + 4.0,
+            11.0,
+            header_col,
+            s,
+        );
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            "Comment",
+            x + name_w + value_w + 6.0,
+            grid_y + 4.0,
+            11.0,
+            header_col,
+            s,
+        );
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            "Actions",
+            x + name_w + value_w + comment_w + 4.0,
+            grid_y + 4.0,
+            11.0,
+            header_col,
+            s,
+        );
 
         // Header bottom line
         paint.set_color_rgba8(204, 204, 204, 255);
@@ -268,7 +357,9 @@ impl ResourceEditor {
 
         for (row_idx, &entry_idx) in filtered.iter().enumerate() {
             let ry = rows_y + row_idx as f32 * ROW_H - self.scroll_y;
-            if ry + ROW_H < rows_y || ry > grid_y + grid_h { continue; }
+            if ry + ROW_H < rows_y || ry > grid_y + grid_h {
+                continue;
+            }
 
             let entry = &self.entries[entry_idx];
 
@@ -282,14 +373,28 @@ impl ResourceEditor {
             }
 
             // Check if we're editing this row
-            let is_editing = self.editing.as_ref().map(|(r, _, _, _)| *r == entry_idx).unwrap_or(false);
+            let is_editing = self
+                .editing
+                .as_ref()
+                .map(|(r, _, _, _)| *r == entry_idx)
+                .unwrap_or(false);
 
             // Name column
             if is_editing && self.editing.as_ref().unwrap().1 == 0 {
                 let (_, _, text, cursor) = self.editing.as_ref().unwrap();
                 self.render_edit_cell(pix, fs, sc, x, ry, name_w, text, *cursor, s);
             } else {
-                crate::ide_text::draw_text(pix, fs, sc, &entry.name, x + 4.0, ry + 5.0, 11.0, val_col, s);
+                crate::ide_text::draw_text(
+                    pix,
+                    fs,
+                    sc,
+                    &entry.name,
+                    x + 4.0,
+                    ry + 5.0,
+                    11.0,
+                    val_col,
+                    s,
+                );
             }
 
             // Value column
@@ -298,7 +403,17 @@ impl ResourceEditor {
                 self.render_edit_cell(pix, fs, sc, x + name_w, ry, value_w, text, *cursor, s);
             } else {
                 let display = Self::display_value(entry);
-                crate::ide_text::draw_text(pix, fs, sc, display, x + name_w + 4.0, ry + 5.0, 11.0, val_col, s);
+                crate::ide_text::draw_text(
+                    pix,
+                    fs,
+                    sc,
+                    display,
+                    x + name_w + 4.0,
+                    ry + 5.0,
+                    11.0,
+                    val_col,
+                    s,
+                );
                 // Browse button for file-based resources
                 if self.active_tab.is_file_based() {
                     let btn_x = x + name_w + value_w - 56.0;
@@ -306,16 +421,46 @@ impl ResourceEditor {
                     fill(pix, &paint, btn_x, ry + 2.0, 52.0, ROW_H - 4.0, s);
                     paint.set_color_rgba8(180, 180, 180, 255);
                     stroke_rect(pix, &paint, btn_x, ry + 2.0, 52.0, ROW_H - 4.0, s);
-                    crate::ide_text::draw_text(pix, fs, sc, "Browse", btn_x + 6.0, ry + 5.0, 10.0, CosmicColor::rgba(60, 60, 60, 255), s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        "Browse",
+                        btn_x + 6.0,
+                        ry + 5.0,
+                        10.0,
+                        CosmicColor::rgba(60, 60, 60, 255),
+                        s,
+                    );
                 }
             }
 
             // Comment column
             if is_editing && self.editing.as_ref().unwrap().1 == 2 {
                 let (_, _, text, cursor) = self.editing.as_ref().unwrap();
-                self.render_edit_cell(pix, fs, sc, x + name_w + value_w, ry, comment_w, text, *cursor, s);
+                self.render_edit_cell(
+                    pix,
+                    fs,
+                    sc,
+                    x + name_w + value_w,
+                    ry,
+                    comment_w,
+                    text,
+                    *cursor,
+                    s,
+                );
             } else {
-                crate::ide_text::draw_text(pix, fs, sc, &entry.comment, x + name_w + value_w + 4.0, ry + 5.0, 11.0, dim_col, s);
+                crate::ide_text::draw_text(
+                    pix,
+                    fs,
+                    sc,
+                    &entry.comment,
+                    x + name_w + value_w + 4.0,
+                    ry + 5.0,
+                    11.0,
+                    dim_col,
+                    s,
+                );
             }
 
             // Delete button
@@ -343,55 +488,199 @@ impl ResourceEditor {
 
                 // Name field
                 if self.add_editing == Some(0) {
-                    self.render_edit_cell(pix, fs, sc, x, add_y, name_w, &self.add_fields.0, self.add_cursor, s);
+                    self.render_edit_cell(
+                        pix,
+                        fs,
+                        sc,
+                        x,
+                        add_y,
+                        name_w,
+                        &self.add_fields.0,
+                        self.add_cursor,
+                        s,
+                    );
                 } else if self.add_fields.0.is_empty() {
-                    crate::ide_text::draw_text(pix, fs, sc, "Name", x + 4.0, add_y + 5.0, 11.0, placeholder_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        "Name",
+                        x + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        placeholder_col,
+                        s,
+                    );
                 } else {
-                    crate::ide_text::draw_text(pix, fs, sc, &self.add_fields.0, x + 4.0, add_y + 5.0, 11.0, val_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        &self.add_fields.0,
+                        x + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        val_col,
+                        s,
+                    );
                 }
 
                 // Value field
                 if self.add_editing == Some(1) {
-                    self.render_edit_cell(pix, fs, sc, x + name_w, add_y, value_w, &self.add_fields.1, self.add_cursor, s);
+                    self.render_edit_cell(
+                        pix,
+                        fs,
+                        sc,
+                        x + name_w,
+                        add_y,
+                        value_w,
+                        &self.add_fields.1,
+                        self.add_cursor,
+                        s,
+                    );
                 } else if self.add_fields.1.is_empty() {
-                    crate::ide_text::draw_text(pix, fs, sc, "Value", x + name_w + 4.0, add_y + 5.0, 11.0, placeholder_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        "Value",
+                        x + name_w + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        placeholder_col,
+                        s,
+                    );
                 } else {
-                    crate::ide_text::draw_text(pix, fs, sc, &self.add_fields.1, x + name_w + 4.0, add_y + 5.0, 11.0, val_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        &self.add_fields.1,
+                        x + name_w + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        val_col,
+                        s,
+                    );
                 }
 
                 // Comment field
                 if self.add_editing == Some(2) {
-                    self.render_edit_cell(pix, fs, sc, x + name_w + value_w, add_y, comment_w, &self.add_fields.2, self.add_cursor, s);
+                    self.render_edit_cell(
+                        pix,
+                        fs,
+                        sc,
+                        x + name_w + value_w,
+                        add_y,
+                        comment_w,
+                        &self.add_fields.2,
+                        self.add_cursor,
+                        s,
+                    );
                 } else if self.add_fields.2.is_empty() {
-                    crate::ide_text::draw_text(pix, fs, sc, "Comment", x + name_w + value_w + 4.0, add_y + 5.0, 11.0, placeholder_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        "Comment",
+                        x + name_w + value_w + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        placeholder_col,
+                        s,
+                    );
                 } else {
-                    crate::ide_text::draw_text(pix, fs, sc, &self.add_fields.2, x + name_w + value_w + 4.0, add_y + 5.0, 11.0, dim_col, s);
+                    crate::ide_text::draw_text(
+                        pix,
+                        fs,
+                        sc,
+                        &self.add_fields.2,
+                        x + name_w + value_w + 4.0,
+                        add_y + 5.0,
+                        11.0,
+                        dim_col,
+                        s,
+                    );
                 }
 
                 // Add button in actions column
                 let add_btn_x = x + name_w + value_w + comment_w + 4.0;
                 paint.set_color_rgba8(0, 120, 212, 255);
-                fill(pix, &paint, add_btn_x, add_y + 3.0, action_w - 8.0, ROW_H - 6.0, s);
-                crate::ide_text::draw_text(pix, fs, sc, "+ Add", add_btn_x + 4.0, add_y + 6.0, 10.0, CosmicColor::rgba(255, 255, 255, 255), s);
+                fill(
+                    pix,
+                    &paint,
+                    add_btn_x,
+                    add_y + 3.0,
+                    action_w - 8.0,
+                    ROW_H - 6.0,
+                    s,
+                );
+                crate::ide_text::draw_text(
+                    pix,
+                    fs,
+                    sc,
+                    "+ Add",
+                    add_btn_x + 4.0,
+                    add_y + 6.0,
+                    10.0,
+                    CosmicColor::rgba(255, 255, 255, 255),
+                    s,
+                );
             }
         }
 
         // Column separator lines — drawn AFTER rows so they stay on top
         paint.set_color_rgba8(200, 200, 200, 255);
         fill(pix, &paint, x + name_w - 1.0, grid_y, 2.0, grid_h, s);
-        fill(pix, &paint, x + name_w + value_w - 1.0, grid_y, 2.0, grid_h, s);
-        fill(pix, &paint, x + name_w + value_w + comment_w - 1.0, grid_y, 2.0, grid_h, s);
+        fill(
+            pix,
+            &paint,
+            x + name_w + value_w - 1.0,
+            grid_y,
+            2.0,
+            grid_h,
+            s,
+        );
+        fill(
+            pix,
+            &paint,
+            x + name_w + value_w + comment_w - 1.0,
+            grid_y,
+            2.0,
+            grid_h,
+            s,
+        );
 
         // Overdraw header/tabs area to clip scrolled rows that bleed above grid
         paint.set_color_rgba8(240, 240, 240, 255);
         fill(pix, &paint, x, y, w, HEADER_H, s);
-        crate::ide_text::draw_text(pix, fs, sc, "Resource Editor", x + 10.0, y + 6.0, 13.0, title_col, s);
+        crate::ide_text::draw_text(
+            pix,
+            fs,
+            sc,
+            "Resource Editor",
+            x + 10.0,
+            y + 6.0,
+            13.0,
+            title_col,
+            s,
+        );
         if self.active_tab.is_file_based() {
             let btn_label = format!("+ Add {}...", self.active_tab.label());
             let btn_x = w - 140.0;
             paint.set_color_rgba8(0, 120, 212, 255);
             fill(pix, &paint, x + btn_x, y + 3.0, 130.0, HEADER_H - 6.0, s);
-            crate::ide_text::draw_text(pix, fs, sc, &btn_label, x + btn_x + 8.0, y + 7.0, 11.0, CosmicColor::rgba(255, 255, 255, 255), s);
+            crate::ide_text::draw_text(
+                pix,
+                fs,
+                sc,
+                &btn_label,
+                x + btn_x + 8.0,
+                y + 7.0,
+                11.0,
+                CosmicColor::rgba(255, 255, 255, 255),
+                s,
+            );
         }
         paint.set_color_rgba8(204, 204, 204, 255);
         fill(pix, &paint, x, y + HEADER_H - 1.0, w, 1.0, s);
@@ -428,29 +717,65 @@ impl ResourceEditor {
     }
 
     fn render_edit_cell(
-        &self, pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache,
-        cx: f32, cy: f32, cw: f32, text: &str, cursor: usize, scale: f32,
+        &self,
+        pix: &mut Pixmap,
+        fs: &mut FontSystem,
+        sc: &mut SwashCache,
+        cx: f32,
+        cy: f32,
+        cw: f32,
+        text: &str,
+        cursor: usize,
+        scale: f32,
     ) {
         let mut paint = Paint::default();
         let val_col = CosmicColor::rgba(30, 30, 30, 255);
 
         // White background
         paint.set_color_rgba8(255, 255, 255, 255);
-        fill(pix, &paint, cx + 1.0, cy + 1.0, cw - 2.0, ROW_H - 2.0, scale);
+        fill(
+            pix,
+            &paint,
+            cx + 1.0,
+            cy + 1.0,
+            cw - 2.0,
+            ROW_H - 2.0,
+            scale,
+        );
         // Blue border
         paint.set_color_rgba8(0, 120, 212, 255);
-        stroke_rect(pix, &paint, cx + 1.0, cy + 1.0, cw - 2.0, ROW_H - 2.0, scale);
+        stroke_rect(
+            pix,
+            &paint,
+            cx + 1.0,
+            cy + 1.0,
+            cw - 2.0,
+            ROW_H - 2.0,
+            scale,
+        );
         // Text
         crate::ide_text::draw_text(pix, fs, sc, text, cx + 4.0, cy + 5.0, 11.0, val_col, scale);
         // Cursor — measure text before cursor for accurate positioning
-        let before_cursor = if cursor <= text.len() { &text[..cursor] } else { text };
+        let before_cursor = if cursor <= text.len() {
+            &text[..cursor]
+        } else {
+            text
+        };
         let cursor_offset = crate::ide_text::measure_text(fs, before_cursor, 11.0, scale);
         let cursor_x = cx + 4.0 + cursor_offset;
         paint.set_color_rgba8(0, 0, 0, 255);
         fill(pix, &paint, cursor_x, cy + 3.0, 1.5, ROW_H - 6.0, scale);
     }
 
-    pub fn handle_click(&mut self, mx: f32, my: f32, x: f32, y: f32, w: f32, _h: f32) -> ResourceEditorEvent {
+    pub fn handle_click(
+        &mut self,
+        mx: f32,
+        my: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        _h: f32,
+    ) -> ResourceEditorEvent {
         let (name_w, value_w, comment_w, _action_w) = self.col_widths(w);
 
         // Add button in title bar for file-based tabs
@@ -499,16 +824,24 @@ impl ResourceEditor {
                 }
 
                 // Browse button for file-based resources
-                if self.active_tab.is_file_based() && mx >= x + name_w + value_w - 56.0 && mx < x + name_w + value_w {
+                if self.active_tab.is_file_based()
+                    && mx >= x + name_w + value_w - 56.0
+                    && mx < x + name_w + value_w
+                {
                     self.commit_edit();
                     return ResourceEditorEvent::BrowseFile(entry_idx);
                 }
 
                 // Cell click for editing
-                let col = if mx < x + name_w { 0 }
-                    else if mx < x + name_w + value_w { 1 }
-                    else if mx < x + name_w + value_w + comment_w { 2 }
-                    else { 3 };
+                let col = if mx < x + name_w {
+                    0
+                } else if mx < x + name_w + value_w {
+                    1
+                } else if mx < x + name_w + value_w + comment_w {
+                    2
+                } else {
+                    3
+                };
 
                 if col < 3 {
                     // For file-based tabs, value column is not directly editable (use Browse)
@@ -537,10 +870,15 @@ impl ResourceEditor {
             let add_y = rows_y + filtered.len() as f32 * ROW_H - self.scroll_y;
             if my >= add_y && my < add_y + ROW_H {
                 // Which column?
-                let col = if mx < x + name_w { 0 }
-                    else if mx < x + name_w + value_w { 1 }
-                    else if mx < x + name_w + value_w + comment_w { 2 }
-                    else { 3 };
+                let col = if mx < x + name_w {
+                    0
+                } else if mx < x + name_w + value_w {
+                    1
+                } else if mx < x + name_w + value_w + comment_w {
+                    2
+                } else {
+                    3
+                };
 
                 if col == 3 {
                     // Add button clicked
@@ -581,11 +919,21 @@ impl ResourceEditor {
     }
 
     /// Handle column resize drag start — returns true if we started a resize
-    pub fn handle_col_resize_start(&mut self, mx: f32, my: f32, x: f32, y: f32, w: f32, h: f32) -> bool {
+    pub fn handle_col_resize_start(
+        &mut self,
+        mx: f32,
+        my: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) -> bool {
         let tab_y = y + HEADER_H;
         let grid_y = tab_y + TAB_H;
         // Allow resize anywhere in the grid area (header + data rows)
-        if my < grid_y || my > y + h { return false; }
+        if my < grid_y || my > y + h {
+            return false;
+        }
         let seps = self.col_separator_xs(x, w);
         for (i, &sep_x) in seps.iter().enumerate() {
             if (mx - sep_x).abs() < 6.0 {
@@ -629,7 +977,9 @@ impl ResourceEditor {
     pub fn is_near_separator(&self, mx: f32, x: f32, y: f32, w: f32, my: f32, h: f32) -> bool {
         let tab_y = y + HEADER_H;
         let grid_y = tab_y + TAB_H;
-        if my < grid_y || my > y + h { return false; }
+        if my < grid_y || my > y + h {
+            return false;
+        }
         let seps = self.col_separator_xs(x, w);
         seps.iter().any(|&sep_x| (mx - sep_x).abs() < 6.0)
     }
@@ -637,7 +987,8 @@ impl ResourceEditor {
     /// Handle character input for active editing cell or add-row field
     pub fn handle_key(&mut self, ch: char) {
         if let Some((_, _, ref mut text, ref mut cursor)) = self.editing {
-            if ch == '\x08' { // backspace
+            if ch == '\x08' {
+                // backspace
                 if *cursor > 0 {
                     text.remove(*cursor - 1);
                     *cursor -= 1;
@@ -697,7 +1048,11 @@ impl ResourceEditor {
             if next_col < 3 {
                 // Move to next column in same row
                 // Skip value column for file-based tabs
-                let actual_col = if next_col == 1 && self.active_tab.is_file_based() { 2 } else { next_col };
+                let actual_col = if next_col == 1 && self.active_tab.is_file_based() {
+                    2
+                } else {
+                    next_col
+                };
                 if actual_col < 3 && row < self.entries.len() {
                     let text = match actual_col {
                         0 => self.entries[row].name.clone(),
@@ -772,16 +1127,22 @@ impl ResourceEditor {
     /// Handle Left arrow
     pub fn handle_left(&mut self) {
         if let Some((_, _, _, ref mut cursor)) = self.editing {
-            if *cursor > 0 { *cursor -= 1; }
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
         } else if self.add_editing.is_some() {
-            if self.add_cursor > 0 { self.add_cursor -= 1; }
+            if self.add_cursor > 0 {
+                self.add_cursor -= 1;
+            }
         }
     }
 
     /// Handle Right arrow
     pub fn handle_right(&mut self) {
         if let Some((_, _, ref text, ref mut cursor)) = self.editing {
-            if *cursor < text.len() { *cursor += 1; }
+            if *cursor < text.len() {
+                *cursor += 1;
+            }
         } else if let Some(col) = self.add_editing {
             let len = match col {
                 0 => self.add_fields.0.len(),
@@ -789,7 +1150,9 @@ impl ResourceEditor {
                 2 => self.add_fields.2.len(),
                 _ => 0,
             };
-            if self.add_cursor < len { self.add_cursor += 1; }
+            if self.add_cursor < len {
+                self.add_cursor += 1;
+            }
         }
     }
 
@@ -846,7 +1209,8 @@ fn stroke_rect(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, 
         pb.push_rect(r);
     }
     if let Some(path) = pb.finish() {
-        let mut st = Stroke::default(); st.width = 1.0 * s;
+        let mut st = Stroke::default();
+        st.width = 1.0 * s;
         pix.stroke_path(&path, paint, &st, Transform::identity(), None);
     }
 }
@@ -854,21 +1218,40 @@ fn stroke_rect(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, 
 // ── PanelWidget impl ───────────────────────────────────────────────────
 
 impl PanelWidget for ResourceEditor {
-    fn set_rect(&mut self, rect: LayoutRect) { self.layout_rect = rect; }
-    fn rect(&self) -> LayoutRect { self.layout_rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn set_rect(&mut self, rect: LayoutRect) {
+        self.layout_rect = rect;
+    }
+    fn rect(&self) -> LayoutRect {
+        self.layout_rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.layout_rect;
-        self.render_at(ctx.pixmap, ctx.font_system, ctx.swash_cache, r.x, r.y, r.w, r.h, ctx.scale);
+        self.render_at(
+            ctx.pixmap,
+            ctx.font_system,
+            ctx.swash_cache,
+            r.x,
+            r.y,
+            r.w,
+            r.h,
+            ctx.scale,
+        );
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.layout_rect.contains(event.x, event.y) { return false; }
+        if !self.layout_rect.contains(event.x, event.y) {
+            return false;
+        }
         true
     }
 
-    fn handle_key(&mut self, _event: &KeyEvent) -> bool { false }
+    fn handle_key(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
         if self.layout_rect.contains(x, y) {
@@ -897,5 +1280,7 @@ impl PanelWidget for ResourceEditor {
         std::mem::take(&mut self.pending_events)
     }
 
-    fn focusable(&self) -> bool { true }
+    fn focusable(&self) -> bool {
+        true
+    }
 }

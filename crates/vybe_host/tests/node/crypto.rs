@@ -57,7 +57,13 @@ fn s(text: &str) -> Value {
 
 fn prop(v: &Value, key: &str) -> Value {
     match v {
-        Value::Object(o) => o.lock().unwrap().properties.get(key).cloned().unwrap_or(Value::Undefined),
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     }
 }
@@ -86,7 +92,11 @@ fn array_len(v: &Value) -> usize {
     match v {
         Value::Object(o) => {
             let o = o.lock().unwrap();
-            if let ObjectKind::Array(elems) = &o.kind { elems.len() } else { 0 }
+            if let ObjectKind::Array(elems) = &o.kind {
+                elems.len()
+            } else {
+                0
+            }
         }
         _ => 0,
     }
@@ -97,10 +107,13 @@ fn array_strings(v: &Value) -> Vec<String> {
         Value::Object(o) => {
             let o = o.lock().unwrap();
             if let ObjectKind::Array(elems) = &o.kind {
-                return elems.iter().map(|e| match e {
-                    Value::String(s) => s.to_string(),
-                    other => format!("{other}"),
-                }).collect();
+                return elems
+                    .iter()
+                    .map(|e| match e {
+                        Value::String(s) => s.to_string(),
+                        other => format!("{other}"),
+                    })
+                    .collect();
             }
             vec![]
         }
@@ -229,7 +242,10 @@ fn two_random_uuids_are_distinct() {
 #[test]
 fn create_hash_sha256_returns_object() {
     let hash = call_crypto("createHash", vec![s("sha256")]);
-    assert!(matches!(hash, Value::Object(_)), "createHash must return an object");
+    assert!(
+        matches!(hash, Value::Object(_)),
+        "createHash must return an object"
+    );
 }
 
 #[test]
@@ -237,7 +253,10 @@ fn create_hash_sha256_digest_hex_matches_known_value() {
     let hash = call_crypto("createHash", vec![s("sha256")]);
     let hash = call_method(&hash, "update", vec![s("abc")]);
     let digest = call_method(&hash, "digest", vec![s("hex")]);
-    assert_eq!(digest, s("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    assert_eq!(
+        digest,
+        s("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    );
 }
 
 #[test]
@@ -253,7 +272,11 @@ fn create_hash_sha512_hex_digest_is_128_chars() {
     let hash = call_crypto("createHash", vec![s("sha512")]);
     let hash = call_method(&hash, "update", vec![s("abc")]);
     let digest = call_method(&hash, "digest", vec![s("hex")]);
-    assert_eq!(as_str(&digest).len(), 128, "sha512 hex digest must be 128 chars");
+    assert_eq!(
+        as_str(&digest).len(),
+        128,
+        "sha512 hex digest must be 128 chars"
+    );
 }
 
 #[test]
@@ -269,7 +292,11 @@ fn create_hash_sha256_base64_digest_is_44_chars() {
     let hash = call_crypto("createHash", vec![s("sha256")]);
     let hash = call_method(&hash, "update", vec![s("hello")]);
     let digest = call_method(&hash, "digest", vec![s("base64")]);
-    assert_eq!(as_str(&digest).len(), 44, "sha256 base64 digest is always 44 chars");
+    assert_eq!(
+        as_str(&digest).len(),
+        44,
+        "sha256 base64 digest is always 44 chars"
+    );
 }
 
 #[test]
@@ -277,7 +304,10 @@ fn create_hash_empty_input_sha256_matches_known_value() {
     let hash = call_crypto("createHash", vec![s("sha256")]);
     let hash = call_method(&hash, "update", vec![s("")]);
     let digest = call_method(&hash, "digest", vec![s("hex")]);
-    assert_eq!(digest, s("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    assert_eq!(
+        digest,
+        s("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    );
 }
 
 // ── createHmac ────────────────────────────────────────────────────────────────
@@ -293,7 +323,10 @@ fn create_hmac_sha256_digest_matches_known_value() {
     let hmac = call_crypto("createHmac", vec![s("sha256"), s("secret")]);
     let hmac = call_method(&hmac, "update", vec![s("hello")]);
     let digest = call_method(&hmac, "digest", vec![s("hex")]);
-    assert_eq!(digest, s("88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b"));
+    assert_eq!(
+        digest,
+        s("88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b")
+    );
 }
 
 #[test]
@@ -301,27 +334,71 @@ fn create_hmac_sha1_hex_digest_is_40_chars() {
     let hmac = call_crypto("createHmac", vec![s("sha1"), s("key")]);
     let hmac = call_method(&hmac, "update", vec![s("data")]);
     let digest = call_method(&hmac, "digest", vec![s("hex")]);
-    assert_eq!(as_str(&digest).len(), 40, "HMAC-SHA1 hex digest is 40 chars");
+    assert_eq!(
+        as_str(&digest).len(),
+        40,
+        "HMAC-SHA1 hex digest is 40 chars"
+    );
 }
 
 // ── pbkdf2Sync ────────────────────────────────────────────────────────────────
 
 #[test]
 fn pbkdf2_sync_returns_buffer_of_correct_length() {
-    let buf = call_crypto("pbkdf2Sync", vec![s("password"), s("salt"), Value::I32(1), Value::I32(32), s("sha256")]);
-    assert_eq!(array_len(&buf), 32, "pbkdf2Sync keylen=32 must return 32 bytes");
+    let buf = call_crypto(
+        "pbkdf2Sync",
+        vec![
+            s("password"),
+            s("salt"),
+            Value::I32(1),
+            Value::I32(32),
+            s("sha256"),
+        ],
+    );
+    assert_eq!(
+        array_len(&buf),
+        32,
+        "pbkdf2Sync keylen=32 must return 32 bytes"
+    );
 }
 
 #[test]
 fn pbkdf2_sync_keylen_16_returns_16_bytes() {
-    let buf = call_crypto("pbkdf2Sync", vec![s("pass"), s("salt"), Value::I32(1), Value::I32(16), s("sha256")]);
+    let buf = call_crypto(
+        "pbkdf2Sync",
+        vec![
+            s("pass"),
+            s("salt"),
+            Value::I32(1),
+            Value::I32(16),
+            s("sha256"),
+        ],
+    );
     assert_eq!(array_len(&buf), 16);
 }
 
 #[test]
 fn pbkdf2_sync_is_deterministic() {
-    let a = call_crypto("pbkdf2Sync", vec![s("pw"), s("salt"), Value::I32(100), Value::I32(20), s("sha256")]);
-    let b = call_crypto("pbkdf2Sync", vec![s("pw"), s("salt"), Value::I32(100), Value::I32(20), s("sha256")]);
+    let a = call_crypto(
+        "pbkdf2Sync",
+        vec![
+            s("pw"),
+            s("salt"),
+            Value::I32(100),
+            Value::I32(20),
+            s("sha256"),
+        ],
+    );
+    let b = call_crypto(
+        "pbkdf2Sync",
+        vec![
+            s("pw"),
+            s("salt"),
+            Value::I32(100),
+            Value::I32(20),
+            s("sha256"),
+        ],
+    );
     assert_eq!(array_len(&a), 20);
     assert_eq!(array_len(&b), 20);
 }
@@ -331,7 +408,11 @@ fn pbkdf2_sync_is_deterministic() {
 #[test]
 fn scrypt_sync_returns_buffer_of_correct_length() {
     let buf = call_crypto("scryptSync", vec![s("password"), s("salt"), Value::I32(32)]);
-    assert_eq!(array_len(&buf), 32, "scryptSync keylen=32 must return 32 bytes");
+    assert_eq!(
+        array_len(&buf),
+        32,
+        "scryptSync keylen=32 must return 32 bytes"
+    );
 }
 
 #[test]
@@ -347,7 +428,10 @@ fn create_cipheriv_aes_256_cbc_returns_object() {
     let key = call_crypto("randomBytes", vec![Value::I32(32)]);
     let iv = call_crypto("randomBytes", vec![Value::I32(16)]);
     let cipher = call_crypto("createCipheriv", vec![s("aes-256-cbc"), key, iv]);
-    assert!(matches!(cipher, Value::Object(_)), "createCipheriv must return object");
+    assert!(
+        matches!(cipher, Value::Object(_)),
+        "createCipheriv must return object"
+    );
 }
 
 #[test]
@@ -355,7 +439,10 @@ fn create_decipheriv_aes_256_cbc_returns_object() {
     let key = call_crypto("randomBytes", vec![Value::I32(32)]);
     let iv = call_crypto("randomBytes", vec![Value::I32(16)]);
     let decipher = call_crypto("createDecipheriv", vec![s("aes-256-cbc"), key, iv]);
-    assert!(matches!(decipher, Value::Object(_)), "createDecipheriv must return object");
+    assert!(
+        matches!(decipher, Value::Object(_)),
+        "createDecipheriv must return object"
+    );
 }
 
 // ── getCiphers / getHashes / getCurves ────────────────────────────────────────
@@ -363,33 +450,48 @@ fn create_decipheriv_aes_256_cbc_returns_object() {
 #[test]
 fn get_ciphers_returns_non_empty_array() {
     let ciphers = call_crypto("getCiphers", vec![]);
-    assert!(array_len(&ciphers) > 0, "getCiphers() must return non-empty array");
+    assert!(
+        array_len(&ciphers) > 0,
+        "getCiphers() must return non-empty array"
+    );
 }
 
 #[test]
 fn get_ciphers_contains_aes_256_cbc() {
     let names = array_strings(&call_crypto("getCiphers", vec![]));
-    assert!(names.iter().any(|n| n == "aes-256-cbc"), "getCiphers must contain aes-256-cbc, got: {names:?}");
+    assert!(
+        names.iter().any(|n| n == "aes-256-cbc"),
+        "getCiphers must contain aes-256-cbc, got: {names:?}"
+    );
 }
 
 #[test]
 fn get_hashes_returns_non_empty_array() {
     let hashes = call_crypto("getHashes", vec![]);
-    assert!(array_len(&hashes) > 0, "getHashes() must return non-empty array");
+    assert!(
+        array_len(&hashes) > 0,
+        "getHashes() must return non-empty array"
+    );
 }
 
 #[test]
 fn get_hashes_contains_sha256_sha1_md5() {
     let names = array_strings(&call_crypto("getHashes", vec![]));
     for algo in ["sha256", "sha1", "md5", "sha512"] {
-        assert!(names.iter().any(|n| n == algo), "getHashes must contain '{algo}', got: {names:?}");
+        assert!(
+            names.iter().any(|n| n == algo),
+            "getHashes must contain '{algo}', got: {names:?}"
+        );
     }
 }
 
 #[test]
 fn get_curves_returns_non_empty_array() {
     let curves = call_crypto("getCurves", vec![]);
-    assert!(array_len(&curves) > 0, "getCurves() must return non-empty array");
+    assert!(
+        array_len(&curves) > 0,
+        "getCurves() must return non-empty array"
+    );
 }
 
 // ── timingSafeEqual ───────────────────────────────────────────────────────────
@@ -406,7 +508,10 @@ fn timing_safe_equal_same_buffer_returns_true() {
 #[test]
 fn constants_returns_object() {
     let consts = call_crypto("constants", vec![]);
-    assert!(matches!(consts, Value::Object(_)), "crypto.constants must be an object");
+    assert!(
+        matches!(consts, Value::Object(_)),
+        "crypto.constants must be an object"
+    );
 }
 
 #[test]
@@ -415,7 +520,8 @@ fn constants_rsa_pkcs1_padding_is_1() {
     let val = prop(&consts, "RSA_PKCS1_PADDING");
     assert!(
         matches!(val, Value::I32(1) | Value::F64(1.0) | Value::I64(1)),
-        "RSA_PKCS1_PADDING must be 1, got {:?}", val
+        "RSA_PKCS1_PADDING must be 1, got {:?}",
+        val
     );
 }
 
@@ -424,7 +530,10 @@ fn constants_rsa_pkcs1_padding_is_1() {
 #[test]
 fn create_sign_sha256_returns_object() {
     let sign = call_crypto("createSign", vec![s("sha256")]);
-    assert!(matches!(sign, Value::Object(_)), "createSign must return object");
+    assert!(
+        matches!(sign, Value::Object(_)),
+        "createSign must return object"
+    );
 }
 
 #[test]
@@ -450,7 +559,10 @@ fn create_sign_has_sign_method() {
 #[test]
 fn create_verify_sha256_returns_object() {
     let verify = call_crypto("createVerify", vec![s("sha256")]);
-    assert!(matches!(verify, Value::Object(_)), "createVerify must return object");
+    assert!(
+        matches!(verify, Value::Object(_)),
+        "createVerify must return object"
+    );
 }
 
 #[test]
@@ -481,7 +593,10 @@ fn random_int_in_range_returns_number() {
     match v {
         Value::I32(n) => assert!(n >= 0 && n < 100, "randomInt must be in [0, 100), got {n}"),
         Value::I64(n) => assert!(n >= 0 && n < 100, "randomInt must be in [0, 100), got {n}"),
-        Value::F64(f) => assert!(f >= 0.0 && f < 100.0 && f.fract() == 0.0, "randomInt got {f}"),
+        Value::F64(f) => assert!(
+            f >= 0.0 && f < 100.0 && f.fract() == 0.0,
+            "randomInt got {f}"
+        ),
         other => panic!("randomInt expected number, got {:?}", other),
     }
 }
@@ -506,7 +621,11 @@ fn random_fill_sync_returns_buffer_filled() {
     let buf = call_crypto("randomBytes", vec![Value::I32(16)]);
     let result = call_crypto("randomFillSync", vec![buf]);
     // Should return an array/buffer of 16 bytes
-    assert_eq!(array_len(&result), 16, "randomFillSync must return filled buffer of same length");
+    assert_eq!(
+        array_len(&result),
+        16,
+        "randomFillSync must return filled buffer of same length"
+    );
 }
 
 // ── createDiffieHellman ───────────────────────────────────────────────────────
@@ -514,7 +633,10 @@ fn random_fill_sync_returns_buffer_filled() {
 #[test]
 fn create_diffie_hellman_returns_object() {
     let dh = call_crypto("createDiffieHellman", vec![Value::I32(512)]);
-    assert!(matches!(dh, Value::Object(_)), "createDiffieHellman must return object");
+    assert!(
+        matches!(dh, Value::Object(_)),
+        "createDiffieHellman must return object"
+    );
 }
 
 #[test]
@@ -552,7 +674,10 @@ fn create_diffie_hellman_has_get_prime() {
 #[test]
 fn create_ecdh_returns_object() {
     let ecdh = call_crypto("createECDH", vec![s("prime256v1")]);
-    assert!(matches!(ecdh, Value::Object(_)), "createECDH must return object");
+    assert!(
+        matches!(ecdh, Value::Object(_)),
+        "createECDH must return object"
+    );
 }
 
 #[test]
@@ -582,9 +707,19 @@ fn hkdf_sync_returns_buffer_of_requested_length() {
     // hkdfSync(digest, ikm, salt, info, keylen)
     let result = call_crypto(
         "hkdfSync",
-        vec![s("sha256"), s("inputkeymaterial"), s("salt"), s("info"), Value::I32(32)],
+        vec![
+            s("sha256"),
+            s("inputkeymaterial"),
+            s("salt"),
+            s("info"),
+            Value::I32(32),
+        ],
     );
-    assert_eq!(array_len(&result), 32, "hkdfSync must return buffer of keylen bytes");
+    assert_eq!(
+        array_len(&result),
+        32,
+        "hkdfSync must return buffer of keylen bytes"
+    );
 }
 
 // ── generatePrimeSync / checkPrimeSync ───────────────────────────────────────
@@ -595,7 +730,8 @@ fn generate_prime_sync_returns_buffer() {
     // Returns ArrayBuffer or Buffer; for our purposes check it's an object or buffer
     assert!(
         matches!(prime, Value::Object(_)),
-        "generatePrimeSync must return buffer/ArrayBuffer object, got {:?}", prime
+        "generatePrimeSync must return buffer/ArrayBuffer object, got {:?}",
+        prime
     );
 }
 
@@ -603,14 +739,22 @@ fn generate_prime_sync_returns_buffer() {
 fn check_prime_sync_known_prime_returns_true() {
     // 7 is a prime
     let is_prime = call_crypto("checkPrimeSync", vec![Value::I32(7)]);
-    assert_eq!(is_prime, Value::Bool(true), "7 is prime, checkPrimeSync must return true");
+    assert_eq!(
+        is_prime,
+        Value::Bool(true),
+        "7 is prime, checkPrimeSync must return true"
+    );
 }
 
 #[test]
 fn check_prime_sync_known_composite_returns_false() {
     // 6 is not prime
     let is_prime = call_crypto("checkPrimeSync", vec![Value::I32(6)]);
-    assert_eq!(is_prime, Value::Bool(false), "6 is not prime, checkPrimeSync must return false");
+    assert_eq!(
+        is_prime,
+        Value::Bool(false),
+        "6 is not prime, checkPrimeSync must return false"
+    );
 }
 
 // ── getFips / setFips ─────────────────────────────────────────────────────────
@@ -620,7 +764,8 @@ fn get_fips_returns_number_or_bool() {
     let v = call_crypto("getFips", vec![]);
     assert!(
         matches!(v, Value::I32(_) | Value::F64(_) | Value::Bool(_)),
-        "getFips() must return number or bool, got {:?}", v
+        "getFips() must return number or bool, got {:?}",
+        v
     );
 }
 
@@ -643,11 +788,13 @@ fn cipher_update_and_final_returns_bytes() {
     // Both should be arrays (buffers).
     assert!(
         matches!(chunk_out, Value::Object(_) | Value::String(_)),
-        "cipher.update must return buffer/string, got {:?}", chunk_out
+        "cipher.update must return buffer/string, got {:?}",
+        chunk_out
     );
     assert!(
         matches!(final_out, Value::Object(_) | Value::String(_)),
-        "cipher.final must return buffer/string, got {:?}", final_out
+        "cipher.final must return buffer/string, got {:?}",
+        final_out
     );
 }
 
@@ -669,8 +816,8 @@ fn create_hash_has_copy_method() {
 fn get_random_values_fills_typed_array() {
     // getRandomValues fills a TypedArray in place and returns it.
     // We use an array of zeros as a proxy typed array.
-    use vybe_bytecode::value::Object;
     use std::collections::HashMap;
+    use vybe_bytecode::value::Object;
     let typed = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
         kind: ObjectKind::Array(vec![Value::I32(0); 8]),
         properties: HashMap::new(),
@@ -678,7 +825,10 @@ fn get_random_values_fills_typed_array() {
         fields: Vec::new(),
     })));
     let result = call_crypto("getRandomValues", vec![typed]);
-    assert!(matches!(result, Value::Object(_)), "getRandomValues must return typed array object");
+    assert!(
+        matches!(result, Value::Object(_)),
+        "getRandomValues must return typed array object"
+    );
 }
 
 // ── subtle (Web Crypto API) ───────────────────────────────────────────────────
@@ -686,7 +836,10 @@ fn get_random_values_fills_typed_array() {
 #[test]
 fn subtle_returns_object() {
     let subtle = call_crypto("subtle", vec![]);
-    assert!(matches!(subtle, Value::Object(_)), "crypto.subtle must return object");
+    assert!(
+        matches!(subtle, Value::Object(_)),
+        "crypto.subtle must return object"
+    );
 }
 
 #[test]
@@ -751,15 +904,19 @@ fn subtle_has_import_export_key_methods() {
 
 #[test]
 fn generate_key_pair_sync_rsa_returns_object_pair() {
-    use vybe_bytecode::value::Object;
     use std::collections::HashMap;
+    use vybe_bytecode::value::Object;
     let opts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new({
         let mut o = Object::new();
-        o.properties.insert("modulusLength".to_string(), Value::I32(2048));
+        o.properties
+            .insert("modulusLength".to_string(), Value::I32(2048));
         o
     })));
     let pair = call_crypto("generateKeyPairSync", vec![s("rsa"), opts]);
-    assert!(matches!(pair, Value::Object(_)), "generateKeyPairSync must return object");
+    assert!(
+        matches!(pair, Value::Object(_)),
+        "generateKeyPairSync must return object"
+    );
     let pk = prop(&pair, "publicKey");
     let sk = prop(&pair, "privateKey");
     assert!(
@@ -811,5 +968,8 @@ fn proposal_node_crypto_surface_is_registered() {
         .into_iter()
         .filter(|name| !has_import(name))
         .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing node:crypto imports: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "missing node:crypto imports: {missing:?}"
+    );
 }

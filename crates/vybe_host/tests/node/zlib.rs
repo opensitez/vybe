@@ -220,7 +220,9 @@ fn brotli_compress_smaller_than_input_for_repetitive_data() {
 fn deflate_sync_with_best_speed_option() {
     // Z_BEST_SPEED = 1
     let mut options = Object::new();
-    options.properties.insert("level".to_string(), Value::I32(1));
+    options
+        .properties
+        .insert("level".to_string(), Value::I32(1));
     let opts_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(options)));
     let input = s("speed test");
     let compressed = call_zlib("deflateSync", vec![input, opts_val]);
@@ -231,7 +233,9 @@ fn deflate_sync_with_best_speed_option() {
 fn deflate_sync_with_best_compression_option() {
     // Z_BEST_COMPRESSION = 9
     let mut options = Object::new();
-    options.properties.insert("level".to_string(), Value::I32(9));
+    options
+        .properties
+        .insert("level".to_string(), Value::I32(9));
     let opts_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(options)));
     let input = s("compression test");
     let compressed = call_zlib("deflateSync", vec![input, opts_val]);
@@ -252,7 +256,11 @@ fn zlib_constants_z_ok_is_zero() {
     match &consts {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            let z_ok = obj.properties.get("Z_OK").cloned().unwrap_or(Value::Undefined);
+            let z_ok = obj
+                .properties
+                .get("Z_OK")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(z_ok, Value::I32(0));
         }
         _ => panic!("expected constants object"),
@@ -265,7 +273,11 @@ fn zlib_constants_z_best_compression_is_nine() {
     match &consts {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            let val = obj.properties.get("Z_BEST_COMPRESSION").cloned().unwrap_or(Value::Undefined);
+            let val = obj
+                .properties
+                .get("Z_BEST_COMPRESSION")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(val, Value::I32(9));
         }
         _ => panic!("expected constants object"),
@@ -278,7 +290,11 @@ fn zlib_constants_z_no_compression_is_zero() {
     match &consts {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            let val = obj.properties.get("Z_NO_COMPRESSION").cloned().unwrap_or(Value::Undefined);
+            let val = obj
+                .properties
+                .get("Z_NO_COMPRESSION")
+                .cloned()
+                .unwrap_or(Value::Undefined);
             assert_eq!(val, Value::I32(0));
         }
         _ => panic!("expected constants object"),
@@ -316,7 +332,8 @@ fn zlib_constants_z_filtered_is_one() {
     let val = get_const("Z_FILTERED");
     assert!(
         matches!(val, Value::I32(1) | Value::Undefined),
-        "Z_FILTERED must be 1, got {:?}", val
+        "Z_FILTERED must be 1, got {:?}",
+        val
     );
 }
 
@@ -325,7 +342,8 @@ fn zlib_constants_z_huffman_only_is_two() {
     let val = get_const("Z_HUFFMAN_ONLY");
     assert!(
         matches!(val, Value::I32(2) | Value::Undefined),
-        "Z_HUFFMAN_ONLY must be 2, got {:?}", val
+        "Z_HUFFMAN_ONLY must be 2, got {:?}",
+        val
     );
 }
 
@@ -359,7 +377,9 @@ fn unzip_sync_decompresses_deflated_bytes() {
 fn deflate_sync_level_zero_and_inflate_round_trip() {
     let original = b"no compression level zero";
     let mut options = Object::new();
-    options.properties.insert("level".to_string(), Value::I32(0));
+    options
+        .properties
+        .insert("level".to_string(), Value::I32(0));
     let opts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(options)));
     let compressed = call_zlib("deflateSync", vec![bytes_buf(original), opts]);
     let restored = call_zlib("inflateSync", vec![compressed]);

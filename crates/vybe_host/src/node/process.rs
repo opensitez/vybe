@@ -24,20 +24,24 @@ fn s_val(text: &str) -> Value {
 
 fn versions_value() -> Value {
     let mut object = Object::new();
-    object.properties.insert("vybe".into(), s_val(env!("CARGO_PKG_VERSION")));
-    object.properties.insert("node".into(), s_val(env!("CARGO_PKG_VERSION")));
+    object
+        .properties
+        .insert("vybe".into(), s_val(env!("CARGO_PKG_VERSION")));
+    object
+        .properties
+        .insert("node".into(), s_val(env!("CARGO_PKG_VERSION")));
     Value::Object(Arc::new(Mutex::new(object)))
 }
 
 fn argv_value() -> Value {
-    let items: Vec<Value> = std::env::args()
-        .map(|arg| s_val(&arg))
-        .collect();
+    let items: Vec<Value> = std::env::args().map(|arg| s_val(&arg)).collect();
     Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
 }
 
 fn argv0_value() -> Value {
-    let argv0 = std::env::args().next().unwrap_or_else(|| "vybex".to_string());
+    let argv0 = std::env::args()
+        .next()
+        .unwrap_or_else(|| "vybex".to_string());
     s_val(&argv0)
 }
 
@@ -92,66 +96,90 @@ pub fn register(vm: &mut VM) {
 
     // Vybe doesn't ship as Node, but consumers expect a "v"-prefixed
     // version string for compat (most regex parsing assumes `v(\d+)`).
-    vm.register_host_value("node:process", "version", s_val(concat!("v", env!("CARGO_PKG_VERSION"))));
+    vm.register_host_value(
+        "node:process",
+        "version",
+        s_val(concat!("v", env!("CARGO_PKG_VERSION"))),
+    );
     vm.register_host_value("node:process", "versions", versions_value());
     vm.register_host_value("node:process", "pid", Value::F64(std::process::id() as f64));
     vm.register_host_value("node:process", "ppid", Value::F64(get_ppid() as f64));
 
-    vm.register_host_fn("node:process", "cwd", Box::new(|_ctx, _args| {
-        match std::env::current_dir() {
+    vm.register_host_fn(
+        "node:process",
+        "cwd",
+        Box::new(|_ctx, _args| match std::env::current_dir() {
             Ok(p) => s_val(p.to_string_lossy().as_ref()),
             Err(_) => s_val("."),
-        }
-    }));
+        }),
+    );
 
-    vm.register_host_fn("node:process", "chdir", Box::new(|_ctx, args| {
-        let path = s_arg(args, 0, ".");
-        let _ = std::env::set_current_dir(&path);
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "chdir",
+        Box::new(|_ctx, args| {
+            let path = s_arg(args, 0, ".");
+            let _ = std::env::set_current_dir(&path);
+            Value::Null
+        }),
+    );
 
-    vm.register_host_fn("node:process", "exit", Box::new(|_ctx, args| {
-        let code = match args.first() {
-            Some(Value::F64(n)) => *n as i32,
-            Some(Value::I32(n)) => *n,
-            _ => 0,
-        };
-        std::process::exit(code);
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "exit",
+        Box::new(|_ctx, args| {
+            let code = match args.first() {
+                Some(Value::F64(n)) => *n as i32,
+                Some(Value::I32(n)) => *n,
+                _ => 0,
+            };
+            std::process::exit(code);
+        }),
+    );
 
     vm.register_host_value("node:process", "argv", argv_value());
     vm.register_host_value("node:process", "argv0", argv0_value());
     vm.register_host_value("node:process", "execPath", exec_path_value());
     vm.register_host_value("node:process", "env", env_value());
 
-    vm.register_host_fn("node:process", "uptime", Box::new(|_ctx, _args| {
-        Value::F64(process_start().elapsed().as_secs_f64())
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "uptime",
+        Box::new(|_ctx, _args| Value::F64(process_start().elapsed().as_secs_f64())),
+    );
 
-    vm.register_host_fn("node:process", "hrtime", Box::new(|_ctx, _args| {
-        // Node hrtime() returns [seconds, nanoseconds] since process start.
-        let elapsed = process_start().elapsed();
-        let pair = vec![
-            Value::F64(elapsed.as_secs() as f64),
-            Value::F64(elapsed.subsec_nanos() as f64),
-        ];
-        Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "hrtime",
+        Box::new(|_ctx, _args| {
+            // Node hrtime() returns [seconds, nanoseconds] since process start.
+            let elapsed = process_start().elapsed();
+            let pair = vec![
+                Value::F64(elapsed.as_secs() as f64),
+                Value::F64(elapsed.subsec_nanos() as f64),
+            ];
+            Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+        }),
+    );
 
-    vm.register_host_fn("node:process", "memoryUsage", Box::new(|_ctx, _args| {
-        // Node returns {rss, heapTotal, heapUsed, external, arrayBuffers}.
-        // Vybe doesn't have a JS heap; report zeros for fields we can't
-        // measure cheaply. RSS could be read from /proc/self/status on
-        // Linux (best-effort).
-        let rss = read_linux_rss().unwrap_or(0.0);
-        let mut o = Object::new();
-        o.properties.insert("rss".into(), Value::F64(rss));
-        o.properties.insert("heapTotal".into(), Value::F64(0.0));
-        o.properties.insert("heapUsed".into(), Value::F64(0.0));
-        o.properties.insert("external".into(), Value::F64(0.0));
-        o.properties.insert("arrayBuffers".into(), Value::F64(0.0));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "memoryUsage",
+        Box::new(|_ctx, _args| {
+            // Node returns {rss, heapTotal, heapUsed, external, arrayBuffers}.
+            // Vybe doesn't have a JS heap; report zeros for fields we can't
+            // measure cheaply. RSS could be read from /proc/self/status on
+            // Linux (best-effort).
+            let rss = read_linux_rss().unwrap_or(0.0);
+            let mut o = Object::new();
+            o.properties.insert("rss".into(), Value::F64(rss));
+            o.properties.insert("heapTotal".into(), Value::F64(0.0));
+            o.properties.insert("heapUsed".into(), Value::F64(0.0));
+            o.properties.insert("external".into(), Value::F64(0.0));
+            o.properties.insert("arrayBuffers".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
     vm.register_host_value("node:process", "title", s_val("vybex"));
     vm.register_host_value("node:process", "execArgv", {
@@ -159,35 +187,68 @@ pub fn register(vm: &mut VM) {
     });
     vm.register_host_value("node:process", "exitCode", Value::Undefined);
 
-    vm.register_host_fn("node:process", "emitWarning", Box::new(|_ctx, args| {
-        if let Some(Value::String(msg)) = args.first() {
-            eprintln!("[node:process] Warning: {msg}");
-        }
-        Value::Undefined
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "emitWarning",
+        Box::new(|_ctx, args| {
+            if let Some(Value::String(msg)) = args.first() {
+                eprintln!("[node:process] Warning: {msg}");
+            }
+            Value::Undefined
+        }),
+    );
 
-    vm.register_host_fn("node:process", "cpuUsage", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("user".into(), Value::F64(0.0));
-        o.properties.insert("system".into(), Value::F64(0.0));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "cpuUsage",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            o.properties.insert("user".into(), Value::F64(0.0));
+            o.properties.insert("system".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
-    vm.register_host_fn("node:process", "resourceUsage", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        for key in ["userCPUTime", "systemCPUTime", "maxRSS", "sharedMemorySize",
-                    "unsharedDataSize", "unsharedStackSize", "minorPageFault",
-                    "majorPageFault", "swappedOut", "fsRead", "fsWrite",
-                    "ipcSent", "ipcReceived", "signalsCount", "voluntaryContextSwitches",
-                    "involuntaryContextSwitches"] {
-            o.properties.insert(key.into(), Value::F64(0.0));
-        }
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_fn(
+        "node:process",
+        "resourceUsage",
+        Box::new(|_ctx, _args| {
+            let mut o = Object::new();
+            for key in [
+                "userCPUTime",
+                "systemCPUTime",
+                "maxRSS",
+                "sharedMemorySize",
+                "unsharedDataSize",
+                "unsharedStackSize",
+                "minorPageFault",
+                "majorPageFault",
+                "swappedOut",
+                "fsRead",
+                "fsWrite",
+                "ipcSent",
+                "ipcReceived",
+                "signalsCount",
+                "voluntaryContextSwitches",
+                "involuntaryContextSwitches",
+            ] {
+                o.properties.insert(key.into(), Value::F64(0.0));
+            }
+            Value::Object(Arc::new(Mutex::new(o)))
+        }),
+    );
 
     vm.register_host_value("node:process", "features", {
         let mut o = Object::new();
-        for key in ["inspector", "debug", "uv", "ipv6", "tls_alpn", "tls_sni", "tls"] {
+        for key in [
+            "inspector",
+            "debug",
+            "uv",
+            "ipv6",
+            "tls_alpn",
+            "tls_sni",
+            "tls",
+        ] {
             o.properties.insert(key.into(), Value::Bool(false));
         }
         Value::Object(Arc::new(Mutex::new(o)))
@@ -219,11 +280,15 @@ fn get_ppid() -> u32 {
     #[cfg(unix)]
     {
         // POSIX guarantees getppid(); use extern "C" to avoid the libc crate.
-        unsafe extern "C" { fn getppid() -> u32; }
+        unsafe extern "C" {
+            fn getppid() -> u32;
+        }
         return unsafe { getppid() };
     }
     #[cfg(windows)]
-    { 1 }
+    {
+        1
+    }
     #[allow(unreachable_code)]
     1
 }

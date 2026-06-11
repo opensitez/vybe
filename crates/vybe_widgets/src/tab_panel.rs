@@ -4,10 +4,10 @@
 //! a tab switches the visible content panel. Only the active tab's content
 //! is rendered and receives events.
 
-use tiny_skia::*;
-use cosmic_text::Color as CosmicColor;
-use crate::layout::*;
 use crate::ide_text;
+use crate::layout::*;
+use cosmic_text::Color as CosmicColor;
+use tiny_skia::*;
 
 /// One tab entry: name + content widget.
 pub struct TabEntry {
@@ -56,9 +56,13 @@ impl TabPanel {
         }
     }
 
-    pub fn set_tab_height(&mut self, h: f32) { self.tab_height = h; }
+    pub fn set_tab_height(&mut self, h: f32) {
+        self.tab_height = h;
+    }
 
-    pub fn set_tab_width(&mut self, w: f32) { self.custom_tab_width = Some(w); }
+    pub fn set_tab_width(&mut self, w: f32) {
+        self.custom_tab_width = Some(w);
+    }
 
     pub fn set_colors(
         &mut self,
@@ -99,14 +103,19 @@ impl TabPanel {
     /// Insert a tab header at a specific position.
     pub fn insert_tab_header(&mut self, index: usize, name: &str, closable: bool) {
         let idx = index.min(self.tabs.len());
-        self.tabs.insert(idx, TabEntry {
-            name: name.to_string(),
-            widget: Box::new(NullWidget::new()),
-            closable,
-        });
+        self.tabs.insert(
+            idx,
+            TabEntry {
+                name: name.to_string(),
+                widget: Box::new(NullWidget::new()),
+                closable,
+            },
+        );
     }
 
-    pub fn active_index(&self) -> usize { self.active }
+    pub fn active_index(&self) -> usize {
+        self.active
+    }
 
     pub fn set_active(&mut self, index: usize) {
         if index < self.tabs.len() {
@@ -115,7 +124,9 @@ impl TabPanel {
         }
     }
 
-    pub fn tab_count(&self) -> usize { self.tabs.len() }
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
 
     pub fn tab_name(&self, index: usize) -> Option<&str> {
         self.tabs.get(index).map(|t| t.name.as_str())
@@ -156,7 +167,9 @@ impl TabPanel {
         }
     }
 
-    pub fn tab_height(&self) -> f32 { self.tab_height }
+    pub fn tab_height(&self) -> f32 {
+        self.tab_height
+    }
 
     fn content_rect(&self) -> LayoutRect {
         LayoutRect::new(
@@ -174,7 +187,9 @@ impl TabPanel {
         }
     }
 
-    fn tab_width(&self) -> f32 { self.custom_tab_width.unwrap_or(120.0) }
+    fn tab_width(&self) -> f32 {
+        self.custom_tab_width.unwrap_or(120.0)
+    }
 
     /// Scroll the tab bar (e.g. from mouse wheel over tab bar).
     pub fn scroll_tab_bar(&mut self, delta: f32) {
@@ -190,8 +205,12 @@ impl PanelWidget for TabPanel {
         self.relayout();
     }
 
-    fn rect(&self) -> LayoutRect { self.rect }
-    fn widget_id(&self) -> WidgetId { self.id }
+    fn rect(&self) -> LayoutRect {
+        self.rect
+    }
+    fn widget_id(&self) -> WidgetId {
+        self.id
+    }
 
     fn render(&mut self, ctx: &mut RenderContext) {
         let s = ctx.scale;
@@ -201,10 +220,13 @@ impl PanelWidget for TabPanel {
         let (r, g, b, a) = self.tab_bg;
         paint.set_color_rgba8(r, g, b, a);
         if let Some(rect) = Rect::from_xywh(
-            self.rect.x * s, self.rect.y * s,
-            self.rect.w * s, self.tab_height * s,
+            self.rect.x * s,
+            self.rect.y * s,
+            self.rect.w * s,
+            self.tab_height * s,
         ) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
 
         // Tab headers
@@ -212,20 +234,35 @@ impl PanelWidget for TabPanel {
         for (i, tab) in self.tabs.iter().enumerate() {
             let tx = self.rect.x + i as f32 * tw - self.scroll_x;
             // Skip tabs that are scrolled out of view
-            if tx + tw < self.rect.x || tx > self.rect.right() { continue; }
+            if tx + tw < self.rect.x || tx > self.rect.right() {
+                continue;
+            }
             let is_active = i == self.active;
 
             // Tab bg
-            let (r, g, b, a) = if is_active { self.tab_active_bg } else { self.tab_bg };
+            let (r, g, b, a) = if is_active {
+                self.tab_active_bg
+            } else {
+                self.tab_bg
+            };
             paint.set_color_rgba8(r, g, b, a);
-            if let Some(rect) = Rect::from_xywh(tx * s, self.rect.y * s, tw * s, self.tab_height * s) {
-                ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            if let Some(rect) =
+                Rect::from_xywh(tx * s, self.rect.y * s, tw * s, self.tab_height * s)
+            {
+                ctx.pixmap
+                    .fill_rect(rect, &paint, Transform::identity(), None);
             }
 
             // Tab text
-            let (tr, tg, tb, ta) = if is_active { self.tab_active_text } else { self.tab_text };
+            let (tr, tg, tb, ta) = if is_active {
+                self.tab_active_text
+            } else {
+                self.tab_text
+            };
             ide_text::draw_text(
-                ctx.pixmap, ctx.font_system, ctx.swash_cache,
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
                 &tab.name,
                 tx + 8.0,
                 self.rect.y + (self.tab_height - 13.0) / 2.0,
@@ -245,9 +282,15 @@ impl PanelWidget for TabPanel {
                     CosmicColor::rgba(160, 160, 160, 255)
                 };
                 ide_text::draw_text(
-                    ctx.pixmap, ctx.font_system, ctx.swash_cache,
+                    ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
                     "×",
-                    close_x, close_y, 12.0, close_col, ctx.scale,
+                    close_x,
+                    close_y,
+                    12.0,
+                    close_col,
+                    ctx.scale,
                 );
             }
 
@@ -256,10 +299,13 @@ impl PanelWidget for TabPanel {
                 let (ar, ag, ab, aa) = self.accent_color;
                 paint.set_color_rgba8(ar, ag, ab, aa);
                 if let Some(rect) = Rect::from_xywh(
-                    tx * s, (self.rect.y + self.tab_height - 2.0) * s,
-                    tw * s, 2.0 * s,
+                    tx * s,
+                    (self.rect.y + self.tab_height - 2.0) * s,
+                    tw * s,
+                    2.0 * s,
                 ) {
-                    ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.pixmap
+                        .fill_rect(rect, &paint, Transform::identity(), None);
                 }
             }
         }
@@ -269,7 +315,8 @@ impl PanelWidget for TabPanel {
         let (r, g, b, a) = self.bg_color;
         paint.set_color_rgba8(r, g, b, a);
         if let Some(rect) = Rect::from_xywh(cr.x * s, cr.y * s, cr.w * s, cr.h * s) {
-            ctx.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            ctx.pixmap
+                .fill_rect(rect, &paint, Transform::identity(), None);
         }
 
         // Active tab content
@@ -292,7 +339,8 @@ impl PanelWidget for TabPanel {
                         // Check close button hit (last 20px of tab)
                         let tab_local_x = rel_x - idx as f32 * tw;
                         if self.tabs[idx].closable && tab_local_x >= tw - 22.0 {
-                            self.pending_events.push(WidgetEvent::TabCloseRequested(idx));
+                            self.pending_events
+                                .push(WidgetEvent::TabCloseRequested(idx));
                         } else if idx != self.active {
                             self.active = idx;
                             self.relayout();
