@@ -27,7 +27,7 @@
 //!
 //! `Pen` and `SolidBrush` are real dotnet classes with arity-N
 //! constructors. The user writes `New Pen(Color.Red, 5)` and the dotnet
-//! ctor forwards to `vybe:drawing::penNew(color, width)` — which returns
+//! ctor forwards to `vybe:gui::penNew(color, width)` — which returns
 //! an Object with `color` and `width` fields. The Graphics method bodies
 //! read those fields directly.
 //!
@@ -748,7 +748,7 @@ pub fn classes() -> &'static [DotnetClass] {
             // stamped with `__control_name = "graphics"` (a default
             // global canvas, useful for ad-hoc drawing in tests).
             widget_host_fn: Some("graphicsNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "Pen",
@@ -775,7 +775,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: PEN_METHODS,
             ctor_arity: 2,
             widget_host_fn: Some("penNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "Brush",
@@ -784,7 +784,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: BRUSH_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "SolidBrush",
@@ -793,7 +793,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 1,
             widget_host_fn: Some("solidBrushNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "HatchBrush",
@@ -802,7 +802,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 3,
             widget_host_fn: Some("hatchBrushNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         DotnetClass {
             name: "LinearGradientBrush",
@@ -819,10 +819,10 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 4,
             widget_host_fn: Some("linearGradientBrushNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         // System.Drawing.Point — position value type. `new Point(x, y)`
-        // lowers to `vybe:drawing::pointNew(x, y)` which returns an
+        // lowers to `vybe:gui::pointNew(x, y)` which returns an
         // Object with `{x, y, X, Y}` fields. The GUI property dispatch
         // reads `.x` / `.y` from a control's `location` property.
         DotnetClass {
@@ -832,7 +832,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 2,
             widget_host_fn: Some("pointNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
         // System.Drawing.Size — dimensions value type. Mirror of Point.
         DotnetClass {
@@ -842,7 +842,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 2,
             widget_host_fn: Some("sizeNew"),
-            widget_host_module: "vybe:drawing",
+            widget_host_module: "vybe:gui",
         },
     ]
 }

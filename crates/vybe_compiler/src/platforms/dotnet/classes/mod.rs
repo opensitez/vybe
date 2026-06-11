@@ -154,9 +154,9 @@ pub struct DotnetClass {
     /// a backing object themselves.
     pub widget_host_fn: Option<&'static str>,
 
-    /// Host module for `widget_host_fn`. `"vybe:gui"` for WinForms
-    /// controls, `"vybe:drawing"` for `Pen`/`SolidBrush`/`Graphics`/etc.,
-    /// and so on. Defaulted to `"vybe:gui"` in family files via the
+    /// Host module for `widget_host_fn`. `"vybe:gui"` for all WinForms
+    /// controls and drawing types (`Pen`/`SolidBrush`/`Graphics`/etc.).
+    /// Defaulted to `"vybe:gui"` in family files via the
     /// [`gui_class!`] / explicit-module convention so the GUI control
     /// families don't have to repeat the module everywhere.
     pub widget_host_module: &'static str,

@@ -8,16 +8,15 @@
 //! `crypto.subtle.digest` returns a synchronous fulfilled Promise (Vybe
 //! Promise model is sync-by-default; see `crate::ecma::promise`).
 //! Algorithm names follow W3C spec: "SHA-1", "SHA-256", "SHA-384",
-//! "SHA-512", "MD5" (deprecated, kept for parity with vybe:crypto).
+//! "SHA-512", "MD5" (deprecated, included for backward compatibility).
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
-// vybe:crypto already pulls sha1/md5 transitively via its own deps;
-// this module reuses them so subtle.digest covers W3C's mandatory
-// algorithm list without adding new workspace deps.
+// Reuses the sha1/md5 crates already in the workspace so subtle.digest
+// covers the W3C mandatory algorithm list without new deps.
 
 fn random_u64() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

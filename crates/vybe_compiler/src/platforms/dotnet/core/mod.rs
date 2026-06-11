@@ -1,4 +1,5 @@
 pub mod adodb_adapter;
+pub mod datatable_adapter;
 pub mod array_adapter;
 pub mod collections_adapter;
 pub mod component_classes;
@@ -21,6 +22,7 @@ pub mod regex_adapter;
 pub mod runtime_adapter;
 pub mod sockets_adapter;
 pub mod stopwatch_adapter;
+pub mod thread_adapter;
 pub mod stream_io_adapter;
 pub mod string_format_adapter;
 pub mod stringbuilder_adapter;

@@ -4,7 +4,7 @@
 //! following the WASI capability-based security model.
 //!
 //! Capabilities control which modules are available:
-//! - Safe (always on): console, types, runtime, data, drawing
+//! - Safe (always on): console, types, data, drawing
 //! - Requires permission: fs, database, sockets, http, env, gui, crypto, xml
 //! - Compiled-in (no host fns): threading — WASM threads proposal opcodes
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
@@ -13,29 +13,18 @@ pub mod console;
 // `vybe:array` retired — every former caller now routes through
 // `ecma:array.*` (real ECMA-262 §23.1) or stdlib polyfills (`__vybe_*`
 // chunks via `BuiltinEmit::Stdlib`). The module file is gone.
-// `vybe:string` retired — VB Left/Mid/InStr/Format and PHP increment
-// helpers now compile to `ecma:string.*` / direct opcodes / stdlib
-// polyfills.
-// `vybe:convert` retired — VB conversion semantics now compile to
-// `ecma:number` / `ecma:string` / direct opcodes.
-// `vybe:crypto` retired — md5/sha256 now flow through `web:crypto`
-// (WHATWG SubtleCrypto) registered via `crate::web::register`.
 pub mod fs;
 pub mod clock;
 pub mod env;
 pub mod random;
 // `vybe:http` (outbound HTTP client) moved to `crate::wasi::http` —
 // it registers `wasi:http/{get,post,fetch}`, the spec-aligned namespace.
-// `vybe:object` retired — `key in obj` flows through `ecma:object.hasOwn`
-// (compiler normalises arg order); `a instanceof B` flows through
-// `Op::REF_TEST` (WASM GC ref.test) for static type names + an inline
-// __type/name string-compare fallback for dynamic RHS.
-pub mod runtime;
+// `vybe:runtime` retired — `callMethod` was the only registration and was
+// never emitted by any compiler pass. VB/C# typed call sites route through
+// component_classes_collections → common emitters; no untyped fallback needed.
 pub mod gui;
 pub mod types;
 pub mod sockets;
-// `vybe:xml` retired — moved to `crate::web::dom_parser` exposing
-// `web:dom-parser` (the WHATWG DOM Parsing & Serialization namespace).
 pub mod data;
 pub mod drawing;
 pub mod canvas;
@@ -46,7 +35,7 @@ pub mod canvas;
 // those `mod.rs` files for the full list. `register_with_capabilities`
 // below calls `crate::ecma::register(vm)` and `crate::wasm::register(vm)`.
 
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{VM, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -153,80 +142,6 @@ impl Capabilities {
 pub fn register_all(vm: &mut VM) {
     register_with_capabilities(vm, &Capabilities::all());
 
-    // __debug_dump(obj) — print all properties of an object for debugging.
-    // Useful in tests: `__debug_dump(myObj)` shows what's on the object.
-    vm.register_host_fn("vybe:debug", "dump", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        use vybe_bytecode::value::ObjectKind;
-        for (i, arg) in args.iter().enumerate() {
-            match arg {
-                Value::Object(obj) => {
-                    let o = obj.lock().unwrap();
-                    eprintln!("__debug_dump arg[{}]: Object (type_id={}) {{", i, o.type_id);
-                    match &o.kind {
-                        ObjectKind::Array(elems) => {
-                            eprintln!("  [Array] length={}", elems.len());
-                            for (j, elem) in elems.iter().enumerate().take(20) {
-                                eprintln!("    [{}] = {}", j, elem);
-                            }
-                        }
-                        ObjectKind::Function(f) => {
-                            eprintln!("  [Function] name={:?}, arity={}, chunk={}",
-                                f.name, f.arity, f.chunk_index);
-                        }
-                        ObjectKind::HostFunction(idx) => {
-                            eprintln!("  [HostFunction] idx={}", idx);
-                        }
-                        ObjectKind::Map(m) => {
-                            eprintln!("  [Map] size={}", m.len());
-                            for (j, (k, v)) in m.iter().enumerate().take(20) {
-                                eprintln!("    [{}] {} => {}", j, k, v);
-                            }
-                        }
-                        ObjectKind::Set(s) => {
-                            eprintln!("  [Set] size={}", s.len());
-                            for (j, v) in s.iter().enumerate().take(20) {
-                                eprintln!("    [{}] {}", j, v);
-                            }
-                        }
-                        ObjectKind::ArrayBuffer(ab) => {
-                            let bytes = ab.bytes.lock().unwrap();
-                            eprintln!("  [ArrayBuffer] byteLength={} resizable={} detached={}",
-                                bytes.len(), ab.resizable, ab.detached);
-                        }
-                        ObjectKind::TypedArray(ta) => {
-                            eprintln!("  [TypedArray] elem={:?} length={} byteOffset={} byteLength={}",
-                                ta.elem, ta.length, ta.byte_offset,
-                                ta.length * ta.elem.bytes_per_element());
-                        }
-                        ObjectKind::Ordinary => {
-                            eprintln!("  [Ordinary]");
-                        }
-                        ObjectKind::ModuleNamespace => {
-                            eprintln!("  [ModuleNamespace] exports={}", o.properties.len());
-                        }
-                        ObjectKind::Continuation(cs) => {
-                            let phase = *cs.state.lock().unwrap();
-                            eprintln!("  [Continuation] phase={:?}", phase);
-                        }
-                        ObjectKind::Future { id } => {
-                            eprintln!("  [Future] id={}", id);
-                        }
-                        ObjectKind::Stream { id } => {
-                            eprintln!("  [Stream] id={}", id);
-                        }
-                    }
-                    for (k, v) in &o.properties {
-                        let v_str = format!("{}", v);
-                        let v_short = if v_str.len() > 60 { format!("{}...", &v_str[..60]) } else { v_str };
-                        eprintln!("  .{} = {}", k, v_short);
-                    }
-                    eprintln!("}}");
-                }
-                other => eprintln!("__debug_dump arg[{}]: {} ({})", i, other, other.type_tag()),
-            }
-        }
-        Value::Null
-    }));
     // Register no-op GUI stubs so compiled code that emits controlSetProperty/showForm/closeForm
     // doesn't fail with "Unresolved import" in non-GUI contexts.
     if vm.host_registry.get(&("vybe:gui".to_string(), "controlSetProperty".to_string())).is_none() {
@@ -482,10 +397,6 @@ pub fn register_all(vm: &mut VM) {
 /// Register modules based on granted capabilities.
 pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // Always registered — pure computation, no security risk.
-    // Note: `ecma:math` moved to `crate::ecma::math` (registered below
-    // via `crate::ecma::register`). Legacy `vybe:string` / `vybe:json`
-    // / `vybe:object` / etc. still live under `modules/` until their
-    // callers migrate to `ecma:*`.
     // `vybe:json` retired — JSON.parse / JSON.stringify both flow through
     // `ecma:json` (registered via `crate::ecma::register` below).
         // RegExp + String.prototype regex methods flow through `ecma:regexp`
@@ -497,7 +408,6 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // through `ecma:map` / `ecma:set` / `ecma:weakmap` / `ecma:weakset`
     // (registered via `crate::ecma::register` below). TypeRegistry
     // dispatch in `builtin_types.rs` points at the same fns.
-    runtime::register(vm);
     types::register(vm);
     data::register(vm);
     drawing::register(vm);
@@ -566,9 +476,6 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // join / atomics compile to WASM opcodes (Op::THREAD_SPAWN, etc.), and
     // Thread.Sleep uses wasi:clocks/sleep. The capability flag remains as a
     // gate for future wasi-threads primitives.
-    // `vybe:crypto` retired — md5/sha256 flow through `web:crypto`
-    // (registered unconditionally via `crate::web::register` above).
-    // Real `wasi:crypto/*` shims stay capability-gated here.
     if caps.has(Capability::Crypto) {
         crate::wasi::crypto::register(vm);
     }

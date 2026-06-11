@@ -15,10 +15,9 @@
 //! replace/replaceAll, slice, split, startsWith/endsWith,
 //! charAt/at/codePointAt, valueOf.
 //!
-//! Cross-language note: the legacy `vybe:string` module (.NET-shaped,
-//! used by VB/C#/PHP/Python/etc. profiles) will eventually delegate
-//! to these via thin forwarding shims so every language sees the
-//! same JS-runtime semantics.
+//! Cross-language note: all language profiles (VB/C#/PHP/Python/etc.)
+//! now target this surface directly; every language sees the same
+//! JS-runtime semantics.
 
 use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
@@ -154,8 +153,7 @@ pub fn register(vm: &mut VM) {
 // Ruby String / .NET — the predicates and case-conversions every
 // language exposes. Live here as one-line Rust impls so the cross-
 // language profile entries can target a single host fn surface (the
-// `ecma:string` namespace) instead of the legacy `vybe:string`
-// language-runtime catch-all. Same precedent as the ecma:array
+// `ecma:string` namespace). Same precedent as the ecma:array
 // adapters (`clear`, `first`, `last`, `removeAt`, etc.).
 
 fn register_adapters(vm: &mut VM) {

@@ -244,7 +244,7 @@ console.log(p === "darwin" || p === "linux" || p === "win32");
 
 #[test]
 fn node_crypto_adapter_reexports_sha256() {
-    // `node:crypto` adapter re-exports `sha256` from `vybe:crypto`.
+    // `node:crypto` adapter re-exports `sha256` from `wasi:crypto/hashes`.
     let out = run_js_with_imports(
         r#"
 import { sha256 } from "node:crypto";

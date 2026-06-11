@@ -73,6 +73,41 @@ fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
     chunk.emit_op_u16(Op::CONST, k, line);
 }
 
+fn emit_js_to_number_f64(
+    chunk: &mut Chunk,
+    slot: u16,
+    to_f64: u16,
+    test_bool: u16,
+    cast_bool: u16,
+    line: u32,
+) {
+    load(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    chunk.emit_if(line);
+    f64_const(chunk, f64::NAN, line);
+    chunk.emit_else(line);
+
+    load(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    f64_const(chunk, 0.0, line);
+    chunk.emit_else(line);
+
+    load(chunk, slot, line);
+    call1(chunk, test_bool, line);
+    chunk.emit_if(line);
+    load(chunk, slot, line);
+    call1(chunk, cast_bool, line);
+    chunk.emit_op(Op::F64_FROM_I32, line);
+    chunk.emit_else(line);
+    load(chunk, slot, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 // ── emit_dyn_to_bool ───────────────────────────────────────────────────
 
 /// Truthy coercion — ECMA-262 §7.1.2 ToBoolean.
@@ -407,6 +442,8 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let test_str = chunk.add_import("wasm:js-string", "test");
     let str_compare = chunk.add_import("wasm:js-string", "compare");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
 
     save(chunk, b_slot, line);
@@ -452,10 +489,8 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_op(i64_cmp_op(&op), line);
     chunk.emit_else(line);
     // fallback: coerce both to f64
-    load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
-    load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
+    emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
+    emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
     chunk.emit_op(f64_cmp_op(&op), line);
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // string
@@ -488,9 +523,10 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     let str_concat = chunk.add_import("wasm:js-string", "concat");
     let str_from_f64 = chunk.add_import("wasm:js-string", "fromF64");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
-    let test_num = chunk.add_import("wasm:js-number", "test");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let from_f64 = chunk.add_import("wasm:js-number", "fromF64");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
 
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
@@ -509,8 +545,7 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     load(chunk, a_slot, line);
     call1(chunk, str_cast, line);
     chunk.emit_else(line);
-    load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
+    emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
     call1(chunk, str_from_f64, line);
     chunk.emit_end(line);
     // coerce b to string
@@ -520,8 +555,7 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, str_cast, line);
     chunk.emit_else(line);
-    load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
+    emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
     call1(chunk, str_from_f64, line);
     chunk.emit_end(line);
     call2(chunk, str_concat, line);
@@ -539,10 +573,8 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I64_ADD, line);
     chunk.emit_else(line);
     // number + number (or coerce) → f64.add
-    load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
-    load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
+    emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
+    emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
     chunk.emit_op(Op::F64_ADD, line);
     call1(chunk, from_f64, line);
     chunk.emit_end(line); // bigint
@@ -557,6 +589,8 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let from_f64 = chunk.add_import("wasm:js-number", "fromF64");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
 
     save(chunk, v, line);
 
@@ -569,8 +603,7 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I64_SUB, line);
     chunk.emit_else(line);
     // number → f64 negation
-    load(chunk, v, line);
-    call1(chunk, to_f64, line);
+    emit_js_to_number_f64(chunk, v, to_f64, test_bool, cast_bool, line);
     chunk.emit_op(Op::F64_NEG, line);
     call1(chunk, from_f64, line);
     chunk.emit_end(line);
@@ -766,6 +799,8 @@ fn emit_dyn_cmp_into(imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp
     let to_f64 = imports.add_import("wasm:js-number", "toF64");
     let test_str = imports.add_import("wasm:js-string", "test");
     let str_compare = imports.add_import("wasm:js-string", "compare");
+    let test_bool = imports.add_import("wasm:js-boolean", "test");
+    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
     let test_bigint = imports.add_import("wasm:js-bigint", "test");
 
     save(code, b_slot, line);
@@ -807,10 +842,8 @@ fn emit_dyn_cmp_into(imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp
     load(code, b_slot, line);
     code.emit_op(i64_cmp_op(&op), line);
     code.emit_else(line);
-    load(code, a_slot, line);
-    call1(code, to_f64, line);
-    load(code, b_slot, line);
-    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
+    emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
     code.emit_op(f64_cmp_op(&op), line);
     code.emit_end(line);
     code.emit_end(line);
@@ -841,9 +874,10 @@ pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let str_concat = imports.add_import("wasm:js-string", "concat");
     let str_from_f64 = imports.add_import("wasm:js-string", "fromF64");
     let test_bigint = imports.add_import("wasm:js-bigint", "test");
-    let test_num = imports.add_import("wasm:js-number", "test");
     let to_f64 = imports.add_import("wasm:js-number", "toF64");
     let from_f64 = imports.add_import("wasm:js-number", "fromF64");
+    let test_bool = imports.add_import("wasm:js-boolean", "test");
+    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
 
     save(code, b_slot, line);
     save(code, a_slot, line);
@@ -860,8 +894,7 @@ pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, a_slot, line);
     call1(code, str_cast, line);
     code.emit_else(line);
-    load(code, a_slot, line);
-    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
     call1(code, str_from_f64, line);
     code.emit_end(line);
     load(code, b_slot, line);
@@ -870,8 +903,7 @@ pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, str_cast, line);
     code.emit_else(line);
-    load(code, b_slot, line);
-    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
     call1(code, str_from_f64, line);
     code.emit_end(line);
     call2(code, str_concat, line);
@@ -887,10 +919,8 @@ pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     code.emit_op(Op::I64_ADD, line);
     code.emit_else(line);
-    load(code, a_slot, line);
-    call1(code, to_f64, line);
-    load(code, b_slot, line);
-    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
+    emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
     code.emit_op(Op::F64_ADD, line);
     call1(code, from_f64, line);
     code.emit_end(line);
@@ -903,6 +933,8 @@ pub fn emit_dyn_neg_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let test_bigint = imports.add_import("wasm:js-bigint", "test");
     let to_f64 = imports.add_import("wasm:js-number", "toF64");
     let from_f64 = imports.add_import("wasm:js-number", "fromF64");
+    let test_bool = imports.add_import("wasm:js-boolean", "test");
+    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
 
     save(code, v, line);
 
@@ -913,8 +945,7 @@ pub fn emit_dyn_neg_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, v, line);
     code.emit_op(Op::I64_SUB, line);
     code.emit_else(line);
-    load(code, v, line);
-    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, v, to_f64, test_bool, cast_bool, line);
     code.emit_op(Op::F64_NEG, line);
     call1(code, from_f64, line);
     code.emit_end(line);

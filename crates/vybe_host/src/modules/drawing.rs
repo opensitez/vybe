@@ -70,7 +70,7 @@ pub fn register(vm: &mut VM) {
     }
 
     // New Point(x, y)
-    vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let x = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let y = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -81,7 +81,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New Size(width, height)
-    vm.register_host_fn("vybe:drawing", "sizeNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "sizeNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let w = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let h = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -92,7 +92,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New Font(name, size)
-    vm.register_host_fn("vybe:drawing", "fontNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "fontNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Arial".into());
         let size = args.get(1).map(|v| v.as_f64()).unwrap_or(12.0);
         let mut obj = Object::new();
@@ -116,7 +116,7 @@ pub fn register(vm: &mut VM) {
     // `new Point(x, y)` — System.Drawing.Point value type. The GUI
     // property dispatch reads `.x` / `.y` from a `Value::Object` stored
     // at `location`, so we expose exactly those field names.
-    vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let x = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let y = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -133,7 +133,7 @@ pub fn register(vm: &mut VM) {
 
     // `new Size(width, height)` — System.Drawing.Size. The GUI dispatch
     // reads `.width` / `.height` (lowercase) from the `size` property.
-    vm.register_host_fn("vybe:drawing", "sizeNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "sizeNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let w = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         let h = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let mut obj = Object::new();
@@ -145,7 +145,7 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
-    vm.register_host_fn("vybe:drawing", "penNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "penNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let color = args.first().cloned().unwrap_or(Value::Null);
         let width = args.get(1).map(|v| v.as_f64()).unwrap_or(1.0);
         let mut obj = Object::new();
@@ -158,7 +158,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // New SolidBrush(color)
-    vm.register_host_fn("vybe:drawing", "solidBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "solidBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let color = args.first().cloned().unwrap_or(Value::Null);
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("SolidBrush")));
@@ -167,7 +167,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Color.FromArgb(r, g, b) or Color.FromArgb(a, r, g, b)
-    vm.register_host_fn("vybe:drawing", "color.fromargb", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "color.fromargb", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let (a, r, g, b) = if args.len() >= 4 {
             (args[0].as_f64() as u8, args[1].as_f64() as u8, args[2].as_f64() as u8, args[3].as_f64() as u8)
         } else if args.len() == 3 {
@@ -189,7 +189,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // ColorTranslator.FromHtml("#RRGGBB")
-    vm.register_host_fn("vybe:drawing", "colortranslator.fromhtml", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "colortranslator.fromhtml", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let html = args.first().map(|v| format!("{}", v)).unwrap_or_default();
         let html = html.trim_start_matches('#');
         let (r, g, b) = if html.len() == 6 {
@@ -212,7 +212,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // Color constants (Color.Red, Color.Blue, etc.) — stub as named objects
-    vm.register_host_fn("vybe:drawing", "colorFromName", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "colorFromName", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let name = args.first().map(|v| format!("{}", v)).unwrap_or_else(|| "Black".into());
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Color")));
@@ -232,7 +232,7 @@ pub fn register(vm: &mut VM) {
     // from; the canonical name is set by the user via the dotnet ctor's
     // identity copy step. The fallback "graphics" name is used by tests
     // that construct a `Graphics` directly.
-    vm.register_host_fn("vybe:drawing", "graphicsNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "graphicsNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Graphics")));
         obj.properties.insert("__control_type".into(), Value::String(Arc::from("Graphics")));
@@ -253,7 +253,7 @@ pub fn register(vm: &mut VM) {
     // friends — see `modules/gui.rs`.
 
     // ── HatchBrush(BackgroundColor, ForegroundColor, HatchStyle) ──
-    vm.register_host_fn("vybe:drawing", "hatchBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "hatchBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let bg = args.first().cloned().unwrap_or(Value::Null);
         let fg = args.get(1).cloned().unwrap_or(Value::Null);
         let style = args.get(2).cloned().unwrap_or(Value::Null);
@@ -266,7 +266,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // ── LinearGradientBrush(Rect, Color1, Color2, Mode) ──
-    vm.register_host_fn("vybe:drawing", "linearGradientBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("vybe:gui", "linearGradientBrushNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let rect = args.first().cloned().unwrap_or(Value::Null);
         let c1 = args.get(1).cloned().unwrap_or(Value::Null);
         let c2 = args.get(2).cloned().unwrap_or(Value::Null);

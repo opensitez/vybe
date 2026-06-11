@@ -223,10 +223,8 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Provider: `ecma:object` — the Component-Model-portable
 /// import set. Modules compiled through these helpers run on any
 /// engine that implements `ecma:object` (V8, SpiderMonkey, wasmtime
-/// with the polyfill). Do NOT emit `vybe:object.*` from language
-/// walkers — that's the Vybe-only escape hatch. If the provider ever
-/// changes (e.g. inline opcodes for perf), it changes HERE, not in
-/// language profiles or walkers.
+/// with the polyfill). If the provider ever changes (e.g. inline
+/// opcodes for perf), it changes HERE, not in language profiles or walkers.
 
 /// Push an array of keys. Stack: [iterable] → [array_of_keys].
 ///

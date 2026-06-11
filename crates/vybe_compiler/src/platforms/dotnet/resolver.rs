@@ -427,9 +427,8 @@ mod tests {
     #[test]
     fn resolves_imported_static_string_format() {
         // `String.Format` routes through the shared dotnet adapter
-        // (`emitter/dotnet/core/string_format_adapter.rs`) — the
-        // `vybe:string/format` host fn was retired when the format
-        // picture parsing moved into the bytecode emitter.
+        // (`emitter/dotnet/core/string_format_adapter.rs`). Format
+        // picture parsing lives in the bytecode emitter.
         let imports = vec!["system".to_string()];
         let ctx = test_ctx(&imports);
         let res = resolve_dotted_name(&["String", "Format"], &ctx);

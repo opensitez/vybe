@@ -2809,14 +2809,17 @@ impl Compiler {
         }
 
         // ── Debug intrinsic: __debug_dump(obj) ──────────────────────
-        // Available in all languages. Prints object properties to stderr.
+        // Available in all languages. Serialises each arg via JSON.stringify
+        // then emits it to wasi:logging/logging.log.
         if let ExprKind::Ident(name) = &callee.kind {
             if name == "__debug_dump" {
+                let stringify_idx = self.import("ecma:json", "stringify");
+                let log_idx = self.import("wasi:logging/logging", "log");
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
+                    self.emit_host_call(stringify_idx, 1);
+                    self.emit_host_call(log_idx, 1);
                 }
-                let idx = self.import("vybe:debug", "dump");
-                self.emit_host_call(idx, arg_exprs.len() as u8);
                 return Ok(());
             }
 

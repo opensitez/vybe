@@ -20,7 +20,7 @@ use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
 /// Magic property name used to mark an object as frozen / sealed /
-/// non-extensible. Matches existing vybe:object module's convention.
+/// non-extensible.
 const FROZEN_MARK: &str = "__vybe_frozen";
 const SEALED_MARK: &str = "__vybe_sealed";
 const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible

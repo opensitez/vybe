@@ -327,15 +327,20 @@ fn vb_like_pattern_to_regex(pattern: &str) -> String {
 
 fn maybe_rewrite_vb_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     if op == BinOp::Like {
-        if let Some(pattern) = literal_string(&right) {
-            return call_expr(
-                build_dotted_expr("Regex.IsMatch"),
-                vec![
-                    Argument::positional(Expression::string(&vb_like_pattern_to_regex(&pattern))),
-                    Argument::positional(left),
-                ],
-            );
-        }
+        // Literal pattern: convert VB wildcards to regex at compile time.
+        // Runtime pattern: pass through as-is (caller provides a compatible regex).
+        let pattern = if let Some(lit) = literal_string(&right) {
+            Expression::string(&vb_like_pattern_to_regex(&lit))
+        } else {
+            right
+        };
+        return call_expr(
+            build_dotted_expr("Regex.IsMatch"),
+            vec![
+                Argument::positional(pattern),
+                Argument::positional(left),
+            ],
+        );
     }
 
     Expression::new(ExprKind::Binary {

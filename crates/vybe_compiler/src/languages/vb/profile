@@ -707,9 +707,9 @@ extra_imports = [
 "webrequest"     = ["wasi:http", "fetch"]
 "webclient"      = ["wasi:http", "fetch"]
 "httpclient"     = ["wasi:http", "fetch"]
-"datatable"      = ["vybe:types", "dataTableNew"]
-"datarow"        = ["vybe:types", "dataRowNew"]
-"dataadapter"    = ["vybe:types", "dataAdapterNew"]
+"datatable"      = ["common", "dotnet.datatable_new"]
+"datarow"        = ["common", "dotnet.datarow_new"]
+"dataadapter"    = ["wasi:sql/types", "data-adapter.new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — compile-time float/string values for property accesses

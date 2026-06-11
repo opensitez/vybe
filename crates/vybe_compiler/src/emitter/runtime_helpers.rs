@@ -525,7 +525,7 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // split, matchAll} put the string FIRST (receiver). These adapter
     // chunks bridge the two: take args in language convention, call into
     // `ecma:regexp.*` with reordered args. Same Layer-3 pattern that
-    // `String.Format` → `vybe:string.format` uses for the .NET shape.
+    // Same Layer-3 pattern as the `String.Format` dotnet adapter.
     chunks.push(build_regex_replace_pat_first(imports));
     exports.push("__stdlib_regex_replace_pat_first");
     chunks.push(build_regex_split_pat_first(imports));

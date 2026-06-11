@@ -6,7 +6,6 @@
 mod math;
 mod console;
 mod string;
-mod convert;
 mod array;
 mod io;
 mod environment;
@@ -32,7 +31,6 @@ pub fn setup_namespaces(vm: &mut VM) {
     math::register(vm);
     console::register(vm);
     string::register(vm);
-    convert::register(vm);
     array::register(vm);
     io::register(vm);
     environment::register(vm);

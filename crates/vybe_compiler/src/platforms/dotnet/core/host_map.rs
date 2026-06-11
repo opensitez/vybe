@@ -39,12 +39,13 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
     match prefix {
         "system.console" => Some("wasi:logging/logging"),
         "system.math" => Some("ecma:math"),
-        "system.convert" => Some("vybe:convert"),
+        // System.Convert.* lowers via the emitter's convert opcodes;
+        // fall through to the type registry / walker rewrites.
+        "system.convert" => None,
         // `system.string.<X>` falls back here when not matched by an
-        // explicit entry in `component_classes.rs::STATIC_ONLY_CLASS`
-        // (e.g. `String.Format` → `vybe:string.format`). Routing through
-        // `ecma:string` means .NET callers get the ECMA-262 String surface
-        // by default; .NET-only methods (Format, IsNullOrEmpty, Join with
+        // explicit entry in `component_classes.rs::STATIC_ONLY_CLASS`.
+        // Routing through `ecma:string` means .NET callers get the ECMA-262
+        // String surface; .NET-only methods (Format, IsNullOrEmpty, Join with
         // (separator, array) signature) need explicit adapter entries.
         "system.string" => Some("ecma:string"),
         // `system.array.X` falls back here when not matched by an
@@ -63,13 +64,12 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => {
             Some("wasi:filesystem")
         }
-        "system.threading.thread" => Some("vybe:clocks"),
+        "system.threading.thread" => None,
         // System.Threading / Tasks: spawn+join compile to Op::THREAD_SPAWN /
-        // Op::THREAD_JOIN; sleep uses vybe:clocks; Task/Thread class types
-        // are registered in the TypeRegistry but carry no host-fn namespace.
-        // Return None so the FQN resolver falls through to the type registry
-        // rather than pointing at a dead `vybe:threading` module.
-        "system.diagnostics.process" => Some("vybe:types"),
+        // Op::THREAD_JOIN; Thread.Sleep compiles via thread_adapter to
+        // wasi:clocks/monotonic-clock + wasi:io/poll. Return None so the FQN
+        // resolver falls through to the type registry.
+        "system.diagnostics.process" => None,
         "system.diagnostics.stopwatch" => Some("wasi:clocks/monotonic-clock"),
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => {
             Some("wasi:logging/logging")
@@ -87,16 +87,18 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // reorder (Replace/Split with input-first .NET shape) get explicit
         // adapter entries via `STATIC_ONLY_CLASS` (or stdlib chunks).
         "system.text.regularexpressions" => Some("ecma:regexp"),
-        "system.text" => Some("vybe:string"),
-        "system.collections.generic" | "system.collections" => Some("vybe:types"),
+        "system.text" => Some("ecma:string"),
+        "system.collections.generic" | "system.collections" => None,
         "system.data.sqlclient" => Some("wasi:sql/types"),
         "system.data.oledb" => Some("wasi:sql/types"),
         "adodb" => Some("wasi:sql/types"),
-        "system.data" => Some("vybe:data"),
-        "system.security.cryptography" => Some("vybe:crypto"),
-        "system.xml.linq" => Some("vybe:xml"),
-        "system.drawing" => Some("vybe:drawing"),
-        "microsoft.visualbasic" => Some("vybe:string"),
+        // DataTable/DataSet constructors lower through datatable_adapter.rs;
+        // method dispatch is handled by DotnetClassExport bindings. Fall through.
+        "system.data" => None,
+        "system.security.cryptography" => Some("wasi:crypto/hashes"),
+        "system.xml.linq" => Some("web:dom-parser"),
+        "system.drawing" => Some("vybe:gui"),
+        "microsoft.visualbasic" => Some("ecma:string"),
         _ => None,
     }
 }

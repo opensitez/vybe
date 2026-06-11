@@ -875,7 +875,7 @@ mod tests {
 
         let mut vm = VM::new();
         let gui = vybe_host::register_all_with_gui(&mut vm);
-        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
         vybe_host::setup_namespaces(&mut vm);
         vm.run(chunks).expect("VB run failed");
         (vm, gui)
@@ -887,7 +887,7 @@ mod tests {
 
         let mut vm = VM::new();
         let gui = vybe_host::register_all_with_gui(&mut vm);
-        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
         vybe_host::setup_namespaces(&mut vm);
         vm.run(chunks).expect("project run failed");
         (vm, gui)

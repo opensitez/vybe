@@ -63,16 +63,7 @@ pub fn emit_to_bool(chunk: &mut Chunk, line: u32) {
 
 // ── Target-aware variants ───────────────────────────────────
 
-/// Target-aware toString. On Vybe, uses host import. On pure WASM, emits
-/// a type-switch that handles common cases inline.
-pub fn emit_to_string_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
-    if target.has_module("vybe:convert") {
-        emit_to_string(chunk, line);
-    } else {
-        // Fallback: import from a generic "env" module.
-        // The embedder must provide env/toString.
-        let idx = chunk.add_import("env", "toString");
-        chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-        chunk.emit(1, line);
-    }
+/// Target-aware toString. Emits `ecma:string.String` on all targets.
+pub fn emit_to_string_targeted(chunk: &mut Chunk, _target: &Target, line: u32) {
+    emit_to_string(chunk, line);
 }

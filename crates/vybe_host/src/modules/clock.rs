@@ -113,13 +113,5 @@ pub fn register(vm: &mut VM) {
         Value::I32(0)
     }));
 
-    // Sleep for N milliseconds (blocking).
-    // `vybe:clocks.sleep` is a Vybe convenience wrapper — no WASI spec equivalent
-    // that does a direct blocking sleep without Pollable round-trip.
-    vm.register_host_fn("vybe:clocks", "sleep", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-        Value::Null
-    }));
 }
 

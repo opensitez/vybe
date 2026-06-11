@@ -190,13 +190,10 @@ pub fn emit_suspend(chunk: &mut Chunk, line: u32) {
     crate::emitter::generators::emit_suspend(chunk, line);
 }
 
-/// Emit Thread.Sleep(ms) — blocks the current thread for the given duration.
-/// `sleep_import_idx` must be obtained from chunk 0 via `chunks[0].add_import("vybe:clocks", "sleep")`.
+/// Emit Thread.Sleep(ms) — WASI pollable blocking sleep.
 /// Stack before: [ms_value]  Stack after: []
-pub fn emit_sleep(chunk: &mut Chunk, sleep_import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, sleep_import_idx, line);
-    chunk.emit(1, line);
-    chunk.emit_op(Op::DROP, line);
+pub fn emit_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, line: u32) {
+    crate::platforms::dotnet::core::thread_adapter::emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
 }
 
 /// Emit Task.Delay(ms) — spawn a worker that sleeps for `ms`, returning
@@ -210,16 +207,15 @@ pub fn emit_sleep(chunk: &mut Chunk, sleep_import_idx: u16, line: u32) {
 ///
 /// Stack before: [ms]  Stack after: [task_object]
 pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    // vybe:clocks/sleep import — all imports flow through chunks[0].
-    let sleep_idx = chunks[0].add_import("vybe:clocks", "sleep");
+    // WASI pollable sleep imports — all imports flow through chunks[0].
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
 
-    // Worker chunk: arity=1 (start_arg = ms), body calls sleep(ms),
+    // Worker chunk: arity=1 (start_arg = ms), body sleeps via WASI pollable,
     // returns null. The Task.result field reflects this null on completion.
     let mut worker = create_function_chunk("__task_delay_worker", 1);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_op_u16(Op::CALL_IMPORT, sleep_idx, line);
-    worker.emit(1, line); // argc = 1
-    worker.emit_op(Op::DROP, line); // drop sleep's null return
+    crate::platforms::dotnet::core::thread_adapter::emit_thread_sleep(&mut worker, sub_dur_idx, block_idx, line);
     worker.emit_op(Op::NULL, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;

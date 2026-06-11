@@ -26,9 +26,8 @@ pub fn register_all(vm: &mut VM) {
     // Substring, etc.) bound directly to ECMA-262 §22.1
     // String.prototype. Same import surface JS engines satisfy
     // natively. Methods needing arg adaptation (.NET's `Insert`,
-    // `Remove`, `LastIndexOf` with different-shape args) are still
-    // bound to vybe:string for the legacy impl until language stdlib
-    // adapter chunks are written.
+    // `Remove`, `LastIndexOf` with different-shape args) have
+    // explicit adapter entries in emitter/dotnet/core/.
     let _string_id = {
         let mut t = TypeDef::new("String");
         for (method, module, fname) in &[
@@ -447,7 +446,7 @@ pub fn register_all(vm: &mut VM) {
     // --- XDocument ---
     {
         let mut t = TypeDef::new("XDocument");
-        if let Some(idx) = h(vm, "vybe:xml", "toString") {
+        if let Some(idx) = h(vm, "web:dom-parser", "serializeToString") {
             t.methods.insert("tostring".into(), Method::HostFn(idx));
             t.methods.insert("save".into(), Method::HostFn(idx));
         }
@@ -458,7 +457,7 @@ pub fn register_all(vm: &mut VM) {
     // --- XElement ---
     {
         let mut t = TypeDef::new("XElement");
-        if let Some(idx) = h(vm, "vybe:xml", "toString") {
+        if let Some(idx) = h(vm, "web:dom-parser", "serializeToString") {
             t.methods.insert("tostring".into(), Method::HostFn(idx));
             t.methods.insert("value".into(), Method::HostFn(idx));
         }
@@ -947,9 +946,9 @@ pub fn register_all(vm: &mut VM) {
         ("Random", "wasi:random/insecure", "get-insecure-random-u64"),
         ("DataTable", "vybe:data", "dataTableNew"),
         ("DataSet", "vybe:data", "dataSetNew"),
-        ("Point", "vybe:drawing", "pointNew"),
-        ("Size", "vybe:drawing", "sizeNew"),
-        ("Font", "vybe:drawing", "fontNew"),
+        ("Point", "vybe:gui", "pointNew"),
+        ("Size", "vybe:gui", "sizeNew"),
+        ("Font", "vybe:gui", "fontNew"),
     ];
     for (type_name, module, fname) in ctor_mappings {
         if let (Some(tid), Some(idx)) = (vm.type_registry.get_id(type_name), h(vm, module, fname)) {

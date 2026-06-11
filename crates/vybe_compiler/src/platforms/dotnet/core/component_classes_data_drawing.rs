@@ -6,34 +6,65 @@ use vybe_bytecode::component_model::{
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
-        constructor_class(
+        // DataTable — constructor via adapter; methods via existing vybe:data host fns.
+        DotnetClassExport::new(
             "dotnet.System.Data",
-            "DataTable",
-            "vybe:data",
-            "dataTableNew",
+            ClassType::new("DataTable")
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_common_backing("dotnet.datatable_new"),
+                )
+                .with_method(MethodDef::new(
+                    "NewRow",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableNewRow")),
+                ))
+                .with_method(MethodDef::new(
+                    "AddRow",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableAddRow")),
+                ))
+                .with_method(MethodDef::new(
+                    "Select",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableSelect")),
+                )),
         ),
-        constructor_class("dotnet.System.Data", "DataSet", "vybe:data", "dataSetNew"),
-        constructor_class("dotnet.System.Drawing", "Point", "vybe:drawing", "pointNew"),
-        constructor_class("dotnet.System.Drawing", "Size", "vybe:drawing", "sizeNew"),
-        constructor_class("dotnet.System.Drawing", "SizeF", "vybe:drawing", "sizeNew"),
-        constructor_class("dotnet.System.Drawing", "Font", "vybe:drawing", "fontNew"),
-        constructor_class("dotnet.System.Drawing", "Pen", "vybe:drawing", "penNew"),
+        // DataSet — constructor via adapter; Tables property via existing host fn.
+        DotnetClassExport::new(
+            "dotnet.System.Data",
+            ClassType::new("DataSet")
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_common_backing("dotnet.dataset_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Tables",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataSetTables")),
+                )),
+        ),
+        constructor_class("dotnet.System.Drawing", "Point", "vybe:gui", "pointNew"),
+        constructor_class("dotnet.System.Drawing", "Size", "vybe:gui", "sizeNew"),
+        constructor_class("dotnet.System.Drawing", "SizeF", "vybe:gui", "sizeNew"),
+        constructor_class("dotnet.System.Drawing", "Font", "vybe:gui", "fontNew"),
+        constructor_class("dotnet.System.Drawing", "Pen", "vybe:gui", "penNew"),
         constructor_class(
             "dotnet.System.Drawing",
             "SolidBrush",
-            "vybe:drawing",
+            "vybe:gui",
             "solidBrushNew",
         ),
         constructor_class(
             "dotnet.System.Drawing",
             "Color",
-            "vybe:drawing",
+            "vybe:gui",
             "colorFromName",
         ),
         constructor_class(
             "dotnet.System.Drawing",
             "Graphics",
-            "vybe:drawing",
+            "vybe:gui",
             "graphicsNew",
         ),
         DotnetClassExport::new(

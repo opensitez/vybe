@@ -1530,7 +1530,7 @@ mod tests {
         let rendered_sink = rendered.clone();
 
         let mut vm = configured_vm();
-        vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx, args| {
+        vm.register_host_fn("wasi:logging/logging", "log", Box::new(move |_ctx, args| {
             let mut out = rendered_sink.lock().expect("lock rendered output");
             for arg in args {
                 match arg {

@@ -826,6 +826,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::dotnet::core::parse_adapter::emit_parse_char(chunks, current, line)
         }
 
+        // ── .NET System.Data adapter ────────────────────────────────
+        "dotnet.datatable_new" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datatable_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.dataset_new" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_dataset_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.datarow_new" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datarow_new(
+                &mut chunks[current], line,
+            )
+        }
+
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),

@@ -3095,10 +3095,12 @@ impl Compiler {
                         // implementation is standardized while the
                         // surface stays .NET-shaped.
                         //
-                        // Stack: [obj] → [obj, name] → [obj]
+                        // Stack: [obj] → [obj, obj, name] → [obj, obj'] → [obj]
+                        self.emit(Op::DUP);
                         self.emit_const(Value::String(Arc::from(proper_name.as_str())));
-                        let stamp_idx = self.import("vybe:types", "__stamp_type");
-                        self.emit_host_call(stamp_idx, 2);
+                        let type_key = self.str_const("__type");
+                        self.emit_u16(Op::STRUCT_SET, type_key);
+                        self.emit(Op::DROP);
 
                         // .NET List / ArrayList instance calls like `list.Sort()`
                         // should stay on the shared compare-aware frontend path
@@ -5162,8 +5164,7 @@ impl Compiler {
 
             // ── Delete (JS expression) ──────────────────────────────────
             ExprKind::Delete(inner) => {
-                // delete obj.prop → call vybe:object::deleteProperty(obj, key)
-                // which removes the property and returns true.
+                // delete obj.prop → ecma:object.delete(obj, key), returns true.
                 if let ExprKind::Member { object, field, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));

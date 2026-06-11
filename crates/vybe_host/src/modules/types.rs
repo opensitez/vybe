@@ -6,7 +6,6 @@ use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    register_typing_infrastructure(vm);
     // `register_datetime` retired — DateTime constructor + statics
     // lower through `emitter::dotnet::core::datetime_adapter` to
     // `ecma:date.{new, now, parse}` (which read
@@ -17,74 +16,6 @@ pub fn register(vm: &mut VM) {
     register_list(vm);
     register_dictionary(vm);
     register_queue_stack(vm);
-}
-
-/// Pull the `__generic_count_getter` host fn index registered by
-/// `register_typing_infrastructure`. Shared by every .NET BCL
-/// constructor so `q.Count` / `s.Count` / `hs.Count` / `l.Count` all
-/// dispatch through the same getter.
-fn count_getter_idx(vm: &VM) -> usize {
-    *vm.host_registry
-        .get(&("vybe:types".to_string(), "__generic_count_getter".to_string()))
-        .expect("register_typing_infrastructure must run before BCL constructors")
-}
-
-/// Build a `__get_count` Value backed by the shared generic getter.
-/// Used by every host-fn constructor that returns a typed BCL object
-/// so `obj.Count` (property-style read) auto-invokes it.
-fn make_count_getter_value(idx: usize) -> Value {
-    let mut getter_obj = Object::new();
-    getter_obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(Arc::new(Mutex::new(getter_obj)))
-}
-
-/// Generic typing infrastructure used by `ConstructorTarget::Common`
-/// emit in the compiler (see `vybex/src/compiler/expressions.rs`).
-///
-/// - `__generic_count_getter(self)` — returns `self.length` / map size /
-///   set size / own-property-count minus meta keys. Used as a property
-///   getter so `.Count` / `.Length` reads auto-invoke at struct_get time.
-/// - `__stamp_type(obj, type_name)` — stamps `__type = type_name` and
-///   installs `__get_count` / `__get_length` pointing at
-///   `__generic_count_getter`. Returns `obj` (lets the caller chain).
-///
-/// Keeps Common-backed constructors spec-clean: `collections.new` →
-/// pure `ecma:array.newWithLength` call, then `__stamp_type`
-/// attaches the .NET metadata as a single import call.
-fn register_typing_infrastructure(vm: &mut VM) {
-    vm.register_host_fn("vybe:types", "__generic_count_getter", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            let count = match &o.kind {
-                ObjectKind::Array(v) => v.len() as f64,
-                ObjectKind::Map(m) => m.len() as f64,
-                ObjectKind::Set(s) => s.len() as f64,
-                _ => o.properties.iter().filter(|(k, _)| !k.starts_with("__")).count() as f64,
-            };
-            return Value::F64(count);
-        }
-        Value::F64(0.0)
-    }));
-    let count_getter_idx = *vm.host_registry
-        .get(&("vybe:types".to_string(), "__generic_count_getter".to_string()))
-        .expect("__generic_count_getter just registered");
-
-    vm.register_host_fn("vybe:types", "__stamp_type", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let obj_val = args.first().cloned().unwrap_or(Value::Null);
-        let name_val = args.get(1).cloned().unwrap_or(Value::Null);
-        if let Value::Object(obj) = &obj_val {
-            let name_str = format!("{}", name_val);
-            let mut inner = obj.lock().unwrap();
-            inner.properties.insert("__type".into(), Value::String(Arc::from(name_str.as_str())));
-            // Auto-getter: `.Count` / `.Length` property reads.
-            let mut getter_obj = Object::new();
-            getter_obj.kind = ObjectKind::HostFunction(count_getter_idx);
-            let getter_val = Value::Object(Arc::new(Mutex::new(getter_obj)));
-            inner.properties.insert("__get_count".into(), getter_val.clone());
-            inner.properties.insert("__get_length".into(), getter_val);
-        }
-        obj_val
-    }));
 }
 
 // ============================================================
@@ -106,9 +37,7 @@ fn register_list(vm: &mut VM) {
     // equivalent stay here as host-fn primitives.
     //
     // Live primitives:
-    //   listNew              — constructor (stamps `__type=List` and
-    //                          installs `__get_count` / `__get_length`
-    //                          auto-getters).
+    //   listNew              — constructor (stamps `__type=List`)
     //   listInsertRange     — `List.InsertRange(index, collection)`
     //   listRemoveRange     — `List.RemoveRange(index, count)`
     //   listGetRange        — `List.GetRange(index, count)` → new List
@@ -117,15 +46,10 @@ fn register_list(vm: &mut VM) {
     //
     // Everything else (`listAdd` / `listRemove` / `listSort` / …) was
     // retired when the dotnet wrapper switched to `collections.*`.
-    let getter_idx = count_getter_idx(vm);
 
-    vm.register_host_fn("vybe:types", "listNew", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let _this = args.first();
+    vm.register_host_fn("vybe:types", "listNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Arc::from("List")));
-        let getter_val = make_count_getter_value(getter_idx);
-        obj.properties.insert("__get_count".into(), getter_val.clone());
-        obj.properties.insert("__get_length".into(), getter_val);
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
@@ -231,8 +155,7 @@ fn register_dictionary(vm: &mut VM) {
     // emitter-fallback helpers stay here.
     //
     // Live primitives:
-    //   dictNew    — bare constructor (stamps `__type=Dictionary` and
-    //                installs `__get_count` auto-getter).
+    //   dictNew    — bare constructor (stamps `__type=Dictionary`)
     //   dictAdd    — used by `compiler_common::dict::emit_set` as a
     //                polymorphic stack-based set (handles both `__data`
     //                property-bag dicts and direct property writes).
@@ -242,12 +165,10 @@ fn register_dictionary(vm: &mut VM) {
     // Everything else (`dictRemove`, `dictKeys`, `dictClear`,
     // `dictContainsKey`, `dictTryGetValue`) was retired — those calls
     // now hit `ecma:map.*` directly through the dotnet adapter.
-    let getter_idx = count_getter_idx(vm);
 
-    vm.register_host_fn("vybe:types", "dictNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("vybe:types", "dictNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Dictionary")));
-        obj.properties.insert("__get_count".into(), make_count_getter_value(getter_idx));
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
@@ -320,32 +241,21 @@ fn register_queue_stack(vm: &mut VM) {
     // done at compile time by the dotnet wrapper Component Model
     // adapter (`Queue` / `Stack` route to `collections.*`, `HashSet`
     // routes to `ecma:set.*`). Only the constructors stay here as
-    // host primitives, since they need to install the
-    // `__get_count` / `__get_length` auto-getter and `__type` stamp.
-    let getter_idx = count_getter_idx(vm);
+    // host primitives to stamp `__type`.
 
-    let getter_idx_q = getter_idx;
-    vm.register_host_fn("vybe:types", "queueNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("vybe:types", "queueNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Arc::from("Queue")));
-        let getter_val = make_count_getter_value(getter_idx_q);
-        obj.properties.insert("__get_count".into(), getter_val.clone());
-        obj.properties.insert("__get_length".into(), getter_val);
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
-    let getter_idx_s = getter_idx;
-    vm.register_host_fn("vybe:types", "stackNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("vybe:types", "stackNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
         obj.properties.insert("__type".into(), Value::String(Arc::from("Stack")));
-        let getter_val = make_count_getter_value(getter_idx_s);
-        obj.properties.insert("__get_count".into(), getter_val.clone());
-        obj.properties.insert("__get_length".into(), getter_val);
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
-    let getter_idx_hs = getter_idx;
-    vm.register_host_fn("vybe:types", "hashSetNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host_fn("vybe:types", "hashSetNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object {
             properties: std::collections::HashMap::new(),
             kind: ObjectKind::Set(indexmap::IndexSet::new()),
@@ -353,9 +263,6 @@ fn register_queue_stack(vm: &mut VM) {
             fields: Vec::new(),
         };
         obj.properties.insert("__type".into(), Value::String(Arc::from("HashSet")));
-        let getter_val = make_count_getter_value(getter_idx_hs);
-        obj.properties.insert("__get_count".into(), getter_val.clone());
-        obj.properties.insert("__get_length".into(), getter_val);
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 }

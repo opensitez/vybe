@@ -24,6 +24,7 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
 use crate::emitter::{channels, collections, dict, strings, threading};
+use crate::platforms::dotnet::core::thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
@@ -222,16 +223,9 @@ pub fn emit_common_with_imports(
     let _ = argc; // unused by current emits — kept for parity with `emit_common`
     match name {
         "threading.sleep" => {
-            // Sleep uses the standard WASI clocks import. This is intentional:
-            // wasi:clocks is the WASI standard for time/sleep and works on any
-            // WASI-compliant runtime. Routed through the dispatcher so the
-            // primitive can be swapped later (e.g. memory_atomic_wait32 with
-            // a timeout, once shared-memory layout is settled) without
-            // touching every language profile.
-            let idx = import("vybe:clocks", "sleep");
-            threading::emit_sleep(chunk, idx, line);
-            // emit_sleep already drops the import return; push null so the
-            // call site has a stack value to consume.
+            let sub_dur_idx = import("wasi:clocks/monotonic-clock", "subscribe-duration");
+            let block_idx = import("wasi:io/poll", "[method]pollable.block");
+            thread_adapter::emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
             chunk.emit_op(Op::NULL, line);
         }
         _ => return false,

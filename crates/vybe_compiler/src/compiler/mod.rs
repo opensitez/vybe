@@ -5942,8 +5942,8 @@ impl Compiler {
             return;
         }
         // Known type used as a value (e.g. `e instanceof RangeError`) — emit
-        // the type name as a string so vybe:object:instanceOf can look it up
-        // via its String fallback. Without this, `RangeError` would become
+        // the type name as a string so the instanceof ref.test fallback can
+        // look it up by name. Without this, `RangeError` would become
         // `global_get` of a nonexistent global → null.
         // Only do this when the name isn't shadowed by an actual global
         // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
@@ -12646,7 +12646,11 @@ impl Compiler {
                 self.emit_host_call(i, 2);
             }
             BinOp::Like => {
-                let idx = self.import("vybe:string", "like");
+                // The VB walker always rewrites `a Like b` to `Regex.IsMatch(pattern, a)`
+                // before reaching this point, so this arm is dead for VB.
+                // Stack at call site: [string, pattern]; ecma:regexp.test expects
+                // (pattern, string) — callers via the walker path never reach here.
+                let idx = self.import("ecma:regexp", "test");
                 self.emit_host_call(idx, 2);
             }
             BinOp::Is => {
@@ -16989,11 +16993,10 @@ impl Compiler {
 
             // ── String compositions of ecma:string primitives ──────────
             //
-            // Each of these used to live as a separate `vybe:string.*`
-            // host fn; now compiled inline so the underlying providers
-            // (ecma:string.padStart, ecma:string.toUpperCase, etc.) are
-            // the single source of truth for semantics. The compositions
-            // are well-known JS idioms — see comments per arm.
+            // Each of these compiles inline so ecma:string.padStart,
+            // ecma:string.toUpperCase, etc. are the single source of
+            // truth for semantics. The compositions are well-known JS
+            // idioms — see comments per arm.
             "zfill" => {
                 // Python str.zfill(width) → padStart(width, "0").
                 if args.len() >= 2 {

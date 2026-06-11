@@ -855,60 +855,11 @@ fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
     }));
 }
 
-fn register_legacy_shim(vm: &mut VM) {
-    vm.register_host_fn("vybe:http", "get", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let url = string_arg(args, 0).unwrap_or_default();
-        match http_request("GET", &url, None) {
-            Ok(response) => Value::String(Arc::from(response.body.as_str())),
-            Err(error) => Value::String(Arc::from(format!("Error: {}", error))),
-        }
-    }));
-
-    vm.register_host_fn("vybe:http", "post", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let url = string_arg(args, 0).unwrap_or_default();
-        let body = string_arg(args, 1).unwrap_or_default();
-        match http_request("POST", &url, Some(&body)) {
-            Ok(response) => Value::String(Arc::from(response.body.as_str())),
-            Err(error) => Value::String(Arc::from(format!("Error: {}", error))),
-        }
-    }));
-
-    vm.register_host_fn("vybe:http", "fetch", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let url = string_arg(args, 0).unwrap_or_default();
-        let method = string_arg(args, 1).unwrap_or_else(|| "GET".into());
-        let body = string_arg(args, 2);
-
-        match http_request(&method, &url, body.as_deref()) {
-            Ok(response) => {
-                let mut object = Object::new();
-                object.properties.insert("status".into(), Value::F64(response.status as f64));
-                object
-                    .properties
-                    .insert("body".into(), Value::String(Arc::from(response.body.as_str())));
-                object
-                    .properties
-                    .insert("ok".into(), Value::Bool((200..300).contains(&response.status)));
-                Value::Object(Arc::new(Mutex::new(object)))
-            }
-            Err(error) => {
-                let mut object = Object::new();
-                object.properties.insert("status".into(), Value::F64(0.0));
-                object
-                    .properties
-                    .insert("body".into(), Value::String(Arc::from(error.as_str())));
-                object.properties.insert("ok".into(), Value::Bool(false));
-                Value::Object(Arc::new(Mutex::new(object)))
-            }
-        }
-    }));
-}
-
 pub fn register(vm: &mut VM) {
     let type_ids = register_resource_types(vm);
     register_types(vm, type_ids);
     register_outgoing_handler(vm, type_ids);
     register_wasi3(vm, type_ids);
-    register_legacy_shim(vm);
 }
 
 fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {

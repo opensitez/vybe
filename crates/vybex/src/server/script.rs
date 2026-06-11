@@ -165,7 +165,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     // how PHP's real `sapi_module->ub_write` is swapped per SAPI. The
     // default stderr path stays for anything that reaches the fn with no
     // context (e.g., inside a callback on a bare thread).
-    vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx, args| {
+    vm.register_host_fn("wasi:logging/logging", "log", Box::new(|_ctx, args| {
         // PHP echo emits one call per argument with arity 1, so we don't
         // join with spaces here — each call writes its single arg verbatim.
         // Semantics: "no newline, no joining" matches real PHP `echo`.
@@ -626,7 +626,7 @@ mod tests {
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&output);
         vybe_host::register_all(&mut vm);
-        vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        vm.register_host_fn("wasi:logging/logging", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let line = args.iter().map(value_as_string).collect::<Vec<_>>().join(" ");
             out.lock().expect("lock output").push(line);
             Value::Null
