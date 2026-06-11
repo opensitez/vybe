@@ -261,6 +261,14 @@ pub(crate) fn collect_protocol_iterable(
     receiver: &Arc<Mutex<Object>>,
     method_name: &str,
 ) -> Option<Value> {
+    collect_protocol_iterable_result(ctx, receiver, method_name)?.ok()
+}
+
+pub(crate) fn collect_protocol_iterable_result(
+    ctx: &mut HostContext,
+    receiver: &Arc<Mutex<Object>>,
+    method_name: &str,
+) -> Option<Result<Value, Value>> {
     let method = lookup_protocol_member(receiver, method_name)?;
     if matches!(method, Value::Null | Value::Undefined) {
         return None;
@@ -269,7 +277,10 @@ pub(crate) fn collect_protocol_iterable(
         .unwrap_or_else(|| {
             invoke_with_explicit_this(ctx, &method, Value::Object(receiver.clone()), &[])
         });
-    let iterator = unwrap_fulfilled_promise(iterator);
+    let iterator = match await_or_reject(iterator) {
+        Ok(value) => value,
+        Err(reason) => return Some(Err(reason)),
+    };
     let Value::Object(iterator_obj) = iterator else {
         return None;
     };
@@ -280,11 +291,28 @@ pub(crate) fn collect_protocol_iterable(
         let Some(next_fn) = next_fn else {
             break;
         };
-        let step = crate::ecma::function::invoke_bound_callback_if_needed(ctx, &next_fn, &[])
-            .unwrap_or_else(|| {
-                invoke_with_explicit_this(ctx, &next_fn, Value::Object(iterator_obj.clone()), &[])
-            });
-        let step = unwrap_fulfilled_promise(step);
+        let step = if let Some(result) =
+            crate::ecma::function::try_invoke_bound_callback_if_needed(ctx, &next_fn, &[])
+        {
+            match result {
+                Ok(value) => value,
+                Err(reason) => return Some(Err(reason)),
+            }
+        } else {
+            match crate::ecma::function::try_invoke_with_explicit_this(
+                ctx,
+                &next_fn,
+                Value::Object(iterator_obj.clone()),
+                &[],
+            ) {
+                Ok(value) => value,
+                Err(reason) => return Some(Err(reason)),
+            }
+        };
+        let step = match await_or_reject(step) {
+            Ok(value) => value,
+            Err(reason) => return Some(Err(reason)),
+        };
         let Value::Object(step_obj) = step else {
             break;
         };
@@ -302,12 +330,48 @@ pub(crate) fn collect_protocol_iterable(
             )
         };
         if done {
+            if let Err(reason) = await_or_reject(value) {
+                return Some(Err(reason));
+            }
             break;
         }
         out.push(value);
     }
 
-    Some(Value::Object(Arc::new(Mutex::new(Object::new_array(out)))))
+    Some(Ok(Value::Object(Arc::new(Mutex::new(Object::new_array(
+        out,
+    ))))))
+}
+
+fn await_or_reject(value: Value) -> Result<Value, Value> {
+    if let Value::Object(obj) = &value {
+        let lock = obj.lock().unwrap();
+        let is_promise = lock
+            .properties
+            .get("__type")
+            .map(|tag| format!("{}", tag))
+            .as_deref()
+            == Some("Promise");
+        if is_promise {
+            let state = lock
+                .properties
+                .get("__state")
+                .map(|state| format!("{}", state))
+                .unwrap_or_default();
+            let settled = lock
+                .properties
+                .get("__value")
+                .cloned()
+                .unwrap_or(Value::Undefined);
+            if state == "rejected" {
+                return Err(settled);
+            }
+            if state == "fulfilled" {
+                return Ok(settled);
+            }
+        }
+    }
+    Ok(unwrap_fulfilled_promise(value))
 }
 
 /// True if index `i` is a hole created by `delete arr[i]`. Holes are

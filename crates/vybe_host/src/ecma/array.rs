@@ -654,24 +654,37 @@ fn register_constructors(vm: &mut VM) {
         "ecma:array",
         "fromAsync",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let source = args.first().cloned().unwrap_or(Value::Undefined);
+            let source = match crate::ecma::iterator::try_maybe_await_value(
+                args.first().cloned().unwrap_or(Value::Undefined),
+            ) {
+                Ok(value) => value,
+                Err(reason) => return crate::ecma::promise::make_promise("rejected", reason),
+            };
             let mapper = args.get(1).cloned();
-            let mapped: Vec<Value> =
-                crate::ecma::iterator::materialize_iterable_values(ctx, &source, true)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        let awaited = crate::ecma::iterator::maybe_await_value(value);
-                        let mapped = match mapper.as_ref() {
-                            Some(mapper) if !matches!(mapper, Value::Null | Value::Undefined) => {
-                                ctx.invoke(mapper, &[awaited, Value::I32(index as i32)])
-                            }
-                            _ => awaited,
-                        };
-                        crate::ecma::iterator::maybe_await_value(mapped)
-                    })
-                    .collect();
-            make_array(mapped)
+            let collected =
+                crate::ecma::iterator::try_materialize_iterable_values(ctx, &source, true)
+                    .and_then(|values| {
+                        let mut mapped = Vec::with_capacity(values.len());
+                        for (index, value) in values.into_iter().enumerate() {
+                            let awaited = crate::ecma::iterator::try_maybe_await_value(value)?;
+                            let mapped_value = match mapper.as_ref() {
+                                Some(mapper)
+                                    if !matches!(mapper, Value::Null | Value::Undefined) =>
+                                {
+                                    ctx.try_invoke(mapper, &[awaited, Value::I32(index as i32)])?
+                                }
+                                _ => awaited,
+                            };
+                            mapped.push(crate::ecma::iterator::try_maybe_await_value(
+                                mapped_value,
+                            )?);
+                        }
+                        Ok(make_array(mapped))
+                    });
+            match collected {
+                Ok(array) => crate::ecma::promise::make_promise("fulfilled", array),
+                Err(reason) => crate::ecma::promise::make_promise("rejected", reason),
+            }
         }),
     );
 

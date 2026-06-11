@@ -703,7 +703,7 @@ fn is_callable(v: &Value) -> bool {
             ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
 }
 
-fn make_promise(state: &str, value: Value) -> Value {
+pub(crate) fn make_promise(state: &str, value: Value) -> Value {
     let mut obj = Object::new();
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Promise")));

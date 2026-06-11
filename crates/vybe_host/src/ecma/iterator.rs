@@ -61,6 +61,37 @@ pub(crate) fn maybe_await_value(value: Value) -> Value {
     crate::ecma::object::unwrap_fulfilled_promise(value)
 }
 
+pub(crate) fn try_maybe_await_value(value: Value) -> Result<Value, Value> {
+    if let Value::Object(obj) = &value {
+        let lock = obj.lock().unwrap();
+        let is_promise = lock
+            .properties
+            .get("__type")
+            .map(|tag| format!("{}", tag))
+            .as_deref()
+            == Some("Promise");
+        if is_promise {
+            let state = lock
+                .properties
+                .get("__state")
+                .map(|state| format!("{}", state))
+                .unwrap_or_default();
+            let settled = lock
+                .properties
+                .get("__value")
+                .cloned()
+                .unwrap_or(Value::Undefined);
+            if state == "rejected" {
+                return Err(settled);
+            }
+            if state == "fulfilled" {
+                return Ok(settled);
+            }
+        }
+    }
+    Ok(maybe_await_value(value))
+}
+
 fn values_from_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
     let o = obj.lock().unwrap();
     let ObjectKind::Array(ref vec) = o.kind else {
@@ -103,36 +134,40 @@ fn lazy_map_parts(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value, usize)> {
     Some((source, mapper, index))
 }
 
-fn materialize_lazy_map(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
-    let (source, mapper, start) = lazy_map_parts(obj)?;
-    let values = materialize_iterable_values(ctx, &source, false);
-    let mut mapped = Vec::new();
-    for x in values.into_iter().skip(start) {
-        mapped.push(
-            invoke_magic_callback(&mapper, &[x.clone()])
-                .unwrap_or_else(|| ctx.invoke(&mapper, &[x])),
-        );
-    }
-    if let Ok(mut o) = obj.lock() {
-        let next = start.saturating_add(mapped.len()).min(i32::MAX as usize);
-        o.properties
-            .insert("__index".into(), Value::I32(next as i32));
-    }
-    Some(mapped)
-}
-
 pub(crate) fn materialize_iterable_values(
     ctx: &mut HostContext,
     value: &Value,
     prefer_async: bool,
 ) -> Vec<Value> {
+    try_materialize_iterable_values(ctx, value, prefer_async).unwrap_or_default()
+}
+
+pub(crate) fn try_materialize_iterable_values(
+    ctx: &mut HostContext,
+    value: &Value,
+    prefer_async: bool,
+) -> Result<Vec<Value>, Value> {
     match value {
         Value::Object(obj) => {
-            if let Some(values) = materialize_lazy_map(ctx, obj) {
-                return values;
+            if let Some((source, mapper, start)) = lazy_map_parts(obj) {
+                let values = try_materialize_iterable_values(ctx, &source, false)?;
+                let mut mapped = Vec::new();
+                for x in values.into_iter().skip(start) {
+                    let mapped_value = match invoke_magic_callback(&mapper, &[x.clone()]) {
+                        Some(value) => value,
+                        None => ctx.try_invoke(&mapper, &[x])?,
+                    };
+                    mapped.push(mapped_value);
+                }
+                if let Ok(mut o) = obj.lock() {
+                    let next = start.saturating_add(mapped.len()).min(i32::MAX as usize);
+                    o.properties
+                        .insert("__index".into(), Value::I32(next as i32));
+                }
+                return Ok(mapped);
             }
             if let Some(values) = values_from_array_like(obj) {
-                return values;
+                return Ok(values);
             }
             let first = if prefer_async {
                 "asyncIterator"
@@ -144,19 +179,23 @@ pub(crate) fn materialize_iterable_values(
             } else {
                 "asyncIterator"
             };
-            if let Some(values) = crate::ecma::object::collect_protocol_iterable(ctx, obj, first) {
-                return values_from_materialized(values);
+            if let Some(values) =
+                crate::ecma::object::collect_protocol_iterable_result(ctx, obj, first)
+            {
+                return values.map(values_from_materialized);
             }
-            if let Some(values) = crate::ecma::object::collect_protocol_iterable(ctx, obj, second) {
-                return values_from_materialized(values);
+            if let Some(values) =
+                crate::ecma::object::collect_protocol_iterable_result(ctx, obj, second)
+            {
+                return values.map(values_from_materialized);
             }
-            Vec::new()
+            Ok(Vec::new())
         }
-        Value::String(text) => text
+        Value::String(text) => Ok(text
             .chars()
             .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
-            .collect(),
-        _ => Vec::new(),
+            .collect::<Vec<_>>()),
+        _ => Ok(Vec::new()),
     }
 }
 

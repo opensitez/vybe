@@ -102,12 +102,6 @@ pub fn register(vm: &mut VM) {
             }
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
-        "ln",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).ln())),
-    );
-
     // Math constants: register as 0-arg host fns first (so CALL_IMPORT via the
     // function index works at runtime), then register_host_value to overwrite
     // the module record ExportEntry with Value — so flatten_module_value_exports
@@ -263,11 +257,7 @@ pub fn register(vm: &mut VM) {
         "tanh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
-        "clamp",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).clamp(f(a, 1), f(a, 2)))),
-    );
+    // clamp(x, min, max) → emit_clamp (pure WASM F64_MAX + F64_MIN, no host fn).
     vm.register_host_fn(
         "ecma:math",
         "clz32",
