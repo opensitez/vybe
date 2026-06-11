@@ -35,22 +35,16 @@ pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_XOR, line);
 }
 
-/// Emit f64 modulo via the ECMA math fmod import.
-/// Pure bytecode implementation: a % b = a - trunc(a/b) * b.
-/// Host can override with native fmod for performance.
-/// `import_idx` is the resolved import index for `ecma:math:fmod`.
+/// Emit f64 C-style modulo as pure WASM opcodes (no host import).
 /// Stack: [a, b] → [result]
-pub fn emit_f64_mod_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(2, line);
+pub fn emit_f64_mod_with_import(chunk: &mut Chunk, _import_idx: u16, line: u32) {
+    crate::emitter::math::emit_c_fmod(chunk, line);
 }
 
-/// Convenience: emit f64 modulo, adding the import to the same chunk.
-/// Use only when imports go on the same chunk as the code (old compilers).
+/// Emit f64 C-style modulo as pure WASM opcodes (no host import).
 /// Stack: [a, b] → [result]
 pub fn emit_f64_mod(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("ecma:math", "fmod");
-    emit_f64_mod_with_import(chunk, idx, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
 }
 
 /// Emit boolean NOT. Converts value to bool then negates.

@@ -39,6 +39,9 @@ fn f64ns(name: &str, args: Vec<Value>) -> Value {
 fn bi64ns(name: &str, args: Vec<Value>) -> Value {
     invoke_ns("ecma:bigint64array", name, args)
 }
+fn bu64ns(name: &str, args: Vec<Value>) -> Value {
+    invoke_ns("ecma:biguint64array", name, args)
+}
 
 fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
@@ -115,6 +118,19 @@ fn set_then_get_round_trips_value() {
     let ta = i32ns("newWithLength", vec![Value::I32(4)]);
     i32ns("set", vec![ta.clone(), Value::I32(2), Value::I32(-7)]);
     assert_eq!(i32ns("get", vec![ta, Value::I32(2)]), Value::I32(-7));
+}
+
+#[test]
+fn bigint64_get_returns_bigint_primitive() {
+    let ta = bi64ns("newWithLength", vec![Value::I32(1)]);
+    bi64ns("set", vec![ta.clone(), Value::I32(0), Value::BigInt(-7)]);
+    assert_eq!(bi64ns("get", vec![ta, Value::I32(0)]), Value::BigInt(-7));
+}
+
+#[test]
+fn biguint64_zero_default_is_bigint_primitive() {
+    let ta = bu64ns("newWithLength", vec![Value::I32(1)]);
+    assert_eq!(bu64ns("get", vec![ta, Value::I32(0)]), Value::BigInt(0));
 }
 
 // ── Uint8Array — values are modulo 256 (unsigned byte wrap) ──────────────────
@@ -238,10 +254,10 @@ fn includes_true_for_present_value() {
     );
 }
 
-// ── BigInt64Array — stores and retrieves i64 values ──────────────────────────
+// ── BigInt64Array — stores signed 64-bit lanes and reads BigInt primitives ───
 
 #[test]
-fn bigint64_from_stores_i64_values() {
+fn bigint64_from_reads_bigint_primitives() {
     let ta = bi64ns(
         "from",
         vec![arr(vec![
@@ -253,9 +269,12 @@ fn bigint64_from_stores_i64_values() {
     assert_eq!(bi64ns("length", vec![ta.clone()]), Value::I32(3));
     assert_eq!(
         bi64ns("get", vec![ta.clone(), Value::I32(1)]),
-        Value::I64(-1)
+        Value::BigInt(-1)
     );
-    assert_eq!(bi64ns("get", vec![ta, Value::I32(2)]), Value::I64(i64::MAX));
+    assert_eq!(
+        bi64ns("get", vec![ta, Value::I32(2)]),
+        Value::BigInt(i64::MAX)
+    );
 }
 
 // ── Float64 special values ────────────────────────────────────────────────────

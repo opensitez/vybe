@@ -2226,6 +2226,10 @@ impl Compiler {
         };
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        if self.try_compile_js_iterator_from_generator_take_to_array(callee, args)? {
+            return Ok(());
+        }
+
         if self.try_compile_go_map_has_call(callee, args)? {
             return Ok(());
         }
@@ -9000,6 +9004,184 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    fn try_compile_js_iterator_from_generator_take_to_array(
+        &mut self,
+        callee: &Expression,
+        args: &[Argument],
+    ) -> Result<bool, String> {
+        if !self.is_js_profile() || !args.is_empty() {
+            return Ok(false);
+        }
+
+        let ExprKind::Member {
+            object: take_call,
+            field: to_array_field,
+            null_safe: false,
+        } = &callee.kind
+        else {
+            return Ok(false);
+        };
+        if to_array_field != "toArray" {
+            return Ok(false);
+        }
+
+        if let ExprKind::Call {
+            callee: flat_map_callee,
+            args: flat_map_args,
+            optional: false,
+        } = &take_call.kind
+        {
+            if flat_map_args.len() == 1 && !flat_map_args[0].spread {
+                if let ExprKind::Member {
+                    object: from_call,
+                    field: flat_map_field,
+                    null_safe: false,
+                } = &flat_map_callee.kind
+                {
+                    let mapper_is_generator = matches!(
+                        &flat_map_args[0].value.kind,
+                        ExprKind::FunctionExpr(stmt)
+                            if matches!(
+                                &stmt.kind,
+                                StmtKind::FunctionDecl {
+                                    is_generator: true,
+                                    ..
+                                }
+                            )
+                    );
+                    if flat_map_field == "flatMap" && mapper_is_generator {
+                        if let ExprKind::Call {
+                            callee: from_callee,
+                            args: from_args,
+                            optional: false,
+                        } = &from_call.kind
+                        {
+                            if from_args.len() == 1
+                                && !from_args[0].spread
+                                && matches!(&from_args[0].value.kind, ExprKind::Array(_))
+                            {
+                                if let ExprKind::Member {
+                                    object: iterator_obj,
+                                    field: from_field,
+                                    null_safe: false,
+                                } = &from_callee.kind
+                                {
+                                    if from_field == "from"
+                                        && matches!(&iterator_obj.kind, ExprKind::Ident(name) if name == "Iterator")
+                                    {
+                                        self.compile_expr(&from_args[0].value)?;
+                                        self.compile_expr(&flat_map_args[0].value)?;
+                                        let line = self.line;
+                                        crate::emitter::generators::emit_flat_map_generator_mapper_into_array(
+                                            &mut self.chunks,
+                                            self.current,
+                                            line,
+                                        );
+                                        return Ok(true);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let ExprKind::Call {
+            callee: from_callee,
+            args: from_args,
+            optional: false,
+        } = &take_call.kind
+        {
+            if from_args.len() == 1 && !from_args[0].spread {
+                if let ExprKind::Member {
+                    object: iterator_obj,
+                    field: from_field,
+                    null_safe: false,
+                } = &from_callee.kind
+                {
+                    if from_field == "from"
+                        && matches!(&iterator_obj.kind, ExprKind::Ident(name) if name == "Iterator")
+                    {
+                        let source = &from_args[0].value;
+                        if self.is_direct_generator_call(source) {
+                            self.compile_expr(source)?;
+                            let line = self.line;
+                            crate::emitter::generators::emit_drain_into_array(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        let ExprKind::Call {
+            callee: take_callee,
+            args: take_args,
+            optional: false,
+        } = &take_call.kind
+        else {
+            return Ok(false);
+        };
+        if take_args.len() != 1 || take_args[0].spread {
+            return Ok(false);
+        }
+
+        let ExprKind::Member {
+            object: from_call,
+            field: take_field,
+            null_safe: false,
+        } = &take_callee.kind
+        else {
+            return Ok(false);
+        };
+        if take_field != "take" {
+            return Ok(false);
+        }
+
+        let ExprKind::Call {
+            callee: from_callee,
+            args: from_args,
+            optional: false,
+        } = &from_call.kind
+        else {
+            return Ok(false);
+        };
+        if from_args.len() != 1 || from_args[0].spread {
+            return Ok(false);
+        }
+
+        let ExprKind::Member {
+            object: iterator_obj,
+            field: from_field,
+            null_safe: false,
+        } = &from_callee.kind
+        else {
+            return Ok(false);
+        };
+        if from_field != "from" {
+            return Ok(false);
+        }
+        if !matches!(&iterator_obj.kind, ExprKind::Ident(name) if name == "Iterator") {
+            return Ok(false);
+        }
+
+        let source = &from_args[0].value;
+        if !self.is_direct_generator_call(source) {
+            return Ok(false);
+        }
+
+        self.compile_expr(source)?;
+        self.compile_expr(&take_args[0].value)?;
+        let line = self.line;
+        crate::emitter::generators::emit_take_into_array(&mut self.chunks, self.current, line);
+        Ok(true)
     }
 
     fn resolve_reflection_string_arg(&self, arg: &Argument) -> Option<String> {

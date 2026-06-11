@@ -30,6 +30,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Item", 1, "collections.get"),
                 ("Insert", 2, "collections.insert"),
                 ("AddRange", 1, "dotnet.list_add_range"),
+                ("InsertRange", 2, "collections.insert_range"),
+                ("RemoveRange", 2, "collections.remove_range"),
+                ("GetRange", 2, "collections.get_range"),
+                ("SetRange", 2, "collections.set_range"),
+                ("BinarySearch", 1, "collections.binary_search"),
             ],
         ),
         // .NET `Dictionary<K,V>` is shape-identical to ECMA-262 §24.1

@@ -2,17 +2,7 @@ use super::*;
 use vybe_bytecode::HostContext;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn(
-        "vybe:compat/clock",
-        "now",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|dur| dur.as_millis() as f64)
-                .unwrap_or(0.0);
-            Value::F64(ms)
-        }),
-    );
+    // vybe:compat/clock.now removed — replaced by ecma:date.now (already registered).
 
     vm.register_host_fn(
         "vybe:compat/env",
@@ -27,35 +17,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "vybe:compat/http",
-        "fetch",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let url = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-            let ok = url
-                .strip_prefix("http://")
-                .and_then(|rest| rest.split('/').next())
-                .and_then(|authority| {
-                    let (host, port) = authority
-                        .rsplit_once(':')
-                        .map(|(host, port)| (host, port.parse::<u16>().ok()))
-                        .unwrap_or((authority, Some(80)));
-                    port.map(|port| (host.to_string(), port))
-                })
-                .is_some_and(|(host, port)| {
-                    std::net::TcpStream::connect((host.as_str(), port)).is_ok()
-                });
-            let mut response = Object::new();
-            response.properties.insert("ok".into(), Value::Bool(ok));
-            response
-                .properties
-                .insert("status".into(), Value::F64(if ok { 200.0 } else { 0.0 }));
-            Value::Object(Arc::new(Mutex::new(response)))
-        }),
-    );
+    // vybe:compat/http.fetch removed — http.fetch now routes to web:fetch.fetch (WHATWG Fetch).
 
     let clock = ensure_namespace(vm, &["clock"]);
-    set_prop(&clock, "now", host_fn_ref(vm, "vybe:compat/clock", "now"));
+    set_prop(&clock, "now", host_fn_ref(vm, "ecma:date", "now"));
     set_prop(
         &clock,
         "toISOString",
@@ -115,7 +80,7 @@ pub fn register(vm: &mut VM) {
 
     // JS `http.*` ambient namespace (wasi:http shim).
     let http = ensure_namespace(vm, &["http"]);
-    set_prop(&http, "fetch", host_fn_ref(vm, "vybe:compat/http", "fetch"));
+    set_prop(&http, "fetch", host_fn_ref(vm, "web:fetch", "fetch"));
     set_prop(&http, "get", host_fn_ref(vm, "wasi:http", "get"));
     set_prop(&http, "post", host_fn_ref(vm, "wasi:http", "post"));
 }

@@ -103,19 +103,16 @@ pub fn register_all(vm: &mut VM) {
     // runtimes expose via the wasm-js-builtins proposal.
     //
     // `list.Count` and `list.Length` are .NET/JS property-style reads;
-    // the compile path (struct_get "count") auto-invokes `__get_count`
-    // installed on each List instance by `vybe:types/listNew`. The
-    // method-call form `list.Count()` dispatches via TypeRegistry to
+    // the compile path (struct_get "count") auto-invokes ARRAY_LENGTH.
+    // The method-call form `list.Count()` dispatches via TypeRegistry to
     // `ecma:array/length` which returns an i32.
     //
-    // Transitional entries flagged `vybe:types/list*` remain only where
-    // a direct `ecma:array` equivalent doesn't exist (RemoveAt,
-    // AddRange semantic mismatch with concat, BinarySearch, GetRange /
-    // SetRange, TryPeek/TryPop at-end). Each lands on a JS-shape
-    // primitive over time.
+    // Constructor: `ecma:array.new` — plain JS Array (§23.1).
+    // Range methods (InsertRange/RemoveRange/GetRange/SetRange/BinarySearch)
+    // are compile-time adapters via `collections.*` common emitters.
     let list_id = {
         let mut t = TypeDef::new("List");
-        if let Some(idx) = h(vm, "vybe:types", "listNew") {
+        if let Some(idx) = h(vm, "ecma:array", "new") {
             t.constructor = Some(Method::HostFn(idx));
         }
         for (method, module, fname) in &[
@@ -134,11 +131,6 @@ pub fn register_all(vm: &mut VM) {
             ("insert", "ecma:array", "insertAt"),
             ("addrange", "ecma:array", "concat"),
             ("capacity", "ecma:array", "length"),
-            ("insertrange", "vybe:types", "listInsertRange"),
-            ("removerange", "vybe:types", "listRemoveRange"),
-            ("getrange", "vybe:types", "listGetRange"),
-            ("setrange", "vybe:types", "listSetRange"),
-            ("binarysearch", "vybe:types", "listBinarySearch"),
             ("clone", "ecma:array", "slice"),
             ("copyto", "ecma:array", "slice"),
             ("trimtosize", "ecma:array", "length"),
@@ -227,10 +219,9 @@ pub fn register_all(vm: &mut VM) {
 
     // --- Queue ---
     //
-    // Phase 7b: `.NET Queue<T>` is a JS Array used FIFO — `Enqueue` →
+    // `.NET Queue<T>` is a JS Array used FIFO — `Enqueue` →
     // `push` appends at the end, `Dequeue` → `shift` removes from the
-    // front. Property-style `q.Count` works via the __get_count
-    // auto-getter installed by `vybe:types/queueNew`.
+    // front. Property-style `q.Count` works via ARRAY_LENGTH.
     {
         let mut t = TypeDef::new("Queue");
         // .NET Queue<T> is a JS Array used FIFO. Methods route to
@@ -313,10 +304,8 @@ pub fn register_all(vm: &mut VM) {
     // StringBuilder + DateTime TypeDef registrations retired — both
     // classes lower at compile time through the dotnet wrapper Component
     // Model adapters (`stringbuilder_adapter`, `datetime_adapter`). The
-    // `vybe:types/sb*` and `vybe:types/dateTime*` host fns these blocks
-    // queried no longer exist; the adapters compose `ecma:date.*`,
-    // `wasi:clocks/wall-clock.now`, and inline `Op::DYN_ADD` string
-    // mutation directly on the wrapper objects.
+    // adapters compose `ecma:date.*`, `wasi:clocks/wall-clock.now`, and
+    // inline `Op::DYN_ADD` string mutation directly on the wrapper objects.
 
     // --- SqlConnection ---
     {
@@ -479,41 +468,22 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- DataTable ---
+    // --- DataTable / DataSet / DataRow ---
+    // Constructors and methods are compile-time adapters in
+    // `emitter/dotnet/core/datatable_adapter.rs` — no runtime host fns.
+    // TypeDefs kept for type-registry lookups only.
     {
         let mut t = TypeDef::new("DataTable");
-        if let Some(idx) = h(vm, "vybe:data", "dataTableNewRow") {
-            t.methods.insert("newrow".into(), Method::HostFn(idx));
-        }
-        if let Some(idx) = h(vm, "vybe:data", "dataTableAddRow") {
-            t.methods.insert("rows".into(), Method::HostFn(idx));
-        }
-        if let Some(idx) = h(vm, "vybe:data", "dataTableSelect") {
-            t.methods.insert("select".into(), Method::HostFn(idx));
-        }
         t.parent = Some(0);
         vm.type_registry.register(t);
     }
-
-    // --- DataSet ---
     {
         let mut t = TypeDef::new("DataSet");
-        if let Some(idx) = h(vm, "vybe:data", "dataSetTables") {
-            t.methods.insert("tables".into(), Method::HostFn(idx));
-        }
         t.parent = Some(0);
         vm.type_registry.register(t);
     }
-
-    // --- DataRow ---
     {
         let mut t = TypeDef::new("DataRow");
-        if let Some(idx) = h(vm, "vybe:data", "dataRowItem") {
-            t.methods.insert("item".into(), Method::HostFn(idx));
-        }
-        if let Some(idx) = h(vm, "vybe:data", "dataRowIsNull") {
-            t.methods.insert("isnull".into(), Method::HostFn(idx));
-        }
         t.parent = Some(0);
         vm.type_registry.register(t);
     }
@@ -1050,8 +1020,8 @@ pub fn register_all(vm: &mut VM) {
         // lowering for range math lands, this becomes a trivial marker and
         // the method calls inline the WASI call themselves.
         ("Random", "wasi:random/insecure", "get-insecure-random-u64"),
-        ("DataTable", "vybe:data", "dataTableNew"),
-        ("DataSet", "vybe:data", "dataSetNew"),
+        // DataTable / DataSet constructors lowered at compile time via
+        // `emitter/dotnet/core/datatable_adapter.rs` — no runtime ctor host fn.
         ("Point", "vybe:gui", "pointNew"),
         ("Size", "vybe:gui", "sizeNew"),
         ("Font", "vybe:gui", "fontNew"),

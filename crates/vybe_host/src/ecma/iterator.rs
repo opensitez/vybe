@@ -23,12 +23,7 @@ use vybe_bytecode::{HostContext, VM, Value};
 // the default Object id; method dispatch falls back to property lookup).
 static METHODS: std::sync::OnceLock<Vec<(String, usize)>> = std::sync::OnceLock::new();
 
-fn make_iterator(values: Vec<Value>) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Iterator")));
-    obj.kind = ObjectKind::Array(values);
-    obj.properties.insert("__index".into(), Value::I32(0));
+fn attach_iterator_methods(obj: &mut Object) {
     if let Some(methods) = METHODS.get() {
         for (name, idx) in methods {
             obj.properties.insert(
@@ -37,6 +32,28 @@ fn make_iterator(values: Vec<Value>) -> Value {
             );
         }
     }
+}
+
+fn make_iterator(values: Vec<Value>) -> Value {
+    let mut obj = Object::new();
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Iterator")));
+    obj.kind = ObjectKind::Array(values);
+    obj.properties.insert("__index".into(), Value::I32(0));
+    attach_iterator_methods(&mut obj);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn make_lazy_map(source: Value, mapper: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from("Iterator")));
+    obj.properties
+        .insert("__iterator_kind".into(), Value::String(Arc::from("map")));
+    obj.properties.insert("__source".into(), source);
+    obj.properties.insert("__mapper".into(), mapper);
+    obj.properties.insert("__index".into(), Value::I32(0));
+    attach_iterator_methods(&mut obj);
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -67,6 +84,43 @@ fn values_from_materialized(value: Value) -> Vec<Value> {
     Vec::new()
 }
 
+fn lazy_map_parts(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value, usize)> {
+    let o = obj.lock().unwrap();
+    let is_map = matches!(
+        o.properties.get("__iterator_kind"),
+        Some(Value::String(kind)) if kind.as_ref() == "map"
+    );
+    if !is_map {
+        return None;
+    }
+    let source = o.properties.get("__source")?.clone();
+    let mapper = o.properties.get("__mapper")?.clone();
+    let index = o
+        .properties
+        .get("__index")
+        .map(|v| v.as_i32().max(0) as usize)
+        .unwrap_or(0);
+    Some((source, mapper, index))
+}
+
+fn materialize_lazy_map(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
+    let (source, mapper, start) = lazy_map_parts(obj)?;
+    let values = materialize_iterable_values(ctx, &source, false);
+    let mut mapped = Vec::new();
+    for x in values.into_iter().skip(start) {
+        mapped.push(
+            invoke_magic_callback(&mapper, &[x.clone()])
+                .unwrap_or_else(|| ctx.invoke(&mapper, &[x])),
+        );
+    }
+    if let Ok(mut o) = obj.lock() {
+        let next = start.saturating_add(mapped.len()).min(i32::MAX as usize);
+        o.properties
+            .insert("__index".into(), Value::I32(next as i32));
+    }
+    Some(mapped)
+}
+
 pub(crate) fn materialize_iterable_values(
     ctx: &mut HostContext,
     value: &Value,
@@ -74,6 +128,9 @@ pub(crate) fn materialize_iterable_values(
 ) -> Vec<Value> {
     match value {
         Value::Object(obj) => {
+            if let Some(values) = materialize_lazy_map(ctx, obj) {
+                return values;
+            }
             if let Some(values) = values_from_array_like(obj) {
                 return values;
             }
@@ -184,17 +241,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:iterator",
         "map",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let source = args.first().cloned().unwrap_or(Value::Null);
             let mapper = args.get(1).cloned().unwrap_or(Value::Null);
-            let mapped: Vec<Value> = v
-                .into_iter()
-                .map(|x| {
-                    invoke_magic_callback(&mapper, &[x.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&mapper, &[x]))
-                })
-                .collect();
-            make_iterator(mapped)
+            make_lazy_map(source, mapper)
         }),
     );
 
@@ -346,13 +396,33 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:iterator",
         "next",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(Value::Object(it)) = args.first() else {
                 let mut result = Object::new();
                 result.properties.insert("value".into(), Value::Undefined);
                 result.properties.insert("done".into(), Value::Bool(true));
                 return Value::Object(Arc::new(Mutex::new(result)));
             };
+            if let Some((source, mapper, index)) = lazy_map_parts(it) {
+                let values = materialize_iterable_values(ctx, &source, false);
+                if let Some(value) = values.get(index).cloned() {
+                    let mapped = invoke_magic_callback(&mapper, &[value.clone()])
+                        .unwrap_or_else(|| ctx.invoke(&mapper, &[value]));
+                    if let Ok(mut lock) = it.lock() {
+                        let next = index.saturating_add(1).min(i32::MAX as usize);
+                        lock.properties
+                            .insert("__index".into(), Value::I32(next as i32));
+                    }
+                    let mut result = Object::new();
+                    result.properties.insert("value".into(), mapped);
+                    result.properties.insert("done".into(), Value::Bool(false));
+                    return Value::Object(Arc::new(Mutex::new(result)));
+                }
+                let mut result = Object::new();
+                result.properties.insert("value".into(), Value::Undefined);
+                result.properties.insert("done".into(), Value::Bool(true));
+                return Value::Object(Arc::new(Mutex::new(result)));
+            }
             let mut lock = it.lock().unwrap();
             let index = lock
                 .properties

@@ -837,6 +837,36 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             &mut chunks[current],
             line,
         ),
+        "dotnet.datatable_new_row" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datatable_new_row(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datatable_add_row" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datatable_add_row(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datatable_select" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datatable_select(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dataset_tables" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_dataset_tables(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datarow_item" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datarow_item(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datarow_is_null" => {
+            crate::emitter::dotnet::core::datatable_adapter::emit_datarow_is_null(
+                chunks, current, line,
+            )
+        }
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.

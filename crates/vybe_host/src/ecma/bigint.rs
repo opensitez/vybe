@@ -53,10 +53,10 @@ pub fn register(vm: &mut VM) {
             let bits = args.first().map(|v| v.as_f64() as u32).unwrap_or(0).min(64);
             let n = to_bigint(args.get(1).unwrap_or(&Value::Null));
             if bits == 0 {
-                return Value::I64(0);
+                return Value::BigInt(0);
             }
             if bits >= 64 {
-                return Value::I64(n);
+                return Value::BigInt(n);
             }
             let mask = (1i64 << bits) - 1;
             let truncated = n & mask;
@@ -66,7 +66,7 @@ pub fn register(vm: &mut VM) {
             } else {
                 truncated
             };
-            Value::I64(result)
+            Value::BigInt(result)
         }),
     );
 
@@ -78,13 +78,13 @@ pub fn register(vm: &mut VM) {
             let bits = args.first().map(|v| v.as_f64() as u32).unwrap_or(0).min(64);
             let n = to_bigint(args.get(1).unwrap_or(&Value::Null));
             if bits == 0 {
-                return Value::I64(0);
+                return Value::BigInt(0);
             }
             if bits >= 64 {
-                return Value::I64(n);
+                return Value::BigInt(n);
             }
             let mask = (1i64 << bits) - 1;
-            Value::I64(n & mask)
+            Value::BigInt(n & mask)
         }),
     );
 
@@ -172,7 +172,7 @@ pub fn register(vm: &mut VM) {
         "ecma:bigint",
         "valueOf",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)))
+            Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)))
         }),
     );
 
@@ -193,7 +193,7 @@ pub fn register(vm: &mut VM) {
                 Box::new(|_ctx: &mut HostContext, args: &[Value]| {
                     let a = to_bigint(args.first().unwrap_or(&Value::Null));
                     let b = to_bigint(args.get(1).unwrap_or(&Value::Null));
-                    Value::I64($op(a, b))
+                    Value::BigInt($op(a, b))
                 }),
             );
         };
@@ -230,14 +230,14 @@ pub fn register(vm: &mut VM) {
         "ecma:bigint",
         "neg",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)).wrapping_neg())
+            Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)).wrapping_neg())
         }),
     );
     vm.register_host_fn(
         "ecma:bigint",
         "not",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::I64(!to_bigint(args.first().unwrap_or(&Value::Null)))
+            Value::BigInt(!to_bigint(args.first().unwrap_or(&Value::Null)))
         }),
     );
 

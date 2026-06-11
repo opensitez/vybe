@@ -8,6 +8,9 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
+use crate::emitter::collections;
+use crate::emitter::ops;
+
 /// `suspend $tag`: yield from the current continuation.
 ///
 /// Stack before: `[yield_value]`
@@ -155,6 +158,193 @@ pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, &mut chunks[current], line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// Take up to `limit` yielded values from a generator continuation into a new array.
+///
+/// Stack before: `[continuation, limit]`
+/// Stack after:  `[array_of_yielded_values]`
+///
+/// This is the bounded counterpart to `emit_drain_into_array`: it is safe for
+/// infinite generators and keeps source-language iterator helpers on the same
+/// WASM continuation opcodes (`GEN_NEXT`) instead of asking host functions to
+/// resume continuations.
+pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let limit_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let cont_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let result_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let count_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let value_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let has_more_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limit_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let block_p = chunks[current].emit_block(line);
+    let (loop_p, _) = chunks[current].emit_loop_s(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit_slot, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cont_slot, line);
+    emit_next(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_more_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_more_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_CONST_1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// Flat-map an array with a mapper that returns a generator continuation.
+///
+/// Stack before: `[source_array, mapper_fn]`
+/// Stack after:  `[array_of_all_yielded_values]`
+///
+/// This keeps generator-returning iterator helpers in bytecode/continuation
+/// space. Hosts can invoke callbacks, but they cannot resume a WASM
+/// continuation, so the returned continuation is drained here via `GEN_NEXT`.
+pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let mapper_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let source_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let result_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let i_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let len_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let item_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let cont_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let value_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    let has_more_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mapper_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let inner_block = chunks[current].emit_block(line);
+    let (inner_loop, _) = chunks[current].emit_loop_s(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cont_slot, line);
+    emit_next(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_more_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_more_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(inner_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner_block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op(Op::I32_CONST_1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }

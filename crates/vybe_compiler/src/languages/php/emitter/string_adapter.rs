@@ -792,12 +792,9 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_FLOOR, line);
     lset(chunk, hi_slot, line);
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
-    let chunk = &mut chunks[current];
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(16.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
     lset(chunk, lo_slot, line);
 
     // out += table.charAt(hi) + table.charAt(lo)
@@ -1140,14 +1137,11 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
-    let chunk = &mut chunks[current];
     lget(chunk, len_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(3.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -3992,11 +3986,8 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
     chunk.emit_op(Op::F64_ADD, line);
     // keep in 32-bit range via fmod 4294967296
-    let fmod = chunks[0].add_import("ecma:math".to_string(), "fmod".to_string());
-    let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(4294967296.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2u8, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
     lset(chunk, h_slot, line);
 
     lget(chunk, i_slot, line);

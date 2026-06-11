@@ -15,7 +15,7 @@ console.log(-7n / 2n);
 console.log(10n / 3n);
 "#
         ),
-        vec!["3", "-3", "3"]
+        vec!["3n", "-3n", "3n"]
     );
 }
 
@@ -29,7 +29,7 @@ console.log(-10n % 3n);
 console.log(10n % -3n);
 "#
         ),
-        vec!["1", "-1", "1"]
+        vec!["1n", "-1n", "1n"]
     );
 }
 
@@ -43,7 +43,7 @@ console.log(10n ** 3n);
 console.log(2n ** 0n);
 "#
         ),
-        vec!["1024", "1000", "1"]
+        vec!["1024n", "1000n", "1n"]
     );
 }
 
@@ -57,7 +57,7 @@ console.log(-(100n + 1n));
 console.log(-(-5n));
 "#
         ),
-        vec!["-42", "-101", "5"]
+        vec!["-42n", "-101n", "5n"]
     );
 }
 
@@ -72,7 +72,7 @@ console.log(0b1100n & 0b1010n);
 console.log(0xFF00n & 0x00FFn);
 "#
         ),
-        vec!["8", "0"]
+        vec!["8n", "0n"]
     );
 }
 
@@ -85,7 +85,7 @@ console.log(0b1100n | 0b1010n);
 console.log(0xFF00n | 0x00FFn);
 "#
         ),
-        vec!["14", "65535"]
+        vec!["14n", "65535n"]
     );
 }
 
@@ -98,7 +98,7 @@ console.log(0b1100n ^ 0b1010n);
 console.log(0n ^ 0xFFn);
 "#
         ),
-        vec!["6", "255"]
+        vec!["6n", "255n"]
     );
 }
 
@@ -112,7 +112,7 @@ console.log(~1n);
 console.log(~(-1n));
 "#
         ),
-        vec!["-1", "-2", "0"]
+        vec!["-1n", "-2n", "0n"]
     );
 }
 
@@ -125,7 +125,7 @@ console.log(1n << 10n);
 console.log(3n << 4n);
 "#
         ),
-        vec!["1024", "48"]
+        vec!["1024n", "48n"]
     );
 }
 
@@ -138,7 +138,7 @@ console.log(1024n >> 5n);
 console.log(-8n >> 1n);
 "#
         ),
-        vec!["32", "-4"]
+        vec!["32n", "-4n"]
     );
 }
 
@@ -247,7 +247,7 @@ console.log(arr[1]);
 console.log(arr[2]);
 "#
         ),
-        vec!["100", "-200", "9007199254740993"]
+        vec!["100n", "-200n", "9007199254740993n"]
     );
 }
 
@@ -261,7 +261,7 @@ arr[0] = 18446744073709551615n;
 console.log(arr[0]);
 "#
         ),
-        vec!["18446744073709551615"]
+        vec!["18446744073709551615n"]
     );
 }
 
@@ -276,7 +276,7 @@ arr[0] = max + 1n;
 console.log(arr[0]);
 "#
         ),
-        vec!["-9223372036854775808"]
+        vec!["-9223372036854775808n"]
     );
 }
 
@@ -291,7 +291,7 @@ console.log(BigInt.asIntN(8, 255n));
 console.log(BigInt.asIntN(8, 128n));
 "#
         ),
-        vec!["-1", "-128"]
+        vec!["-1n", "-128n"]
     );
 }
 
@@ -304,6 +304,6 @@ console.log(BigInt.asUintN(8, 256n));
 console.log(BigInt.asUintN(8, 255n));
 "#
         ),
-        vec!["0", "255"]
+        vec!["0n", "255n"]
     );
 }

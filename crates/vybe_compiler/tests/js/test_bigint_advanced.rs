@@ -26,7 +26,7 @@ console.log(7n / 2n);
 console.log(-7n / 2n);
 "#
         ),
-        vec!["3", "-3"]
+        vec!["3n", "-3n"]
     );
 }
 
@@ -39,7 +39,7 @@ console.log(10n % 3n);
 console.log(-10n % 3n);
 "#
         ),
-        vec!["1", "-1"]
+        vec!["1n", "-1n"]
     );
 }
 

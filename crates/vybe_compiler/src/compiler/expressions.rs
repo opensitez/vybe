@@ -1130,6 +1130,20 @@ impl Compiler {
                             }
                             UnaryOp::Pos => {
                                 // JS `+v` coerces to number — ECMA-262 §7.1.4 ToNumber.
+                                // BigInt is the one primitive exception: unary
+                                // plus throws, while explicit Number(1n) still
+                                // converts.
+                                if self.is_js_profile()
+                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
+                                {
+                                    self.emit_const(Value::String(Arc::from(
+                                        "Cannot convert a BigInt value to a number",
+                                    )));
+                                    let line = self.line;
+                                    self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                                    common::errors::emit_throw(self.chunk(), line);
+                                    return Ok(());
+                                }
                                 // For Object operands, ToPrimitive(hint=number)
                                 // first (so Symbol.toPrimitive / valueOf
                                 // overrides fire with the JS method-call
@@ -2550,7 +2564,19 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
+                    if let Some(ns) = self
+                        .infer_expr_type_hint(object)
+                        .as_deref()
+                        .map(Self::normalize_type_hint)
+                        .and_then(|type_hint| match type_hint.as_str() {
+                            "bigint64array" => Some("ecma:bigint64array"),
+                            "biguint64array" => Some("ecma:biguint64array"),
+                            _ => None,
+                        })
                     {
+                        let idx = self.import(ns, "get");
+                        self.emit_host_call(idx, 2);
+                    } else {
                         let l = self.line;
                         common::collections::emit_get(&mut self.chunks, self.current, l);
                     }
@@ -2710,7 +2736,19 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_u16(Op::LOCAL_GET, key_slot);
+                        if let Some(ns) = self
+                            .infer_expr_type_hint(object)
+                            .as_deref()
+                            .map(Self::normalize_type_hint)
+                            .and_then(|type_hint| match type_hint.as_str() {
+                                "bigint64array" => Some("ecma:bigint64array"),
+                                "biguint64array" => Some("ecma:biguint64array"),
+                                _ => None,
+                            })
                         {
+                            let idx = self.import(ns, "get");
+                            self.emit_host_call(idx, 2);
+                        } else {
                             let l = self.line;
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }

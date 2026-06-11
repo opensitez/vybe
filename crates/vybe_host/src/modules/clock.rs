@@ -162,4 +162,8 @@ pub fn register(vm: &mut VM) {
         "utc-offset",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::I32(0)),
     );
+
+    // Thread.Sleep → thread_adapter.rs → wasi:clocks/monotonic-clock.subscribe-duration
+    //                                   + wasi:io/poll.[method]pollable.block
+    // No `vybe:clocks.sleep` host fn needed — blocking sleep is fully covered by WASI.
 }

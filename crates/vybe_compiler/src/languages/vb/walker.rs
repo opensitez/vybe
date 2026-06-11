@@ -786,6 +786,24 @@ fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
             build_dotted_expr("System.Math.Truncate"),
             arguments.to_vec(),
         )),
+        "int" if arguments.len() == 1 => Some(call_expr(
+            build_dotted_expr("System.Math.Floor"),
+            arguments.to_vec(),
+        )),
+        // VB `Rnd()` → Math.random() (ecma:math.random via System.Math routing)
+        "rnd" if arguments.is_empty() => {
+            Some(call_expr(build_dotted_expr("System.Math.Random"), vec![]))
+        }
+        // VB `Rnd(seed)` — seed arg is ignored per VB spec (Rnd always 0..1)
+        "rnd" => Some(call_expr(build_dotted_expr("System.Math.Random"), vec![])),
+        // VB `Sgn(x)` → Math.sign(x)
+        "sgn" if arguments.len() == 1 => Some(call_expr(
+            build_dotted_expr("System.Math.Sign"),
+            arguments.to_vec(),
+        )),
+        // VB `Randomize` / `Randomize(seed)` — no-op; VB `Rnd()` routes to
+        // wasi:random/random.random so seeding is the engine's concern.
+        "randomize" => Some(Expression::new(ExprKind::Lit(Literal::Null))),
         "round" if arguments.len() == 1 => {
             Some(build_vb_bankers_round_expr(arguments[0].value.clone()))
         }

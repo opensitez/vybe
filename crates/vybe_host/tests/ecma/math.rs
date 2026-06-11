@@ -73,23 +73,15 @@ fn imul_multiplies_using_32_bit_wrapping_rules() {
 }
 
 #[test]
-fn random_and_rnd_return_unit_interval_values() {
-    for name in ["random", "rnd"] {
-        let Value::F64(number) = invoke(name, vec![]) else {
-            panic!("{} should return f64", name);
-        };
-        assert!(
-            (0.0..1.0).contains(&number),
-            "{} out of range: {}",
-            name,
-            number
-        );
-    }
-}
-
-#[test]
-fn randomize_returns_null() {
-    assert!(matches!(invoke("randomize", vec![]), Value::Null));
+fn random_returns_unit_interval_value() {
+    let Value::F64(number) = invoke("random", vec![]) else {
+        panic!("random should return f64");
+    };
+    assert!(
+        (0.0..1.0).contains(&number),
+        "random out of range: {}",
+        number
+    );
 }
 
 #[test]

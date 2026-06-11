@@ -26,7 +26,7 @@ fn invoke(name: &str, args: Vec<Value>) -> Value {
 }
 
 fn bi(n: i64) -> Value {
-    Value::I64(n)
+    Value::BigInt(n)
 }
 
 // ── BigInt() coercion ─────────────────────────────────────────────────────────
@@ -47,38 +47,35 @@ fn bigint_of_zero_stays_zero() {
 #[test]
 fn div_negative_dividend_truncates_toward_zero_not_floor() {
     // -7n / 2n = -3n (truncate), not -4n (floor).
-    assert_eq!(invoke("div", vec![bi(-7), bi(2)]), Value::I64(-3));
+    assert_eq!(invoke("div", vec![bi(-7), bi(2)]), bi(-3));
 }
 
 #[test]
 fn rem_sign_follows_dividend() {
     // -7n % 2n = -1n (sign of dividend), not 1n.
-    assert_eq!(invoke("rem", vec![bi(-7), bi(2)]), Value::I64(-1));
+    assert_eq!(invoke("rem", vec![bi(-7), bi(2)]), bi(-1));
 }
 
 // ── Arithmetic identity laws ──────────────────────────────────────────────────
 
 #[test]
 fn add_zero_is_identity() {
-    assert_eq!(invoke("add", vec![bi(42), bi(0)]), Value::I64(42));
+    assert_eq!(invoke("add", vec![bi(42), bi(0)]), bi(42));
 }
 
 #[test]
 fn mul_by_zero_yields_zero() {
-    assert_eq!(invoke("mul", vec![bi(999), bi(0)]), Value::I64(0));
+    assert_eq!(invoke("mul", vec![bi(999), bi(0)]), bi(0));
 }
 
 #[test]
 fn sub_self_is_zero() {
-    assert_eq!(invoke("sub", vec![bi(12345), bi(12345)]), Value::I64(0));
+    assert_eq!(invoke("sub", vec![bi(12345), bi(12345)]), bi(0));
 }
 
 #[test]
 fn neg_double_negation_is_identity() {
-    assert_eq!(
-        invoke("neg", vec![invoke("neg", vec![bi(42)])]),
-        Value::I64(42)
-    );
+    assert_eq!(invoke("neg", vec![invoke("neg", vec![bi(42)])]), bi(42));
 }
 
 // ── Bitwise — two's complement semantics ─────────────────────────────────────
@@ -86,28 +83,28 @@ fn neg_double_negation_is_identity() {
 #[test]
 fn not_zero_equals_negative_one() {
     // ~0n = -1n in two's complement.
-    assert_eq!(invoke("not", vec![bi(0)]), Value::I64(-1));
+    assert_eq!(invoke("not", vec![bi(0)]), bi(-1));
 }
 
 #[test]
 fn not_negative_one_equals_zero() {
-    assert_eq!(invoke("not", vec![bi(-1)]), Value::I64(0));
+    assert_eq!(invoke("not", vec![bi(-1)]), bi(0));
 }
 
 #[test]
 fn xor_with_self_always_zero() {
-    assert_eq!(invoke("xor", vec![bi(0xDEAD), bi(0xDEAD)]), Value::I64(0));
+    assert_eq!(invoke("xor", vec![bi(0xDEAD), bi(0xDEAD)]), bi(0));
 }
 
 #[test]
 fn shr_negative_is_arithmetic_sign_extending() {
     // -8n >> 1 = -4n (arithmetic shift, not logical).
-    assert_eq!(invoke("shr", vec![bi(-8), bi(1)]), Value::I64(-4));
+    assert_eq!(invoke("shr", vec![bi(-8), bi(1)]), bi(-4));
 }
 
 #[test]
 fn shl_one_left_four_equals_sixteen() {
-    assert_eq!(invoke("shl", vec![bi(1), bi(4)]), Value::I64(16));
+    assert_eq!(invoke("shl", vec![bi(1), bi(4)]), bi(16));
 }
 
 // ── asIntN — signed width clamping ────────────────────────────────────────────
@@ -115,48 +112,36 @@ fn shl_one_left_four_equals_sixteen() {
 #[test]
 fn as_int_n_8_wraps_128_to_negative_128() {
     // 128 is just outside the signed 8-bit range; wraps to -128.
-    assert_eq!(
-        invoke("asIntN", vec![Value::I32(8), bi(128)]),
-        Value::I64(-128)
-    );
+    assert_eq!(invoke("asIntN", vec![Value::I32(8), bi(128)]), bi(-128));
 }
 
 #[test]
 fn as_int_n_8_keeps_127_unchanged() {
-    assert_eq!(
-        invoke("asIntN", vec![Value::I32(8), bi(127)]),
-        Value::I64(127)
-    );
+    assert_eq!(invoke("asIntN", vec![Value::I32(8), bi(127)]), bi(127));
 }
 
 #[test]
 fn as_int_n_1_of_one_is_negative_one() {
     // 1-bit signed: only values are 0 and -1. 1n → -1n.
-    assert_eq!(invoke("asIntN", vec![Value::I32(1), bi(1)]), Value::I64(-1));
+    assert_eq!(invoke("asIntN", vec![Value::I32(1), bi(1)]), bi(-1));
 }
 
 // ── asUintN — unsigned width clamping ─────────────────────────────────────────
 
 #[test]
 fn as_uint_n_8_wraps_256_to_zero() {
-    assert_eq!(
-        invoke("asUintN", vec![Value::I32(8), bi(256)]),
-        Value::I64(0)
-    );
+    assert_eq!(invoke("asUintN", vec![Value::I32(8), bi(256)]), bi(0));
 }
 
 #[test]
 fn as_uint_n_8_of_negative_one_is_255() {
     // -1n in unsigned 8-bit = 255 (all bits set).
-    assert_eq!(
-        invoke("asUintN", vec![Value::I32(8), bi(-1)]),
-        Value::I64(255)
-    );
+    assert_eq!(invoke("asUintN", vec![Value::I32(8), bi(-1)]), bi(255));
 }
 
 #[test]
 fn as_uint_n_1_of_one_is_one() {
-    assert_eq!(invoke("asUintN", vec![Value::I32(1), bi(1)]), Value::I64(1));
+    assert_eq!(invoke("asUintN", vec![Value::I32(1), bi(1)]), bi(1));
 }
 
 // ── Comparisons ───────────────────────────────────────────────────────────────
@@ -222,13 +207,13 @@ fn to_string_with_radix_2_produces_binary() {
 #[test]
 fn pow_two_to_ten_is_1024() {
     // ECMA-262: BigInt ** BigInt; 2n ** 10n = 1024n.
-    assert_eq!(invoke("pow", vec![bi(2), bi(10)]), Value::I64(1024));
+    assert_eq!(invoke("pow", vec![bi(2), bi(10)]), bi(1024));
 }
 
 #[test]
 fn pow_any_bigint_to_zero_is_one() {
     // x ** 0n = 1n for any x.
-    assert_eq!(invoke("pow", vec![bi(9999), bi(0)]), Value::I64(1));
+    assert_eq!(invoke("pow", vec![bi(9999), bi(0)]), bi(1));
 }
 
 // ── BigInt.prototype.toLocaleString ──────────────────────────────────────────
@@ -245,5 +230,5 @@ fn to_locale_string_returns_non_empty_string() {
 #[test]
 fn value_of_returns_the_bigint_primitive() {
     // §21.2.3.4: valueOf returns the BigInt primitive (same value).
-    assert_eq!(invoke("valueOf", vec![bi(42)]), Value::I64(42));
+    assert_eq!(invoke("valueOf", vec![bi(42)]), bi(42));
 }

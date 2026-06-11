@@ -71,11 +71,6 @@ pub fn register(vm: &mut VM) {
     );
     vm.register_host_fn(
         "ecma:math",
-        "fmod",
-        Box::new(|_ctx, a| Value::F64(f(a, 0) % f(a, 1))),
-    );
-    vm.register_host_fn(
-        "ecma:math",
         "random",
         Box::new(|_ctx, _| {
             let t = std::time::SystemTime::now()
@@ -320,43 +315,12 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, a| Value::F64(f(a, 0).ln_1p())),
     );
 
-    // VB-specific math functions
-    vm.register_host_fn(
-        "ecma:math",
-        "fix",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).trunc())),
-    ); // truncate toward zero
-    vm.register_host_fn(
-        "ecma:math",
-        "int",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).floor())),
-    ); // VB Int = floor
-    vm.register_host_fn(
-        "ecma:math",
-        "sgn",
-        Box::new(|_ctx, a| {
-            let n = f(a, 0);
-            Value::F64(if n > 0.0 {
-                1.0
-            } else if n < 0.0 {
-                -1.0
-            } else {
-                0.0
-            })
-        }),
-    );
-    vm.register_host_fn(
-        "ecma:math",
-        "rnd",
-        Box::new(|_ctx, _a| {
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos();
-            Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
-        }),
-    );
-    vm.register_host_fn("ecma:math", "randomize", Box::new(|_ctx, _a| Value::Null));
+    // VB `Fix(x)` → walker rewrites to System.Math.Truncate → ecma:math.trunc (§21.3.2.34).
+    // VB `Int(x)` → walker rewrites to System.Math.Floor   → ecma:math.floor (§21.3.2.16).
+    // VB `Rnd()`  → walker rewrites to System.Math.Random  → ecma:math.random (§21.3.2.27).
+    // VB `Sgn(x)` → walker rewrites to System.Math.Sign   → ecma:math.sign  (§21.3.2.29).
+    // VB `Randomize` → walker rewrites to Null noop — no host fn needed.
+    // C `fmod(a,b)` / PHP `fmod` / Fortran `mod` → emit_c_fmod (pure WASM opcodes — no host fn).
 
     // ── Stage-3 Math iterator accumulators ──────────────────────────
     //

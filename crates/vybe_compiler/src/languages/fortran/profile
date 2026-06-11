@@ -65,8 +65,8 @@ tanh          = { emit = "host:ecma:math:tanh",            min_args = 1, max_arg
 exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 log           = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 log10         = { emit = "host:ecma:math:log10",           min_args = 1, max_args = 1 }
-mod           = { emit = "host:ecma:math:fmod",            min_args = 2, max_args = 2 }
-modulo        = { emit = "host:ecma:math:fmod",            min_args = 2, max_args = 2 }
+mod           = { emit = "common:expressions.f64_mod",     min_args = 2, max_args = 2 }
+modulo        = { emit = "common:expressions.f64_mod",     min_args = 2, max_args = 2 }
 sign          = { emit = "host:ecma:math:sign",            min_args = 2, max_args = 2 }
 random_number = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
 

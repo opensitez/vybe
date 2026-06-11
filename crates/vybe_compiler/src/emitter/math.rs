@@ -14,6 +14,26 @@ pub fn emit_abs(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_ABS, line);
 }
 
+/// C-style fmod: `a - trunc(a/b) * b`. Stack: [a, b] → [result].
+/// Pure WASM opcodes — no host import needed.
+pub fn emit_c_fmod(chunk: &mut Chunk, line: u32) {
+    let b_slot = chunk.local_count;
+    let a_slot = chunk.local_count + 1;
+    chunk.local_count += 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a (for subtraction later)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
+    chunk.emit_op(Op::F64_DIV, line);               // a/b
+    chunk.emit_op(Op::F64_TRUNC, line);             // trunc(a/b)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
+    chunk.emit_op(Op::F64_MUL, line);               // trunc(a/b)*b
+    chunk.emit_op(Op::F64_SUB, line);               // a - trunc(a/b)*b
+}
+
 /// Python floor modulo: `a - b * floor(a / b)`. Stack: [a, b] → [result].
 /// Differs from C fmod (which truncates toward zero).
 pub fn emit_python_floor_mod(chunk: &mut Chunk, line: u32) {

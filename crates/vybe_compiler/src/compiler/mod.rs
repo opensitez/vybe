@@ -5436,6 +5436,32 @@ impl Compiler {
                     .then_some(enum_type)
             }
             ExprKind::Binary { op, left, right }
+                if matches!(
+                    op,
+                    BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Mod
+                        | BinOp::Pow
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                        | BinOp::Shl
+                        | BinOp::Shr
+                ) =>
+            {
+                let left_type = self.infer_expr_type_hint(left)?;
+                let right_type = self.infer_expr_type_hint(right)?;
+                if left_type.eq_ignore_ascii_case("bigint")
+                    && right_type.eq_ignore_ascii_case("bigint")
+                {
+                    Some("bigint".into())
+                } else {
+                    None
+                }
+            }
+            ExprKind::Binary { op, left, right }
                 if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) =>
             {
                 let left_type = self.infer_expr_type_hint(left)?;
@@ -12083,8 +12109,7 @@ impl Compiler {
                 if self.is_python_profile() {
                     common::math::emit_python_floor_mod(self.chunk(), l);
                 } else {
-                    let idx = self.import("ecma:math", "fmod");
-                    common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
+                    common::math::emit_c_fmod(self.chunk(), l);
                 }
             }
             BinOp::Pow => {
@@ -12721,9 +12746,8 @@ impl Compiler {
                 if self.is_js_profile() {
                     self.coerce_top_two_to_number();
                 }
-                let idx = self.import("ecma:math", "fmod");
                 let l = self.line;
-                common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
+                common::math::emit_c_fmod(self.chunk(), l);
             }
             CompoundOp::Pow => {
                 let l = self.line;
@@ -13528,7 +13552,9 @@ impl Compiler {
                     // so we drain via the `__stdlib_drain_generator`
                     // bytecode helper before the host call.
                     let drain_first_arg = self.is_js_profile()
-                        && (module == "ecma:array" && (func == "from" || func == "fromAsync"));
+                        && ((module == "ecma:array" && (func == "from" || func == "fromAsync"))
+                            || (module == "ecma:iterator"
+                                && (func == "from" || func == "asyncFrom")));
                     if drain_first_arg && !args.is_empty() {
                         self.compile_expr(args[0])?;
                         let v_slot = self.define_local("__hc_iter_v");

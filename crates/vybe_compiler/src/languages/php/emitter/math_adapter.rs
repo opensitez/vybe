@@ -197,8 +197,6 @@ fn emit_dec_to_radix(
     hex_digits: bool,
     line: u32,
 ) {
-    // Fetch the one import we need before taking the &mut borrow of chunk.
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
     let chunk = &mut chunks[current];
     let n_slot = alloc_local(chunk);
     let out_slot = alloc_local(chunk);
@@ -240,8 +238,7 @@ fn emit_dec_to_radix(
     // digit = n % radix
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(radix as f64), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
     lset(chunk, digit_slot, line);
 
     // out = (table.charAt(digit) | String(digit)) + out
@@ -376,7 +373,6 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
 
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
     let chunk = &mut chunks[current];
 
     // while n > 0: out = table.charAt(n % to) + out; n = floor(n / to)
@@ -393,8 +389,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // digit_idx = n % to
     lget(chunk, n_slot, line);
     lget(chunk, to_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
+    crate::emitter::math::emit_c_fmod(chunk, line);
     let digit_slot = alloc_local(chunk);
     lset(chunk, digit_slot, line);
 

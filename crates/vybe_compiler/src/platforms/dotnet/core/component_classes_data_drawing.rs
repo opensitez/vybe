@@ -6,7 +6,6 @@ use vybe_bytecode::component_model::{
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
-        // DataTable — constructor via adapter; methods via existing vybe:data host fns.
         DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataTable")
@@ -16,20 +15,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "NewRow",
                     0,
-                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableNewRow")),
+                    MethodBody::Common("dotnet.datatable_new_row".into()),
                 ))
                 .with_method(MethodDef::new(
                     "AddRow",
                     1,
-                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableAddRow")),
+                    MethodBody::Common("dotnet.datatable_add_row".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Select",
                     1,
-                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataTableSelect")),
+                    MethodBody::Common("dotnet.datatable_select".into()),
                 )),
         ),
-        // DataSet — constructor via adapter; Tables property via existing host fn.
         DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataSet")
@@ -37,7 +35,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Tables",
                     0,
-                    MethodBody::HostCall(HostTarget::new("vybe:data", "dataSetTables")),
+                    MethodBody::Common("dotnet.dataset_tables".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Data",
+            ClassType::new("DataRow")
+                .with_method(MethodDef::new(
+                    "Item",
+                    1,
+                    MethodBody::Common("dotnet.datarow_item".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsNull",
+                    1,
+                    MethodBody::Common("dotnet.datarow_is_null".into()),
                 )),
         ),
         constructor_class("dotnet.System.Drawing", "Point", "vybe:gui", "pointNew"),

@@ -166,7 +166,7 @@ const n = 0xFF_FFn;
 console.log(n);
 "#
         ),
-        vec!["65535"]
+        vec!["65535n"]
     );
 }
 

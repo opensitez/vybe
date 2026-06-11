@@ -80,7 +80,7 @@ pub(crate) fn typed_array_name(elem: TypedElemKind) -> &'static str {
 pub(crate) fn zero_value(elem: TypedElemKind) -> Value {
     match elem {
         TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
-        TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::I64(0),
+        TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::BigInt(0),
         _ => Value::I32(0),
     }
 }
@@ -161,12 +161,12 @@ pub(crate) fn read_element(ta: &TypedArrayState, i: usize) -> Value {
         TypedElemKind::BigI64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(i64::from_le_bytes(bytes))
+            Value::BigInt(i64::from_le_bytes(bytes))
         }
         TypedElemKind::BigU64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(u64::from_le_bytes(bytes) as i64)
+            Value::BigInt(u64::from_le_bytes(bytes) as i64)
         }
     }
 }
