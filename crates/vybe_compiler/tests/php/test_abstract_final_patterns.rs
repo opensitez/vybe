@@ -11,7 +11,7 @@ abstract class Shape {}
 try {
     new Shape();
 } catch (Error $e) {
-    echo "cannot instantiate";
+    echo "cannot instantiate", "\n";
 }
 "#
         ),
@@ -31,7 +31,7 @@ abstract class Formatter {
 class UpperFormatter extends Formatter {
     public function format(string $s): string { return strtoupper($s); }
 }
-echo (new UpperFormatter())->process("hello");
+echo (new UpperFormatter())->process("hello"), "\n";
 "#
         ),
         vec!["HELLO"]
@@ -51,7 +51,7 @@ class Child extends Base {
     public function tag(): string { return "child"; }
 }
 $c = new Child();
-echo $c->identify() . ',' . $c->tag();
+echo $c->identify() . ',' . $c->tag(), "\n";
 "#
         ),
         vec!["base,child"]
@@ -73,7 +73,7 @@ class Car extends Vehicle {
     public function type(): string { return "car"; }
 }
 $c = new Car("Toyota");
-echo $c->make . ':' . $c->type();
+echo $c->make . ':' . $c->type(), "\n";
 "#
         ),
         vec!["Toyota:car"]
@@ -95,7 +95,7 @@ abstract class Registry {
 class MyRegistry extends Registry {}
 MyRegistry::add("a");
 MyRegistry::add("b");
-echo implode(',', MyRegistry::all());
+echo implode(',', MyRegistry::all()), "\n";
 "#
         ),
         vec!["a,b"]
@@ -116,7 +116,7 @@ class C extends B {
     public function age(): int { return 25; }
 }
 $c = new C();
-echo $c->name() . ',' . $c->age();
+echo $c->name() . ',' . $c->age(), "\n";
 "#
         ),
         vec!["Carol,25"]
@@ -134,7 +134,7 @@ final class Sealed {}
 try {
     eval('class Child extends Sealed {}');
 } catch (\Error $e) {
-    echo "cannot extend";
+    echo "cannot extend", "\n";
 }
 "#
         ),
@@ -151,7 +151,7 @@ final class Config {
     public function __construct(public readonly string $env) {}
 }
 $c = new Config("production");
-echo $c->env;
+echo $c->env, "\n";
 "#
         ),
         vec!["production"]
@@ -171,7 +171,7 @@ class Base {
 try {
     eval('class Child extends Base { public function version(): string { return "2.0"; } }');
 } catch (\Error $e) {
-    echo "cannot override";
+    echo "cannot override", "\n";
 }
 "#
         ),
@@ -188,7 +188,7 @@ class Parent2 {
     final public function id(): int { return 42; }
 }
 class Child2 extends Parent2 {}
-echo (new Child2())->id();
+echo (new Child2())->id(), "\n";
 "#
         ),
         vec!["42"]
@@ -216,7 +216,7 @@ class ConsoleLogger extends BaseLogger {
 $l = new ConsoleLogger();
 $l->log("hello");
 $l->log("world");
-echo implode(',', $l->getLog());
+echo implode(',', $l->getLog()), "\n";
 "#
         ),
         vec!["hello,world"]
@@ -235,7 +235,7 @@ abstract class Protocol {
     abstract public function connect(): void;
 }
 class HTTP extends Protocol {
-    public function connect(): void { echo self::VERSION; }
+    public function connect(): void { echo self::VERSION, "\n"; }
 }
 (new HTTP())->connect();
 "#
@@ -263,10 +263,12 @@ class SalesReport extends Report {
     protected function header(): string { return "SALES REPORT"; }
     protected function body(): string { return "Total: $9999"; }
 }
-echo (new SalesReport())->generate();
+echo (new SalesReport())->generate(), "\n";
 "#
         ),
-        vec!["SALES REPORT\nTotal: $9999\n---end---"]
+        // run_prints splits captured stdout bytes on '\n', so the three
+        // lines the program writes arrive as three entries.
+        vec!["SALES REPORT", "Total: $9999", "---end---"]
     );
 }
 
@@ -284,7 +286,7 @@ abstract class Container {
 class Box extends Container {
     public static function type(): string { return "box"; }
 }
-echo Box::describe();
+echo Box::describe(), "\n";
 "#
         ),
         vec!["Type: box"]
@@ -301,7 +303,7 @@ fn abstract_method_final_in_intermediate_class() {
 abstract class A2 { abstract public function run(): string; }
 class B2 extends A2 { final public function run(): string { return "B2"; } }
 class C2 extends B2 {}
-echo (new C2())->run();
+echo (new C2())->run(), "\n";
 "#
         ),
         vec!["B2"]
@@ -346,7 +348,7 @@ class Product extends Entity {
     }
     public function label(): string { return "$this->id:$this->name"; }
 }
-echo (new Product(1, 'Widget'))->label();
+echo (new Product(1, 'Widget'))->label(), "\n";
 "#
         ),
         vec!["1:Widget"]
@@ -372,7 +374,7 @@ class Form {
     protected function rules(): array { return ['email', 'password']; }
 }
 $f = new Form();
-echo $f->validate(['email' => 'a@b.com', 'password' => 'x']) ? 'valid' : 'invalid';
+echo $f->validate(['email' => 'a@b.com', 'password' => 'x']) ? 'valid' : 'invalid', "\n";
 "#
         ),
         vec!["valid"]
@@ -392,7 +394,7 @@ final class Singleton {
     public static function get(): static { return self::$instance ??= new self(); }
     public function whoAmI(): string { return static::class; }
 }
-echo Singleton::get()->whoAmI();
+echo Singleton::get()->whoAmI(), "\n";
 "#
         ),
         vec!["Singleton"]
@@ -407,7 +409,7 @@ fn abstract_child_inherits_parent_concrete_methods() {
         run_prints(
             r#"<?php
 abstract class Writer {
-    public function writeLine(string $s): void { echo $s . "\n"; }
+    public function writeLine(string $s): void { echo $s . "\n", "\n"; }
     abstract public function target(): string;
 }
 abstract class NetworkWriter extends Writer {
@@ -441,7 +443,7 @@ class DbSource extends DataSource {
 }
 $db = new DbSource();
 $db->connect("mysql://localhost/mydb");
-echo $db->getConnection();
+echo $db->getConnection(), "\n";
 "#
         ),
         vec!["mysql://localhost/mydb"]
@@ -458,7 +460,7 @@ fn instanceof_abstract_parent_returns_true_for_child() {
 abstract class Animal2 {}
 class Cat extends Animal2 {}
 $c = new Cat();
-echo ($c instanceof Animal2) ? 'yes' : 'no';
+echo ($c instanceof Animal2) ? 'yes' : 'no', "\n";
 "#
         ),
         vec!["yes"]
@@ -475,7 +477,7 @@ fn compile_final_abstract_class_is_error() {
 try {
     eval('abstract final class X {}');
 } catch (\Error $e) {
-    echo "error";
+    echo "error", "\n";
 }
 "#
         ),

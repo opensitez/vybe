@@ -3,14 +3,16 @@ use super::helpers::{compile_ok, run_prints};
 // ── Runtime validation — Phase D "all PHP arrays use vybe:js-array" ──
 #[test]
 fn array_literal_runtime() {
-    let out = run_prints("<?php\n$a = [10, 20, 30];\necho $a[0]; echo $a[1]; echo $a[2];\n");
+    let out = run_prints(
+        "<?php\n$a = [10, 20, 30];\necho $a[0], \"\\n\"; echo $a[1], \"\\n\"; echo $a[2], \"\\n\";\n",
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn array_append_runtime() {
     let out = run_prints(
-        "<?php\n$a = [1, 2];\n$a[] = 3;\n$a[] = 4;\necho count($a); echo $a[2]; echo $a[3];\n",
+        "<?php\n$a = [1, 2];\n$a[] = 3;\n$a[] = 4;\necho count($a), \"\\n\"; echo $a[2], \"\\n\"; echo $a[3], \"\\n\";\n",
     );
     assert_eq!(out, vec!["4", "3", "4"]);
 }
@@ -18,7 +20,7 @@ fn array_append_runtime() {
 #[test]
 fn array_push_pop_runtime() {
     let out = run_prints(
-        "<?php\n$a = [1, 2, 3];\narray_push($a, 4, 5);\n$v = array_pop($a);\necho count($a); echo $v;\n",
+        "<?php\n$a = [1, 2, 3];\narray_push($a, 4, 5);\n$v = array_pop($a);\necho count($a), \"\\n\"; echo $v, \"\\n\";\n",
     );
     assert_eq!(out, vec!["4", "5"]);
 }

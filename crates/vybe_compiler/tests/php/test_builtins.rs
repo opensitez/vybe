@@ -104,7 +104,7 @@ fn str_pad() {
 }
 #[test]
 fn chr_ord() {
-    assert_outputs("<?php echo chr(65); echo ord('A');", &["A", "65"]);
+    assert_outputs("<?php echo chr(65), \"\\n\"; echo ord('A'), \"\\n\";", &["A", "65"]);
 }
 #[test]
 fn ucfirst() {
@@ -156,14 +156,14 @@ fn array_push() {
 #[test]
 fn array_pop() {
     assert_outputs(
-        "<?php $a = [1,2]; $v = array_pop($a); echo $v; echo json_encode($a);",
+        "<?php $a = [1,2]; $v = array_pop($a); echo $v, \"\\n\"; echo json_encode($a), \"\\n\";",
         &["2", "[1]"],
     );
 }
 #[test]
 fn array_shift() {
     assert_outputs(
-        "<?php $a = [1,2]; $v = array_shift($a); echo $v; echo json_encode($a);",
+        "<?php $a = [1,2]; $v = array_shift($a); echo $v, \"\\n\"; echo json_encode($a), \"\\n\";",
         &["1", "[2]"],
     );
 }
@@ -413,14 +413,14 @@ fn extension_loaded_runtime_condition_shape() {
 #[test]
 fn extension_loaded_mysql_surface_runtime() {
     assert_outputs(
-        "<?php echo extension_loaded('mysqlnd') ? 'yes' : 'no'; echo extension_loaded('mysqli') ? 'yes' : 'no'; echo extension_loaded('pdo_mysql') ? 'yes' : 'no'; echo extension_loaded('definitely_missing_ext') ? 'yes' : 'no';",
+        "<?php echo extension_loaded('mysqlnd') ? 'yes' : 'no', \"\\n\"; echo extension_loaded('mysqli') ? 'yes' : 'no', \"\\n\"; echo extension_loaded('pdo_mysql') ? 'yes' : 'no', \"\\n\"; echo extension_loaded('definitely_missing_ext') ? 'yes' : 'no', \"\\n\";",
         &["yes", "yes", "yes", "no"],
     );
 }
 #[test]
 fn php_version_constant_and_function_runtime() {
     assert_outputs(
-        "<?php echo PHP_VERSION; echo phpversion();",
+        "<?php echo PHP_VERSION, \"\\n\"; echo phpversion(), \"\\n\";",
         &["8.0.0", "8.0.0"],
     );
 }
@@ -441,14 +441,14 @@ fn class_exists_declared_runtime() {
 #[test]
 fn version_compare_returns_ordering() {
     assert_outputs(
-        "<?php echo version_compare('7.0.0', '8.2.0'); echo version_compare('8.2.0', '7.0.0'); echo version_compare('8.2.0', '8.2.0');",
+        "<?php echo version_compare('7.0.0', '8.2.0'), \"\\n\"; echo version_compare('8.2.0', '7.0.0'), \"\\n\"; echo version_compare('8.2.0', '8.2.0'), \"\\n\";",
         &["-1", "1", "0"],
     );
 }
 #[test]
 fn version_compare_operator_runtime() {
     assert_outputs(
-        "<?php echo version_compare('8.2.0', '7.0.0', '>') ? 'yes' : 'no'; echo version_compare('7.0.0', '8.2.0', '>') ? 'yes' : 'no'; echo version_compare('8.2.0', '8.2.0', '>=') ? 'yes' : 'no';",
+        "<?php echo version_compare('8.2.0', '7.0.0', '>') ? 'yes' : 'no', \"\\n\"; echo version_compare('7.0.0', '8.2.0', '>') ? 'yes' : 'no', \"\\n\"; echo version_compare('8.2.0', '8.2.0', '>=') ? 'yes' : 'no', \"\\n\";",
         &["yes", "no", "yes"],
     );
 }

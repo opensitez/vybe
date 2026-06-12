@@ -16,18 +16,53 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
-// PHP stdout is a byte stream: echo/printf write bytes with no implicit
-// newline, so consecutive writes concatenate (`printf('hi'); echo ' 2';`
-// → "hi 2", one line). We therefore store each write verbatim as a fragment
-// and only split into lines in `finish_output`, mirroring real PHP-stdout
-// bytes rather than treating every host log call as its own line.
+// Output capture mirrors the two real output surfaces:
+//
+// - `wasi:cli/stdout.write-via-stream(data: stream<u8>)` (echo/printf):
+//   the WASI 0.3 stdout surface — raw PHP-stdout bytes, NO implicit
+//   newline, so consecutive writes concatenate onto the current line
+//   (`echo 'yes'; echo 'no';` → "yesno"; `printf('hi'); echo ' 2';`
+//   → "hi 2").
+// - `wasi:logging/logging.log` (console-style logging): one line-oriented
+//   record per call — the real host fn println!s the message, so the
+//   capture appends the same newline.
+//
+// Fragments are buffered and split into lines in `finish_output`.
 fn capture_log_lines(output: &Arc<Mutex<Vec<String>>>, args: &[Value]) {
-    let joined = args
+    let mut joined = args
         .iter()
         .map(|arg| format!("{}", arg))
         .collect::<Vec<_>>()
         .join(" ");
+    joined.push('\n');
     output.lock().unwrap().push(joined);
+}
+
+fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            capture_log_lines(&out, args);
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:cli/stdout",
+        "write-via-stream",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let stream_val = args.first().cloned().unwrap_or(Value::Null);
+            let bytes = ctx.stream_drain(&stream_val);
+            if !bytes.is_empty() {
+                out.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Value::Null
+        }),
+    );
 }
 
 fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
@@ -88,16 +123,8 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let chunks = compile(src);
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            capture_log_lines(&out, args);
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("run failed");
     finish_output(&output)
@@ -106,16 +133,8 @@ pub fn run_prints(src: &str) -> Vec<String> {
 pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            capture_log_lines(&out, args);
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
 
     let language = vybe_compiler::languages::find_by_name("php").expect("php language not found");

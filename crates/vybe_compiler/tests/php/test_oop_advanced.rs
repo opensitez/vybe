@@ -15,8 +15,8 @@ class Base {
 class Child extends Base {
     protected static string $type = "child";
 }
-echo Base::getType();
-echo Child::getType();
+echo Base::getType(), "\n";
+echo Child::getType(), "\n";
 "#
         ),
         &["base", "child"]
@@ -43,9 +43,9 @@ class Dog extends Animal {
 }
 $a = Animal::create("Rex");
 $d = Dog::create("Buddy");
-echo $a->type();
-echo $d->type();
-echo $d->name;
+echo $a->type(), "\n";
+echo $d->type(), "\n";
+echo $d->name, "\n";
 "#
         ),
         &["animal", "dog", "Buddy"]
@@ -66,8 +66,8 @@ class Shape {
 class Circle extends Shape {
     const NAME = "circle";
 }
-echo Shape::describe();
-echo Circle::describe();
+echo Shape::describe(), "\n";
+echo Circle::describe(), "\n";
 "#
         ),
         &["shape", "circle"]
@@ -84,10 +84,10 @@ class Base {
     public static function staticClass(): string { return static::class; }
 }
 class Child extends Base {}
-echo Base::selfClass();
-echo Child::selfClass();
-echo Base::staticClass();
-echo Child::staticClass();
+echo Base::selfClass(), "\n";
+echo Child::selfClass(), "\n";
+echo Base::staticClass(), "\n";
+echo Child::staticClass(), "\n";
 "#
         ),
         &["Base", "Base", "Base", "Child"]
@@ -116,8 +116,8 @@ class Vehicle {
 class Car extends Vehicle {}
 $v = Vehicle::make()->paint("red");
 $c = Car::make()->paint("blue");
-echo $v->describe();
-echo $c->describe();
+echo $v->describe(), "\n";
+echo $c->describe(), "\n";
 "#
         ),
         &["Vehicle:red", "Car:blue"]
@@ -135,7 +135,7 @@ $obj = new class {
         return "hello from anonymous";
     }
 };
-echo $obj->greet();
+echo $obj->greet(), "\n";
 "#
         ),
         &["hello from anonymous"]
@@ -153,7 +153,7 @@ $obj = new class("world") {
         return "hello $this->name";
     }
 };
-echo $obj->greet();
+echo $obj->greet(), "\n";
 "#
         ),
         &["hello world"]
@@ -173,7 +173,7 @@ $obj = new class implements Printable {
         return "I am printable";
     }
 };
-echo $obj->toString();
+echo $obj->toString(), "\n";
 "#
         ),
         &["I am printable"]
@@ -187,7 +187,7 @@ fn anonymous_class_extends() {
             r#"<?php
 class Logger {
     public function log(string $msg): void {
-        echo "LOG: $msg";
+        echo "LOG: $msg", "\n";
     }
 }
 $obj = new class extends Logger {
@@ -219,7 +219,7 @@ $c = makeCounter(10);
 $c->inc();
 $c->inc();
 $c->inc();
-echo $c->get();
+echo $c->get(), "\n";
 "#
         ),
         &["13"]
@@ -244,7 +244,7 @@ class C {
     }
 }
 $c = new C();
-echo $c->hello();
+echo $c->hello(), "\n";
 "#
         ),
         &["A"]
@@ -265,8 +265,8 @@ class MyClass {
     }
 }
 $obj = new MyClass();
-echo $obj->greet();
-echo $obj->hello();
+echo $obj->greet(), "\n";
+echo $obj->hello(), "\n";
 "#
         ),
         &["hello", "hello"]
@@ -291,8 +291,8 @@ class Z {
     }
 }
 $z = new Z();
-echo $z->speak();
-echo $z->ySpeak();
+echo $z->speak(), "\n";
+echo $z->ySpeak(), "\n";
 "#
         ),
         &["X speaks", "Y speaks"]
@@ -320,8 +320,8 @@ class Email {
 }
 $e1 = new Email("user@example.com");
 $e2 = new Email("invalid");
-echo $e1->isValid();
-echo $e2->isValid();
+echo $e1->isValid(), "\n";
+echo $e2->isValid(), "\n";
 "#
         ),
         &["valid", "invalid"]
@@ -344,7 +344,7 @@ class App {
     use HasVersion;
 }
 $app = new App();
-echo $app->getVersion();
+echo $app->getVersion(), "\n";
 "#
         ),
         &["1.0"]
@@ -367,8 +367,8 @@ class User implements Status {
     }
 }
 $u = new User();
-echo $u->getStatus();
-echo User::INACTIVE;
+echo $u->getStatus(), "\n";
+echo User::INACTIVE, "\n";
 "#
         ),
         &["1", "0"]
@@ -395,7 +395,7 @@ class File implements Readable, Writable {
 $f = new File();
 $f->write("hello");
 $f->write(" world");
-echo $f->read();
+echo $f->read(), "\n";
 "#
         ),
         &["hello world"]
@@ -421,7 +421,7 @@ class SalesReport extends Report {
     }
 }
 $r = new SalesReport();
-echo $r->generate();
+echo $r->generate(), "\n";
 "#
         ),
         &["Q1: 100, Q2: 200, Q3: 150"]
@@ -445,7 +445,7 @@ class TypedCollection extends Collection {
     }
 }
 $c = new TypedCollection(["hello", "world"]);
-echo $c->first();
+echo $c->first(), "\n";
 "#
         ),
         &["hello"]
@@ -470,8 +470,8 @@ class Temperature {
     }
 }
 $t = new Temperature(100);
-echo $t->getCelsius();
-echo $t->getFahrenheit();
+echo $t->getCelsius(), "\n";
+echo $t->getFahrenheit(), "\n";
 "#
         ),
         &["100", "212"]
@@ -495,8 +495,8 @@ enum Color: string implements HasLabel {
         return strtoupper($this->value);
     }
 }
-echo Color::Red->label();
-echo Color::Green->value;
+echo Color::Red->label(), "\n";
+echo Color::Green->value, "\n";
 "#
         ),
         &["RED", "green"]
@@ -516,9 +516,9 @@ enum Suit: string {
     case Spades = "S";
 }
 $s = Suit::from("H");
-echo $s->name;
+echo $s->name, "\n";
 $t = Suit::tryFrom("X");
-echo $t === null ? "null" : $t->name;
+echo $t === null ? "null" : $t->name, "\n";
 "#
         ),
         &["Hearts", "null"]
@@ -547,7 +547,7 @@ class Point {
 }
 $a = new Point(0, 0, 0);
 $b = new Point(3, 4, 0);
-echo $a->distanceTo($b);
+echo $a->distanceTo($b), "\n";
 "#
         ),
         &["5"]
@@ -573,8 +573,8 @@ class Items implements Countable2, Stringable2 {
     public function __toString(): string { return implode(",", $this->data); }
 }
 function describe(Countable2&Stringable2 $obj): void {
-    echo $obj->count();
-    echo $obj;
+    echo $obj->count(), "\n";
+    echo $obj, "\n";
 }
 describe(new Items(["a", "b", "c"]));
 "#
@@ -595,8 +595,8 @@ function createTag(string $tag, string $content, string $class = "", string $id 
     if ($id) $attrs .= " id=\"$id\"";
     return "<$tag$attrs>$content</$tag>";
 }
-echo createTag("div", "hello", id: "main");
-echo createTag(tag: "span", content: "world", class: "bold");
+echo createTag("div", "hello", id: "main"), "\n";
+echo createTag(tag: "span", content: "world", class: "bold"), "\n";
 "#
         ),
         &[
@@ -619,7 +619,7 @@ class Money implements Stringable {
     }
 }
 function display(Stringable $item): void {
-    echo $item;
+    echo $item, "\n";
 }
 display(new Money(1299));
 display(new Money(50));
@@ -642,9 +642,9 @@ class Config {
 $a = new Config();
 $b = clone $a;
 $b->env = "dev";
-echo $a->env;
-echo $b->env;
-echo $a->timeout;
+echo $a->env, "\n";
+echo $b->env, "\n";
+echo $a->timeout, "\n";
 "#
         ),
         &["prod", "dev", "30"]
@@ -672,8 +672,8 @@ $alice = new Person("Alice", "Paris");
 $bob = clone $alice;
 $bob->name = "Bob";
 $bob->address->city = "London";
-echo $alice->name . ":" . $alice->address->city;
-echo $bob->name . ":" . $bob->address->city;
+echo $alice->name . ":" . $alice->address->city, "\n";
+echo $bob->name . ":" . $bob->address->city, "\n";
 "#
         ),
         &["Alice:Paris", "Bob:London"]
@@ -692,9 +692,9 @@ class Box {
 $a = new Box(5);
 $b = $a;
 $c = new Box(5);
-echo ($a === $b) ? "same" : "different";
-echo ($a === $c) ? "same" : "different";
-echo ($a == $c) ? "equal" : "not equal";
+echo ($a === $b) ? "same" : "different", "\n";
+echo ($a === $c) ? "same" : "different", "\n";
+echo ($a == $c) ? "equal" : "not equal", "\n";
 "#
         ),
         &["same", "different", "equal"]
@@ -741,7 +741,7 @@ $q = (new QueryBuilder())
     ->where("age>18")
     ->limit(10)
     ->build();
-echo $q;
+echo $q, "\n";
 "#
         ),
         &["SELECT * FROM users WHERE active=1 AND age>18 LIMIT 10"]
@@ -764,7 +764,7 @@ final class Singleton {
     }
 }
 $s = Singleton::getInstance();
-echo $s->id;
+echo $s->id, "\n";
 "#,
     );
 }
@@ -787,7 +787,7 @@ class Child extends Base {
     }
 }
 $c = new Child();
-echo $c->greeting();
+echo $c->greeting(), "\n";
 "#,
     );
 }
@@ -818,7 +818,7 @@ class C extends B {
     public function getLog(): string { return $this->log; }
 }
 $c = new C();
-echo $c->getLog();
+echo $c->getLog(), "\n";
 "#
         ),
         &["ABC"]
@@ -844,10 +844,10 @@ class Counter {
 $a = new Counter();
 $b = new Counter();
 $c = new Counter();
-echo $a->getId();
-echo $b->getId();
-echo $c->getId();
-echo Counter::getTotal();
+echo $a->getId(), "\n";
+echo $b->getId(), "\n";
+echo $c->getId(), "\n";
+echo Counter::getTotal(), "\n";
 "#
         ),
         &["1", "2", "3", "3"]
@@ -878,8 +878,8 @@ class VegRegistry extends Registry {
 FruitRegistry::add("apple");
 FruitRegistry::add("banana");
 VegRegistry::add("carrot");
-echo implode(",", FruitRegistry::all());
-echo implode(",", VegRegistry::all());
+echo implode(",", FruitRegistry::all()), "\n";
+echo implode(",", VegRegistry::all()), "\n";
 "#
         ),
         &["apple,banana", "carrot"]
@@ -897,9 +897,9 @@ class Config {
     const DOUBLE = self::BASE * 2;
     const LABEL = "max:" . self::DOUBLE;
 }
-echo Config::BASE;
-echo Config::DOUBLE;
-echo Config::LABEL;
+echo Config::BASE, "\n";
+echo Config::DOUBLE, "\n";
+echo Config::LABEL, "\n";
 "#
         ),
         &["10", "20", "max:20"]
@@ -920,8 +920,8 @@ class Point {
 }
 $p = new Point(3, 4);
 $arr = (array) $p;
-echo $arr["x"];
-echo $arr["y"];
+echo $arr["x"], "\n";
+echo $arr["y"], "\n";
 "#
         ),
         &["3", "4"]
@@ -937,10 +937,10 @@ fn get_class_and_is_a() {
 class Animal {}
 class Dog extends Animal {}
 $d = new Dog();
-echo get_class($d);
-echo is_a($d, "Dog") ? "yes" : "no";
-echo is_a($d, "Animal") ? "yes" : "no";
-echo is_a($d, "Cat") ? "yes" : "no";
+echo get_class($d), "\n";
+echo is_a($d, "Dog") ? "yes" : "no", "\n";
+echo is_a($d, "Animal") ? "yes" : "no", "\n";
+echo is_a($d, "Cat") ? "yes" : "no", "\n";
 "#
         ),
         &["Dog", "yes", "yes", "no"]
@@ -959,10 +959,10 @@ class Widget {
     public function render(): string { return "<button>"; }
 }
 $w = new Widget();
-echo method_exists($w, "render") ? "yes" : "no";
-echo method_exists($w, "missing") ? "yes" : "no";
-echo property_exists($w, "name") ? "yes" : "no";
-echo property_exists($w, "id") ? "yes" : "no";
+echo method_exists($w, "render") ? "yes" : "no", "\n";
+echo method_exists($w, "missing") ? "yes" : "no", "\n";
+echo property_exists($w, "name") ? "yes" : "no", "\n";
+echo property_exists($w, "id") ? "yes" : "no", "\n";
 "#
         ),
         &["yes", "no", "yes", "yes"]
@@ -987,9 +987,9 @@ class Response {
 $r1 = new Response(200);
 $r2 = new Response("ok");
 $r3 = new Response(500);
-echo $r1->isOk() ? "ok" : "fail";
-echo $r2->isOk() ? "ok" : "fail";
-echo $r3->isOk() ? "ok" : "fail";
+echo $r1->isOk() ? "ok" : "fail", "\n";
+echo $r2->isOk() ? "ok" : "fail", "\n";
+echo $r3->isOk() ? "ok" : "fail", "\n";
 "#
         ),
         &["ok", "ok", "fail"]
@@ -1013,8 +1013,8 @@ class User {
 }
 $u1 = new User("Alice", "alice@example.com");
 $u2 = new User("Bob");
-echo $u1->contact();
-echo $u2->contact();
+echo $u1->contact(), "\n";
+echo $u2->contact(), "\n";
 "#
         ),
         &["alice@example.com", "no email"]
@@ -1045,9 +1045,9 @@ class Money {
 $m1 = new Money(100, "USD");
 $m2 = $m1->withAmount(200);
 $m3 = $m2->withCurrency("EUR");
-echo $m1;
-echo $m2;
-echo $m3;
+echo $m1, "\n";
+echo $m2, "\n";
+echo $m3, "\n";
 "#
         ),
         &["100 USD", "200 USD", "200 EUR"]
@@ -1068,7 +1068,7 @@ function makeNode(int $value): object {
     return new Node($value);
 }
 $n = makeNode(42);
-echo $n->value;
+echo $n->value, "\n";
 "#
         ),
         &["42"]
@@ -1092,8 +1092,8 @@ class Sub extends Base {}
 $s = new Sub("sub");
 $a = $s->cloneSelf();
 $b = $s->cloneStatic();
-echo get_class($a) . ":" . $a->getTag();
-echo get_class($b) . ":" . $b->getTag();
+echo get_class($a) . ":" . $a->getTag(), "\n";
+echo get_class($b) . ":" . $b->getTag(), "\n";
 "#
         ),
         &["Base:base-copy", "Sub:sub-copy"]
@@ -1112,8 +1112,8 @@ class Formatter {
     }
 }
 $f = new Formatter();
-echo $f->format("%s is %d years old", "Alice", 30);
-echo $f->format("%.2f + %.2f = %.2f", 1.1, 2.2, 3.3);
+echo $f->format("%s is %d years old", "Alice", 30), "\n";
+echo $f->format("%.2f + %.2f = %.2f", 1.1, 2.2, 3.3), "\n";
 "#
         ),
         &["Alice is 30 years old", "1.10 + 2.20 = 3.30"]
@@ -1138,7 +1138,7 @@ class Child extends Base {
     }
 }
 $c = new Child();
-echo $c->combine("foo", "bar", "baz");
+echo $c->combine("foo", "bar", "baz"), "\n";
 "#
         ),
         &["FOO-BAR-BAZ"]
@@ -1170,7 +1170,7 @@ $vals = [];
 foreach ($range as $k => $v) {
     $vals[] = "$k:$v";
 }
-echo implode(",", $vals);
+echo implode(",", $vals), "\n";
 "#
         ),
         &["0:1,1:2,2:3,3:4,4:5"]
@@ -1196,7 +1196,7 @@ $items = [
 ];
 $discounted = array_map(fn($i) => $i->discounted(0.1), $items);
 $totals = array_map(fn($i) => $i->price, $discounted);
-echo number_format(array_sum($totals), 2);
+echo number_format(array_sum($totals), 2), "\n";
 "#
         ),
         &["31.50"]
@@ -1232,8 +1232,8 @@ class Color {
 }
 $c1 = Color::fromHex('#ff8000');
 $c2 = Color::fromRgb(0, 128, 255);
-echo $c1;
-echo $c2;
+echo $c1, "\n";
+echo $c2, "\n";
 "#
         ),
         &["rgb(255,128,0)", "rgb(0,128,255)"]
@@ -1264,8 +1264,8 @@ class JsonRecord implements Codec {
 $r = new JsonRecord(["key" => "value"]);
 $s = $r->serialize();
 $r2 = JsonRecord::deserialize($s);
-echo $s;
-echo $r2->data["key"];
+echo $s, "\n";
+echo $r2->data["key"], "\n";
 "#
         ),
         &["{\"key\":\"value\"}", "value"]
@@ -1303,7 +1303,7 @@ $tree = new TreeNode(5);
 foreach ([3, 7, 1, 4, 6, 8] as $v) {
     $tree->insert($v);
 }
-echo implode(",", $tree->inorder());
+echo implode(",", $tree->inorder()), "\n";
 "#
         ),
         &["1,3,4,5,6,7,8"]
@@ -1334,9 +1334,9 @@ $cart1->add("apple");
 $cart1->add("banana");
 $cart2 = clone $cart1;
 $cart2->add("cherry");
-echo $cart1->count();
-echo $cart2->count();
-echo implode(",", $cart1->items());
+echo $cart1->count(), "\n";
+echo $cart2->count(), "\n";
+echo implode(",", $cart1->items()), "\n";
 "#
         ),
         &["2", "3", "apple,banana"]
@@ -1358,8 +1358,8 @@ class Rect implements Shape {
     public function perimeter(): float { return 2 * ($this->w + $this->h); }
 }
 $r = new Rect(3.0, 4.0);
-echo $r->area();
-echo $r->perimeter();
+echo $r->area(), "\n";
+echo $r->perimeter(), "\n";
 "#,
     );
 }
@@ -1382,9 +1382,9 @@ class Converter {
     }
 }
 $c = new Converter();
-echo $c->toInt("42");
-echo $c->toBool(0) ? "true" : "false";
-echo $c->toStr(3.14);
+echo $c->toInt("42"), "\n";
+echo $c->toBool(0) ? "true" : "false", "\n";
+echo $c->toStr(3.14), "\n";
 "#
         ),
         &["42", "false", "3.14"]
@@ -1410,8 +1410,8 @@ class JsonSerializer extends Serializer {
 }
 $s = new JsonSerializer();
 $result = $s->roundtrip(["x" => 1, "y" => 2]);
-echo $result["x"];
-echo $result["y"];
+echo $result["x"], "\n";
+echo $result["y"], "\n";
 "#
         ),
         &["1", "2"]
