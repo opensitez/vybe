@@ -533,6 +533,7 @@ header_remove       = { emit = "host:node:http:remove_header",     min_args = 0,
 # name is a string literal; `defined("NAME")` probes that same global.
 defined             = { emit = "intrinsic:php_defined",      min_args = 1, max_args = 1 }
 define              = { emit = "intrinsic:php_define",       min_args = 2, max_args = 3 }
+constant            = { emit = "intrinsic:php_constant",     min_args = 1, max_args = 1 }
 function_exists     = { emit = "intrinsic:php_function_exists", min_args = 1, max_args = 1 }
 class_exists        = { emit = "intrinsic:php_class_exists", min_args = 1, max_args = 2 }
 

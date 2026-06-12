@@ -5555,6 +5555,26 @@ fn apply_postfix(
             if let ExprKind::StaticAccess { class, member } = &receiver.kind {
                 if matches!(class.kind, ExprKind::Super) {
                     if let ExprKind::Ident(method_name) = &member.kind {
+                        // `parent::__construct(args)` is the parent
+                        // CONSTRUCTOR, not a parent method — normalise to
+                        // the bare `super(args)` call shape that the
+                        // super-ctor dispatch in compile_call handles
+                        // (constructors live in their own ctor chunks, so
+                        // a `super.__construct` member lookup finds
+                        // nothing).
+                        if method_name == "__construct" {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Super,
+                                        span.clone(),
+                                    )),
+                                    args,
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
                         let super_member = Expression::with_span(
                             ExprKind::Member {
                                 object: Box::new(Expression::with_span(
@@ -6058,7 +6078,45 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             //                   class-context push)
             //   parent → Super
             Rule::kw_static => {
-                class = Some(Expression::with_span(ExprKind::This, span.clone()));
+                // In a STATIC method `$this` slot 0 holds the class object
+                // itself (callable as ctor); in an INSTANCE method it holds
+                // the instance, whose class is reachable through the
+                // prototype-chain `constructor` link. Discriminate at
+                // runtime so `new static(...)` works in both contexts:
+                //   typeof $this === "function" ? $this : $this.constructor
+                let this_e = Expression::with_span(ExprKind::This, span.clone());
+                let typeof_this = Expression::with_span(
+                    ExprKind::TypeOf(Box::new(this_e.clone())),
+                    span.clone(),
+                );
+                let fn_str = Expression::with_span(
+                    ExprKind::Lit(Literal::Str("function".to_string())),
+                    span.clone(),
+                );
+                let is_fn = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(typeof_this),
+                        right: Box::new(fn_str),
+                    },
+                    span.clone(),
+                );
+                let ctor_member = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(this_e.clone()),
+                        field: "constructor".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                class = Some(Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(is_fn),
+                        then: Box::new(this_e),
+                        else_: Box::new(ctor_member),
+                    },
+                    span.clone(),
+                ));
             }
             Rule::kw_self => {
                 let cn = current_class_name().unwrap_or_default();
@@ -8749,6 +8807,123 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // PHP `is_infinite($x)` ≡ `Math.abs($x) === Infinity`.
         // `$x` is evaluated once because Math.abs receives it as an
         // argument; the comparison sees only the result.
+        // ── Class reflection ────────────────────────────────────────────
+        // PHP `get_class($obj)` → `$obj.constructor.name`. Instances carry
+        // a `constructor` link to their runtime class (prototype chain in
+        // the JS path; stamped directly in the PHP ctor chunk), and the
+        // class function carries its declared `name`.
+        "get_class" if args.len() == 1 => {
+            let ctor = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(arg(0)?),
+                    field: "constructor".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Member {
+                object: Box::new(ctor),
+                field: "name".to_string(),
+                null_safe: false,
+            }
+        }
+        // PHP `is_a($obj, "Name")` (literal class name) → `$obj instanceof Name`.
+        "is_a" if args.len() == 2 => {
+            if let ExprKind::Lit(Literal::Str(class_name)) = &args[1].value.kind {
+                ExprKind::Binary {
+                    op: BinOp::InstanceOf,
+                    left: Box::new(arg(0)?),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Ident(class_name.clone()),
+                        span.clone(),
+                    )),
+                }
+            } else {
+                return None;
+            }
+        }
+        // PHP `is_subclass_of($obj, "Name")` (literal class name) →
+        // `$obj instanceof Name && $obj.constructor.name !== "Name"`.
+        "is_subclass_of" if args.len() == 2 => {
+            if let ExprKind::Lit(Literal::Str(class_name)) = &args[1].value.kind {
+                let inst = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::InstanceOf,
+                        left: Box::new(arg(0)?),
+                        right: Box::new(Expression::with_span(
+                            ExprKind::Ident(class_name.clone()),
+                            span.clone(),
+                        )),
+                    },
+                    span.clone(),
+                );
+                let ctor = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "constructor".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let own_name = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(ctor),
+                        field: "name".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let not_same = mk_binary(
+                    BinOp::StrictNotEq,
+                    own_name,
+                    Expression::string(class_name.as_str()),
+                );
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(inst),
+                    right: Box::new(not_same),
+                }
+            } else {
+                return None;
+            }
+        }
+        // PHP `method_exists($obj, "m")` (literal method name, instance
+        // receiver) → `typeof $obj.m === "function"` — instance methods
+        // are bound as properties on the instance.
+        "method_exists" if args.len() == 2 => {
+            if let ExprKind::Lit(Literal::Str(method_name)) = &args[1].value.kind {
+                let member = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: method_name.clone(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(member)),
+                        span.clone(),
+                    )),
+                    right: Box::new(Expression::string("function")),
+                }
+            } else {
+                return None;
+            }
+        }
+        // PHP `property_exists($obj, "p")` → `"p" in $obj` (hasOwn).
+        "property_exists" if args.len() == 2 => {
+            if let ExprKind::Lit(Literal::Str(_)) = &args[1].value.kind {
+                ExprKind::Binary {
+                    op: BinOp::In,
+                    left: Box::new(arg(1)?),
+                    right: Box::new(arg(0)?),
+                }
+            } else {
+                return None;
+            }
+        }
         // PHP `gettype($v)` → IIFE chain mapping JS typeof onto PHP names.
         "gettype" if args.len() == 1 => {
             let mk_str = |s: &str| {
