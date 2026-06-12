@@ -362,17 +362,13 @@ impl EventLoop {
 
     /// Check if there's any pending work.
     pub fn has_pending(&self) -> bool {
-        !self.microtasks.is_empty()
-            || !self.macrotasks.is_empty()
-            || !self.waiting_fibers.is_empty()
-            || !self.future_waiting_fibers.is_empty()
-            || !self.stream_waiting_fibers.is_empty()
+        !self.microtasks.is_empty() || !self.macrotasks.is_empty()
     }
 
     /// Sleep until the next timer fires (or return immediately if microtasks pending).
     /// Uses the monotonic clock for accurate scheduling.
     pub fn wait_for_next(&self) {
-        if !self.microtasks.is_empty() || !self.waiting_fibers.is_empty() {
+        if !self.microtasks.is_empty() {
             return; // microtasks are processed immediately
         }
         if let Some(earliest) = self

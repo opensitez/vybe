@@ -18,9 +18,16 @@ pub(crate) const MAX_STACK: usize = 65536;
 pub enum ExecResult {
     /// Execution completed with a value.
     Done(Value),
-    /// Execution suspended — waiting for a Promise to resolve.
-    /// Contains the promise ID the fiber is waiting on.
-    Suspended(u64),
+    /// Execution suspended — waiting for host/runtime resolution.
+    Suspended { kind: SuspensionKind, id: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuspensionKind {
+    Await,
+    Jspi,
+    Future,
+    StreamRead,
 }
 
 /// Restricted context passed to host functions.
@@ -49,6 +56,11 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.stack for closing escaped upvalues in timer callbacks.
     /// Null when no VM is attached (HostContext::empty()).
     stack_slot: *const Vec<Value>,
+    /// Raw pointer to the CM3 handle table, so host functions receiving a
+    /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
+    /// can resolve it to the EventLoop stream/future id.
+    /// Null when no VM is attached (HostContext::empty()).
+    handle_table_slot: *const crate::handle_table::HandleTable,
 }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
@@ -280,6 +292,15 @@ impl<'a> HostContext<'a> {
             } else {
                 return Vec::new();
             }
+        } else if let Value::I32(handle) = stream_val {
+            // CM3 canonical lowering: a `stream<u8>` crosses the boundary as
+            // an i32 readable-end handle (CanonicalABI §HandleTable). Resolve
+            // it so spec-shaped imports like wasi:cli/stdout.write-via-stream
+            // work when called from guest bytecode.
+            match self.resolve_readable_stream_handle(*handle as u32) {
+                Some(id) => id,
+                None => return Vec::new(),
+            }
         } else {
             return Vec::new();
         };
@@ -309,6 +330,21 @@ impl<'a> HostContext<'a> {
         out
     }
 
+    /// Resolve a CM3 readable-stream-end handle (i32 from the handle table)
+    /// to its EventLoop stream id. None when the handle is absent, of the
+    /// wrong kind, or no VM is attached.
+    fn resolve_readable_stream_handle(&self, handle: u32) -> Option<u64> {
+        unsafe {
+            if self.handle_table_slot.is_null() {
+                return None;
+            }
+            match (*self.handle_table_slot).get(handle) {
+                Some(crate::handle_table::HandleEntry::ReadableStreamEnd(id)) => Some(*id),
+                _ => None,
+            }
+        }
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -318,6 +354,7 @@ impl<'a> HostContext<'a> {
             last_exception_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
+            handle_table_slot: std::ptr::null(),
         }
     }
 }
@@ -520,6 +557,11 @@ pub struct LabelEntry {
     pub target: usize,
     /// True if this is a loop (continue jumps to start), false if block/if (break jumps to end).
     pub is_loop: bool,
+    /// Number of stack values the label carries when branched to.
+    pub result_arity: u8,
+    /// Value-stack height at label entry. Branches restore this height while
+    /// preserving the top `result_arity` values.
+    pub stack_height: usize,
 }
 
 /// Pre-scanned jump targets for one BLOCK / LOOP / IF / ELSE opcode.
@@ -732,8 +774,40 @@ impl VM {
             }
             let mem = &mut self.extra_memories[idx];
             let old_pages = mem.len() / 65536;
-            mem.resize(mem.len() + pages * 65536, 0);
+            let Some(new_pages) = old_pages.checked_add(pages) else {
+                return usize::MAX;
+            };
+            if new_pages > 65536 {
+                return usize::MAX;
+            }
+            let Some(new_len) = new_pages.checked_mul(65536) else {
+                return usize::MAX;
+            };
+            mem.resize(new_len, 0);
             old_pages
+        }
+    }
+
+    pub(crate) fn branch_to_label(&mut self, depth: usize, entry: LabelEntry) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.ip = entry.target;
+        }
+
+        let arity = entry.result_arity as usize;
+        let keep = if arity == 0 {
+            Vec::new()
+        } else {
+            let split = self.stack.len().saturating_sub(arity);
+            self.stack.split_off(split)
+        };
+        self.stack.truncate(entry.stack_height);
+        self.stack.extend(keep);
+
+        let len = self.label_stack.len();
+        if entry.is_loop {
+            self.label_stack.truncate(len - depth);
+        } else {
+            self.label_stack.truncate(len - depth - 1);
         }
     }
 
@@ -935,6 +1009,7 @@ impl VM {
             last_exception_slot: exc_ptr,
             globals_slot: globals_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
+            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
         }
     }
 
@@ -1474,7 +1549,18 @@ impl VM {
                 self.run_event_loop()?;
                 Ok(val)
             }
-            ExecResult::Suspended(_) => {
+            ExecResult::Suspended {
+                kind: SuspensionKind::Jspi,
+                id,
+            } => {
+                self.run_event_loop()?;
+                if self.has_pending_jspi() {
+                    Err(VMError::new(format!("__jspi__:{}", id)))
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            ExecResult::Suspended { .. } => {
                 self.run_event_loop()?;
                 Ok(Value::Null)
             }
@@ -1624,19 +1710,31 @@ impl VM {
             Err(e) if e.message.starts_with("__await__:") => {
                 // Await suspension — extract promise ID
                 let id: u64 = e.message["__await__:".len()..].parse().unwrap_or(0);
-                Ok(ExecResult::Suspended(id))
+                Ok(ExecResult::Suspended {
+                    kind: SuspensionKind::Await,
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__jspi__:") => {
                 let id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
-                Ok(ExecResult::Suspended(id))
+                Ok(ExecResult::Suspended {
+                    kind: SuspensionKind::Jspi,
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__future__:") => {
                 let id: u64 = e.message["__future__:".len()..].parse().unwrap_or(0);
-                Ok(ExecResult::Suspended(id))
+                Ok(ExecResult::Suspended {
+                    kind: SuspensionKind::Future,
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__stream_read__:") => {
                 let id: u64 = e.message["__stream_read__:".len()..].parse().unwrap_or(0);
-                Ok(ExecResult::Suspended(id))
+                Ok(ExecResult::Suspended {
+                    kind: SuspensionKind::StreamRead,
+                    id,
+                })
             }
             Err(e) => Err(e),
         }

@@ -286,7 +286,7 @@ fn ref_test_interface_in_vm() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(true)),
+        matches!(result, Value::Bool(true) | Value::I32(1)),
         "Dog should pass ref_test for IAnimal"
     );
 }

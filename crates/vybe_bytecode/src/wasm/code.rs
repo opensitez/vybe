@@ -2022,6 +2022,46 @@ fn emit_vm_internal_op(
             body.push(0xD0);
             body.push(0x6F); // ref.null extern (placeholder return)
         }
+        // Memory64 reuses the standard memory instruction bytes. The i64
+        // address shape is carried by the memory type in the binary format.
+        _ if op == Op::I64_MEMORY_SIZE => {
+            body.push(Op::MEMORY_SIZE.sub());
+            body.push(0x00);
+        }
+        _ if op == Op::I64_MEMORY_GROW => {
+            body.push(Op::MEMORY_GROW.sub());
+            body.push(0x00);
+        }
+        _ if op == Op::I32_LOAD_64 => {
+            body.push(Op::I32_LOAD.sub());
+            body.push(0x02);
+            body.push(0x00);
+        }
+        _ if op == Op::I64_LOAD_64 => {
+            body.push(Op::I64_LOAD.sub());
+            body.push(0x03);
+            body.push(0x00);
+        }
+        _ if op == Op::F64_LOAD_64 => {
+            body.push(Op::F64_LOAD.sub());
+            body.push(0x03);
+            body.push(0x00);
+        }
+        _ if op == Op::I32_STORE_64 => {
+            body.push(Op::I32_STORE.sub());
+            body.push(0x02);
+            body.push(0x00);
+        }
+        _ if op == Op::I64_STORE_64 => {
+            body.push(Op::I64_STORE.sub());
+            body.push(0x03);
+            body.push(0x00);
+        }
+        _ if op == Op::F64_STORE_64 => {
+            body.push(Op::F64_STORE.sub());
+            body.push(0x03);
+            body.push(0x00);
+        }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => {
             body.push(0x01);

@@ -281,10 +281,14 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     vm.label_stack.push(LabelEntry {
         target: 123,
         is_loop: false,
+        result_arity: 0,
+        stack_height: 0,
     });
     vm.label_stack.push(LabelEntry {
         target: 456,
         is_loop: true,
+        result_arity: 0,
+        stack_height: 0,
     });
     // Build a dummy Continuation object so we have a Value to stash
     // in active_continuations (field is pub(crate); constructed via
@@ -299,6 +303,8 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     vm.label_stack.push(LabelEntry {
         target: 42,
         is_loop: true,
+        result_arity: 0,
+        stack_height: 0,
     });
     vm.active_continuations
         .push(vybe_bytecode::vm::ActiveContinuation {

@@ -53,6 +53,9 @@ pub struct SharedMemory {
     /// In a production VM, this would be mmap'd memory with no lock for
     /// non-atomic access. For correctness and simplicity, we use Mutex here.
     buffer: Arc<Mutex<Vec<u8>>>,
+    /// Optional maximum size, in WASM pages. `memory.grow` returns failure
+    /// instead of resizing past this bound.
+    max_pages: Option<usize>,
     /// Wait/notify infrastructure: maps memory addresses to condvars.
     /// When a thread calls wait32(addr), it blocks on the condvar for that addr.
     /// When another thread calls notify(addr), it signals the condvar.
@@ -64,6 +67,7 @@ impl Clone for SharedMemory {
         // Clone shares the SAME buffer — this is thread spawning
         Self {
             buffer: Arc::clone(&self.buffer),
+            max_pages: self.max_pages,
             waiters: Arc::clone(&self.waiters),
         }
     }
@@ -73,6 +77,7 @@ impl SharedMemory {
     pub fn new(size: usize) -> Self {
         Self {
             buffer: Arc::new(Mutex::new(vec![0u8; size])),
+            max_pages: None,
             waiters: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -80,8 +85,13 @@ impl SharedMemory {
     pub fn from_vec(v: Vec<u8>) -> Self {
         Self {
             buffer: Arc::new(Mutex::new(v)),
+            max_pages: None,
             waiters: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn set_max_pages(&mut self, max_pages: Option<usize>) {
+        self.max_pages = max_pages;
     }
 
     pub fn len(&self) -> usize {
@@ -97,7 +107,18 @@ impl SharedMemory {
         let mut buf = self.buffer.lock().unwrap();
         let old_len = buf.len();
         let old_pages = old_len / 65536;
-        buf.resize(old_len + pages * 65536, 0);
+        let Some(new_pages) = old_pages.checked_add(pages) else {
+            return usize::MAX;
+        };
+        if let Some(max_pages) = self.max_pages {
+            if new_pages > max_pages {
+                return usize::MAX;
+            }
+        }
+        let Some(new_len) = new_pages.checked_mul(65536) else {
+            return usize::MAX;
+        };
+        buf.resize(new_len, 0);
         old_pages
     }
 
@@ -442,6 +463,46 @@ impl SharedMemory {
             0 // woken
         } else {
             // Timed wait
+            let timeout = std::time::Duration::from_nanos(timeout_ns as u64);
+            let result = condvar.wait_timeout(guard, timeout).unwrap();
+            if result.1.timed_out() { 2 } else { 0 }
+        }
+    }
+
+    /// Block until memory[addr] != expected or notified or timeout.
+    /// timeout_ns: -1 = infinite, 0 = no wait, >0 = nanoseconds.
+    /// Returns: 0 = ok (woken), 1 = not-equal, 2 = timed-out
+    pub fn wait64(&self, addr: usize, expected: i64, timeout_ns: i64) -> i32 {
+        {
+            let buf = self.buffer.lock().unwrap();
+            if addr + 8 > buf.len() {
+                return 1;
+            }
+            let current = i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap());
+            if current != expected {
+                return 1;
+            }
+        }
+
+        if timeout_ns == 0 {
+            return 2;
+        }
+
+        let condvar = {
+            let mut waiters = self.waiters.lock().unwrap();
+            waiters
+                .entry(addr)
+                .or_insert_with(|| Arc::new(Condvar::new()))
+                .clone()
+        };
+
+        let dummy_mutex = Mutex::new(());
+        let guard = dummy_mutex.lock().unwrap();
+
+        if timeout_ns < 0 {
+            let _guard = condvar.wait(guard).unwrap();
+            0
+        } else {
             let timeout = std::time::Duration::from_nanos(timeout_ns as u64);
             let result = condvar.wait_timeout(guard, timeout).unwrap();
             if result.1.timed_out() { 2 } else { 0 }

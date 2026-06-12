@@ -19,6 +19,10 @@ pub struct Fiber {
     /// surrounding block/loop labels so `br` / `br_if`
     /// target the right depth after resumption.
     pub label_stack: Vec<crate::vm::LabelEntry>,
+    /// Saved WASM exception-handler stack. Suspending inside a try body
+    /// must preserve the active catch targets so `resume_throw` and
+    /// rejected JSPI resumes enter the restored fiber's structured EH path.
+    pub(crate) exception_handlers: Vec<crate::vm::ExceptionHandler>,
     /// Saved active-continuation stack. A fiber captured inside a
     /// running coroutine (e.g. `await` inside a `@generator`) must
     /// bring its coroutine-context with it; restoring the fiber
@@ -53,6 +57,7 @@ impl Fiber {
             frames,
             open_upvalues,
             label_stack: Vec::new(),
+            exception_handlers: Vec::new(),
             active_continuations: Vec::new(),
             resume_value: None,
             resume_exception: None,
@@ -60,6 +65,13 @@ impl Fiber {
     }
     pub fn with_labels(mut self, labels: Vec<crate::vm::LabelEntry>) -> Self {
         self.label_stack = labels;
+        self
+    }
+    pub(crate) fn with_exception_handlers(
+        mut self,
+        handlers: Vec<crate::vm::ExceptionHandler>,
+    ) -> Self {
+        self.exception_handlers = handlers;
         self
     }
     pub fn with_continuations(mut self, conts: Vec<crate::vm::ActiveContinuation>) -> Self {

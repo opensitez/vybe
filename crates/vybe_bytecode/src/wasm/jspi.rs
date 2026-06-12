@@ -27,10 +27,8 @@
 //! `compiler_common` sets `Chunk::is_async = true` on every `async`
 //! function the user writes; that chunk's function index becomes a
 //! `promising_func_idx`. Import wrapping is identified by Vybe's
-//! convention: any host fn named `wasm:js-*.await*` or explicitly
-//! registered as "suspending" is listed. For this first cut we list
-//! no suspending imports — Vybe's own async path goes through
-//! `PROMISE_SUSPEND` on the value return, not via wrapped imports.
+//! convention: any host fn named `wasm:js-*.await*` is listed as a
+//! `suspending_import_idx`.
 //!
 //! # Wire format choice: custom section vs. export name
 //!
@@ -61,10 +59,17 @@ pub fn encode_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>
         .map(|(i, _)| (import_base + i) as u32)
         .collect();
 
-    // No suspending imports are declared in this first cut — Vybe's
-    // transparent `CALL_IMPORT` auto-suspension path handles async
-    // host fns by return-value inspection, not JSPI wrapping.
-    let suspending: Vec<u32> = Vec::new();
+    let suspending: Vec<u32> = chunks
+        .first()
+        .map(|c| {
+            c.imports
+                .iter()
+                .enumerate()
+                .filter(|(_, import)| is_suspending_import(&import.module, &import.name))
+                .map(|(i, _)| i as u32)
+                .collect()
+        })
+        .unwrap_or_default();
 
     if promising.is_empty() && suspending.is_empty() {
         return None;
@@ -80,4 +85,8 @@ pub fn encode_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>
         write_leb128_u32(&mut out, *idx);
     }
     Some(out)
+}
+
+fn is_suspending_import(module: &str, name: &str) -> bool {
+    module.starts_with("wasm:js-") && name.contains("await")
 }

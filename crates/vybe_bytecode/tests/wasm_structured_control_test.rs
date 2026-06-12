@@ -13,6 +13,11 @@ fn make_i32(chunk: &mut Chunk, v: i32) {
     chunk.emit_op_u16(Op::CONST, idx, 0);
 }
 
+fn emit_if_typed(chunk: &mut Chunk, result_count: u8) {
+    chunk.emit_op(Op::IF, 0);
+    chunk.emit(result_count, 0);
+}
+
 fn leb(out: &mut Vec<u8>, mut value: u32) {
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -131,6 +136,24 @@ fn reader_preserves_if_else_and_i32_conditions() {
 }
 
 #[test]
+fn multi_value_if_branch_preserves_results_and_drops_temps() {
+    let mut chunk = Chunk::new("<script>");
+    make_i32(&mut chunk, 99); // value below the if
+    make_i32(&mut chunk, 1); // true condition
+    emit_if_typed(&mut chunk, 2);
+    make_i32(&mut chunk, 77); // branch-local temp, not a result
+    make_i32(&mut chunk, 1); // first branch result
+    make_i32(&mut chunk, 2); // second branch result
+    chunk.emit_br(0, 0);
+    chunk.emit_end(0);
+    chunk.emit_op(Op::I32_ADD, 0); // 1 + 2
+    chunk.emit_op(Op::I32_ADD, 0); // 99 + 3; would be 77 + 3 without stack shaping
+    chunk.emit_op(Op::RETURN, 0);
+
+    run_chunk_expect_i32(chunk, 102);
+}
+
+#[test]
 fn reader_preserves_br_if_depth() {
     let chunk = decoded_function(&[
         0x02, 0x40, // block
@@ -178,9 +201,9 @@ fn reader_preserves_br_table_vector_and_default_depths() {
 }
 
 #[test]
-fn vm_rejects_non_i32_if_condition() {
+fn vm_rejects_non_numeric_if_condition() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::TRUE, 0);
+    chunk.emit_op(Op::NULL, 0);
     chunk.emit_if(0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::END, 0);

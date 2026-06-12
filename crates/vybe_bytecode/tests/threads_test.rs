@@ -302,6 +302,34 @@ fn memory_atomic_wait32_returns_not_equal() {
 }
 
 #[test]
+fn memory_atomic_wait64_returns_not_equal() {
+    let r = run_with_memory(|c| {
+        push_i32(c, 0);
+        push_i64(c, 0);
+        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        push_i32(c, 0); // address
+        push_i64(c, 999); // expected (doesn't match stored 0)
+        push_i64(c, -1); // timeout = -1 (infinite)
+        c.emit_op(Op::MEMORY_ATOMIC_WAIT64, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn memory_atomic_wait64_zero_timeout_times_out() {
+    let r = run_with_memory(|c| {
+        push_i32(c, 0);
+        push_i64(c, 123);
+        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        push_i32(c, 0); // address
+        push_i64(c, 123); // expected matches
+        push_i64(c, 0); // timeout = 0
+        c.emit_op(Op::MEMORY_ATOMIC_WAIT64, 0);
+    });
+    assert_eq!(r.as_i32(), 2);
+}
+
+#[test]
 fn memory_atomic_notify_returns_zero_waiters() {
     // Single-threaded: notify wakes 0 threads
     let r = run_with_memory(|c| {

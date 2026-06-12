@@ -12,6 +12,14 @@ use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{Chunk, Method, Op, TypeDef, VM, Value};
 
+fn is_wasm_true(value: &Value) -> bool {
+    matches!(value, Value::Bool(true) | Value::I32(1))
+}
+
+fn is_wasm_false(value: &Value) -> bool {
+    matches!(value, Value::Bool(false) | Value::I32(0))
+}
+
 // ============================================================
 // TypeRegistry unit tests
 // ============================================================
@@ -247,7 +255,7 @@ fn test_ref_test_opcode_with_type_string() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(true)),
+        is_wasm_true(&result),
         "Button should be a subtype of Control, got {:?}",
         result
     );
@@ -274,7 +282,7 @@ fn test_ref_test_opcode_with_type_id() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(true)),
+        is_wasm_true(&result),
         "Button (type_id) should be a subtype of Control, got {:?}",
         result
     );
@@ -304,7 +312,7 @@ fn test_ref_test_opcode_negative() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(false)),
+        is_wasm_false(&result),
         "List should NOT be a subtype of Button, got {:?}",
         result
     );
@@ -337,7 +345,7 @@ fn test_ref_test_with_js_types_array() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(true)),
+        is_wasm_true(&result),
         "Dog (via __types) should match Animal, got {:?}",
         result
     );
@@ -357,7 +365,7 @@ fn test_ref_test_primitives() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        matches!(result, Value::Bool(true)),
+        is_wasm_true(&result),
         "String should match 'string', got {:?}",
         result
     );

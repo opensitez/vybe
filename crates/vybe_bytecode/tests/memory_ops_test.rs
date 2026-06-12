@@ -27,6 +27,23 @@ fn memory_grow_and_size() {
 }
 
 #[test]
+fn memory_grow_returns_minus_one_when_max_exceeded() {
+    let mut vm = VM::new();
+    vm.memory.resize(65536, 0);
+    vm.memory.set_max_pages(Some(1));
+
+    let mut chunk = Chunk::new("<script>");
+    let one = chunk.add_constant(Value::I32(1));
+    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_i32(), -1);
+    assert_eq!(vm.memory.len(), 65536);
+}
+
+#[test]
 fn i32_store_and_load() {
     let mut vm = VM::new();
     // Pre-allocate memory

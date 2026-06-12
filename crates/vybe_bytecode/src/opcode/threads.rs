@@ -7,6 +7,7 @@ use super::opcode_category;
 impl Op {
     pub const MEMORY_ATOMIC_NOTIFY: Op = Op::new(0xFE, 0x00);
     pub const MEMORY_ATOMIC_WAIT32: Op = Op::new(0xFE, 0x01);
+    pub const MEMORY_ATOMIC_WAIT64: Op = Op::new(0xFE, 0x02);
     pub const ATOMIC_FENCE: Op = Op::new(0xFE, 0x03);
     pub const I32_ATOMIC_LOAD: Op = Op::new(0xFE, 0x10);
     pub const I64_ATOMIC_LOAD: Op = Op::new(0xFE, 0x11);
@@ -29,6 +30,7 @@ impl Op {
 opcode_category! {
     [0x00] memory_atomic_notify => None, "memory.atomic.notify";
     [0x01] memory_atomic_wait32 => None, "memory.atomic.wait32";
+    [0x02] memory_atomic_wait64 => None, "memory.atomic.wait64";
     [0x03] atomic_fence => None, "atomic.fence";
     [0x10] i32_atomic_load => None, "i32.atomic.load";
     [0x11] i64_atomic_load => None, "i64.atomic.load";

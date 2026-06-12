@@ -235,6 +235,43 @@ impl VM {
         }
     }
 
+    fn pending_promise_id(value: &Value) -> Option<u64> {
+        let Value::Object(obj) = value else {
+            return None;
+        };
+        let o = obj.lock().unwrap();
+        let ty = o
+            .properties
+            .get("__type")
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        if ty != "Promise" {
+            return None;
+        }
+        let state = o
+            .properties
+            .get("__state")
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        if state != "pending" {
+            return None;
+        }
+        Some(
+            o.properties
+                .get("__id")
+                .map(|v| v.as_f64() as u64)
+                .unwrap_or(0),
+        )
+    }
+
+    fn suspend_for_pending_promise(&mut self, promise_id: u64) -> VMError {
+        let fiber = self.save_fiber();
+        self.event_loop
+            .borrow_mut()
+            .suspend_fiber(promise_id, fiber);
+        VMError::new(format!("__jspi__:{}", promise_id))
+    }
+
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
         loop {
             let f = self.frame();
@@ -1304,13 +1341,7 @@ impl VM {
                     let depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
                     self.frame_mut().ip = ip;
                     if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
-                        self.frames.last_mut().unwrap().ip = entry.target;
-                        let len = self.label_stack.len();
-                        if entry.is_loop {
-                            self.label_stack.truncate(len - depth);
-                        } else {
-                            self.label_stack.truncate(len - depth - 1);
-                        }
+                        self.branch_to_label(depth, entry);
                     }
                 }
                 _ if op == Op::BR_IF_FALSE => {
@@ -1338,13 +1369,7 @@ impl VM {
                     };
                     if cond != 0 {
                         if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
-                            self.frames.last_mut().unwrap().ip = entry.target;
-                            let len = self.label_stack.len();
-                            if entry.is_loop {
-                                self.label_stack.truncate(len - depth);
-                            } else {
-                                self.label_stack.truncate(len - depth - 1);
-                            }
+                            self.branch_to_label(depth, entry);
                         }
                     }
                 }
@@ -1496,6 +1521,10 @@ impl VM {
                             if let Some(exc) = self.last_exception.take() {
                                 self.raise_exception_value(exc)?;
                                 continue;
+                            }
+
+                            if let Some(promise_id) = Self::pending_promise_id(&result) {
+                                return Err(self.suspend_for_pending_promise(promise_id));
                             }
 
                             self.push(result)?;
@@ -2047,16 +2076,8 @@ impl VM {
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.peek(0).clone();
                     if self.test_type(&val, &target_name) {
-                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
-                            let target = entry.target;
-                            let is_loop = entry.is_loop;
-                            self.frames.last_mut().unwrap().ip = target;
-                            let len = self.label_stack.len();
-                            if is_loop {
-                                self.label_stack.truncate(len - depth);
-                            } else {
-                                self.label_stack.truncate(len - depth - 1);
-                            }
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                            self.branch_to_label(depth, entry);
                         }
                     }
                 }
@@ -2066,16 +2087,8 @@ impl VM {
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.peek(0).clone();
                     if !self.test_type(&val, &target_name) {
-                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
-                            let target = entry.target;
-                            let is_loop = entry.is_loop;
-                            self.frames.last_mut().unwrap().ip = target;
-                            let len = self.label_stack.len();
-                            if is_loop {
-                                self.label_stack.truncate(len - depth);
-                            } else {
-                                self.label_stack.truncate(len - depth - 1);
-                            }
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                            self.branch_to_label(depth, entry);
                         }
                     }
                 }
@@ -2407,48 +2420,53 @@ impl VM {
                     self.push(Value::I32(pages))?;
                 }
                 _ if op == Op::MEMORY_GROW => {
-                    let pages = self.pop().as_f64() as usize;
+                    let pages = self.pop().as_i32() as u32 as usize;
                     let old_pages = self.active_mem_grow(pages);
-                    self.push(Value::I32(old_pages as i32))?;
+                    let result = if old_pages == usize::MAX {
+                        -1
+                    } else {
+                        old_pages as i32
+                    };
+                    self.push(Value::I32(result))?;
                 }
                 _ if op == Op::I32_LOAD => {
-                    let addr = self.pop().as_f64() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.load_i32(addr)?))?;
                 }
                 _ if op == Op::I32_STORE => {
-                    let val = self.pop().as_f64() as i32;
-                    let addr = self.pop().as_f64() as usize;
+                    let val = self.pop().as_i32();
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_i32(addr, val)?;
                 }
                 _ if op == Op::I64_LOAD => {
-                    let addr = self.pop().as_f64() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.load_i64(addr)?))?;
                 }
                 _ if op == Op::I64_STORE => {
-                    let val = self.pop().as_f64() as i64;
-                    let addr = self.pop().as_f64() as usize;
+                    let val = self.pop().as_i64();
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_i64(addr, val)?;
                 }
                 _ if op == Op::F64_LOAD => {
-                    let addr = self.pop().as_f64() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::F64(self.memory.load_f64(addr)?))?;
                 }
                 _ if op == Op::F64_STORE => {
                     let val = self.pop().as_f64();
-                    let addr = self.pop().as_f64() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_f64(addr, val)?;
                 }
                 _ if op == Op::I32_LOAD8_U => {
-                    let addr = self.pop().as_f64() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.load_u8(addr)? as i32))?;
                 }
                 _ if op == Op::I32_STORE8 => {
                     let val = self.pop().as_i32() as u8;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_u8(addr, val)?;
                 }
                 _ if op == Op::F32_LOAD => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 4 <= buf.len() {
                             f32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap()) as f64
@@ -2460,7 +2478,7 @@ impl VM {
                 }
                 _ if op == Op::F32_STORE => {
                     let val = self.pop().as_f64() as f32;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.with_buffer_mut(|buf| {
                         if addr + 4 <= buf.len() {
                             buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
@@ -2468,11 +2486,11 @@ impl VM {
                     });
                 }
                 _ if op == Op::I32_LOAD8_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.load_u8(addr)? as i8 as i32))?;
                 }
                 _ if op == Op::I32_LOAD16_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() {
                             i16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i32
@@ -2483,7 +2501,7 @@ impl VM {
                     self.push(Value::I32(val))?;
                 }
                 _ if op == Op::I32_LOAD16_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() {
                             u16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i32
@@ -2495,7 +2513,7 @@ impl VM {
                 }
                 _ if op == Op::I32_STORE16 => {
                     let val = self.pop().as_i32() as i16;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.with_buffer_mut(|buf| {
                         if addr + 2 <= buf.len() {
                             buf[addr..addr + 2].copy_from_slice(&val.to_le_bytes());
@@ -2503,15 +2521,15 @@ impl VM {
                     });
                 }
                 _ if op == Op::I64_LOAD8_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.load_u8(addr)? as i8 as i64))?;
                 }
                 _ if op == Op::I64_LOAD8_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.load_u8(addr)? as i64))?;
                 }
                 _ if op == Op::I64_LOAD16_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() {
                             i16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i64
@@ -2522,7 +2540,7 @@ impl VM {
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD16_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let val = self.memory.with_buffer(|buf| {
                         if addr + 2 <= buf.len() {
                             u16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i64
@@ -2533,21 +2551,21 @@ impl VM {
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD32_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.load_i32(addr)? as i64))?;
                 }
                 _ if op == Op::I64_LOAD32_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.load_i32(addr)? as u32 as i64))?;
                 }
                 _ if op == Op::I64_STORE8 => {
                     let val = self.pop().as_i64() as u8;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_u8(addr, val)?;
                 }
                 _ if op == Op::I64_STORE16 => {
                     let val = self.pop().as_i64() as i16;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.with_buffer_mut(|buf| {
                         if addr + 2 <= buf.len() {
                             buf[addr..addr + 2].copy_from_slice(&val.to_le_bytes());
@@ -2556,7 +2574,7 @@ impl VM {
                 }
                 _ if op == Op::I64_STORE32 => {
                     let val = self.pop().as_i64() as i32;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.store_i32(addr, val)?;
                 }
 
@@ -2633,7 +2651,7 @@ impl VM {
 
                 // -- Block/loop/if structured control (WASM-compliant) --
                 _ if op == Op::BLOCK => {
-                    let _blocktype = self.read_byte(); // single blocktype byte (0x40/0x6F/…)
+                    let result_arity = self.read_byte(); // 0=void, 1=single, 2+=multi-value
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
                     let end_ip = self.block_tables[&ci]
@@ -2643,20 +2661,24 @@ impl VM {
                     self.label_stack.push(LabelEntry {
                         target: end_ip,
                         is_loop: false,
+                        result_arity,
+                        stack_height: self.stack.len(),
                     });
                 }
                 _ if op == Op::LOOP => {
-                    let _blocktype = self.read_byte();
+                    let result_arity = self.read_byte();
                     // Loop target is the ip right after the blocktype byte —
                     // that is where `br 0` restarts (the loop body start).
                     let loop_body_start = self.frame().ip;
                     self.label_stack.push(LabelEntry {
                         target: loop_body_start,
                         is_loop: true,
+                        result_arity,
+                        stack_height: self.stack.len(),
                     });
                 }
                 _ if op == Op::IF => {
-                    let _result_count = self.read_byte(); // void/single/multi hint; ignored by VM
+                    let result_arity = self.read_byte();
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
                     let targets = self.block_tables[&ci]
@@ -2686,6 +2708,8 @@ impl VM {
                         self.label_stack.push(LabelEntry {
                             target: targets.end_ip,
                             is_loop: false,
+                            result_arity,
+                            stack_height: self.stack.len(),
                         });
                     } else if let Some(else_ip) = targets.else_ip {
                         // Condition false, ELSE exists — push label and jump into else-body.
@@ -2694,6 +2718,8 @@ impl VM {
                         self.label_stack.push(LabelEntry {
                             target: targets.end_ip,
                             is_loop: false,
+                            result_arity,
+                            stack_height: self.stack.len(),
                         });
                         self.frame_mut().ip = else_ip + 2; // +2 skips the ELSE opcode bytes
                     } else {
@@ -2735,13 +2761,7 @@ impl VM {
                         default_depth
                     };
                     if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
-                        self.frames.last_mut().unwrap().ip = entry.target;
-                        let len = self.label_stack.len();
-                        if entry.is_loop {
-                            self.label_stack.truncate(len - depth);
-                        } else {
-                            self.label_stack.truncate(len - depth - 1);
-                        }
+                        self.branch_to_label(depth, entry);
                     }
                 }
 
@@ -3827,11 +3847,6 @@ impl VM {
                             ));
                         }
                         let caller_fiber = self.save_fiber();
-                        self.active_continuations.push(ActiveContinuation {
-                            cont: cont.clone(),
-                            caller_fiber,
-                            mode: ResumeMode::Raw,
-                        });
                         // If suspended, restore fiber then immediately
                         // throw the exception. If fresh (ready), we
                         // first call entry with the exn as its arg so
@@ -3849,13 +3864,34 @@ impl VM {
                                 if let Some(fiber) = saved {
                                     self.resume_fiber_with(fiber, None)?;
                                 }
-                                // Now throw. Route through the VM's
-                                // exception machinery — push exn and
-                                // bubble up via the standard error
-                                // channel.
-                                return Err(VMError::new(format!("thrown into cont: {:?}", exn)));
+                                self.active_continuations.push(ActiveContinuation {
+                                    cont: cont.clone(),
+                                    caller_fiber,
+                                    mode: ResumeMode::Raw,
+                                });
+                                if self.raise_exception_value(exn).is_err() {
+                                    let thrown = self.last_exception.take().unwrap_or(Value::Null);
+                                    if let Some(ac) = self.active_continuations.pop() {
+                                        if let Value::Object(ref obj) = ac.cont {
+                                            let o = obj.lock().unwrap();
+                                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                                *cs.state.lock().unwrap() =
+                                                    crate::value::ContinuationPhase::Done;
+                                            }
+                                        }
+                                        self.resume_fiber_with(ac.caller_fiber, None)?;
+                                        self.raise_exception_value(thrown)?;
+                                    } else {
+                                        return Err(VMError::new(format!("{}", thrown)));
+                                    }
+                                }
                             }
                             crate::value::ContinuationPhase::Ready => {
+                                self.active_continuations.push(ActiveContinuation {
+                                    cont: cont.clone(),
+                                    caller_fiber,
+                                    mode: ResumeMode::Raw,
+                                });
                                 self.push(entry)?;
                                 self.push(exn)?;
                                 self.call_value(1)?;
@@ -5831,51 +5867,51 @@ impl VM {
                 // -- Atomics (single-threaded: same as non-atomic for now) --
                 _ if op == Op::ATOMIC_FENCE => {} // no-op in single-threaded
                 _ if op == Op::I32_ATOMIC_LOAD => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_load_i32(addr)))?;
                 }
                 // Atomic store: stack is [addr, value] — pop value first (top), then addr
                 _ if op == Op::I32_ATOMIC_STORE => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.atomic_store_i32(addr, v);
                 }
                 // Atomic RMW: stack is [addr, value] — pop value (top), addr (second), return old
                 _ if op == Op::I32_ATOMIC_RMW_ADD => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_rmw_add_i32(addr, v)))?;
                 }
                 _ if op == Op::I32_ATOMIC_RMW_SUB => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_rmw_sub_i32(addr, v)))?;
                 }
                 _ if op == Op::I32_ATOMIC_RMW_AND => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_rmw_and_i32(addr, v)))?;
                 }
                 _ if op == Op::I32_ATOMIC_RMW_OR => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_rmw_or_i32(addr, v)))?;
                 }
                 _ if op == Op::I32_ATOMIC_RMW_XOR => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_rmw_xor_i32(addr, v)))?;
                 }
                 _ if op == Op::I32_ATOMIC_RMW_XCHG => {
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_xchg_i32(addr, v)))?;
                 }
                 // Atomic CmpXchg: stack is [addr, expected, replacement]
                 _ if op == Op::I32_ATOMIC_RMW_CMPXCHG => {
                     let replacement = self.pop().as_i32();
                     let expected = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.atomic_cmpxchg_i32(
                         addr,
                         expected,
@@ -5883,39 +5919,45 @@ impl VM {
                     )))?;
                 }
                 _ if op == Op::I64_ATOMIC_LOAD => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.atomic_load_i64(addr)))?;
                 }
                 _ if op == Op::I64_ATOMIC_STORE => {
                     let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.memory.atomic_store_i64(addr, v);
                 }
                 _ if op == Op::I64_ATOMIC_RMW_ADD => {
                     let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.atomic_rmw_add_i64(addr, v)))?;
                 }
                 _ if op == Op::I64_ATOMIC_RMW_SUB => {
                     let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.atomic_rmw_sub_i64(addr, v)))?;
                 }
                 _ if op == Op::I64_ATOMIC_RMW_CMPXCHG => {
                     let repl = self.pop().as_i64();
                     let exp = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I64(self.memory.atomic_cmpxchg_i64(addr, exp, repl)))?;
                 }
                 _ if op == Op::MEMORY_ATOMIC_WAIT32 => {
                     let timeout = self.pop().as_i64();
                     let expected = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?;
+                }
+                _ if op == Op::MEMORY_ATOMIC_WAIT64 => {
+                    let timeout = self.pop().as_i64();
+                    let expected = self.pop().as_i64();
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    self.push(Value::I32(self.memory.wait64(addr, expected, timeout)))?;
                 }
                 _ if op == Op::MEMORY_ATOMIC_NOTIFY => {
                     let count = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     self.push(Value::I32(self.memory.notify(addr, count)))?;
                 }
 
@@ -5926,7 +5968,8 @@ impl VM {
                 _ if op == Op::I64_MEMORY_GROW => {
                     let pages = self.pop().as_i64() as usize;
                     let old = self.memory.grow(pages);
-                    self.push(Value::I64(old as i64))?;
+                    let result = if old == usize::MAX { -1 } else { old as i64 };
+                    self.push(Value::I64(result))?;
                 }
                 _ if op == Op::I32_LOAD_64 => {
                     let addr = self.pop().as_i64() as usize;
@@ -5948,12 +5991,12 @@ impl VM {
                 _ if op == Op::I64_STORE_64 => {
                     let v = self.pop().as_i64();
                     let addr = self.pop().as_i64() as usize;
-                    let _ = self.memory.store_i64(addr, v);
+                    self.memory.store_i64(addr, v)?;
                 }
                 _ if op == Op::F64_STORE_64 => {
                     let v = self.pop().as_f64();
                     let addr = self.pop().as_i64() as usize;
-                    let _ = self.memory.store_f64(addr, v);
+                    self.memory.store_f64(addr, v)?;
                 }
 
                 // -- Relaxed-SIMD proposal (prefix 0xDD internal, 0xFD 0x100+ in WASM) --
@@ -6349,11 +6392,7 @@ impl VM {
                                     .map(|v| v.as_f64() as u64)
                                     .unwrap_or(0);
                                 drop(o);
-                                let fiber = self.save_fiber();
-                                self.event_loop
-                                    .borrow_mut()
-                                    .suspend_fiber(promise_id, fiber);
-                                return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                                return Err(self.suspend_for_pending_promise(promise_id));
                             }
                             let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
                             if state == "rejected" {
@@ -6501,16 +6540,31 @@ impl VM {
                     use crate::value::ObjectKind;
                     let item = self.pop();
                     let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Stream { id } = o.kind {
-                            let stream_id = id;
-                            drop(o);
-                            let mut el = self.event_loop.borrow_mut();
-                            if let Some(fiber) = el.stream_push(stream_id, item) {
-                                el.microtasks
-                                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    // The stream is either the high-level Stream value or a
+                    // CM3 writable-end i32 handle (canon stream.new pushes
+                    // i32 handles per CanonicalABI §HandleTable).
+                    let stream_id = match val {
+                        Value::Object(ref obj) => {
+                            let o = obj.lock().unwrap();
+                            if let ObjectKind::Stream { id } = o.kind {
+                                Some(id)
+                            } else {
+                                None
                             }
+                        }
+                        Value::I32(handle) => match self.handle_table.get(handle as u32) {
+                            Some(crate::handle_table::HandleEntry::WritableStreamEnd(id)) => {
+                                Some(*id)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(stream_id) = stream_id {
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.stream_push(stream_id, item) {
+                            el.microtasks
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
                 }

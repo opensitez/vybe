@@ -356,7 +356,7 @@ fn block_end_no_branch() {
 fn br_0_exits_block() {
     // block { push 5 ; br 0 ; push 99 } ; end → 5 on stack (99 skipped)
     let result = run_script(|c| {
-        let bp = c.emit_block(0);
+        let bp = c.emit_block_typed(0, 1);
         let i5 = c.add_constant(Value::F64(5.0));
         c.emit_op_u16(Op::CONST, i5, 0);
         c.emit_br(0, 0); // branch to end of block
@@ -374,7 +374,7 @@ fn br_if_conditional_branch() {
     //   i32.const 1 ; br_if 0 ; push 99
     // } ; end → nothing on stack from 99
     let result = run_script(|c| {
-        let bp = c.emit_block(0);
+        let bp = c.emit_block_typed(0, 1);
         let one = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, one, 0);
         c.emit_br_if(0, 0); // branch because true
@@ -393,7 +393,7 @@ fn br_if_conditional_branch() {
 fn br_if_zero_does_not_branch() {
     // block { i32.const 0 ; br_if 0 ; push 7 ; br 0 ; } ; end → 7 on stack
     let result = run_script(|c| {
-        let bp = c.emit_block(0);
+        let bp = c.emit_block_typed(0, 1);
         let zero = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, zero, 0);
         c.emit_br_if(0, 0); // does NOT branch
@@ -2183,13 +2183,13 @@ fn ref_is_undefined_distinguishes_from_null() {
         c.emit_op(Op::UNDEFINED, 0);
         c.emit_op(Op::REF_IS_UNDEFINED, 0);
     });
-    assert_eq!(r.as_bool(), true);
+    assert_eq!(r.as_i32(), 1);
     // null → false
     let r = run_script(|c| {
         c.emit_op(Op::NULL, 0);
         c.emit_op(Op::REF_IS_UNDEFINED, 0);
     });
-    assert_eq!(r.as_bool(), false);
+    assert_eq!(r.as_i32(), 0);
 }
 
 #[test]
@@ -2241,14 +2241,14 @@ fn ref_is_i32_distinguishes_integers_in_number_range() {
         c.emit_op_u16(Op::CONST, k, 0);
         c.emit_op(Op::REF_IS_I32, 0);
     });
-    assert_eq!(r.as_bool(), true);
+    assert_eq!(r.as_i32(), 1);
 
     let r = run_script(|c| {
         let k = c.add_constant(Value::F64(3.14));
         c.emit_op_u16(Op::CONST, k, 0);
         c.emit_op(Op::REF_IS_I32, 0);
     });
-    assert_eq!(r.as_bool(), false);
+    assert_eq!(r.as_i32(), 0);
 }
 
 #[test]
@@ -2258,14 +2258,14 @@ fn ref_is_u32_rejects_negatives() {
         c.emit_op_u16(Op::CONST, k, 0);
         c.emit_op(Op::REF_IS_U32, 0);
     });
-    assert_eq!(r.as_bool(), false);
+    assert_eq!(r.as_i32(), 0);
 
     let r = run_script(|c| {
         let k = c.add_constant(Value::I32(42));
         c.emit_op_u16(Op::CONST, k, 0);
         c.emit_op(Op::REF_IS_U32, 0);
     });
-    assert_eq!(r.as_bool(), true);
+    assert_eq!(r.as_i32(), 1);
 }
 
 #[test]
@@ -2340,7 +2340,7 @@ fn ref_is_symbol_and_ref_is_bigint_discriminate_types() {
     chunk.emit_op(Op::REF_IS_SYMBOL, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), true);
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
 
     // BigInt
     let mut chunk = Chunk::new("<script>");
@@ -2349,7 +2349,7 @@ fn ref_is_symbol_and_ref_is_bigint_discriminate_types() {
     chunk.emit_op(Op::REF_IS_BIGINT, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), true);
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
 
     // A regular i32 is not a BigInt.
     let mut chunk = Chunk::new("<script>");
@@ -2358,7 +2358,7 @@ fn ref_is_symbol_and_ref_is_bigint_discriminate_types() {
     chunk.emit_op(Op::REF_IS_BIGINT, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2898,7 +2898,7 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), true);
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
 
     // Two DIFFERENT objects → ref.eq is false.
     let mut chunk = Chunk::new("<script>");
@@ -2921,7 +2921,7 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
 }
 
 #[test]
@@ -2932,7 +2932,7 @@ fn ref_eq_handles_null_and_undefined() {
         c.emit_op(Op::NULL, 0);
         c.emit_op(Op::REF_EQ, 0);
     });
-    assert_eq!(r.as_bool(), true);
+    assert_eq!(r.as_i32(), 1);
 
     // undefined == null → false (distinct per ref.eq semantics)
     let r = run_script(|c| {
@@ -2940,7 +2940,7 @@ fn ref_eq_handles_null_and_undefined() {
         c.emit_op(Op::NULL, 0);
         c.emit_op(Op::REF_EQ, 0);
     });
-    assert_eq!(r.as_bool(), false);
+    assert_eq!(r.as_i32(), 0);
 }
 
 #[test]

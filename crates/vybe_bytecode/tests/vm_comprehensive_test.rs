@@ -1414,7 +1414,7 @@ fn br_unconditional() {
     chunk.local_count = 1;
     let c1 = chunk.add_constant(Value::I32(1));
     let c2 = chunk.add_constant(Value::I32(2));
-    let block = chunk.emit_block(0);
+    let block = chunk.emit_block_typed(0, 1);
     chunk.emit_op_u16(Op::CONST, c1, 0);
     chunk.emit_br(0, 0);
     chunk.emit_op(Op::DROP, 0);

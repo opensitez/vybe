@@ -44,6 +44,40 @@ fn roundtrip(chunks: Vec<Chunk>) -> Vec<Chunk> {
     wasm::read_wasm(&bytes).expect("WASM round-trip read failed")
 }
 
+fn read_leb_u32(bytes: &[u8], ip: &mut usize) -> u32 {
+    let mut result = 0u32;
+    let mut shift = 0;
+    loop {
+        let byte = bytes[*ip];
+        *ip += 1;
+        result |= ((byte & 0x7f) as u32) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    result
+}
+
+fn custom_section_payload<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    let mut ip = 8;
+    while ip < bytes.len() {
+        let section_id = bytes[ip];
+        ip += 1;
+        let section_size = read_leb_u32(bytes, &mut ip) as usize;
+        let section_end = ip + section_size;
+        if section_id == 0 {
+            let name_len = read_leb_u32(bytes, &mut ip) as usize;
+            let name_end = ip + name_len;
+            if &bytes[ip..name_end] == name.as_bytes() {
+                return Some(&bytes[name_end..section_end]);
+            }
+        }
+        ip = section_end;
+    }
+    None
+}
+
 #[test]
 fn roundtrip_const_and_return() {
     let mut chunk = Chunk::new("<script>");
@@ -193,6 +227,68 @@ fn core_memory_opcodes_have_spec_byte_values() {
 }
 
 #[test]
+fn memory64_internal_ops_emit_standard_memory_bytes() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::I64_MEMORY_SIZE, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::I32_LOAD_64, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::I64_LOAD_64, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::F64_LOAD_64, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::I32_STORE_64, 0);
+    chunk.emit_op(Op::I64_STORE_64, 0);
+    chunk.emit_op(Op::F64_STORE_64, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let bytes = wasm::write_wasm(&[chunk]);
+    for pattern in [
+        &[0x3F, 0x00][..],
+        &[0x40, 0x00][..],
+        &[0x28, 0x02, 0x00][..],
+        &[0x29, 0x03, 0x00][..],
+        &[0x2B, 0x03, 0x00][..],
+        &[0x36, 0x02, 0x00][..],
+        &[0x37, 0x03, 0x00][..],
+        &[0x39, 0x03, 0x00][..],
+    ] {
+        assert!(
+            bytes.windows(pattern.len()).any(|w| w == pattern),
+            "missing memory64 lowering pattern {pattern:02x?}"
+        );
+    }
+}
+
+#[test]
+fn jspi_suspending_imports_emit_metadata_not_opcode() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.add_import("wasm:js-promise", "await");
+    chunk.emit_op(Op::RETURN, 0);
+
+    let bytes = wasm::write_wasm(&[chunk]);
+    assert!(
+        !bytes.windows(2).any(|w| w == [0xff, 0x4f]),
+        "VM-only promise_suspend opcode must not be emitted to wasm"
+    );
+
+    let payload = custom_section_payload(&bytes, "vybe.jspi").expect("missing JSPI metadata");
+    let mut ip = 0;
+    let promising_count = read_leb_u32(payload, &mut ip);
+    for _ in 0..promising_count {
+        let _ = read_leb_u32(payload, &mut ip);
+    }
+    let suspending_count = read_leb_u32(payload, &mut ip);
+    let suspending: Vec<u32> = (0..suspending_count)
+        .map(|_| read_leb_u32(payload, &mut ip))
+        .collect();
+
+    assert_eq!(suspending, vec![0]);
+}
+
+#[test]
 fn core_comparison_opcodes_have_spec_byte_values() {
     assert_eq!(Op::I32_EQZ.sub(), 0x45);
     assert_eq!(Op::I32_EQ.sub(), 0x46);
@@ -258,6 +354,8 @@ fn simd_prefix_is_fd() {
 #[test]
 fn threads_prefix_is_fe() {
     assert_eq!(Op::ATOMIC_FENCE.prefix(), 0xFE);
+    assert_eq!(Op::MEMORY_ATOMIC_WAIT32.sub(), 0x01);
+    assert_eq!(Op::MEMORY_ATOMIC_WAIT64.sub(), 0x02);
     assert_eq!(Op::I32_ATOMIC_LOAD.prefix(), 0xFE);
     assert_eq!(Op::I64_ATOMIC_STORE.prefix(), 0xFE);
 }

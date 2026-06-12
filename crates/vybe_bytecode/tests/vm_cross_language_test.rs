@@ -5,6 +5,13 @@ use vybe_bytecode::value::{Object, ObjectKind};
 /// Verify that objects created by different language compilers are interoperable.
 use vybe_bytecode::*;
 
+fn assert_wasm_true(value: &Value, message: &str) {
+    assert!(
+        matches!(value, Value::Bool(true) | Value::I32(1)),
+        "{message}"
+    );
+}
+
 /// Simulate what Python `{"name": "Rex", "age": 3}` compiles to
 fn make_python_dict() -> Value {
     let mut obj = Object::new();
@@ -173,7 +180,7 @@ fn ref_test_works_across_languages() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Bool(true)));
+    assert_wasm_true(&result, "Dog should match Dog");
 }
 
 #[test]
@@ -199,10 +206,7 @@ fn inheritance_works_across_languages() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(
-        matches!(result, Value::Bool(true)),
-        "Dog should be instanceof Animal"
-    );
+    assert_wasm_true(&result, "Dog should be instanceof Animal");
 }
 
 #[test]
@@ -232,10 +236,7 @@ fn interface_works_across_languages() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(
-        matches!(result, Value::Bool(true)),
-        "Dog implements IAnimal"
-    );
+    assert_wasm_true(&result, "Dog implements IAnimal");
 }
 
 #[test]

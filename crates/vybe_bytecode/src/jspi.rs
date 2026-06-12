@@ -84,6 +84,7 @@ impl VM {
             .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
+        self.exception_handlers = fiber.exception_handlers;
         self.active_continuations = fiber.active_continuations;
         if let Some(val) = push_value {
             self.push(val)?;
@@ -108,6 +109,7 @@ impl VM {
             .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
+        self.exception_handlers = fiber.exception_handlers;
         self.active_continuations = fiber.active_continuations;
 
         // Rejected promise: throw the reason into the resuming fiber so that
@@ -127,7 +129,7 @@ impl VM {
         // Continue execution
         match self.execute_with_async()? {
             ExecResult::Done(val) => Ok(val),
-            ExecResult::Suspended(_) => Ok(Value::Null), // re-suspended, event loop will handle
+            ExecResult::Suspended { .. } => Ok(Value::Null), // re-suspended, event loop will handle
         }
     }
 
@@ -149,7 +151,7 @@ impl VM {
 
     /// Check if there are any JSPI-suspended fibers waiting for resolution.
     pub fn has_pending_jspi(&self) -> bool {
-        self.event_loop.borrow().has_pending()
+        !self.event_loop.borrow().waiting_fibers.is_empty()
     }
 
     /// Save the current execution state to a Fiber.
@@ -197,9 +199,11 @@ impl VM {
         let stack = self.stack.drain(..).collect();
         let upvalues = self.open_upvalues.drain(..).collect();
         let labels = self.label_stack.drain(..).collect();
+        let handlers = self.exception_handlers.drain(..).collect();
         let conts = self.active_continuations.drain(..).collect();
         Fiber::new(stack, frames, upvalues)
             .with_labels(labels)
+            .with_exception_handlers(handlers)
             .with_continuations(conts)
     }
 }
