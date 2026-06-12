@@ -63,6 +63,14 @@ fn two_distinct_local_slots() {
     assert_eq!(r.as_i32(), 30);
 }
 
+#[test]
+fn unset_local_get_returns_null() {
+    let r = run(|c| {
+        c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    });
+    assert!(matches!(r, Value::Null));
+}
+
 // ── local.tee ────────────────────────────────────────────────────────────
 
 #[test]
@@ -138,4 +146,25 @@ fn global_set_overwrites_init_value() {
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 100);
+}
+
+#[test]
+fn missing_global_get_returns_undefined() {
+    let mut c = Chunk::new("<script>");
+    let name_k = c.add_constant(Value::String(Arc::from("__missing")));
+    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).expect("run failed");
+    assert!(matches!(r, Value::Undefined));
+}
+
+#[test]
+fn global_set_leaves_assigned_value_on_stack() {
+    let mut c = Chunk::new("<script>");
+    let name_k = c.add_constant(Value::String(Arc::from("__stack")));
+    push_i32(&mut c, 12);
+    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).expect("run failed");
+    assert_eq!(r.as_i32(), 12);
 }

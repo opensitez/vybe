@@ -23,6 +23,11 @@ fn push_i32(c: &mut Chunk, v: i32) {
     c.emit_op_u16(Op::CONST, k, 0);
 }
 
+fn push_f64(c: &mut Chunk, v: f64) {
+    let k = c.add_constant(Value::F64(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
+
 // ── unreachable ──────────────────────────────────────────────────────────
 
 #[test]
@@ -115,6 +120,28 @@ fn select_with_negative_condition_picks_first() {
     assert_eq!(r.as_i32(), 10);
 }
 
+#[test]
+fn select_preserves_f64_values() {
+    let r = run(|c| {
+        push_f64(c, 1.25);
+        push_f64(c, -4.5);
+        push_i32(c, 0);
+        c.emit_op(Op::SELECT, 0);
+    });
+    assert_eq!(r.as_f64(), -4.5);
+}
+
+#[test]
+fn select_preserves_reference_values() {
+    let r = run(|c| {
+        c.emit_op(Op::NULL, 0);
+        c.emit_op(Op::NULL, 0);
+        push_i32(c, 1);
+        c.emit_op(Op::SELECT, 0);
+    });
+    assert!(matches!(r, Value::Null));
+}
+
 // ── select_t ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -137,4 +164,15 @@ fn select_t_picks_second_when_zero() {
         c.emit_op(Op::SELECT_T, 0);
     });
     assert_eq!(r.as_i32(), 20);
+}
+
+#[test]
+fn select_t_preserves_f64_values() {
+    let r = run(|c| {
+        push_f64(c, 2.5);
+        push_f64(c, 9.75);
+        push_i32(c, -1);
+        c.emit_op(Op::SELECT_T, 0);
+    });
+    assert_eq!(r.as_f64(), 2.5);
 }

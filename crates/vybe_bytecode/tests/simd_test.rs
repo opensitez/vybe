@@ -792,6 +792,136 @@ fn mem_run(setup: impl FnOnce(&mut VM), emit: impl FnOnce(&mut Chunk)) -> Value 
     vm.run(vec![c]).expect("run failed")
 }
 
+fn simd_mem_err(mem_size: usize, emit: impl FnOnce(&mut Chunk)) -> String {
+    let mut vm = VM::new();
+    vm.memory.resize(mem_size, 0);
+    let mut c = Chunk::new("<script>");
+    emit(&mut c);
+    c.emit_op(Op::RETURN, 0);
+    vm.run(vec![c]).unwrap_err().to_string()
+}
+
+fn simd_store_lane_memory(
+    op: Op,
+    lane: u8,
+    addr: i32,
+    vec: [u8; 16],
+    mem_size: usize,
+) -> Vec<u8> {
+    let mut vm = VM::new();
+    vm.memory.resize(mem_size, 0);
+    let mut c = Chunk::new("<script>");
+    emit_v128_const(&mut c, vec);
+    push_i32(&mut c, addr);
+    c.emit_op(op, 0);
+    c.emit(lane, 0);
+    push_i32(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    vm.run(vec![c]).expect("run failed");
+    let mut out = vec![0; mem_size];
+    vm.memory.read_bytes(0, &mut out);
+    out
+}
+
+fn assert_simd_oob(mem_size: usize, emit: impl FnOnce(&mut Chunk)) {
+    let err = simd_mem_err(mem_size, emit);
+    assert!(
+        err.contains("out of bounds") || err.contains("trap"),
+        "expected SIMD memory trap, got {err}"
+    );
+}
+
+#[test]
+fn v128_load_oob_traps() {
+    assert_simd_oob(15, |c| {
+        push_i32(c, 0);
+        c.emit_op(Op::V128_LOAD, 0);
+    });
+}
+
+#[test]
+fn v128_store_oob_traps() {
+    assert_simd_oob(15, |c| {
+        push_i32(c, 0);
+        emit_v128_const(c, [1; 16]);
+        c.emit_op(Op::V128_STORE, 0);
+    });
+}
+
+#[test]
+fn v128_load64_lane_oob_traps() {
+    assert_simd_oob(7, |c| {
+        push_i32(c, 0);
+        emit_v128_const(c, [0; 16]);
+        c.emit_op(Op::V128_LOAD64_LANE, 0);
+        c.emit(0u8, 0);
+    });
+}
+
+#[test]
+fn simd_load_extend_and_splat_variants_oob_trap() {
+    let cases: &[(Op, usize)] = &[
+        (Op::V128_LOAD8X8_S, 7),
+        (Op::V128_LOAD8X8_U, 7),
+        (Op::V128_LOAD16X4_S, 7),
+        (Op::V128_LOAD16X4_U, 7),
+        (Op::V128_LOAD32X2_S, 7),
+        (Op::V128_LOAD32X2_U, 7),
+        (Op::V128_LOAD8_SPLAT, 0),
+        (Op::V128_LOAD16_SPLAT, 1),
+        (Op::V128_LOAD32_SPLAT, 3),
+        (Op::V128_LOAD64_SPLAT, 7),
+        (Op::V128_LOAD32_ZERO, 3),
+        (Op::V128_LOAD64_ZERO, 7),
+    ];
+
+    for (op, mem_size) in cases {
+        assert_simd_oob(*mem_size, |c| {
+            push_i32(c, 0);
+            c.emit_op(*op, 0);
+        });
+    }
+}
+
+#[test]
+fn simd_load_lane_variants_oob_trap() {
+    let cases: &[(Op, usize)] = &[
+        (Op::V128_LOAD8_LANE, 0),
+        (Op::V128_LOAD16_LANE, 1),
+        (Op::V128_LOAD32_LANE, 3),
+        (Op::V128_LOAD64_LANE, 7),
+    ];
+
+    for (op, mem_size) in cases {
+        assert_simd_oob(*mem_size, |c| {
+            push_i32(c, 0);
+            emit_v128_const(c, [0; 16]);
+            c.emit_op(*op, 0);
+            c.emit(0u8, 0);
+        });
+    }
+}
+
+#[test]
+fn simd_store_lane_variants_oob_trap() {
+    let cases: &[(Op, usize)] = &[
+        (Op::V128_STORE8_LANE, 0),
+        (Op::V128_STORE16_LANE, 1),
+        (Op::V128_STORE32_LANE, 3),
+        (Op::V128_STORE64_LANE, 7),
+    ];
+
+    for (op, mem_size) in cases {
+        assert_simd_oob(*mem_size, |c| {
+            emit_v128_const(c, [1; 16]);
+            push_i32(c, 0);
+            c.emit_op(*op, 0);
+            c.emit(0u8, 0);
+            push_i32(c, 0);
+        });
+    }
+}
+
 #[test]
 fn v128_load8x8_s_sign_extends() {
     // Write 0xFF (-1 as i8) to addr 0; expect sign-extended to -1 as i16 in all 8 lanes
@@ -1056,29 +1186,80 @@ fn v128_load8_lane_replaces_one_byte() {
 }
 
 #[test]
-fn v128_store8_lane_writes_one_byte() {
-    mem_run(
-        |_| {},
-        |c| {
-            emit_v128_const(c, [99; 16]); // vec (all 99)
-            push_i32(c, 10); // addr
-            c.emit_op(Op::V128_STORE8_LANE, 0);
-            c.emit(3u8, 0); // lane 3
-            push_i32(c, 0); // dummy return
-        },
-    );
-    // We can't easily read back memory in this helper — test via load
+fn v128_load16_lane_replaces_two_bytes() {
     let r = as_v128(mem_run(
         |vm| {
-            // Setup: store lane 3 of [99;16] to addr 10
-            let _ = vm.memory.store_u8(10, 99);
+            let _ = vm.memory.store_u8(2, 0x34);
+            let _ = vm.memory.store_u8(3, 0x12);
         },
         |c| {
-            push_i32(c, 10);
-            c.emit_op(Op::V128_LOAD8_SPLAT, 0);
+            push_i32(c, 2);
+            emit_v128_const(c, [0xAA; 16]);
+            c.emit_op(Op::V128_LOAD16_LANE, 0);
+            c.emit(4u8, 0);
         },
     ));
-    assert!(r.iter().all(|&b| b == 99));
+
+    assert_eq!(&r[8..10], &[0x34, 0x12]);
+    assert_eq!(&r[0..8], &[0xAA; 8]);
+    assert_eq!(&r[10..16], &[0xAA; 6]);
+}
+
+#[test]
+fn v128_load32_lane_replaces_four_bytes() {
+    let r = as_v128(mem_run(
+        |vm| {
+            for (i, byte) in 0x1234_5678u32.to_le_bytes().iter().enumerate() {
+                let _ = vm.memory.store_u8(4 + i, *byte);
+            }
+        },
+        |c| {
+            push_i32(c, 4);
+            emit_v128_const(c, [0xAA; 16]);
+            c.emit_op(Op::V128_LOAD32_LANE, 0);
+            c.emit(2u8, 0);
+        },
+    ));
+
+    assert_eq!(&r[8..12], &0x1234_5678u32.to_le_bytes());
+    assert_eq!(&r[0..8], &[0xAA; 8]);
+    assert_eq!(&r[12..16], &[0xAA; 4]);
+}
+
+#[test]
+fn v128_store8_lane_writes_one_byte() {
+    let mut vec = [0u8; 16];
+    vec[3] = 99;
+    let memory = simd_store_lane_memory(Op::V128_STORE8_LANE, 3, 10, vec, 16);
+    assert_eq!(memory[10], 99);
+    assert!(memory.iter().enumerate().all(|(i, &b)| i == 10 || b == 0));
+}
+
+#[test]
+fn v128_store16_lane_writes_two_bytes() {
+    let mut vec = [0u8; 16];
+    vec[4..6].copy_from_slice(&0x1234u16.to_le_bytes());
+    let memory = simd_store_lane_memory(Op::V128_STORE16_LANE, 2, 10, vec, 16);
+    assert_eq!(&memory[10..12], &0x1234u16.to_le_bytes());
+    assert!(memory.iter().enumerate().all(|(i, &b)| (10..12).contains(&i) || b == 0));
+}
+
+#[test]
+fn v128_store32_lane_writes_four_bytes() {
+    let mut vec = [0u8; 16];
+    vec[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+    let memory = simd_store_lane_memory(Op::V128_STORE32_LANE, 1, 8, vec, 16);
+    assert_eq!(&memory[8..12], &0x1234_5678u32.to_le_bytes());
+    assert!(memory.iter().enumerate().all(|(i, &b)| (8..12).contains(&i) || b == 0));
+}
+
+#[test]
+fn v128_store64_lane_writes_eight_bytes() {
+    let mut vec = [0u8; 16];
+    vec[8..16].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+    let memory = simd_store_lane_memory(Op::V128_STORE64_LANE, 1, 4, vec, 16);
+    assert_eq!(&memory[4..12], &0x0102_0304_0506_0708u64.to_le_bytes());
+    assert!(memory.iter().enumerate().all(|(i, &b)| (4..12).contains(&i) || b == 0));
 }
 
 #[test]

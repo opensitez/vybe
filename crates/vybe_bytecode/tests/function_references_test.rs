@@ -114,3 +114,28 @@ fn call_ref_with_multiple_args() {
     let result = vm.run(vec![script, add_fn]).unwrap();
     assert_eq!(result.as_i32(), 42);
 }
+
+#[test]
+fn call_ref_null_traps() {
+    let mut vm = VM::new();
+    let mut script = Chunk::new("<script>");
+    script.emit_op(opcode::Op::NULL_FUNC, 0);
+    script.emit_op_u8(opcode::Op::CALL_REF, 0, 0);
+    script.emit_op(opcode::Op::HALT, 0);
+
+    let err = vm.run(vec![script]).unwrap_err().to_string();
+    assert!(err.contains("call") || err.contains("function"));
+}
+
+#[test]
+fn call_ref_non_function_traps() {
+    let mut vm = VM::new();
+    let mut script = Chunk::new("<script>");
+    let k = script.add_constant(Value::I32(123));
+    script.emit_op_u16(opcode::Op::CONST, k, 0);
+    script.emit_op_u8(opcode::Op::CALL_REF, 0, 0);
+    script.emit_op(opcode::Op::HALT, 0);
+
+    let err = vm.run(vec![script]).unwrap_err().to_string();
+    assert!(err.contains("call") || err.contains("function"));
+}

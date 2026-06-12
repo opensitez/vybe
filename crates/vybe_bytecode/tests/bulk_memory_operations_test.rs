@@ -16,6 +16,15 @@ fn run_with_memory(mem_size: usize, emit: impl FnOnce(&mut Chunk)) -> VM {
     vm
 }
 
+fn run_with_memory_err(mem_size: usize, emit: impl FnOnce(&mut Chunk)) -> String {
+    let mut vm = VM::new();
+    vm.memory.resize(mem_size, 0);
+    let mut chunk = Chunk::new("<script>");
+    emit(&mut chunk);
+    chunk.emit_op(Op::RETURN, 0);
+    vm.run(vec![chunk]).unwrap_err().to_string()
+}
+
 fn push_i32(c: &mut Chunk, v: i32) {
     let idx = c.add_constant(Value::I32(v));
     c.emit_op_u16(Op::CONST, idx, 0);
@@ -57,6 +66,17 @@ fn memory_fill_zero_count_is_noop() {
 }
 
 #[test]
+fn memory_fill_zero_count_at_memory_end_is_noop() {
+    let vm = run_with_memory(64, |c| {
+        push_i32(c, 64);
+        push_i32(c, 0xFF);
+        push_i32(c, 0);
+        c.emit_op(Op::MEMORY_FILL, 0);
+    });
+    assert_eq!(read_byte(&vm, 63), 0x00);
+}
+
+#[test]
 fn memory_fill_zero_byte_clears_range() {
     // Pre-fill then clear with 0
     let vm = run_with_memory(64, |c| {
@@ -73,6 +93,17 @@ fn memory_fill_zero_byte_clears_range() {
     assert_eq!(read_byte(&vm, 5), 0x00);
     assert_eq!(read_byte(&vm, 6), 0x00);
     assert_eq!(read_byte(&vm, 7), 0xFF); // after cleared range
+}
+
+#[test]
+fn memory_fill_oob_traps() {
+    let err = run_with_memory_err(4, |c| {
+        push_i32(c, 2);
+        push_i32(c, 0xAA);
+        push_i32(c, 3);
+        c.emit_op(Op::MEMORY_FILL, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
 }
 
 // ── memory.copy (0xFC 0x0A) ──────────────────────────────────────────
@@ -114,6 +145,21 @@ fn memory_copy_zero_count_is_noop() {
 }
 
 #[test]
+fn memory_copy_zero_count_at_memory_end_is_noop() {
+    let vm = run_with_memory(64, |c| {
+        push_i32(c, 0);
+        push_i32(c, 0xAA);
+        push_i32(c, 1);
+        c.emit_op(Op::MEMORY_FILL, 0);
+        push_i32(c, 64);
+        push_i32(c, 64);
+        push_i32(c, 0);
+        c.emit_op(Op::MEMORY_COPY, 0);
+    });
+    assert_eq!(read_byte(&vm, 0), 0xAA);
+}
+
+#[test]
 fn memory_copy_overlapping_forward() {
     // src=[0..4]=0x77, dst=[2..6] — overlap, must copy correctly
     let vm = run_with_memory(256, |c| {
@@ -130,16 +176,71 @@ fn memory_copy_overlapping_forward() {
     assert_eq!(read_byte(&vm, 5), 0x77);
 }
 
+#[test]
+fn memory_copy_source_oob_traps() {
+    let err = run_with_memory_err(4, |c| {
+        push_i32(c, 0);
+        push_i32(c, 2);
+        push_i32(c, 3);
+        c.emit_op(Op::MEMORY_COPY, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
+#[test]
+fn memory_copy_destination_oob_traps() {
+    let err = run_with_memory_err(4, |c| {
+        push_i32(c, 2);
+        push_i32(c, 0);
+        push_i32(c, 3);
+        c.emit_op(Op::MEMORY_COPY, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
 // ── data.drop (0xFC 0x09) ────────────────────────────────────────────
 
 #[test]
 fn data_drop_does_not_trap() {
-    // data.drop is a stub in the VM — verify it executes without error
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_u8(Op::DATA_DROP, 0, 0); // data segment index 0
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("data.drop should not trap");
+}
+
+#[test]
+fn memory_init_zero_count_without_drop_is_noop() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    push_i32(&mut chunk, 0); // dst
+    push_i32(&mut chunk, 0); // src offset
+    push_i32(&mut chunk, 0); // count
+    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    vm.run(vec![chunk])
+        .expect("zero-count memory.init should not trap before data.drop");
+}
+
+#[test]
+fn memory_init_after_data_drop_traps() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u8(Op::DATA_DROP, 0, 0);
+    push_i32(&mut chunk, 0); // dst
+    push_i32(&mut chunk, 0); // src offset
+    push_i32(&mut chunk, 0); // count
+    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = vm
+        .run(vec![chunk])
+        .expect_err("memory.init after data.drop must trap");
+    assert!(
+        err.to_string().contains("data segment dropped"),
+        "unexpected trap: {err}"
+    );
 }
 
 // ── table.copy (0xFC 0x0E) ───────────────────────────────────────────
@@ -212,4 +313,25 @@ fn table_init_stub_does_not_trap() {
     chunk.emit_op_u8(Op::TABLE_INIT, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("table.init should not trap");
+}
+
+#[test]
+fn table_init_after_elem_drop_traps() {
+    let mut vm = VM::new();
+    vm.func_table.resize(8, Value::Null);
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
+    push_i32(&mut chunk, 0); // dst
+    push_i32(&mut chunk, 0); // src offset
+    push_i32(&mut chunk, 0); // count
+    chunk.emit_op_u8(Op::TABLE_INIT, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = vm
+        .run(vec![chunk])
+        .expect_err("table.init after elem.drop must trap");
+    assert!(
+        err.to_string().contains("element segment dropped"),
+        "unexpected trap: {err}"
+    );
 }

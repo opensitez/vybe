@@ -539,6 +539,17 @@ fn i64_rem_s_by_zero_traps() {
     );
 }
 #[test]
+fn i64_rem_u_by_zero_traps() {
+    assert!(
+        run_err(|c| {
+            push_i64(c, 1);
+            push_i64(c, 0);
+            c.emit_op(Op::I64_REM_U, 0);
+        })
+        .contains("trap")
+    );
+}
+#[test]
 fn i64_div_s_min_neg1_traps() {
     assert!(
         run_err(|c| {
@@ -568,6 +579,58 @@ fn i64_shl_by_64_same_as_0() {
             push_i64(c, 1);
             push_i64(c, 64);
             c.emit_op(Op::I64_SHL, 0);
+        })
+        .as_i64(),
+        1
+    );
+}
+
+#[test]
+fn i64_shr_s_by_64_same_as_0() {
+    assert_eq!(
+        run(|c| {
+            push_i64(c, -1);
+            push_i64(c, 64);
+            c.emit_op(Op::I64_SHR_S, 0);
+        })
+        .as_i64(),
+        -1
+    );
+}
+
+#[test]
+fn i64_shr_u_by_64_same_as_0() {
+    assert_eq!(
+        run(|c| {
+            push_i64(c, -1);
+            push_i64(c, 64);
+            c.emit_op(Op::I64_SHR_U, 0);
+        })
+        .as_i64(),
+        -1
+    );
+}
+
+#[test]
+fn i64_rotl_by_64_same_as_0() {
+    assert_eq!(
+        run(|c| {
+            push_i64(c, 0x1234_5678_9abc_def0_u64 as i64);
+            push_i64(c, 64);
+            c.emit_op(Op::I64_ROTL, 0);
+        })
+        .as_i64(),
+        0x1234_5678_9abc_def0_u64 as i64
+    );
+}
+
+#[test]
+fn i64_rotr_by_65_same_as_1() {
+    assert_eq!(
+        run(|c| {
+            push_i64(c, 2);
+            push_i64(c, 65);
+            c.emit_op(Op::I64_ROTR, 0);
         })
         .as_i64(),
         1

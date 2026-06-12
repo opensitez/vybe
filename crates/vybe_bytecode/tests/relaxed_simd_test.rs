@@ -9,6 +9,41 @@
 use vybe_bytecode::value::Value;
 use vybe_bytecode::{Chunk, Op, VM};
 
+#[test]
+fn relaxed_simd_internal_subopcodes_map_to_spec_range() {
+    let ops = [
+        Op::I8X16_RELAXED_SWIZZLE,
+        Op::I32X4_RELAXED_TRUNC_F32X4_S,
+        Op::I32X4_RELAXED_TRUNC_F32X4_U,
+        Op::I32X4_RELAXED_TRUNC_F64X2_S_ZERO,
+        Op::I32X4_RELAXED_TRUNC_F64X2_U_ZERO,
+        Op::F32X4_RELAXED_MADD,
+        Op::F32X4_RELAXED_NMADD,
+        Op::F64X2_RELAXED_MADD,
+        Op::F64X2_RELAXED_NMADD,
+        Op::I8X16_RELAXED_LANESELECT,
+        Op::I16X8_RELAXED_LANESELECT,
+        Op::I32X4_RELAXED_LANESELECT,
+        Op::I64X2_RELAXED_LANESELECT,
+        Op::F32X4_RELAXED_MIN,
+        Op::F32X4_RELAXED_MAX,
+        Op::F64X2_RELAXED_MIN,
+        Op::F64X2_RELAXED_MAX,
+        Op::I16X8_RELAXED_Q15MULR_S,
+        Op::I16X8_RELAXED_DOT_I8X16_I7X16_S,
+        Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,
+    ];
+
+    for (internal_sub, op) in ops.into_iter().enumerate() {
+        assert_eq!(op.prefix(), 0xDD);
+        assert_eq!(op.sub(), internal_sub as u8);
+        assert_eq!(
+            vybe_bytecode::opcode::relaxed_simd::spec_sub(op.sub()),
+            0x100 + internal_sub as u32
+        );
+    }
+}
+
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut c = Chunk::new("<script>");
     emit(&mut c);

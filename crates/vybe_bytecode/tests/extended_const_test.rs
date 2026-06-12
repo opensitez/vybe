@@ -101,6 +101,60 @@ fn global_init_chain() {
 }
 
 #[test]
+fn global_init_missing_global_get_yields_null() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.add_global_init("MISSING_REF", ConstExpr::GlobalGet("DOES_NOT_EXIST".into()));
+
+    let name = chunk.add_constant(Value::String(Arc::from("MISSING_REF")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert!(matches!(result, Value::Null));
+}
+
+#[test]
+fn global_init_i64_arithmetic_wraps() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.add_global_init(
+        "I64_WRAP",
+        ConstExpr::Add(
+            Box::new(ConstExpr::Value(Value::I64(i64::MAX))),
+            Box::new(ConstExpr::Value(Value::I64(1))),
+        ),
+    );
+
+    let name = chunk.add_constant(Value::String(Arc::from("I64_WRAP")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_i64(), i64::MIN);
+}
+
+#[test]
+fn global_init_f64_arithmetic_preserves_float_type() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.add_global_init(
+        "F64_PRODUCT",
+        ConstExpr::Mul(
+            Box::new(ConstExpr::Value(Value::F64(1.5))),
+            Box::new(ConstExpr::Value(Value::F64(2.0))),
+        ),
+    );
+
+    let name = chunk.add_constant(Value::String(Arc::from("F64_PRODUCT")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_f64(), 3.0);
+}
+
+#[test]
 fn global_init_runtime_opcode() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
@@ -168,6 +222,73 @@ fn cont_new_typed_stores_tag() {
         }
         other => panic!("expected Object, got {:?}", other),
     }
+}
+
+#[test]
+fn suspend_typed_rejects_wrong_yield_type() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    let tag_idx = chunk.add_continuation_tag("yield_i32", "i32", "any");
+    let value = chunk.add_constant(Value::String(Arc::from("not an i32")));
+
+    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_op_u16(Op::SUSPEND_TYPED, tag_idx, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let err = vm.run(vec![chunk]).expect_err("typed suspend should trap");
+    assert!(
+        err.to_string()
+            .contains("suspend_typed: yield type mismatch"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn resume_typed_rejects_wrong_resume_type() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 2;
+    let tag_idx = chunk.add_continuation_tag("resume_i32", "any", "i32");
+    let resume_value = chunk.add_constant(Value::String(Arc::from("not an i32")));
+
+    chunk.emit_op_u16(Op::REF_FUNC, 0, 0);
+    chunk.emit(0, 0);
+    chunk.emit_op_u16(Op::CONT_NEW_TYPED, tag_idx, 0);
+    chunk.emit_op_u16(Op::CONST, resume_value, 0);
+    chunk.emit_op_u16(Op::RESUME_TYPED, tag_idx, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let err = vm.run(vec![chunk]).expect_err("typed resume should trap");
+    assert!(
+        err.to_string()
+            .contains("resume_typed: resume type mismatch"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn resume_typed_rejects_wrong_tag() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 2;
+    let actual_tag = chunk.add_continuation_tag("actual", "any", "any");
+    let wrong_tag = chunk.add_continuation_tag("wrong", "any", "any");
+    let resume_value = chunk.add_constant(Value::I32(1));
+
+    chunk.emit_op_u16(Op::REF_FUNC, 0, 0);
+    chunk.emit(0, 0);
+    chunk.emit_op_u16(Op::CONT_NEW_TYPED, actual_tag, 0);
+    chunk.emit_op_u16(Op::CONST, resume_value, 0);
+    chunk.emit_op_u16(Op::RESUME_TYPED, wrong_tag, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let err = vm
+        .run(vec![chunk])
+        .expect_err("wrong typed resume tag should trap");
+    assert!(
+        err.to_string().contains("resume_typed: tag mismatch"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

@@ -7,7 +7,50 @@
 
 use std::sync::Arc;
 use vybe_bytecode::value::Value;
+use vybe_bytecode::wasm;
 use vybe_bytecode::{Chunk, Op, VM};
+
+fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn push_section(out: &mut Vec<u8>, id: u8, payload: &[u8]) {
+    out.push(id);
+    write_leb_u32(out, payload.len() as u32);
+    out.extend_from_slice(payload);
+}
+
+fn standard_eh_module(body_ops: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+
+    let mut body = Vec::new();
+    body.push(0x00);
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+
+    let mut code = Vec::new();
+    code.push(0x01);
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+
+    out
+}
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     run_locals(0, emit)
@@ -26,6 +69,26 @@ fn run_err(emit: impl FnOnce(&mut Chunk)) -> String {
     emit(&mut chunk);
     chunk.emit_op(Op::RETURN, 0);
     VM::new().run(vec![chunk]).unwrap_err().to_string()
+}
+
+#[test]
+fn standard_rethrow_must_not_decode_as_noop() {
+    let bytes = standard_eh_module(&[
+        0x09, 0x00, // rethrow 0
+    ]);
+
+    let err = wasm::read_wasm(&bytes).unwrap_err();
+    assert!(err.contains("rethrow"));
+}
+
+#[test]
+fn standard_delegate_must_not_decode_as_noop() {
+    let bytes = standard_eh_module(&[
+        0x18, 0x00, // delegate 0
+    ]);
+
+    let err = wasm::read_wasm(&bytes).unwrap_err();
+    assert!(err.contains("delegate"));
 }
 
 /// Emit TRY_TABLE with one catch-all handler pointing `body_bytes` ahead.
@@ -156,6 +219,18 @@ fn emit_try_table_typed(c: &mut Chunk, tag_byte: u8, body_bytes: u16) {
     c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
 }
 
+fn emit_try_table_typed_then_catch_all(c: &mut Chunk, tag_byte: u8, body_bytes: u16) {
+    c.emit_op(Op::TRY_TABLE, 0);
+    c.emit(2, 0); // handler_count
+    let first_handler_offset = body_bytes + 3;
+    c.emit(tag_byte, 0);
+    c.emit((first_handler_offset >> 8) as u8, 0);
+    c.emit((first_handler_offset & 0xFF) as u8, 0);
+    c.emit(0, 0); // catch-all fallback
+    c.emit((body_bytes >> 8) as u8, 0);
+    c.emit((body_bytes & 0xFF) as u8, 0);
+}
+
 #[test]
 fn typed_catch_matches_when_exception_type_matches() {
     // Register tag "ValueError" = tag index 1 (0 is catch-all sentinel).
@@ -236,4 +311,38 @@ fn typed_catch_with_object_exception_type() {
         c.emit_op_u16(Op::CONST, caught, 0);
     });
     assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn typed_catch_falls_through_to_later_catch_all() {
+    let r = run(|c| {
+        let tag_idx = c.add_exception_tag("TypeError");
+        let err_str = c.add_constant(Value::String(Arc::from("ValueError: wrong")));
+        let caught = c.add_constant(Value::I32(77));
+
+        emit_try_table_typed_then_catch_all(c, tag_idx, 6);
+        c.emit_op_u16(Op::CONST, err_str, 0);
+        c.emit_op(Op::THROW, 0);
+
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, caught, 0);
+    });
+    assert_eq!(r.as_i32(), 77);
+}
+
+#[test]
+fn typed_catch_precedes_later_catch_all_when_it_matches() {
+    let r = run(|c| {
+        let tag_idx = c.add_exception_tag("TypeError");
+        let err_str = c.add_constant(Value::String(Arc::from("TypeError: bad")));
+        let caught = c.add_constant(Value::I32(88));
+
+        emit_try_table_typed_then_catch_all(c, tag_idx, 6);
+        c.emit_op_u16(Op::CONST, err_str, 0);
+        c.emit_op(Op::THROW, 0);
+
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, caught, 0);
+    });
+    assert_eq!(r.as_i32(), 88);
 }

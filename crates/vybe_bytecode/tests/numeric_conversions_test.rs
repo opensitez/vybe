@@ -122,6 +122,17 @@ fn i32_trunc_f32_u_neg_traps() {
     );
 }
 
+#[test]
+fn i32_trunc_f32_u_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
+            c.emit_op(Op::I32_TRUNC_F32_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
 // ── i32.trunc_f64_s (0xAA) / i32.trunc_f64_u (0xAB) ──────────────────────
 
 #[test]
@@ -146,6 +157,49 @@ fn i32_trunc_f64_s_negative() {
         -2
     );
 }
+
+#[test]
+fn i32_trunc_f64_s_accepts_exact_boundaries() {
+    assert_eq!(
+        run(|c| {
+            push_f64(c, i32::MAX as f64);
+            c.emit_op(Op::I32_FROM_F64, 0);
+        })
+        .as_i32(),
+        i32::MAX
+    );
+    assert_eq!(
+        run(|c| {
+            push_f64(c, i32::MIN as f64);
+            c.emit_op(Op::I32_FROM_F64, 0);
+        })
+        .as_i32(),
+        i32::MIN
+    );
+}
+
+#[test]
+fn i32_trunc_f64_s_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
+            c.emit_op(Op::I32_FROM_F64, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i32_trunc_f64_s_overflow_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, i32::MAX as f64 + 1024.0);
+            c.emit_op(Op::I32_FROM_F64, 0);
+        })
+        .contains("trap")
+    );
+}
+
 #[test]
 fn i32_trunc_f64_u_positive() {
     assert_eq!(
@@ -172,6 +226,17 @@ fn i32_trunc_f64_u_neg_traps() {
     assert!(
         run_err(|c| {
             push_f64(c, -0.5);
+            c.emit_op(Op::I32_TRUNC_F64_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i32_trunc_f64_u_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
             c.emit_op(Op::I32_TRUNC_F64_U, 0);
         })
         .contains("trap")
@@ -248,6 +313,18 @@ fn i64_trunc_f32_s_nan_traps() {
         .contains("trap")
     );
 }
+
+#[test]
+fn i64_trunc_f32_s_overflow_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f32::INFINITY as f64);
+            c.emit_op(Op::I64_TRUNC_F32_S, 0);
+        })
+        .contains("trap")
+    );
+}
+
 #[test]
 fn i64_trunc_f32_u_positive() {
     assert!(
@@ -264,6 +341,28 @@ fn i64_trunc_f32_u_neg_traps() {
     assert!(
         run_err(|c| {
             push_f64(c, -1.0);
+            c.emit_op(Op::I64_TRUNC_F32_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f32_u_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
+            c.emit_op(Op::I64_TRUNC_F32_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f32_u_overflow_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f32::INFINITY as f64);
             c.emit_op(Op::I64_TRUNC_F32_U, 0);
         })
         .contains("trap")
@@ -292,6 +391,61 @@ fn i64_trunc_f64_u() {
         })
         .as_i64() as u64,
         4_000_000_000
+    );
+}
+
+#[test]
+fn i64_trunc_f64_s_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
+            c.emit_op(Op::I64_TRUNC_F64_S, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f64_s_overflow_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, i64::MAX as f64 * 2.0);
+            c.emit_op(Op::I64_TRUNC_F64_S, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f64_u_negative_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, -1.0);
+            c.emit_op(Op::I64_TRUNC_F64_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f64_u_nan_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, f64::NAN);
+            c.emit_op(Op::I64_TRUNC_F64_U, 0);
+        })
+        .contains("trap")
+    );
+}
+
+#[test]
+fn i64_trunc_f64_u_overflow_traps() {
+    assert!(
+        run_err(|c| {
+            push_f64(c, u64::MAX as f64 * 2.0);
+            c.emit_op(Op::I64_TRUNC_F64_U, 0);
+        })
+        .contains("trap")
     );
 }
 

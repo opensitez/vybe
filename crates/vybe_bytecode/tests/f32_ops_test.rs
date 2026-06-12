@@ -208,6 +208,27 @@ fn f32_lt_nan_false() {
         0
     );
 }
+#[test]
+fn f32_ordered_comparisons_with_nan_are_false() {
+    for op in [Op::F32_GT, Op::F32_LE, Op::F32_GE] {
+        assert_eq!(
+            bool_result(run(|c| {
+                push(c, f32::NAN);
+                push(c, 1.0);
+                c.emit_op(op, 0);
+            })),
+            0
+        );
+        assert_eq!(
+            bool_result(run(|c| {
+                push(c, 1.0);
+                push(c, f32::NAN);
+                c.emit_op(op, 0);
+            })),
+            0
+        );
+    }
+}
 
 // ── f32 unary ─────────────────────────────────────────────────────────────
 
@@ -239,6 +260,26 @@ fn f32_neg() {
             c.emit_op(Op::F32_NEG, 0);
         })),
         -3.0
+    );
+}
+#[test]
+fn f32_neg_positive_zero_produces_negative_zero() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, 0.0);
+            c.emit_op(Op::F32_NEG, 0);
+        }))
+        .is_sign_negative()
+    );
+}
+#[test]
+fn f32_abs_negative_zero_produces_positive_zero() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, -0.0);
+            c.emit_op(Op::F32_ABS, 0);
+        }))
+        .is_sign_positive()
     );
 }
 #[test]
@@ -289,6 +330,16 @@ fn f32_sqrt() {
             c.emit_op(Op::F32_SQRT, 0);
         })),
         2.0
+    );
+}
+#[test]
+fn f32_sqrt_negative_is_nan() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, -1.0);
+            c.emit_op(Op::F32_SQRT, 0);
+        }))
+        .is_nan()
     );
 }
 
@@ -383,6 +434,17 @@ fn f32_copysign_negative() {
     );
 }
 #[test]
+fn f32_copysign_uses_negative_zero_sign() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, 3.0);
+            push(c, -0.0);
+            c.emit_op(Op::F32_COPYSIGN, 0);
+        }))
+        .is_sign_negative()
+    );
+}
+#[test]
 fn f32_div_by_zero_infinity() {
     assert!(
         f32_result(run(|c| {
@@ -457,5 +519,29 @@ fn f32_min_nan_second() {
             c.emit_op(Op::F32_MIN, 0);
         }))
         .is_nan()
+    );
+}
+
+#[test]
+fn f32_min_neg_zero() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, -0.0);
+            push(c, 0.0);
+            c.emit_op(Op::F32_MIN, 0);
+        }))
+        .is_sign_negative()
+    );
+}
+
+#[test]
+fn f32_max_pos_zero() {
+    assert!(
+        f32_result(run(|c| {
+            push(c, -0.0);
+            push(c, 0.0);
+            c.emit_op(Op::F32_MAX, 0);
+        }))
+        .is_sign_positive()
     );
 }

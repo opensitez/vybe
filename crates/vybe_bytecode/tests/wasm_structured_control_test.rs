@@ -310,6 +310,18 @@ fn if_false_skips_body() {
 }
 
 #[test]
+fn if_false_skips_unreachable_body() {
+    let mut c = Chunk::new("<script>");
+    make_i32(&mut c, 0);
+    c.emit_if(0);
+    c.emit_op(Op::UNREACHABLE, 0);
+    c.emit_end(0);
+    make_i32(&mut c, 7);
+    c.emit_op(Op::RETURN, 0);
+    run_chunk_expect_i32(c, 7);
+}
+
+#[test]
 fn if_else_takes_then_when_true() {
     // if (1) { 11 } else { 22 } end; return
     let mut c = Chunk::new("<script>");
@@ -384,6 +396,18 @@ fn block_br_exits_block() {
     c.emit_block(0);
     c.emit_br(0, 0);
     make_i32(&mut c, 0); // dead code
+    c.emit_end(0);
+    make_i32(&mut c, 99);
+    c.emit_op(Op::RETURN, 0);
+    run_chunk_expect_i32(c, 99);
+}
+
+#[test]
+fn block_br_skips_unreachable_tail() {
+    let mut c = Chunk::new("<script>");
+    c.emit_block(0);
+    c.emit_br(0, 0);
+    c.emit_op(Op::UNREACHABLE, 0);
     c.emit_end(0);
     make_i32(&mut c, 99);
     c.emit_op(Op::RETURN, 0);

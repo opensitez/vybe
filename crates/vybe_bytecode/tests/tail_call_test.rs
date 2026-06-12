@@ -44,6 +44,17 @@ fn return_call_ref_delivers_callee_result() {
     assert_eq!(r.as_i32(), 42);
 }
 
+#[test]
+fn return_call_ref_non_function_traps() {
+    let mut main = Chunk::new("<main>");
+    let not_func = main.add_constant(Value::I32(123));
+    main.emit_op_u16(opcode::Op::CONST, not_func, 0);
+    main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 0, 0);
+
+    let err = VM::new().run(vec![main]).unwrap_err().to_string();
+    assert!(err.contains("call") || err.contains("function"));
+}
+
 // ── RETURN_CALL ───────────────────────────────────────────────────────────
 
 #[test]
@@ -77,6 +88,18 @@ fn return_call_delivers_callee_result() {
 
     let r = VM::new().run(vec![main, add_one]).expect("run failed");
     assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn return_call_non_function_traps() {
+    let mut main = Chunk::new("<main>");
+    main.local_count = 1;
+    let not_func = main.add_constant(Value::I32(7));
+    main.emit_op_u16(opcode::Op::CONST, not_func, 0);
+    main.emit_op_u8(opcode::Op::RETURN_CALL, 0, 0);
+
+    let err = VM::new().run(vec![main]).unwrap_err().to_string();
+    assert!(err.contains("call") || err.contains("function"));
 }
 
 // ── RETURN_CALL_INDIRECT ──────────────────────────────────────────────────
@@ -122,6 +145,18 @@ fn return_call_indirect_via_function_table() {
 
     let r = VM::new().run(vec![main, triple_fn]).expect("run failed");
     assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn return_call_indirect_oob_table_index_traps() {
+    let mut main = Chunk::new("<main>");
+    main.local_count = 1;
+    let table_idx = main.add_constant(Value::I32(99));
+    main.emit_op_u16(opcode::Op::CONST, table_idx, 0);
+    main.emit_op_u8(opcode::Op::RETURN_CALL_INDIRECT, 0, 0);
+
+    let err = VM::new().run(vec![main]).unwrap_err().to_string();
+    assert!(err.contains("call_indirect") || err.contains("table"));
 }
 
 // ── Tail-call chain (the core spec purpose: no stack growth) ──────────────

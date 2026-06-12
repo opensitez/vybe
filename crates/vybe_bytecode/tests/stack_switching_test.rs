@@ -2,7 +2,50 @@
 //! fiber-based coroutine semantics.
 
 use vybe_bytecode::wasm::write_wasm;
+use vybe_bytecode::wasm;
 use vybe_bytecode::{Chunk, Op, VM, Value};
+
+fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn push_section(out: &mut Vec<u8>, id: u8, payload: &[u8]) {
+    out.push(id);
+    write_leb_u32(out, payload.len() as u32);
+    out.extend_from_slice(payload);
+}
+
+fn standard_stack_switching_module(body_ops: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+
+    let mut body = Vec::new();
+    body.push(0x00);
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+
+    let mut code = Vec::new();
+    code.push(0x01);
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+
+    out
+}
 
 // ── Binary emission ────────────────────────────────────────────────
 
@@ -119,6 +162,21 @@ fn stack_switching_tag_section_declares_suspend_tag() {
     panic!("tag section (id 13) not found");
 }
 
+#[test]
+fn standard_resume_with_handler_vector_must_not_decode_as_noop() {
+    let bytes = standard_stack_switching_module(&[
+        0xE3, // resume
+        0x00, // cont type index
+        0x01, // one handler
+        0x00, // on-tag-to-label
+        0x00, // tag index
+        0x00, // label index
+    ]);
+
+    let err = wasm::read_wasm(&bytes).unwrap_err();
+    assert!(err.contains("resume") && err.contains("handler"));
+}
+
 // ── VM coroutine semantics ─────────────────────────────────────────
 
 #[test]
@@ -184,6 +242,48 @@ fn resume_throw_emits_spec_byte() {
         find_byte_seq(&wasm, &[0xE4]),
         "RESUME_THROW should emit 0xE4 (resume_throw)"
     );
+}
+
+#[test]
+fn resume_throw_non_continuation_traps() {
+    let mut chunk = Chunk::new("<script>");
+    let not_cont = chunk.add_constant(Value::I32(1));
+    let exn = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, not_cont, 0);
+    chunk.emit_op_u16(Op::CONST, exn, 0);
+    chunk.emit_op_u16(Op::RESUME_THROW, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
+    assert!(err.contains("resume_throw") && err.contains("continuation"));
+}
+
+#[test]
+fn resume_non_continuation_traps() {
+    let mut chunk = Chunk::new("<script>");
+    let not_cont = chunk.add_constant(Value::I32(1));
+    let resume_value = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, not_cont, 0);
+    chunk.emit_op_u16(Op::CONST, resume_value, 0);
+    chunk.emit_op_u16(Op::RESUME, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
+    assert!(err.contains("resume") && err.contains("continuation"));
+}
+
+#[test]
+fn cont_bind_non_continuation_traps() {
+    let mut chunk = Chunk::new("<script>");
+    let not_cont = chunk.add_constant(Value::I32(1));
+    let arg = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, not_cont, 0);
+    chunk.emit_op_u16(Op::CONST, arg, 0);
+    chunk.emit_op_u8(Op::CONT_BIND, 1, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
+    assert!(err.contains("cont.bind") && err.contains("continuation"));
 }
 
 #[test]

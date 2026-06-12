@@ -706,3 +706,42 @@ fn i32_shr_s_by_32_same_as_0() {
         -1
     );
 }
+
+#[test]
+fn i32_shr_u_by_32_same_as_0() {
+    assert_eq!(
+        run(|c| {
+            push(c, -1);
+            push(c, 32);
+            c.emit_op(Op::I32_SHR_U, 0);
+        })
+        .as_i32(),
+        -1
+    );
+}
+
+#[test]
+fn i32_rotl_by_32_same_as_0() {
+    assert_eq!(
+        run(|c| {
+            push(c, 0x1234_5678);
+            push(c, 32);
+            c.emit_op(Op::I32_ROTL, 0);
+        })
+        .as_i32(),
+        0x1234_5678
+    );
+}
+
+#[test]
+fn i32_rotr_by_33_same_as_1() {
+    assert_eq!(
+        run(|c| {
+            push(c, 2);
+            push(c, 33);
+            c.emit_op(Op::I32_ROTR, 0);
+        })
+        .as_i32(),
+        1
+    );
+}

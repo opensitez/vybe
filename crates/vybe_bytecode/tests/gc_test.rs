@@ -23,6 +23,14 @@ fn run_err(emit: impl FnOnce(&mut Chunk)) -> String {
     VM::new().run(vec![chunk]).unwrap_err().to_string()
 }
 
+fn emit_op_u16_u16(chunk: &mut Chunk, op: Op, first: u16, second: u16, line: u32) {
+    chunk.emit_op(op, line);
+    chunk.emit((first >> 8) as u8, line);
+    chunk.emit((first & 0xff) as u8, line);
+    chunk.emit((second >> 8) as u8, line);
+    chunk.emit((second & 0xff) as u8, line);
+}
+
 // ── BR_ON_NULL ────────────────────────────────────────────────────────────
 
 #[test]
@@ -558,34 +566,47 @@ fn array_new_default_length_is_correct() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ARRAY.NEW_DATA / ARRAY.NEW_ELEM (0xFB 0x09 / 0x0A) — stub
+// ARRAY.NEW_DATA / ARRAY.NEW_ELEM (0xFB 0x09 / 0x0A)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn array_new_data_produces_empty_array() {
-    // VM stubs: produces an empty array (no data segment support yet)
-    let r = run(|c| {
+fn array_new_data_reads_data_segment() {
+    let mut vm = VM::new();
+    vm.set_data_segment(0, vec![10, 20, 30, 40]);
+    let mut c = Chunk::new("<test>");
+    {
         let size = c.add_constant(Value::I32(4));
         let offset = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, offset, 0);
         c.emit_op_u16(Op::CONST, size, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_DATA, 0, 0); // typeidx=0, dataidx=0
-        c.emit_op(Op::ARRAY_LENGTH, 0);
-    });
-    assert_eq!(r.as_i32(), 0); // empty
+        emit_op_u16_u16(&mut c, Op::ARRAY_NEW_DATA, 0, 0, 0);
+        let idx = c.add_constant(Value::I32(2));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+        c.emit_op(Op::HALT, 0);
+    }
+    let r = vm.run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 30);
 }
 
 #[test]
-fn array_new_elem_produces_empty_array() {
-    let r = run(|c| {
+fn array_new_elem_reads_elem_segment() {
+    let mut vm = VM::new();
+    vm.set_elem_segment(0, vec![Value::I32(7), Value::I32(8), Value::I32(9)]);
+    let mut c = Chunk::new("<test>");
+    {
         let size = c.add_constant(Value::I32(2));
-        let offset = c.add_constant(Value::I32(0));
+        let offset = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, offset, 0);
         c.emit_op_u16(Op::CONST, size, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_ELEM, 0, 0); // typeidx=0, elemidx=0
-        c.emit_op(Op::ARRAY_LENGTH, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
+        emit_op_u16_u16(&mut c, Op::ARRAY_NEW_ELEM, 0, 0, 0);
+        let idx = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+        c.emit_op(Op::HALT, 0);
+    }
+    let r = vm.run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 8);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -620,38 +641,71 @@ fn array_get_u_on_regular_array_reads_element() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ARRAY.INIT_DATA / ARRAY.INIT_ELEM (0xFB 0x12 / 0x13) — stub
+// ARRAY.INIT_DATA / ARRAY.INIT_ELEM (0xFB 0x12 / 0x13)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn array_init_data_is_noop() {
-    // Stub: pops [arr, dst_off, src_off, size], no return, array unchanged
-    let r = run_locals(1, |c| {
-        let zero = c.add_constant(Value::I32(0));
-        let v = c.add_constant(Value::I32(55));
-        // Create [55]
-        c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
+fn array_init_data_copies_into_array() {
+    let mut vm = VM::new();
+    vm.set_data_segment(0, vec![1, 2, 3, 4]);
+    let mut c = Chunk::new("<test>");
+    c.local_count = 1;
+    {
+        let one = c.add_constant(Value::I32(1));
+        let two = c.add_constant(Value::I32(2));
+        let null = c.add_constant(Value::Null);
+        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_op(Op::DROP, 0);
 
-        // array.init_data: pops [arr, dst_offset, src_offset, size]; reads typeidx u16 + dataidx u16
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, one, 0); // dst_offset
+        c.emit_op_u16(Op::CONST, two, 0); // src_offset
+        c.emit_op_u16(Op::CONST, one, 0); // size
+        emit_op_u16_u16(&mut c, Op::ARRAY_INIT_DATA, 0, 0, 0);
+
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+        c.emit_op(Op::HALT, 0);
+    }
+    let r = vm.run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 3);
+}
+
+#[test]
+fn array_init_elem_copies_into_array() {
+    let mut vm = VM::new();
+    vm.set_elem_segment(0, vec![Value::I32(11), Value::I32(12), Value::I32(13)]);
+    let mut c = Chunk::new("<test>");
+    c.local_count = 1;
+    {
+        let zero = c.add_constant(Value::I32(0));
+        let one = c.add_constant(Value::I32(1));
+        let two = c.add_constant(Value::I32(2));
+        let null = c.add_constant(Value::Null);
+        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
+
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, zero, 0); // dst_offset
-        c.emit_op_u16(Op::CONST, zero, 0); // src_offset
-        c.emit_op_u16(Op::CONST, zero, 0); // size
-        c.emit_op(Op::ARRAY_INIT_DATA, 0); // opcode (2 bytes)
-        c.emit(0, 0);
-        c.emit(0, 0); // typeidx = 0
-        c.emit(0, 0);
-        c.emit(0, 0); // dataidx = 0
+        c.emit_op_u16(Op::CONST, one, 0); // src_offset
+        c.emit_op_u16(Op::CONST, two, 0); // size
+        emit_op_u16_u16(&mut c, Op::ARRAY_INIT_ELEM, 0, 0, 0);
 
-        // array unchanged — element 0 is still 55
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op_u16(Op::CONST, one, 0);
         c.emit_op(Op::ARRAY_GET, 0);
-    });
-    assert_eq!(r.as_i32(), 55);
+        c.emit_op(Op::HALT, 0);
+    }
+    let r = vm.run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 13);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

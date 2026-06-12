@@ -224,6 +224,29 @@ fn f64_lt_nan_false() {
         0
     );
 }
+#[test]
+fn f64_ordered_comparisons_with_nan_are_false() {
+    for op in [Op::F64_GT, Op::F64_LE, Op::F64_GE] {
+        assert_eq!(
+            run(|c| {
+                push(c, f64::NAN);
+                push(c, 1.0);
+                c.emit_op(op, 0);
+            })
+            .as_i32(),
+            0
+        );
+        assert_eq!(
+            run(|c| {
+                push(c, 1.0);
+                push(c, f64::NAN);
+                c.emit_op(op, 0);
+            })
+            .as_i32(),
+            0
+        );
+    }
+}
 
 // ── f64 unary ─────────────────────────────────────────────────────────────
 
@@ -258,6 +281,28 @@ fn f64_neg() {
         })
         .as_f64(),
         -3.0
+    );
+}
+#[test]
+fn f64_neg_positive_zero_produces_negative_zero() {
+    assert!(
+        run(|c| {
+            push(c, 0.0);
+            c.emit_op(Op::F64_NEG, 0);
+        })
+        .as_f64()
+        .is_sign_negative()
+    );
+}
+#[test]
+fn f64_abs_negative_zero_produces_positive_zero() {
+    assert!(
+        run(|c| {
+            push(c, -0.0);
+            c.emit_op(Op::F64_ABS, 0);
+        })
+        .as_f64()
+        .is_sign_positive()
     );
 }
 #[test]
@@ -434,6 +479,18 @@ fn f64_copysign_negative() {
         })
         .as_f64(),
         -3.0
+    );
+}
+#[test]
+fn f64_copysign_uses_negative_zero_sign() {
+    assert!(
+        run(|c| {
+            push(c, 3.0);
+            push(c, -0.0);
+            c.emit_op(Op::F64_COPYSIGN, 0);
+        })
+        .as_f64()
+        .is_sign_negative()
     );
 }
 #[test]

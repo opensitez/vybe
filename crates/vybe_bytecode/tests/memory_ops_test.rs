@@ -368,6 +368,156 @@ fn run_mem(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> Value {
     vm.run(vec![c]).unwrap()
 }
 
+fn run_mem_err(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> String {
+    let mut c = Chunk::new("<script>");
+    c.local_count = 1;
+    emit(&mut c);
+    c.emit_op(Op::HALT, 0);
+    vm.run(vec![c]).unwrap_err().to_string()
+}
+
+// ── memarg offsets and traps ─────────────────────────────────────────────
+
+#[test]
+fn i32_load_store_apply_memarg_offset() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let base = c.add_constant(Value::I32(4));
+        let val = c.add_constant(Value::I32(0x1122_3344));
+        let zero = c.add_constant(Value::I32(0));
+
+        c.emit_op_u16(Op::CONST, base, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::I32_STORE, 0);
+        c.emit_leb_u32(2, 0); // natural i32 alignment
+        c.emit_leb_u32(8, 0); // effective address = 4 + 8
+
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::I32_LOAD, 0);
+        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(12, 0);
+    });
+    assert_eq!(r.as_i32(), 0x1122_3344);
+}
+
+#[test]
+fn f64_load_store_apply_memarg_offset() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let base = c.add_constant(Value::I32(5));
+        let val = c.add_constant(Value::F64(6.25));
+        let zero = c.add_constant(Value::I32(0));
+
+        c.emit_op_u16(Op::CONST, base, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::F64_STORE, 0);
+        c.emit_leb_u32(3, 0);
+        c.emit_leb_u32(9, 0);
+
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::F64_LOAD, 0);
+        c.emit_leb_u32(3, 0);
+        c.emit_leb_u32(14, 0);
+    });
+    assert_eq!(r.as_f64(), 6.25);
+}
+
+#[test]
+fn f32_load_store_apply_memarg_offset() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let base = c.add_constant(Value::I32(3));
+        let val = c.add_constant(Value::F64((-2.5f32) as f64));
+        let zero = c.add_constant(Value::I32(0));
+
+        c.emit_op_u16(Op::CONST, base, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::F32_STORE, 0);
+        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(17, 0);
+
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::F32_LOAD, 0);
+        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(20, 0);
+    });
+    assert_eq!(r.as_f64() as f32, -2.5f32);
+}
+
+#[test]
+fn i64_load16_s_applies_memarg_offset() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let base = c.add_constant(Value::I32(6));
+        let val = c.add_constant(Value::I64(-1234));
+        let zero = c.add_constant(Value::I32(0));
+
+        c.emit_op_u16(Op::CONST, base, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::I64_STORE16, 0);
+        c.emit_leb_u32(1, 0);
+        c.emit_leb_u32(12, 0);
+
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::I64_LOAD16_S, 0);
+        c.emit_leb_u32(1, 0);
+        c.emit_leb_u32(18, 0);
+    });
+    assert_eq!(r.as_i64(), -1234);
+}
+
+#[test]
+fn i32_load_oob_traps() {
+    let mut vm = VM::new();
+    vm.memory.resize(3, 0);
+    let err = run_mem_err(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I32_LOAD, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
+#[test]
+fn i64_store32_oob_traps() {
+    let mut vm = VM::new();
+    vm.memory.resize(2, 0);
+    let err = run_mem_err(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val = c.add_constant(Value::I64(1));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::I64_STORE32, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
+#[test]
+fn f32_load_oob_traps() {
+    let mut vm = VM::new();
+    vm.memory.resize(3, 0);
+    let err = run_mem_err(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::F32_LOAD, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
+#[test]
+fn f64_store_oob_traps() {
+    let mut vm = VM::new();
+    vm.memory.resize(7, 0);
+    let err = run_mem_err(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val = c.add_constant(Value::F64(1.0));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_op(Op::F64_STORE, 0);
+    });
+    assert!(err.contains("out of bounds") || err.contains("trap"));
+}
+
 // ── f32.store / f32.load ─────────────────────────────────────────────────
 
 #[test]

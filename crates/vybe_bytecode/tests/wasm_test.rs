@@ -1178,6 +1178,20 @@ fn call_ref_basic() {
 // Memory64
 // ============================================================
 
+fn emit_leb_u64(out: &mut Chunk, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.emit(byte, 0);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
 #[test]
 fn memory64_grow_and_load() {
     let mut chunk = Chunk::new("test");
@@ -1201,6 +1215,33 @@ fn memory64_grow_and_load() {
         Value::I32(42) => {}
         _ => panic!("Expected I32(42), got {:?}", result),
     }
+}
+
+#[test]
+fn memory64_load_store_apply_memarg_offset() {
+    let mut chunk = Chunk::new("test");
+    let pages = chunk.add_constant(Value::I64(1));
+    let base = chunk.add_constant(Value::I64(4));
+    let value = chunk.add_constant(Value::I32(99));
+
+    chunk.emit_op_u16(Op::CONST, pages, 0);
+    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
+    chunk.emit_op(Op::DROP, 0);
+
+    chunk.emit_op_u16(Op::CONST, base, 0);
+    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_op(Op::I32_STORE_64, 0);
+    chunk.emit_leb_u32(2, 0); // align
+    emit_leb_u64(&mut chunk, 8); // offset: effective address is 12
+
+    chunk.emit_op_u16(Op::CONST, base, 0);
+    chunk.emit_op(Op::I32_LOAD_64, 0);
+    chunk.emit_leb_u32(2, 0);
+    emit_leb_u64(&mut chunk, 8);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = run_chunks(vec![chunk]);
+    assert_eq!(result.as_i32(), 99);
 }
 
 // ============================================================
