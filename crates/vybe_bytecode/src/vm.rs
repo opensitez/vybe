@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak as ArcWeak};
 
@@ -468,6 +468,14 @@ pub struct VM {
     /// Additional memories for multi-memory support.
     /// memory index 0 = self.memory, index 1+ = extra_memories[i-1].
     pub(crate) extra_memories: Vec<Vec<u8>>,
+    /// Bulk-memory data segments that have been dropped.
+    pub(crate) dropped_data: HashSet<u32>,
+    /// Reference-types element segments that have been dropped.
+    pub(crate) dropped_elems: HashSet<u32>,
+    /// GC/bulk-memory data segment payloads loaded for VM execution.
+    pub(crate) data_segments: Vec<Vec<u8>>,
+    /// GC/reference-types element segment payloads loaded for VM execution.
+    pub(crate) elem_segments: Vec<Vec<Value>>,
     /// Currently selected memory index (for load/store ops). Default 0.
     pub(crate) active_memory: usize,
     /// Function table (WASM MVP) — for call_indirect. Also accessible
@@ -628,6 +636,10 @@ impl VM {
             type_registry: crate::typedef::TypeRegistry::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
+            dropped_data: HashSet::new(),
+            dropped_elems: HashSet::new(),
+            data_segments: Vec::new(),
+            elem_segments: Vec::new(),
             active_memory: 0,
             func_table: Vec::new(),
             extra_tables: Vec::new(),
@@ -663,6 +675,20 @@ impl VM {
     /// Restrict execution trace output to a specific chunk name.
     pub fn set_trace_chunk_filter(&mut self, chunk_name: Option<String>) {
         self.trace_chunk_filter = chunk_name;
+    }
+
+    pub fn set_data_segment(&mut self, index: usize, bytes: Vec<u8>) {
+        if self.data_segments.len() <= index {
+            self.data_segments.resize_with(index + 1, Vec::new);
+        }
+        self.data_segments[index] = bytes;
+    }
+
+    pub fn set_elem_segment(&mut self, index: usize, values: Vec<Value>) {
+        if self.elem_segments.len() <= index {
+            self.elem_segments.resize_with(index + 1, Vec::new);
+        }
+        self.elem_segments[index] = values;
     }
 
     /// Capture the current call stack for error reporting.
@@ -749,26 +775,47 @@ impl VM {
         }
     }
 
-    /// Get the size (in bytes) of the currently active memory.
-    pub(crate) fn active_mem_len(&self) -> usize {
-        if self.active_memory == 0 {
+    /// Get the size (in bytes) of a memory by spec memory index.
+    pub(crate) fn mem_len(&self, memidx: usize) -> usize {
+        if memidx == 0 {
             self.memory.len()
         } else {
-            let idx = self.active_memory - 1;
-            if idx < self.extra_memories.len() {
-                self.extra_memories[idx].len()
-            } else {
-                0
-            }
+            self.extra_memories
+                .get(memidx - 1)
+                .map_or(0, |mem| mem.len())
         }
     }
 
-    /// Grow the currently active memory by `pages` pages. Returns old page count.
-    pub(crate) fn active_mem_grow(&mut self, pages: usize) -> usize {
-        if self.active_memory == 0 {
+    fn instantiate_declared_memories(&mut self, min_pages: &[u64]) -> Result<(), crate::VMError> {
+        for (idx, pages) in min_pages.iter().copied().enumerate() {
+            let bytes_u64 = pages
+                .checked_mul(65536)
+                .ok_or_else(|| crate::VMError::new("memory declaration size overflow"))?;
+            let bytes = usize::try_from(bytes_u64)
+                .map_err(|_| crate::VMError::new("memory declaration size out of range"))?;
+            if idx == 0 {
+                if self.memory.len() < bytes {
+                    self.memory.resize(bytes, 0);
+                }
+            } else {
+                let extra_idx = idx - 1;
+                if self.extra_memories.len() <= extra_idx {
+                    self.extra_memories.resize_with(extra_idx + 1, Vec::new);
+                }
+                if self.extra_memories[extra_idx].len() < bytes {
+                    self.extra_memories[extra_idx].resize(bytes, 0);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Grow a memory by spec memory index. Returns old page count or `usize::MAX` on failure.
+    pub(crate) fn mem_grow(&mut self, memidx: usize, pages: usize) -> usize {
+        if memidx == 0 {
             self.memory.grow(pages)
         } else {
-            let idx = self.active_memory - 1;
+            let idx = memidx - 1;
             if idx >= self.extra_memories.len() {
                 self.extra_memories.resize_with(idx + 1, Vec::new);
             }
@@ -785,6 +832,76 @@ impl VM {
             };
             mem.resize(new_len, 0);
             old_pages
+        }
+    }
+
+    pub(crate) fn read_memory_bytes(
+        &self,
+        memidx: usize,
+        addr: usize,
+        size: usize,
+    ) -> Result<Vec<u8>, crate::VMError> {
+        if memidx == 0 {
+            self.memory.with_buffer(|buf| {
+                if addr.saturating_add(size) > buf.len() {
+                    Err(crate::VMError::new(format!(
+                        "trap: memory access out of bounds: addr={} size={} limit={}",
+                        addr,
+                        size,
+                        buf.len()
+                    )))
+                } else {
+                    Ok(buf[addr..addr + size].to_vec())
+                }
+            })
+        } else {
+            let mem = self.extra_mem(memidx);
+            if addr.saturating_add(size) > mem.len() {
+                Err(crate::VMError::new(format!(
+                    "trap: memory access out of bounds: addr={} size={} limit={}",
+                    addr,
+                    size,
+                    mem.len()
+                )))
+            } else {
+                Ok(mem[addr..addr + size].to_vec())
+            }
+        }
+    }
+
+    pub(crate) fn write_memory_bytes(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        bytes: &[u8],
+    ) -> Result<(), crate::VMError> {
+        if memidx == 0 {
+            self.memory.with_buffer_mut(|buf| {
+                if addr.saturating_add(bytes.len()) > buf.len() {
+                    Err(crate::VMError::new(format!(
+                        "trap: memory access out of bounds: addr={} size={} limit={}",
+                        addr,
+                        bytes.len(),
+                        buf.len()
+                    )))
+                } else {
+                    buf[addr..addr + bytes.len()].copy_from_slice(bytes);
+                    Ok(())
+                }
+            })
+        } else {
+            let mem = self.extra_mem_mut(memidx);
+            if addr.saturating_add(bytes.len()) > mem.len() {
+                Err(crate::VMError::new(format!(
+                    "trap: memory access out of bounds: addr={} size={} limit={}",
+                    addr,
+                    bytes.len(),
+                    mem.len()
+                )))
+            } else {
+                mem[addr..addr + bytes.len()].copy_from_slice(bytes);
+                Ok(())
+            }
         }
     }
 
@@ -1056,6 +1173,9 @@ impl VM {
     ///   let result = vm.invoke_callback(&predicate, &[element]);
     pub fn invoke_callback(&mut self, func_ref: &Value, args: &[Value]) -> Value {
         let saved_frame_depth = self.frames.len();
+        // Save the stack height so we can restore it after the callback returns,
+        // giving the callback an isolated value stack (WASM call-frame semantics).
+        let saved_stack_len = self.stack.len();
 
         // Push function ref + args onto stack
         self.stack.push(func_ref.clone());
@@ -1065,26 +1185,31 @@ impl VM {
 
         // Call the function (pushes a new frame for compiled fns; inline for host fns)
         if self.call_value(args.len()).is_err() {
+            self.stack.truncate(saved_stack_len);
             return Value::Null;
         }
 
         // Host functions run inline — no frame was pushed, result is already on the stack.
         // Calling execute_until would re-enter the dispatch loop at the wrong IP.
         if self.frames.len() == saved_frame_depth {
-            return self.stack.pop().unwrap_or(Value::Null);
+            let result = self.stack.pop().unwrap_or(Value::Null);
+            self.stack.truncate(saved_stack_len);
+            return result;
         }
 
-        // Execute until the callback frame returns
-        match self.execute_until(saved_frame_depth + 1) {
+        // Execute until the callback frame returns, then restore the stack to its
+        // pre-call height so the caller's expression stack is not polluted.
+        let result = match self.execute_until(saved_frame_depth + 1) {
             Ok(val) => val,
             Err(_) => {
-                // On error, unwind
                 while self.frames.len() > saved_frame_depth {
                     self.frames.pop();
                 }
                 Value::Null
             }
-        }
+        };
+        self.stack.truncate(saved_stack_len);
+        result
     }
 
     /// Convert a value to its string representation.
@@ -1429,6 +1554,9 @@ impl VM {
             }
         }
         self.chunks.extend(adjusted);
+
+        let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
+        self.instantiate_declared_memories(&declared_memories)?;
 
         // Resolve imports for ALL new chunks (not just script chunk).
         // Each chunk has its own import list. We build one unified import table

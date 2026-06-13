@@ -230,6 +230,31 @@ fn is_binary_typed_op(op: Op) -> bool {
     || op == Op::EQ || op == Op::NE
 }
 
+fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
+    ip + 1 < chunk.code.len() && Op::decode(chunk.code[ip], chunk.code[ip + 1]).is_some()
+}
+
+fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
+    if next_bytes_decode_opcode(chunk, *ip) {
+        return 0;
+    }
+    read_leb_u32(&chunk.code, ip)
+}
+
+fn read_optional_memarg(chunk: &Chunk, ip: &mut usize, default_align: u32) -> (u32, u64, u32) {
+    if next_bytes_decode_opcode(chunk, *ip) {
+        return (default_align, 0, 0);
+    }
+    let align = read_leb_u32(&chunk.code, ip);
+    let offset = read_leb_u32(&chunk.code, ip) as u64;
+    let memidx = if align & 0x40 != 0 {
+        read_leb_u32(&chunk.code, ip)
+    } else {
+        0
+    };
+    (align & !0x40, offset, memidx)
+}
+
 pub fn encode_code_section(
     chunks: &[Chunk],
     rt_imports: &[(&str, &str)],
@@ -395,8 +420,9 @@ pub fn encode_code_section(
                         // spec: data_idx, memory_idx
                         let data_idx = chunk.code[ip];
                         ip += 1;
+                        let memidx = read_optional_memidx_immediate(chunk, &mut ip);
                         write_leb128_u32(&mut body, data_idx as u32);
-                        write_leb128_u32(&mut body, 0); // memory index 0
+                        write_leb128_u32(&mut body, memidx);
                     }
                     Op::DATA_DROP => {
                         let data_idx = chunk.code[ip];
@@ -404,12 +430,15 @@ pub fn encode_code_section(
                         write_leb128_u32(&mut body, data_idx as u32);
                     }
                     Op::MEMORY_COPY => {
-                        // spec: dst_mem, src_mem (both 0 for single memory)
-                        write_leb128_u32(&mut body, 0);
-                        write_leb128_u32(&mut body, 0);
+                        // spec: dst_mem, src_mem
+                        let dst_mem = read_optional_memidx_immediate(chunk, &mut ip);
+                        let src_mem = read_optional_memidx_immediate(chunk, &mut ip);
+                        write_leb128_u32(&mut body, dst_mem);
+                        write_leb128_u32(&mut body, src_mem);
                     }
                     Op::MEMORY_FILL => {
-                        write_leb128_u32(&mut body, 0); // memory index 0
+                        let memidx = read_optional_memidx_immediate(chunk, &mut ip);
+                        write_leb128_u32(&mut body, memidx);
                     }
                     Op::TABLE_INIT => {
                         let elem_idx = chunk.code[ip];
@@ -588,18 +617,19 @@ fn emit_core_op(
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
             body.push(op.sub());
-            body.push(0x00);
+            let memidx = read_optional_memidx_immediate(chunk, ip);
+            write_leb128_u32(body, memidx);
         }
         // Memory load/store with alignment + offset
         _ if op == Op::I32_LOAD || op == Op::F32_LOAD => {
             body.push(op.sub());
-            body.push(0x02);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD || op == Op::F64_LOAD => {
             body.push(op.sub());
-            body.push(0x03);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_LOAD8_S
             || op == Op::I32_LOAD8_U
@@ -607,8 +637,8 @@ fn emit_core_op(
             || op == Op::I64_LOAD8_U =>
         {
             body.push(op.sub());
-            body.push(0x00);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_LOAD16_S
             || op == Op::I32_LOAD16_U
@@ -616,38 +646,38 @@ fn emit_core_op(
             || op == Op::I64_LOAD16_U =>
         {
             body.push(op.sub());
-            body.push(0x01);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD32_S || op == Op::I64_LOAD32_U => {
             body.push(op.sub());
-            body.push(0x02);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE || op == Op::F32_STORE => {
             body.push(op.sub());
-            body.push(0x02);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE || op == Op::F64_STORE => {
             body.push(op.sub());
-            body.push(0x03);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE8 || op == Op::I64_STORE8 => {
             body.push(op.sub());
-            body.push(0x00);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE16 || op == Op::I64_STORE16 => {
             body.push(op.sub());
-            body.push(0x01);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE32 => {
             body.push(op.sub());
-            body.push(0x02);
-            body.push(0x00);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            encode_memarg_with_memidx(body, align, offset, memidx);
         }
         // WASM global.get/set — resolved to indexed globals via global_map.
         // WASM global indices are module-wide: imported globals come first

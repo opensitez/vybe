@@ -37,6 +37,434 @@ fn wasm_output_is_at_least_8_bytes() {
     );
 }
 
+#[test]
+fn reader_ignores_unknown_custom_sections_in_any_position() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(
+        &mut bytes,
+        0,
+        &named_custom_section("before-type", b"ignored"),
+    );
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(
+        &mut bytes,
+        0,
+        &named_custom_section("between-type-func", b"ignored"),
+    );
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 0, &named_custom_section("before-code", b"ignored"));
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+    push_section(&mut bytes, 0, &named_custom_section("after-code", b"ignored"));
+
+    let chunks = wasm::read_wasm(&bytes).expect("custom sections must not affect decoding");
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[1].name, "func_0");
+}
+
+#[test]
+fn reader_rejects_duplicate_known_sections() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "binary modules must reject duplicate non-custom sections"
+    );
+}
+
+#[test]
+fn reader_rejects_known_sections_out_of_order() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "binary modules must reject known sections that appear out of order"
+    );
+}
+
+#[test]
+fn reader_rejects_function_and_code_count_mismatch() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x02, 0x00, 0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "function and code sections must declare the same number of functions"
+    );
+}
+
+#[test]
+fn reader_rejects_function_type_index_out_of_range() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x01]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "function section type indices must refer to declared function types"
+    );
+}
+
+#[test]
+fn reader_rejects_code_body_without_end_opcode() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x01]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "each code body must terminate with the wasm end opcode"
+    );
+}
+
+#[test]
+fn reader_rejects_instruction_validation_errors() {
+    let cases: &[(&str, &[u8])] = &[
+        ("branch depth without enclosing label", &[0x0C, 0x00]),
+        ("local.get index outside params and locals", &[0x20, 0x00]),
+        ("call index outside function index space", &[0x10, 0x01]),
+        ("i32.add without two stack operands", &[0x6A]),
+    ];
+
+    for (name, body_ops) in cases {
+        let bytes = standard_module_with_body(body_ops, 0);
+        assert!(
+            wasm::read_wasm(&bytes).is_err(),
+            "reader must reject instruction validation error: {name}"
+        );
+    }
+}
+
+#[test]
+fn reader_rejects_truncated_section_payload() {
+    let bytes = [
+        0x00, 0x61, 0x73, 0x6D, // magic
+        0x01, 0x00, 0x00, 0x00, // version
+        0x01, // type section
+        0x05, // declared payload length, but only two bytes follow
+        0x01, 0x60,
+    ];
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "section payloads must not be silently truncated"
+    );
+}
+
+#[test]
+fn reader_rejects_memory_min_greater_than_max() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 5, &[0x01, 0x01, 0x02, 0x01]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "memory limits must reject min pages greater than max pages"
+    );
+}
+
+#[test]
+fn reader_rejects_duplicate_export_names() {
+    let mut exports = Vec::new();
+    exports.push(0x02);
+    exports.extend_from_slice(&[0x01, b'f', 0x00, 0x00]);
+    exports.extend_from_slice(&[0x01, b'f', 0x00, 0x00]);
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 7, &exports);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "export names must be unique"
+    );
+}
+
+#[test]
+fn reader_rejects_export_function_index_out_of_range() {
+    let export = [0x01, 0x01, b'f', 0x00, 0x01];
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 7, &export);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "function exports must reference declared function indices"
+    );
+}
+
+#[test]
+fn reader_rejects_start_function_with_params_or_results() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x01, 0x7F, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 8, &[0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "start function must have type [] -> []"
+    );
+}
+
+#[test]
+fn reader_rejects_start_function_index_out_of_range() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 8, &[0x01]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "start function index must reference an existing function"
+    );
+}
+
+#[test]
+fn reader_rejects_global_get_index_out_of_range() {
+    let bytes = standard_module_with_body(&[0x23, 0x00], 0);
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "global.get must reference an existing global"
+    );
+}
+
+#[test]
+fn reader_rejects_global_set_to_immutable_global() {
+    let mut global_section = Vec::new();
+    global_section.push(0x01); // one global
+    global_section.push(0x7F); // i32
+    global_section.push(0x00); // immutable
+    global_section.extend_from_slice(&[0x41, 0x00, 0x0B]); // i32.const 0; end
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 6, &global_section);
+    push_section(&mut bytes, 10, &[0x01, 0x05, 0x00, 0x41, 0x01, 0x24, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "global.set must reject immutable globals"
+    );
+}
+
+#[test]
+fn reader_rejects_element_segment_unknown_table_index() {
+    let elem_section = [
+        0x01, // one segment
+        0x02, // active segment with explicit table index
+        0x00, // table 0, but no table section declares it
+        0x41, 0x00, 0x0B, // offset expr i32.const 0; end
+        0x00, // elemkind funcref
+        0x00, // zero function indices
+    ];
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 9, &elem_section);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "active element segments must reference an existing table"
+    );
+}
+
+#[test]
+fn reader_rejects_active_data_segment_unknown_memory_index() {
+    let data_section = [
+        0x01, // one segment
+        0x02, // active segment with explicit memory index
+        0x00, // memory 0, but no memory section declares it
+        0x41, 0x00, 0x0B, // offset expr i32.const 0; end
+        0x00, // empty payload
+    ];
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+    push_section(&mut bytes, 11, &data_section);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "active data segments must reference an existing memory"
+    );
+}
+
+#[test]
+fn reader_rejects_import_type_index_out_of_range() {
+    let mut import_section = Vec::new();
+    import_section.push(0x01);
+    import_section.extend_from_slice(&[0x01, b'm', 0x01, b'f', 0x00, 0x00]);
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 2, &import_section);
+    push_section(&mut bytes, 1, &[0x00]);
+    push_section(&mut bytes, 3, &[0x00]);
+    push_section(&mut bytes, 10, &[0x00]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "function imports must reference a declared function type"
+    );
+}
+
+#[test]
+fn reader_rejects_data_count_mismatch() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 12, &[0x01]); // data_count says one data segment
+    push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
+    push_section(&mut bytes, 11, &[0x00]); // actual data section has zero segments
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "data_count section must match the data section segment count"
+    );
+}
+
+#[test]
+fn reader_rejects_memory_init_without_data_count() {
+    let bytes = standard_module_with_body(
+        &[
+            0x41, 0x00, // dst
+            0x41, 0x00, // src
+            0x41, 0x00, // len
+            0xFC, 0x08, // memory.init
+            0x00, // dataidx
+            0x00, // memidx
+        ],
+        1,
+    );
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "modules using memory.init must declare a data_count section"
+    );
+}
+
+#[test]
+fn reader_rejects_data_drop_index_out_of_range() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 12, &[0x00]); // no data segments
+    push_section(
+        &mut bytes,
+        10,
+        &[
+            0x01, // one body
+            0x04, // body size
+            0x00, // locals
+            0xFC, 0x09, // data.drop
+            0x00, // dataidx 0, out of range
+            0x0B,
+        ],
+    );
+    push_section(&mut bytes, 11, &[0x00]);
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "data.drop must reference an existing data segment"
+    );
+}
+
+#[test]
+fn reader_rejects_table_init_element_index_out_of_range() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
+    push_section(&mut bytes, 3, &[0x01, 0x00]);
+    push_section(&mut bytes, 4, &[0x01, 0x70, 0x00, 0x01]); // one funcref table
+    push_section(
+        &mut bytes,
+        10,
+        &[
+            0x01, // one body
+            0x0A, // body size
+            0x00, // locals
+            0x41, 0x00, // dst
+            0x41, 0x00, // src
+            0x41, 0x00, // len
+            0xFC, 0x0C, // table.init
+            0x00, // elemidx 0, out of range
+            0x00, // tableidx 0
+            0x0B,
+        ],
+    );
+
+    assert!(
+        wasm::read_wasm(&bytes).is_err(),
+        "table.init must reference an existing element segment"
+    );
+}
+
 // ── Round-trip: write → read → execute ────────────────────────────────────
 
 fn roundtrip(chunks: Vec<Chunk>) -> Vec<Chunk> {
@@ -77,6 +505,14 @@ fn push_section(out: &mut Vec<u8>, id: u8, payload: &[u8]) {
     out.push(id);
     write_leb_u32(out, payload.len() as u32);
     out.extend_from_slice(payload);
+}
+
+fn named_custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
+    let mut section = Vec::new();
+    write_leb_u32(&mut section, name.len() as u32);
+    section.extend_from_slice(name.as_bytes());
+    section.extend_from_slice(payload);
+    section
 }
 
 fn standard_module_with_body(body_ops: &[u8], memory_count: u32) -> Vec<u8> {
@@ -898,15 +1334,19 @@ fn threads_opcodes_have_spec_byte_values() {
         (Op::I32_ATOMIC_STORE, 0x17),
         (Op::I64_ATOMIC_STORE, 0x18),
         (Op::I32_ATOMIC_RMW_ADD, 0x1E),
-        (Op::I32_ATOMIC_RMW_SUB, 0x1F),
-        (Op::I32_ATOMIC_RMW_AND, 0x20),
-        (Op::I32_ATOMIC_RMW_OR, 0x21),
-        (Op::I32_ATOMIC_RMW_XOR, 0x22),
-        (Op::I32_ATOMIC_RMW_XCHG, 0x23),
-        (Op::I32_ATOMIC_RMW_CMPXCHG, 0x24),
-        (Op::I64_ATOMIC_RMW_ADD, 0x25),
+        (Op::I64_ATOMIC_RMW_ADD, 0x1F),
+        (Op::I32_ATOMIC_RMW_SUB, 0x25),
         (Op::I64_ATOMIC_RMW_SUB, 0x26),
-        (Op::I64_ATOMIC_RMW_CMPXCHG, 0x2E),
+        (Op::I32_ATOMIC_RMW_AND, 0x2C),
+        (Op::I64_ATOMIC_RMW_AND, 0x2D),
+        (Op::I32_ATOMIC_RMW_OR, 0x33),
+        (Op::I64_ATOMIC_RMW_OR, 0x34),
+        (Op::I32_ATOMIC_RMW_XOR, 0x3A),
+        (Op::I64_ATOMIC_RMW_XOR, 0x3B),
+        (Op::I32_ATOMIC_RMW_XCHG, 0x41),
+        (Op::I64_ATOMIC_RMW_XCHG, 0x42),
+        (Op::I32_ATOMIC_RMW_CMPXCHG, 0x48),
+        (Op::I64_ATOMIC_RMW_CMPXCHG, 0x49),
     ];
 
     for (op, sub) in cases {

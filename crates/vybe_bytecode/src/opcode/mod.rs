@@ -149,6 +149,9 @@ pub enum OperandFormat {
     U16_I16,
     /// Unsigned LEB128 u32.
     U32Leb,
+    /// WASM memarg: alignment LEB + offset LEB, with an optional memory index
+    /// extension when the high bit used by this VM's multi-memory encoding is set.
+    MemArg,
     /// Variable: u16 func_idx + u8 upvalue_count + descriptors.
     Closure,
     /// Variable: u32 LEB count + count × u32 LEB labels + u32 LEB default.
@@ -171,7 +174,7 @@ impl OperandFormat {
             Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
             Self::V128Const | Self::Shuffle => 16,
-            Self::Closure | Self::U32Leb | Self::BrTable | Self::TryTable => 0,
+            Self::Closure | Self::U32Leb | Self::MemArg | Self::BrTable | Self::TryTable => 0,
         }
     }
 
@@ -179,6 +182,7 @@ impl OperandFormat {
     pub fn size_in(self, code: &[u8], operand_start: usize) -> usize {
         match self {
             Self::U32Leb => leb_u32_size(code, operand_start),
+            Self::MemArg => memarg_size(code, operand_start),
             Self::Closure => {
                 let uv_count_pos = operand_start + 2;
                 let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
@@ -192,6 +196,24 @@ impl OperandFormat {
             fmt => fmt.fixed_size(),
         }
     }
+}
+
+pub fn memarg_size(code: &[u8], operand_start: usize) -> usize {
+    let mut ip = operand_start;
+    let align_start = ip;
+    let align = read_leb_u32(code, &mut ip);
+    if ip == align_start {
+        return 0;
+    }
+    let offset_start = ip;
+    let _offset = read_leb_u32(code, &mut ip);
+    if ip == offset_start {
+        return ip.saturating_sub(operand_start);
+    }
+    if align & 0x40 != 0 {
+        let _memidx = read_leb_u32(code, &mut ip);
+    }
+    ip.saturating_sub(operand_start)
 }
 
 pub fn leb_u32_size(code: &[u8], start: usize) -> usize {

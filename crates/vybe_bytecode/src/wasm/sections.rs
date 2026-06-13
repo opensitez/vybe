@@ -104,6 +104,31 @@ pub fn encode_memory_section() -> Vec<u8> {
     encode_memory_section_with(1, None, false)
 }
 
+pub fn module_uses_memory64(chunks: &[Chunk]) -> bool {
+    for chunk in chunks {
+        let mut ip = 0;
+        while ip + 1 < chunk.code.len() {
+            let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
+                ip += 2;
+                continue;
+            };
+            if op == Op::I64_MEMORY_SIZE
+                || op == Op::I64_MEMORY_GROW
+                || op == Op::I32_LOAD_64
+                || op == Op::I64_LOAD_64
+                || op == Op::F64_LOAD_64
+                || op == Op::I32_STORE_64
+                || op == Op::I64_STORE_64
+                || op == Op::F64_STORE_64
+            {
+                return true;
+            }
+            ip += super::code::opcode_size(op, &chunk.code, ip);
+        }
+    }
+    false
+}
+
 /// Memory-section encoder with explicit limits and `shared` flag.
 /// `shared = true` requires a max page count (enforced here) and sets
 /// the limits flag byte to 0x03 per the threads proposal.
@@ -118,6 +143,24 @@ pub fn encode_memory_section_with(min_pages: u32, max_pages: Option<u32>, shared
     if has_max {
         let max = max_pages.unwrap_or(min_pages.max(1));
         write_leb128_u32(&mut out, max);
+    }
+    out
+}
+
+pub fn encode_memory64_section_with(
+    min_pages: u64,
+    max_pages: Option<u64>,
+    shared: bool,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, 1); // one memory
+    let has_max = max_pages.is_some() || shared;
+    let flags: u8 = 0x04 | (if has_max { 0x01 } else { 0x00 }) | (if shared { 0x02 } else { 0x00 });
+    out.push(flags);
+    write_leb128_u64(&mut out, min_pages);
+    if has_max {
+        let max = max_pages.unwrap_or(min_pages.max(1));
+        write_leb128_u64(&mut out, max);
     }
     out
 }
@@ -216,6 +259,25 @@ pub fn encode_table_section_with(chunks: &[Chunk], extra_externref: u32) -> Vec<
         out.push(0x6F);
         out.push(0x00);
         write_leb128_u32(&mut out, 0);
+    }
+    out
+}
+
+pub fn encode_table64_section_with(
+    min_entries: u64,
+    max_entries: Option<u64>,
+    reftype: u8,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, 1); // one table
+    out.push(reftype);
+    if let Some(max) = max_entries {
+        out.push(0x05); // memory64/table64 limits with max
+        write_leb128_u64(&mut out, min_entries);
+        write_leb128_u64(&mut out, max);
+    } else {
+        out.push(0x04); // memory64/table64 min-only limits
+        write_leb128_u64(&mut out, min_entries);
     }
     out
 }

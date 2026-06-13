@@ -71,6 +71,39 @@ fn unset_local_get_returns_null() {
     assert!(matches!(r, Value::Null));
 }
 
+#[test]
+fn local_get_out_of_range_traps_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        let mut c = Chunk::new("<script>");
+        c.local_count = 1;
+        c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+        c.emit_op(Op::RETURN, 0);
+        VM::new().run(vec![c])
+    });
+
+    assert!(
+        matches!(result, Ok(Err(_))),
+        "local.get with an out-of-range local index must trap, not panic or produce a value"
+    );
+}
+
+#[test]
+fn local_set_out_of_range_traps_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        let mut c = Chunk::new("<script>");
+        c.local_count = 1;
+        push_i32(&mut c, 1);
+        c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+        c.emit_op(Op::RETURN, 0);
+        VM::new().run(vec![c])
+    });
+
+    assert!(
+        matches!(result, Ok(Err(_))),
+        "local.set with an out-of-range local index must trap, not panic or write outside locals"
+    );
+}
+
 // ── local.tee ────────────────────────────────────────────────────────────
 
 #[test]

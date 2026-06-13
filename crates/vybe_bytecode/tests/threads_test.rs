@@ -86,6 +86,17 @@ fn push_i64(c: &mut Chunk, v: i64) {
     c.emit_op_u16(Op::CONST, k, 0);
 }
 
+fn emit_atomic(c: &mut Chunk, op: Op) {
+    c.emit_op(op, 0);
+    c.emit(0, 0); // memarg align
+    c.emit(0, 0); // memarg offset
+}
+
+fn emit_atomic_fence(c: &mut Chunk) {
+    c.emit_op(Op::ATOMIC_FENCE, 0);
+    c.emit(0, 0);
+}
+
 // ── standard WASM threads opcode decoding ────────────────────────────────
 
 #[test]
@@ -96,8 +107,8 @@ fn standard_i32_atomic_load8_u_must_not_decode_as_noop() {
         0x00, 0x00, // memarg align=0 offset=0
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("atomic") && err.contains("load8_u"));
+    let chunks = wasm::read_wasm(&bytes).expect("i32.atomic.load8_u should decode");
+    assert!(chunks[1].code.windows(2).any(|w| w == [0xFE, 0x12]));
 }
 
 #[test]
@@ -105,81 +116,84 @@ fn standard_i64_atomic_rmw_and_must_not_decode_as_noop() {
     let bytes = standard_threads_module(&[
         0x41, 0x00, // i32.const 0
         0x42, 0x01, // i64.const 1
-        0xFE, 0x27, // i64.atomic.rmw.and
+        0xFE, 0x2D, // i64.atomic.rmw.and
         0x03, 0x00, // memarg align=3 offset=0
         0xA7, // i32.wrap_i64 so the function body has i32 result shape
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("atomic") && err.contains("rmw.and"));
+    let chunks = wasm::read_wasm(&bytes).expect("i64.atomic.rmw.and should decode");
+    assert!(chunks[1].code.windows(2).any(|w| w == [0xFE, 0x2D]));
 }
 
 #[test]
-fn all_unsupported_standard_atomic_opcodes_must_not_decode_as_noops() {
-    let cases: &[(&str, u8, &[u8], Option<u8>)] = &[
-        ("i32.atomic.load8_u", 0x12, &[0x41, 0x00], None),
-        ("i32.atomic.load16_u", 0x13, &[0x41, 0x00], None),
-        ("i64.atomic.load8_u", 0x14, &[0x41, 0x00], Some(0xA7)),
-        ("i64.atomic.load16_u", 0x15, &[0x41, 0x00], Some(0xA7)),
-        ("i64.atomic.load32_u", 0x16, &[0x41, 0x00], Some(0xA7)),
-        ("i32.atomic.store8", 0x19, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.store16", 0x1A, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.store8", 0x1B, &[0x41, 0x00, 0x42, 0x01], None),
-        ("i64.atomic.store16", 0x1C, &[0x41, 0x00, 0x42, 0x01], None),
-        ("i64.atomic.store32", 0x1D, &[0x41, 0x00, 0x42, 0x01], None),
-        ("i64.atomic.rmw.and", 0x27, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw.or", 0x28, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw.xor", 0x29, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw.xchg", 0x2A, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.add_u", 0x2E, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.add_u", 0x2F, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.add_u", 0x30, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.add_u", 0x31, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.add_u", 0x32, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.sub_u", 0x33, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.sub_u", 0x34, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.sub_u", 0x35, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.sub_u", 0x36, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.sub_u", 0x37, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.and_u", 0x38, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.and_u", 0x39, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.and_u", 0x3A, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.and_u", 0x3B, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.and_u", 0x3C, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.or_u", 0x3D, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.or_u", 0x3E, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.or_u", 0x3F, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.or_u", 0x40, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.or_u", 0x41, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.xor_u", 0x42, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.xor_u", 0x43, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.xor_u", 0x44, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.xor_u", 0x45, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.xor_u", 0x46, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.xchg_u", 0x47, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i32.atomic.rmw16.xchg_u", 0x48, &[0x41, 0x00, 0x41, 0x01], None),
-        ("i64.atomic.rmw8.xchg_u", 0x49, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw16.xchg_u", 0x4A, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i64.atomic.rmw32.xchg_u", 0x4B, &[0x41, 0x00, 0x42, 0x01], Some(0xA7)),
-        ("i32.atomic.rmw8.cmpxchg_u", 0x4C, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], None),
-        ("i32.atomic.rmw16.cmpxchg_u", 0x4D, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], None),
-        ("i64.atomic.rmw8.cmpxchg_u", 0x4E, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], Some(0xA7)),
-        ("i64.atomic.rmw16.cmpxchg_u", 0x4F, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], Some(0xA7)),
-        ("i64.atomic.rmw32.cmpxchg_u", 0x50, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], Some(0xA7)),
+fn all_standard_atomic_opcodes_decode_to_bytecode() {
+    let cases: &[(&str, u8, &[u8], &[u8])] = &[
+        ("i32.atomic.load8_u", 0x12, &[0x41, 0x00], &[]),
+        ("i32.atomic.load16_u", 0x13, &[0x41, 0x00], &[]),
+        ("i64.atomic.load8_u", 0x14, &[0x41, 0x00], &[0xA7]),
+        ("i64.atomic.load16_u", 0x15, &[0x41, 0x00], &[0xA7]),
+        ("i64.atomic.load32_u", 0x16, &[0x41, 0x00], &[0xA7]),
+        ("i32.atomic.store8", 0x19, &[0x41, 0x00, 0x41, 0x01], &[0x41, 0x00]),
+        ("i32.atomic.store16", 0x1A, &[0x41, 0x00, 0x41, 0x01], &[0x41, 0x00]),
+        ("i64.atomic.store8", 0x1B, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
+        ("i64.atomic.store16", 0x1C, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
+        ("i64.atomic.store32", 0x1D, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
+        ("i64.atomic.rmw.and", 0x2D, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw.or", 0x34, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw.xor", 0x3B, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw.xchg", 0x42, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.add_u", 0x20, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.add_u", 0x21, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.add_u", 0x22, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.add_u", 0x23, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.add_u", 0x24, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.sub_u", 0x27, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.sub_u", 0x28, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.sub_u", 0x29, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.sub_u", 0x2A, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.sub_u", 0x2B, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.and_u", 0x2E, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.and_u", 0x2F, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.and_u", 0x30, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.and_u", 0x31, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.and_u", 0x32, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.or_u", 0x35, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.or_u", 0x36, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.or_u", 0x37, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.or_u", 0x38, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.or_u", 0x39, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.xor_u", 0x3C, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.xor_u", 0x3D, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.xor_u", 0x3E, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.xor_u", 0x3F, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.xor_u", 0x40, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.xchg_u", 0x43, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i32.atomic.rmw16.xchg_u", 0x44, &[0x41, 0x00, 0x41, 0x01], &[]),
+        ("i64.atomic.rmw8.xchg_u", 0x45, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw16.xchg_u", 0x46, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i64.atomic.rmw32.xchg_u", 0x47, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        ("i32.atomic.rmw8.cmpxchg_u", 0x4A, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], &[]),
+        ("i32.atomic.rmw16.cmpxchg_u", 0x4B, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], &[]),
+        ("i64.atomic.rmw8.cmpxchg_u", 0x4C, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
+        ("i64.atomic.rmw16.cmpxchg_u", 0x4D, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
+        ("i64.atomic.rmw32.cmpxchg_u", 0x4E, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
     ];
 
     for (name, subopcode, operands, result_fixup) in cases {
         let mut body = Vec::new();
         body.extend_from_slice(operands);
         body.extend_from_slice(&[0xFE, *subopcode, 0x00, 0x00]);
-        if let Some(op) = result_fixup {
-            body.push(*op);
-        }
+        body.extend_from_slice(result_fixup);
         let bytes = standard_threads_module(&body);
-        let err = wasm::read_wasm(&bytes).unwrap_err();
+        let chunks = wasm::read_wasm(&bytes).unwrap_or_else(|err| {
+            panic!("{name} should decode to bytecode instead of being skipped: {err}")
+        });
         assert!(
-            err.contains("atomic") && err.contains(name),
-            "{name} must be rejected or semantically decoded, got {err}"
+            chunks[1]
+                .code
+                .windows(2)
+                .any(|w| w == [0xFE, *subopcode]),
+            "{name} must be present in bytecode"
         );
     }
 }
@@ -190,7 +204,7 @@ fn all_unsupported_standard_atomic_opcodes_must_not_decode_as_noops() {
 fn atomic_fence_is_noop() {
     // fence emits nothing observable — just verify it doesn't crash
     let r = run_with_memory(|c| {
-        c.emit_op(Op::ATOMIC_FENCE, 0);
+        emit_atomic_fence(c);
         push_i32(c, 42);
     });
     assert_eq!(r.as_i32(), 42);
@@ -203,9 +217,9 @@ fn i32_atomic_store_and_load() {
     let r = run_with_memory(|c| {
         push_i32(c, 0); // address
         push_i32(c, 99); // value
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0); // address
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 99);
 }
@@ -215,12 +229,12 @@ fn i32_atomic_store_overwrites() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 2);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 2);
 }
@@ -232,10 +246,10 @@ fn i32_atomic_rmw_add_returns_old() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 10);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 5);
-        c.emit_op(Op::I32_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_ADD);
         // returns old value (10)
     });
     assert_eq!(r.as_i32(), 10);
@@ -246,13 +260,13 @@ fn i32_atomic_rmw_add_updates_memory() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 10);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 5);
-        c.emit_op(Op::I32_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_ADD);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0); // should be 15
+        emit_atomic(c, Op::I32_ATOMIC_LOAD); // should be 15
     });
     assert_eq!(r.as_i32(), 15);
 }
@@ -264,13 +278,13 @@ fn i32_atomic_rmw_sub() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 20);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 8);
-        c.emit_op(Op::I32_ATOMIC_RMW_SUB, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_SUB);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 12);
 }
@@ -282,13 +296,13 @@ fn i32_atomic_rmw_and() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1100);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b1010);
-        c.emit_op(Op::I32_ATOMIC_RMW_AND, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_AND);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 0b1000);
 }
@@ -298,10 +312,10 @@ fn i32_atomic_rmw_and_returns_old() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1100);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b1010);
-        c.emit_op(Op::I32_ATOMIC_RMW_AND, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_AND);
     });
     assert_eq!(r.as_i32(), 0b1100);
 }
@@ -311,13 +325,13 @@ fn i32_atomic_rmw_or() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1100);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b0011);
-        c.emit_op(Op::I32_ATOMIC_RMW_OR, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_OR);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 0b1111);
 }
@@ -327,10 +341,10 @@ fn i32_atomic_rmw_or_returns_old() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1100);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b0011);
-        c.emit_op(Op::I32_ATOMIC_RMW_OR, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_OR);
     });
     assert_eq!(r.as_i32(), 0b1100);
 }
@@ -340,13 +354,13 @@ fn i32_atomic_rmw_xor() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1111);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b1010);
-        c.emit_op(Op::I32_ATOMIC_RMW_XOR, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_XOR);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 0b0101);
 }
@@ -356,10 +370,10 @@ fn i32_atomic_rmw_xor_returns_old() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0b1111);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 0b1010);
-        c.emit_op(Op::I32_ATOMIC_RMW_XOR, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_XOR);
     });
     assert_eq!(r.as_i32(), 0b1111);
 }
@@ -371,10 +385,10 @@ fn i32_atomic_rmw_xchg_returns_old() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 7);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 99);
-        c.emit_op(Op::I32_ATOMIC_RMW_XCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_XCHG);
     });
     assert_eq!(r.as_i32(), 7);
 }
@@ -384,13 +398,13 @@ fn i32_atomic_rmw_xchg_updates_memory() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 7);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 99);
-        c.emit_op(Op::I32_ATOMIC_RMW_XCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_XCHG);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 99);
 }
@@ -402,14 +416,14 @@ fn i32_atomic_cmpxchg_succeeds_when_expected_matches() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 42);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 42);
         push_i32(c, 100);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 100); // replaced
 }
@@ -419,14 +433,14 @@ fn i32_atomic_cmpxchg_fails_when_expected_mismatches() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 42);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 99);
         push_i32(c, 100);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i32(), 42); // unchanged
 }
@@ -436,11 +450,11 @@ fn i32_atomic_cmpxchg_returns_old_on_success() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 42);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 42);
         push_i32(c, 100);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
     });
     assert_eq!(r.as_i32(), 42);
 }
@@ -450,11 +464,11 @@ fn i32_atomic_cmpxchg_returns_old_on_failure() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 42);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 99);
         push_i32(c, 100);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
     });
     assert_eq!(r.as_i32(), 42);
 }
@@ -466,9 +480,9 @@ fn i64_atomic_store_and_load() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, i64::MAX);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), i64::MAX);
 }
@@ -480,13 +494,13 @@ fn i64_atomic_rmw_add() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 100);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 42);
-        c.emit_op(Op::I64_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_ADD);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), 142);
 }
@@ -496,13 +510,13 @@ fn i64_atomic_rmw_add_returns_old_and_wraps() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, i64::MAX);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_ADD);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), i64::MIN);
 }
@@ -512,13 +526,13 @@ fn i64_atomic_rmw_sub() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 200);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 58);
-        c.emit_op(Op::I64_ATOMIC_RMW_SUB, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_SUB);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), 142);
 }
@@ -528,13 +542,13 @@ fn i64_atomic_rmw_sub_returns_old_and_wraps() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, i64::MIN);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_SUB, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_SUB);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), i64::MAX);
 }
@@ -546,14 +560,14 @@ fn i64_atomic_cmpxchg_succeeds() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 7);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 7);
         push_i64(c, 99);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), 99);
 }
@@ -563,11 +577,11 @@ fn i64_atomic_cmpxchg_returns_old_on_success() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 7);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 7);
         push_i64(c, 99);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
     });
     assert_eq!(r.as_i64(), 7);
 }
@@ -577,14 +591,14 @@ fn i64_atomic_cmpxchg_fails_when_expected_mismatches() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 7);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 8);
         push_i64(c, 99);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
         c.emit_op(Op::DROP, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert_eq!(r.as_i64(), 7);
 }
@@ -594,11 +608,11 @@ fn i64_atomic_cmpxchg_returns_old_on_failure() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 7);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0);
         push_i64(c, 8);
         push_i64(c, 99);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
     });
     assert_eq!(r.as_i64(), 7);
 }
@@ -611,11 +625,11 @@ fn memory_atomic_wait32_returns_not_equal() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0); // address
         push_i32(c, 999); // expected (doesn't match stored 0)
         push_i64(c, -1); // timeout = -1 (infinite)
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT32, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT32);
     });
     // 1 = "not-equal" (value at address didn't match expected)
     assert_eq!(r.as_i32(), 1);
@@ -626,11 +640,11 @@ fn memory_atomic_wait32_zero_timeout_times_out() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i32(c, 123);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
         push_i32(c, 0);
         push_i32(c, 123);
         push_i64(c, 0);
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT32, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT32);
     });
     assert_eq!(r.as_i32(), 2);
 }
@@ -640,11 +654,11 @@ fn memory_atomic_wait64_returns_not_equal() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 0);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0); // address
         push_i64(c, 999); // expected (doesn't match stored 0)
         push_i64(c, -1); // timeout = -1 (infinite)
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT64, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT64);
     });
     assert_eq!(r.as_i32(), 1);
 }
@@ -654,11 +668,11 @@ fn memory_atomic_wait64_zero_timeout_times_out() {
     let r = run_with_memory(|c| {
         push_i32(c, 0);
         push_i64(c, 123);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
         push_i32(c, 0); // address
         push_i64(c, 123); // expected matches
         push_i64(c, 0); // timeout = 0
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT64, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT64);
     });
     assert_eq!(r.as_i32(), 2);
 }
@@ -669,7 +683,7 @@ fn memory_atomic_notify_returns_zero_waiters() {
     let r = run_with_memory(|c| {
         push_i32(c, 0); // address
         push_i32(c, 10); // count
-        c.emit_op(Op::MEMORY_ATOMIC_NOTIFY, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_NOTIFY);
     });
     assert_eq!(r.as_i32(), 0);
 }
@@ -679,7 +693,7 @@ fn memory_atomic_notify_oob_traps() {
     let err = run_with_small_memory_err(3, |c| {
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::MEMORY_ATOMIC_NOTIFY, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_NOTIFY);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -690,7 +704,7 @@ fn memory_atomic_notify_oob_traps() {
 fn i32_atomic_load_oob_traps() {
     let err = run_with_small_memory_err(3, |c| {
         push_i32(c, 0);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -700,7 +714,7 @@ fn i32_atomic_store_oob_traps() {
     let err = run_with_small_memory_err(3, |c| {
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -709,7 +723,7 @@ fn i32_atomic_store_oob_traps() {
 fn i64_atomic_load_oob_traps() {
     let err = run_with_small_memory_err(7, |c| {
         push_i32(c, 0);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -719,7 +733,7 @@ fn i64_atomic_store_oob_traps() {
     let err = run_with_small_memory_err(7, |c| {
         push_i32(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -728,7 +742,7 @@ fn i64_atomic_store_oob_traps() {
 fn i32_atomic_load_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_LOAD);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -738,7 +752,7 @@ fn i32_atomic_store_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 1);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I32_ATOMIC_STORE);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -747,7 +761,7 @@ fn i32_atomic_store_unaligned_traps() {
 fn i64_atomic_load_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 4);
-        c.emit_op(Op::I64_ATOMIC_LOAD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_LOAD);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -757,7 +771,7 @@ fn i64_atomic_store_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 4);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_STORE, 0);
+        emit_atomic(c, Op::I64_ATOMIC_STORE);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -767,7 +781,7 @@ fn i32_atomic_rmw_oob_traps() {
     let err = run_with_small_memory_err(3, |c| {
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_ADD);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -777,7 +791,7 @@ fn i64_atomic_rmw_oob_traps() {
     let err = run_with_small_memory_err(7, |c| {
         push_i32(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_ADD);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -787,7 +801,7 @@ fn i64_atomic_rmw_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 4);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_ADD);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -797,7 +811,7 @@ fn i32_atomic_rmw_unaligned_traps() {
     let err = run_with_small_memory_err(16, |c| {
         push_i32(c, 1);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_RMW_ADD, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_ADD);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -808,7 +822,7 @@ fn i32_atomic_cmpxchg_oob_traps() {
         push_i32(c, 0);
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -819,7 +833,7 @@ fn i32_atomic_cmpxchg_unaligned_traps() {
         push_i32(c, 1);
         push_i32(c, 0);
         push_i32(c, 1);
-        c.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I32_ATOMIC_RMW_CMPXCHG);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -830,7 +844,7 @@ fn i64_atomic_cmpxchg_oob_traps() {
         push_i32(c, 0);
         push_i64(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -841,7 +855,7 @@ fn i64_atomic_cmpxchg_unaligned_traps() {
         push_i32(c, 4);
         push_i64(c, 0);
         push_i64(c, 1);
-        c.emit_op(Op::I64_ATOMIC_RMW_CMPXCHG, 0);
+        emit_atomic(c, Op::I64_ATOMIC_RMW_CMPXCHG);
     });
     assert!(err.contains("atomic") && err.contains("unaligned"));
 }
@@ -852,7 +866,7 @@ fn memory_atomic_wait32_oob_traps() {
         push_i32(c, 0);
         push_i32(c, 0);
         push_i64(c, 0);
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT32, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT32);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }
@@ -863,7 +877,7 @@ fn memory_atomic_wait64_oob_traps() {
         push_i32(c, 0);
         push_i64(c, 0);
         push_i64(c, 0);
-        c.emit_op(Op::MEMORY_ATOMIC_WAIT64, 0);
+        emit_atomic(c, Op::MEMORY_ATOMIC_WAIT64);
     });
     assert!(err.contains("atomic") && err.contains("out of bounds"));
 }

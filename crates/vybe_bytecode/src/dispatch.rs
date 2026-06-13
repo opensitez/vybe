@@ -161,6 +161,25 @@ fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
     })
 }
 
+fn read_le<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    bytes.try_into().unwrap_or([0; N])
+}
+
+fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
+    let mut result = 0u64;
+    let mut shift = 0;
+    while *ip < code.len() {
+        let byte = code[*ip];
+        *ip += 1;
+        result |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    result
+}
+
 fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
     if idx >= typed_array_live_length(ta) {
         return false;
@@ -272,6 +291,66 @@ impl VM {
         VMError::new(format!("__jspi__:{}", promise_id))
     }
 
+    fn next_bytes_decode_opcode(&self) -> bool {
+        let f = self.frame();
+        let code = &self.chunks[f.chunk_index].code;
+        f.ip + 1 < code.len() && Op::decode(code[f.ip], code[f.ip + 1]).is_some()
+    }
+
+    pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
+        if self.next_bytes_decode_opcode() {
+            return 0;
+        }
+        let chunk_idx = self.frame().chunk_index;
+        let mut ip = self.frame().ip;
+        let memidx = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip) as usize;
+        self.frame_mut().ip = ip;
+        memidx
+    }
+
+    pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
+        if self.next_bytes_decode_opcode() {
+            return (0, 0);
+        }
+        let chunk_idx = self.frame().chunk_index;
+        let code = &self.chunks[chunk_idx].code;
+        let mut ip = self.frame().ip;
+        let align = read_leb_u32(code, &mut ip);
+        let offset = read_leb_u32(code, &mut ip) as usize;
+        let memidx = if align & 0x40 != 0 {
+            read_leb_u32(code, &mut ip) as usize
+        } else {
+            0
+        };
+        self.frame_mut().ip = ip;
+        (offset, memidx)
+    }
+
+    fn read_optional_memarg64(&mut self) -> (u64, usize) {
+        if self.next_bytes_decode_opcode() {
+            return (0, 0);
+        }
+        let chunk_idx = self.frame().chunk_index;
+        let code = &self.chunks[chunk_idx].code;
+        let mut ip = self.frame().ip;
+        let align = read_leb_u32(code, &mut ip);
+        let offset = read_leb_u64(code, &mut ip);
+        let memidx = if align & 0x40 != 0 {
+            read_leb_u32(code, &mut ip) as usize
+        } else {
+            0
+        };
+        self.frame_mut().ip = ip;
+        (offset, memidx)
+    }
+
+    fn memory64_effective_addr(&self, base: i64, offset: u64) -> Result<usize, VMError> {
+        let addr = (base as u64)
+            .checked_add(offset)
+            .ok_or_else(|| VMError::new("trap: memory64 address overflow"))?;
+        usize::try_from(addr).map_err(|_| VMError::new("trap: memory64 address out of range"))
+    }
+
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
         loop {
             let f = self.frame();
@@ -377,7 +456,12 @@ impl VM {
                 _ if op == Op::LOCAL_GET => {
                     let slot = self.read_u16() as usize;
                     let base = self.frame().base;
-                    let val = self.stack[base + slot].clone();
+                    let idx = base + slot;
+                    let val = self
+                        .stack
+                        .get(idx)
+                        .cloned()
+                        .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
                     if let Some(rec) = self.type_recorder.as_mut() {
                         let chunk_idx = self.frames.last().unwrap().chunk_index;
                         rec.record(chunk_idx, slot, &val);
@@ -392,13 +476,23 @@ impl VM {
                         rec.record(chunk_idx, slot, &val);
                     }
                     let base = self.frame().base;
-                    self.stack[base + slot] = val;
+                    let idx = base + slot;
+                    let dst = self
+                        .stack
+                        .get_mut(idx)
+                        .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
+                    *dst = val;
                 }
                 _ if op == Op::LOCAL_TEE => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
                     let base = self.frame().base;
-                    self.stack[base + slot] = val;
+                    let idx = base + slot;
+                    let dst = self
+                        .stack
+                        .get_mut(idx)
+                        .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
+                    *dst = val;
                 }
                 _ if op == Op::GLOBAL_GET => {
                     let idx = self.read_u16();
@@ -664,7 +758,7 @@ impl VM {
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
                         {
-                            let mut ob = o.lock().unwrap();
+                            let ob = o.lock().unwrap();
                             if let ObjectKind::TypedArray(ref ta) = ob.kind {
                                 let numeric_idx = match &key {
                                     Value::I32(n) if *n >= 0 => Some(*n as usize),
@@ -1057,10 +1151,13 @@ impl VM {
                 _ if op == Op::TABLE_GET => {
                     let table_idx = self.read_byte() as usize;
                     let idx = self.pop().as_i32() as usize;
-                    let table = self.table_ref(table_idx);
+                    let table = self
+                        .table_ref(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.get unknown table"))?;
                     let val = table
-                        .and_then(|t| t.get(idx).cloned())
-                        .unwrap_or(Value::Null);
+                        .get(idx)
+                        .cloned()
+                        .ok_or_else(|| VMError::new("trap: table.get out of bounds"))?;
                     self.push(val)?;
                 }
                 // `table.set tbl` — pop value + i32 index, write into
@@ -1622,20 +1719,46 @@ impl VM {
                 // execute these correctly.
                 _ if op == Op::ARRAY_NEW_DATA => {
                     let _typeidx = self.read_u16();
-                    let _dataidx = self.read_u16();
-                    let _size = self.pop().as_i32();
-                    let _offset = self.pop().as_i32();
+                    let dataidx = self.read_u16() as u32;
+                    if self.dropped_data.contains(&dataidx) {
+                        return Err(VMError::new("array.new_data: data segment dropped"));
+                    }
+                    let size = self.pop().as_i32().max(0) as usize;
+                    let offset = self.pop().as_i32().max(0) as usize;
+                    let data = self
+                        .data_segments
+                        .get(dataidx as usize)
+                        .ok_or_else(|| VMError::new("array.new_data: missing data segment"))?;
+                    let end = offset.saturating_add(size);
+                    if end > data.len() {
+                        return Err(VMError::new("array.new_data: out of bounds"));
+                    }
+                    let elems = data[offset..end]
+                        .iter()
+                        .map(|b| Value::I32(*b as i32))
+                        .collect();
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        Vec::new(),
+                        elems,
                     )))))?;
                 }
                 _ if op == Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
-                    let _elemidx = self.read_u16();
-                    let _size = self.pop().as_i32();
-                    let _offset = self.pop().as_i32();
+                    let elemidx = self.read_u16() as u32;
+                    if self.dropped_elems.contains(&elemidx) {
+                        return Err(VMError::new("array.new_elem: element segment dropped"));
+                    }
+                    let size = self.pop().as_i32().max(0) as usize;
+                    let offset = self.pop().as_i32().max(0) as usize;
+                    let elems = self
+                        .elem_segments
+                        .get(elemidx as usize)
+                        .ok_or_else(|| VMError::new("array.new_elem: missing element segment"))?;
+                    let end = offset.saturating_add(size);
+                    if end > elems.len() {
+                        return Err(VMError::new("array.new_elem: out of bounds"));
+                    }
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        Vec::new(),
+                        elems[offset..end].to_vec(),
                     )))))?;
                 }
                 // `array.get_s $t` / `array.get_u $t` — only applicable to
@@ -1709,19 +1832,92 @@ impl VM {
                 // rationale as new_data / new_elem above).
                 _ if op == Op::ARRAY_INIT_DATA => {
                     let _typeidx = self.read_u16();
-                    let _dataidx = self.read_u16();
-                    let _size = self.pop().as_i32();
-                    let _src_offset = self.pop().as_i32();
-                    let _dst_offset = self.pop().as_i32();
-                    let _array = self.pop();
+                    let dataidx = self.read_u16() as u32;
+                    if self.dropped_data.contains(&dataidx) {
+                        return Err(VMError::new("array.init_data: data segment dropped"));
+                    }
+                    let size = self.pop().as_i32().max(0) as usize;
+                    let src_offset = self.pop().as_i32().max(0) as usize;
+                    let dst_offset = self.pop().as_i32().max(0) as usize;
+                    let array = self.pop();
+                    let data = self
+                        .data_segments
+                        .get(dataidx as usize)
+                        .ok_or_else(|| VMError::new("array.init_data: missing data segment"))?;
+                    let src_end = src_offset.saturating_add(size);
+                    if src_end > data.len() {
+                        return Err(VMError::new("array.init_data: source out of bounds"));
+                    }
+                    if let Value::Object(obj) = array {
+                        let mut o = obj.lock().unwrap();
+                        match &mut o.kind {
+                            ObjectKind::Array(elems) => {
+                                let dst_end = dst_offset.saturating_add(size);
+                                if dst_end > elems.len() {
+                                    return Err(VMError::new(
+                                        "array.init_data: destination out of bounds",
+                                    ));
+                                }
+                                for i in 0..size {
+                                    elems[dst_offset + i] = Value::I32(data[src_offset + i] as i32);
+                                }
+                            }
+                            ObjectKind::TypedArray(ta) => {
+                                let dst_end = dst_offset.saturating_add(size);
+                                if dst_end > typed_array_live_length(ta) {
+                                    return Err(VMError::new(
+                                        "array.init_data: destination out of bounds",
+                                    ));
+                                }
+                                for i in 0..size {
+                                    typed_array_write(
+                                        ta,
+                                        dst_offset + i,
+                                        &Value::I32(data[src_offset + i] as i32),
+                                    );
+                                }
+                            }
+                            _ => return Err(VMError::new("array.init_data: not an array")),
+                        }
+                    } else {
+                        return Err(VMError::new("array.init_data: not an array"));
+                    }
                 }
                 _ if op == Op::ARRAY_INIT_ELEM => {
                     let _typeidx = self.read_u16();
-                    let _elemidx = self.read_u16();
-                    let _size = self.pop().as_i32();
-                    let _src_offset = self.pop().as_i32();
-                    let _dst_offset = self.pop().as_i32();
-                    let _array = self.pop();
+                    let elemidx = self.read_u16() as u32;
+                    if self.dropped_elems.contains(&elemidx) {
+                        return Err(VMError::new("array.init_elem: element segment dropped"));
+                    }
+                    let size = self.pop().as_i32().max(0) as usize;
+                    let src_offset = self.pop().as_i32().max(0) as usize;
+                    let dst_offset = self.pop().as_i32().max(0) as usize;
+                    let array = self.pop();
+                    let source = self
+                        .elem_segments
+                        .get(elemidx as usize)
+                        .ok_or_else(|| VMError::new("array.init_elem: missing element segment"))?;
+                    let src_end = src_offset.saturating_add(size);
+                    if src_end > source.len() {
+                        return Err(VMError::new("array.init_elem: source out of bounds"));
+                    }
+                    if let Value::Object(obj) = array {
+                        let mut o = obj.lock().unwrap();
+                        if let ObjectKind::Array(elems) = &mut o.kind {
+                            let dst_end = dst_offset.saturating_add(size);
+                            if dst_end > elems.len() {
+                                return Err(VMError::new(
+                                    "array.init_elem: destination out of bounds",
+                                ));
+                            }
+                            elems[dst_offset..dst_end]
+                                .clone_from_slice(&source[src_offset..src_end]);
+                        } else {
+                            return Err(VMError::new("array.init_elem: not an array"));
+                        }
+                    } else {
+                        return Err(VMError::new("array.init_elem: not an array"));
+                    }
                 }
                 // `struct.new_default $t` — no per-field values on stack;
                 // produce an all-null struct. Matches our externref model.
@@ -2183,8 +2379,11 @@ impl VM {
                     self.push(Value::F64((a as f32) as f64))?;
                 }
                 _ if op == Op::I32_FROM_F64 => {
-                    let v = self.pop();
-                    self.push(Value::I32(v.as_i32()))?;
+                    let v = self.pop().as_f64();
+                    if v.is_nan() || v >= 2147483648.0 || v < -2147483648.0 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I32(v as i32))?;
                 }
                 _ if op == Op::I32_TRUNC_F64_U => {
                     let v = self.pop().as_f64();
@@ -2389,18 +2588,22 @@ impl VM {
                     let args_start = self.stack.len() - argc;
                     let table_idx_pos = args_start - 1;
                     let table_idx = self.stack[table_idx_pos].as_i32() as usize;
-                    if table_idx < self.func_table.len() {
-                        let func = self.func_table[table_idx].clone();
-                        self.stack[table_idx_pos] = func;
-                        let old_base = self.frame().base;
-                        let callee_idx = table_idx_pos;
-                        for i in 0..=argc {
-                            self.stack[old_base + i] = self.stack[callee_idx + i].clone();
-                        }
-                        self.stack.truncate(old_base + 1 + argc);
-                        self.frames.pop();
-                        self.call_value(argc)?;
+                    if table_idx >= self.func_table.len() {
+                        return Err(VMError::new(format!(
+                            "trap: return_call_indirect: table index {} out of bounds",
+                            table_idx
+                        )));
                     }
+                    let func = self.func_table[table_idx].clone();
+                    self.stack[table_idx_pos] = func;
+                    let old_base = self.frame().base;
+                    let callee_idx = table_idx_pos;
+                    for i in 0..=argc {
+                        self.stack[old_base + i] = self.stack[callee_idx + i].clone();
+                    }
+                    self.stack.truncate(old_base + 1 + argc);
+                    self.frames.pop();
+                    self.call_value(argc)?;
                 }
                 _ if op == Op::RETURN_CALL_REF => {
                     let argc = self.read_byte() as usize;
@@ -2416,12 +2619,14 @@ impl VM {
 
                 // -- Linear memory --
                 _ if op == Op::MEMORY_SIZE => {
-                    let pages = (self.active_mem_len() / 65536) as i32;
+                    let memidx = self.read_optional_memidx_immediate();
+                    let pages = (self.mem_len(memidx) / 65536) as i32;
                     self.push(Value::I32(pages))?;
                 }
                 _ if op == Op::MEMORY_GROW => {
+                    let memidx = self.read_optional_memidx_immediate();
                     let pages = self.pop().as_i32() as u32 as usize;
-                    let old_pages = self.active_mem_grow(pages);
+                    let old_pages = self.mem_grow(memidx, pages);
                     let result = if old_pages == usize::MAX {
                         -1
                     } else {
@@ -2430,152 +2635,151 @@ impl VM {
                     self.push(Value::I32(result))?;
                 }
                 _ if op == Op::I32_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.load_i32(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I32(i32::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I32_STORE => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_i32(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.load_i64(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
+                    self.push(Value::I64(i64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I64_STORE => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_i64(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::F64_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::F64(self.memory.load_f64(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
+                    self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::F64_STORE => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_f64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_f64(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I32_LOAD8_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.load_u8(addr)? as i32))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.push(Value::I32(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i32,
+                    ))?;
                 }
                 _ if op == Op::I32_STORE8 => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as u8;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_u8(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &[val])?;
                 }
                 _ if op == Op::F32_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let val = self.memory.with_buffer(|buf| {
-                        if addr + 4 <= buf.len() {
-                            f32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap()) as f64
-                        } else {
-                            0.0
-                        }
-                    });
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    let val = f32::from_le_bytes(read_le(&bytes)) as f64;
                     self.push(Value::F64(val))?;
                 }
                 _ if op == Op::F32_STORE => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_f64() as f32;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.with_buffer_mut(|buf| {
-                        if addr + 4 <= buf.len() {
-                            buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
-                        }
-                    });
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I32_LOAD8_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.load_u8(addr)? as i8 as i32))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.push(Value::I32(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i32,
+                    ))?;
                 }
                 _ if op == Op::I32_LOAD16_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let val = self.memory.with_buffer(|buf| {
-                        if addr + 2 <= buf.len() {
-                            i16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i32
-                        } else {
-                            0
-                        }
-                    });
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    let val = i16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
                 }
                 _ if op == Op::I32_LOAD16_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let val = self.memory.with_buffer(|buf| {
-                        if addr + 2 <= buf.len() {
-                            u16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i32
-                        } else {
-                            0
-                        }
-                    });
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    let val = u16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
                 }
                 _ if op == Op::I32_STORE16 => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as i16;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.with_buffer_mut(|buf| {
-                        if addr + 2 <= buf.len() {
-                            buf[addr..addr + 2].copy_from_slice(&val.to_le_bytes());
-                        }
-                    });
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_LOAD8_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.load_u8(addr)? as i8 as i64))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.push(Value::I64(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i64,
+                    ))?;
                 }
                 _ if op == Op::I64_LOAD8_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.load_u8(addr)? as i64))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.push(Value::I64(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i64,
+                    ))?;
                 }
                 _ if op == Op::I64_LOAD16_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let val = self.memory.with_buffer(|buf| {
-                        if addr + 2 <= buf.len() {
-                            i16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i64
-                        } else {
-                            0
-                        }
-                    });
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    let val = i16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD16_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let val = self.memory.with_buffer(|buf| {
-                        if addr + 2 <= buf.len() {
-                            u16::from_le_bytes(buf[addr..addr + 2].try_into().unwrap()) as i64
-                        } else {
-                            0
-                        }
-                    });
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    let val = u16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD32_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.load_i32(addr)? as i64))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as i64))?;
                 }
                 _ if op == Op::I64_LOAD32_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.load_i32(addr)? as u32 as i64))?;
+                    let (offset, memidx) = self.read_optional_memarg();
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as u32 as i64))?;
                 }
                 _ if op == Op::I64_STORE8 => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as u8;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_u8(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &[val])?;
                 }
                 _ if op == Op::I64_STORE16 => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i16;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.with_buffer_mut(|buf| {
-                        if addr + 2 <= buf.len() {
-                            buf[addr..addr + 2].copy_from_slice(&val.to_le_bytes());
-                        }
-                    });
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_STORE32 => {
+                    let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i32;
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.store_i32(addr, val)?;
+                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
 
                 // -- Conversions --
@@ -2593,10 +2797,16 @@ impl VM {
                 }
                 _ if op == Op::I64_TRUNC_F64_S => {
                     let a = self.pop().as_f64();
+                    if a.is_nan() || a >= 9223372036854775808.0 || a < -9223372036854775808.0 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
                     self.push(Value::I64(a as i64))?;
                 }
                 _ if op == Op::I64_TRUNC_F64_U => {
                     let a = self.pop().as_f64();
+                    if a.is_nan() || a < 0.0 || a >= 18446744073709551616.0 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
                     self.push(Value::I64(a as u64 as i64))?;
                 }
                 _ if op == Op::F64_PROMOTE_F32 => {
@@ -2985,11 +3195,26 @@ impl VM {
                     let mem_idx = self.read_byte() as usize;
                     self.active_memory = mem_idx;
                 }
-                _ if op == Op::MEMORY_INIT => {
+                _ if op == Op::MEMORY_NEW => {
                     let pages = self.pop().as_f64() as usize;
                     let mem_idx = self.extra_memories.len() + 1; // 0 is default memory
                     self.extra_memories.push(vec![0u8; pages * 65536]);
                     self.push(Value::I32(mem_idx as i32))?;
+                }
+                _ if op == Op::MEMORY_INIT => {
+                    let data_idx = self.read_byte() as u32;
+                    let _memidx = self.read_optional_memidx_immediate();
+                    if self.dropped_data.contains(&data_idx) {
+                        return Err(VMError::new("memory.init: data segment dropped"));
+                    }
+                    let count = self.pop().as_i32().max(0) as usize;
+                    let _src = self.pop().as_i32().max(0) as usize;
+                    let _dst = self.pop().as_i32().max(0) as usize;
+                    if count != 0 {
+                        return Err(VMError::new(
+                            "memory.init: data segment payloads are not loaded".to_string(),
+                        ));
+                    }
                 }
                 // ── reference-types: table operations ─────────────────
                 // Each op reads a `u8 table_idx` operand per spec. Tables
@@ -2998,82 +3223,105 @@ impl VM {
                 // 1+ map to lazily-created `extra_tables`.
                 _ if op == Op::TABLE_SIZE => {
                     let tidx = self.read_byte() as usize;
-                    let size = self.table_ref(tidx).map_or(0, |t| t.len()) as i32;
+                    let table = self
+                        .table_ref(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.size unknown table"))?;
+                    let size = table.len() as i32;
                     self.push(Value::I32(size))?;
                 }
                 _ if op == Op::TABLE_GROW => {
                     let tidx = self.read_byte() as usize;
                     let delta = self.pop().as_i32().max(0) as usize;
                     let init = self.pop();
-                    if let Some(table) = self.table_mut(tidx) {
-                        let old_size = table.len();
-                        let new_size = old_size.saturating_add(delta);
-                        table.resize(new_size, init);
-                        self.push(Value::I32(old_size as i32))?;
-                    } else {
-                        self.push(Value::I32(-1))?;
-                    }
+                    let table = self
+                        .table_mut(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.grow unknown table"))?;
+                    let old_size = table.len();
+                    let new_size = old_size.saturating_add(delta);
+                    table.resize(new_size, init);
+                    self.push(Value::I32(old_size as i32))?;
                 }
                 _ if op == Op::TABLE_FILL => {
                     let tidx = self.read_byte() as usize;
                     let count = self.pop().as_i32().max(0) as usize;
                     let value = self.pop();
                     let dst = self.pop().as_i32().max(0) as usize;
-                    if let Some(table) = self.table_mut(tidx) {
-                        let end = (dst + count).min(table.len());
-                        for i in dst..end {
-                            table[i] = value.clone();
-                        }
+                    let table = self
+                        .table_mut(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
+                    let end = dst.saturating_add(count);
+                    if end > table.len() {
+                        return Err(VMError::new("trap: table.fill out of bounds"));
+                    }
+                    for i in dst..end {
+                        table[i] = value.clone();
                     }
                 }
                 _ if op == Op::TABLE_COPY => {
-                    // Spec: `table.copy dst_table src_table` — we have one
-                    // table so both operands are 0.
-                    let _dst_table = self.read_byte();
+                    // Current bytecode carries one table operand for direct
+                    // tests; binary decoding emits the destination table.
+                    // Use that selected table for both src and dst when no
+                    // separate source operand is present.
+                    let table_idx = self.read_byte() as usize;
                     let count = self.pop().as_i32().max(0) as usize;
                     let src = self.pop().as_i32().max(0) as usize;
                     let dst = self.pop().as_i32().max(0) as usize;
-                    let max = self.func_table.len();
+                    let table = self
+                        .table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
+                    let max = table.len();
                     if src.saturating_add(count) > max || dst.saturating_add(count) > max {
-                        return Err(VMError::new("table.copy: out of bounds".to_string()));
+                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
                     }
                     if dst <= src {
                         for i in 0..count {
-                            self.func_table[dst + i] = self.func_table[src + i].clone();
+                            table[dst + i] = table[src + i].clone();
                         }
                     } else {
                         for i in (0..count).rev() {
-                            self.func_table[dst + i] = self.func_table[src + i].clone();
+                            table[dst + i] = table[src + i].clone();
                         }
                     }
                 }
                 _ if op == Op::TABLE_INIT => {
-                    let _elem_idx = self.read_byte();
+                    let elem_idx = self.read_byte() as u32;
+                    if self.dropped_elems.contains(&elem_idx) {
+                        return Err(VMError::new("table.init: element segment dropped"));
+                    }
                     // No runtime element segments — bounds-check-only no-op.
-                    let _count = self.pop().as_i32();
+                    let count = self.pop().as_i32().max(0) as usize;
                     let _src = self.pop().as_i32();
                     let _dst = self.pop().as_i32();
+                    if count != 0 {
+                        return Err(VMError::new(
+                            "table.init: element segment payloads are not loaded".to_string(),
+                        ));
+                    }
                 }
                 _ if op == Op::ELEM_DROP => {
-                    let _elem_idx = self.read_byte();
+                    let elem_idx = self.read_byte() as u32;
+                    self.dropped_elems.insert(elem_idx);
                 }
                 _ if op == Op::DATA_DROP => {
-                    let _data_idx = self.read_byte();
+                    let data_idx = self.read_byte() as u32;
+                    self.dropped_data.insert(data_idx);
                 }
                 _ if op == Op::MEMORY_COPY => {
+                    let dst_mem = self.read_optional_memidx_immediate();
+                    let src_mem = self.read_optional_memidx_immediate();
                     let count = self.pop().as_i32().max(0) as usize;
                     let src = self.pop().as_i32().max(0) as usize;
                     let dst = self.pop().as_i32().max(0) as usize;
-                    let mut buf = vec![0u8; count];
-                    self.memory.read_bytes(src, &mut buf);
-                    self.memory.write_bytes(dst, &buf);
+                    let buf = self.read_memory_bytes(src_mem, src, count)?;
+                    self.write_memory_bytes(dst_mem, dst, &buf)?;
                 }
                 _ if op == Op::MEMORY_FILL => {
+                    let memidx = self.read_optional_memidx_immediate();
                     let count = self.pop().as_i32().max(0) as usize;
                     let val = self.pop().as_i32() as u8;
                     let dst = self.pop().as_i32().max(0) as usize;
                     let buf = vec![val; count];
-                    self.memory.write_bytes(dst, &buf);
+                    self.write_memory_bytes(memidx, dst, &buf)?;
                 }
                 _ if op == Op::MEMORY_COPY_CROSS => {
                     let len = self.pop().as_f64() as usize;
@@ -3594,8 +3842,7 @@ impl VM {
                                 let entry = cs.entry.clone();
                                 (phase, entry)
                             } else {
-                                self.push(resume_val)?;
-                                return Ok(Value::Null);
+                                return Err(VMError::new("resume: not a continuation"));
                             }
                         };
                         // Capture the caller's state so SUSPEND can restore
@@ -3656,7 +3903,7 @@ impl VM {
                             mode: ResumeMode::Raw,
                         });
                     } else {
-                        self.push(resume_val)?;
+                        return Err(VMError::new("resume: not a continuation"));
                     }
                 }
                 _ if op == Op::SWITCH => {
@@ -3736,10 +3983,10 @@ impl VM {
                             );
                             Value::Object(Arc::new(Mutex::new(new_obj)))
                         } else {
-                            cont_val.clone()
+                            return Err(VMError::new("cont.bind: not a continuation"));
                         }
                     } else {
-                        cont_val.clone()
+                        return Err(VMError::new("cont.bind: not a continuation"));
                     };
                     self.push(new_cont)?;
                 }
@@ -4114,32 +4361,56 @@ impl VM {
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 _ if op == Op::SUSPEND_TYPED => {
-                    let _tag_idx = self.read_u16();
-                    // Typed suspend: yield a value, with type validation.
+                    let tag_idx = self.read_u16() as usize;
                     let val = self.pop();
-                    // In a full implementation, we'd validate val matches the yield_type
-                    // of the current continuation's tag. For now, just yield.
+                    let expected_type = self
+                        .chunks
+                        .first()
+                        .and_then(|chunk| chunk.continuation_tags.get(tag_idx))
+                        .map(|tag| tag.yield_type.clone())
+                        .unwrap_or_default();
+                    if !expected_type.is_empty()
+                        && expected_type != "any"
+                        && !self.test_type(&val, &expected_type.to_lowercase())
+                    {
+                        return Err(VMError::new(format!(
+                            "suspend_typed: yield type mismatch, expected {}",
+                            expected_type
+                        )));
+                    }
                     return Ok(val);
                 }
                 _ if op == Op::RESUME_TYPED => {
-                    let _tag_idx = self.read_u16();
+                    let tag_idx = self.read_u16() as usize;
                     let val = self.pop();
                     let cont = self.pop();
                     if let Value::Object(obj) = &cont {
-                        // Validate resume value type matches continuation's resume_type
-                        let expected_type = {
+                        let (actual_tag, expected_type) = {
                             let o = obj.lock().unwrap();
-                            o.properties
+                            let actual_tag = o
+                                .properties
+                                .get("__cont_tag")
+                                .map(|v| v.as_i32() as usize)
+                                .unwrap_or(usize::MAX);
+                            let expected_type = o
+                                .properties
                                 .get("__cont_resume_type")
                                 .map(|v| format!("{}", v))
-                                .unwrap_or_default()
+                                .unwrap_or_default();
+                            (actual_tag, expected_type)
                         };
+                        if actual_tag != tag_idx {
+                            return Err(VMError::new(format!(
+                                "resume_typed: tag mismatch, expected {}, got {}",
+                                actual_tag, tag_idx
+                            )));
+                        }
                         if !expected_type.is_empty() && expected_type != "any" {
-                            let actual_matches =
-                                self.test_type(&val, &expected_type.to_lowercase());
-                            if !actual_matches {
-                                // Type mismatch on resume — for now, proceed anyway
-                                // A strict implementation would trap here
+                            if !self.test_type(&val, &expected_type.to_lowercase()) {
+                                return Err(VMError::new(format!(
+                                    "resume_typed: resume type mismatch, expected {}",
+                                    expected_type
+                                )));
                             }
                         }
                         let func_val = {
@@ -4191,80 +4462,87 @@ impl VM {
                 // ── SIMD (128-bit vectors) ────────────────────────────────────
                 // Memory
                 _ if op == Op::V128_LOAD => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     let mut b = [0u8; 16];
-                    self.memory.read_bytes(addr, &mut b);
+                    b.copy_from_slice(&self.read_memory_bytes(0, addr, 16)?);
                     self.push(Value::V128(b))?;
                 }
                 _ if op == Op::V128_LOAD8X8_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
-                        let b = self.memory.load_u8(addr + i).unwrap_or(0);
+                        let b = bytes[i];
                         let v = b as i8 as i16;
                         out[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD8X8_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
-                        let b = self.memory.load_u8(addr + i).unwrap_or(0);
+                        let b = bytes[i];
                         let v = b as u16;
                         out[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD16X4_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
-                        let lo = self.memory.load_u8(addr + i * 2).unwrap_or(0);
-                        let hi = self.memory.load_u8(addr + i * 2 + 1).unwrap_or(0);
+                        let lo = bytes[i * 2];
+                        let hi = bytes[i * 2 + 1];
                         let v = u16::from_le_bytes([lo, hi]) as i16 as i32;
                         out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD16X4_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
-                        let lo = self.memory.load_u8(addr + i * 2).unwrap_or(0);
-                        let hi = self.memory.load_u8(addr + i * 2 + 1).unwrap_or(0);
+                        let lo = bytes[i * 2];
+                        let hi = bytes[i * 2 + 1];
                         let v = u16::from_le_bytes([lo, hi]) as u32;
                         out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32X2_S => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
-                        let v = self.memory.load_i32(addr + i * 4).unwrap_or(0) as i64;
+                        let v = i32::from_le_bytes(read_le(&bytes[i * 4..i * 4 + 4])) as i64;
                         out[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32X2_U => {
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
-                        let v = self.memory.load_i32(addr + i * 4).unwrap_or(0) as u32 as u64;
+                        let v = u32::from_le_bytes(read_le(&bytes[i * 4..i * 4 + 4])) as u64;
                         out[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
                     }
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD8_SPLAT => {
-                    let addr = self.pop().as_i32() as usize;
-                    let b = self.memory.load_u8(addr).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let b = self.read_memory_bytes(0, addr, 1)?[0];
                     self.push(Value::V128([b; 16]))?;
                 }
                 _ if op == Op::V128_LOAD16_SPLAT => {
-                    let addr = self.pop().as_i32() as usize;
-                    let lo = self.memory.load_u8(addr).unwrap_or(0);
-                    let hi = self.memory.load_u8(addr + 1).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 2)?;
+                    let lo = bytes[0];
+                    let hi = bytes[1];
                     let mut out = [0u8; 16];
                     for i in 0..8 {
                         out[i * 2] = lo;
@@ -4273,8 +4551,9 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32_SPLAT => {
-                    let addr = self.pop().as_i32() as usize;
-                    let v = self.memory.load_i32(addr).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 4)?;
+                    let v = i32::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     for i in 0..4 {
                         out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -4282,8 +4561,9 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD64_SPLAT => {
-                    let addr = self.pop().as_i32() as usize;
-                    let v = self.memory.load_i64(addr).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let v = i64::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
                     out[8..16].copy_from_slice(&v.to_le_bytes());
@@ -4291,9 +4571,9 @@ impl VM {
                 }
                 _ if op == Op::V128_STORE => {
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(b) = val {
-                        self.memory.write_bytes(addr, &b);
+                        self.write_memory_bytes(0, addr, &b)?;
                     }
                 }
                 _ if op == Op::V128_CONST => {
@@ -4306,9 +4586,9 @@ impl VM {
                 _ if op == Op::V128_LOAD8_LANE => {
                     let lane = self.read_byte() as usize & 15;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(mut v) = val {
-                        v[lane] = self.memory.load_u8(addr).unwrap_or(0);
+                        v[lane] = self.read_memory_bytes(0, addr, 1)?[0];
                         self.push(Value::V128(v))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
@@ -4317,10 +4597,11 @@ impl VM {
                 _ if op == Op::V128_LOAD16_LANE => {
                     let lane = self.read_byte() as usize & 7;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(mut v) = val {
-                        v[lane * 2] = self.memory.load_u8(addr).unwrap_or(0);
-                        v[lane * 2 + 1] = self.memory.load_u8(addr + 1).unwrap_or(0);
+                        let bytes = self.read_memory_bytes(0, addr, 2)?;
+                        v[lane * 2] = bytes[0];
+                        v[lane * 2 + 1] = bytes[1];
                         self.push(Value::V128(v))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
@@ -4329,11 +4610,10 @@ impl VM {
                 _ if op == Op::V128_LOAD32_LANE => {
                     let lane = self.read_byte() as usize & 3;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(mut v) = val {
-                        for j in 0..4 {
-                            v[lane * 4 + j] = self.memory.load_u8(addr + j).unwrap_or(0);
-                        }
+                        let bytes = self.read_memory_bytes(0, addr, 4)?;
+                        v[lane * 4..lane * 4 + 4].copy_from_slice(&bytes);
                         self.push(Value::V128(v))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
@@ -4342,11 +4622,10 @@ impl VM {
                 _ if op == Op::V128_LOAD64_LANE => {
                     let lane = self.read_byte() as usize & 1;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(mut v) = val {
-                        for j in 0..8 {
-                            v[lane * 8 + j] = self.memory.load_u8(addr + j).unwrap_or(0);
-                        }
+                        let bytes = self.read_memory_bytes(0, addr, 8)?;
+                        v[lane * 8..lane * 8 + 8].copy_from_slice(&bytes);
                         self.push(Value::V128(v))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
@@ -4354,47 +4633,44 @@ impl VM {
                 }
                 _ if op == Op::V128_STORE8_LANE => {
                     let lane = self.read_byte() as usize & 15;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(v) = self.pop() {
-                        let _ = self.memory.store_u8(addr, v[lane]);
+                        self.write_memory_bytes(0, addr, &[v[lane]])?;
                     }
                 }
                 _ if op == Op::V128_STORE16_LANE => {
                     let lane = self.read_byte() as usize & 7;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(v) = self.pop() {
-                        let _ = self.memory.store_u8(addr, v[lane * 2]);
-                        let _ = self.memory.store_u8(addr + 1, v[lane * 2 + 1]);
+                        self.write_memory_bytes(0, addr, &v[lane * 2..lane * 2 + 2])?;
                     }
                 }
                 _ if op == Op::V128_STORE32_LANE => {
                     let lane = self.read_byte() as usize & 3;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(v) = self.pop() {
-                        for j in 0..4 {
-                            let _ = self.memory.store_u8(addr + j, v[lane * 4 + j]);
-                        }
+                        self.write_memory_bytes(0, addr, &v[lane * 4..lane * 4 + 4])?;
                     }
                 }
                 _ if op == Op::V128_STORE64_LANE => {
                     let lane = self.read_byte() as usize & 1;
-                    let addr = self.pop().as_i32() as usize;
+                    let addr = self.pop().as_i32() as u32 as usize;
                     if let Value::V128(v) = self.pop() {
-                        for j in 0..8 {
-                            let _ = self.memory.store_u8(addr + j, v[lane * 8 + j]);
-                        }
+                        self.write_memory_bytes(0, addr, &v[lane * 8..lane * 8 + 8])?;
                     }
                 }
                 _ if op == Op::V128_LOAD32_ZERO => {
-                    let addr = self.pop().as_i32() as usize;
-                    let v = self.memory.load_i32(addr).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 4)?;
+                    let v = i32::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..4].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD64_ZERO => {
-                    let addr = self.pop().as_i32() as usize;
-                    let v = self.memory.load_i64(addr).unwrap_or(0);
+                    let addr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let v = i64::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
@@ -5864,139 +6140,61 @@ impl VM {
                     }
                 }
 
-                // -- Atomics (single-threaded: same as non-atomic for now) --
-                _ if op == Op::ATOMIC_FENCE => {} // no-op in single-threaded
-                _ if op == Op::I32_ATOMIC_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_load_i32(addr)))?;
-                }
-                // Atomic store: stack is [addr, value] — pop value first (top), then addr
-                _ if op == Op::I32_ATOMIC_STORE => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.atomic_store_i32(addr, v);
-                }
-                // Atomic RMW: stack is [addr, value] — pop value (top), addr (second), return old
-                _ if op == Op::I32_ATOMIC_RMW_ADD => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_rmw_add_i32(addr, v)))?;
-                }
-                _ if op == Op::I32_ATOMIC_RMW_SUB => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_rmw_sub_i32(addr, v)))?;
-                }
-                _ if op == Op::I32_ATOMIC_RMW_AND => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_rmw_and_i32(addr, v)))?;
-                }
-                _ if op == Op::I32_ATOMIC_RMW_OR => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_rmw_or_i32(addr, v)))?;
-                }
-                _ if op == Op::I32_ATOMIC_RMW_XOR => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_rmw_xor_i32(addr, v)))?;
-                }
-                _ if op == Op::I32_ATOMIC_RMW_XCHG => {
-                    let v = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_xchg_i32(addr, v)))?;
-                }
-                // Atomic CmpXchg: stack is [addr, expected, replacement]
-                _ if op == Op::I32_ATOMIC_RMW_CMPXCHG => {
-                    let replacement = self.pop().as_i32();
-                    let expected = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.atomic_cmpxchg_i32(
-                        addr,
-                        expected,
-                        replacement,
-                    )))?;
-                }
-                _ if op == Op::I64_ATOMIC_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.atomic_load_i64(addr)))?;
-                }
-                _ if op == Op::I64_ATOMIC_STORE => {
-                    let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.memory.atomic_store_i64(addr, v);
-                }
-                _ if op == Op::I64_ATOMIC_RMW_ADD => {
-                    let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.atomic_rmw_add_i64(addr, v)))?;
-                }
-                _ if op == Op::I64_ATOMIC_RMW_SUB => {
-                    let v = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.atomic_rmw_sub_i64(addr, v)))?;
-                }
-                _ if op == Op::I64_ATOMIC_RMW_CMPXCHG => {
-                    let repl = self.pop().as_i64();
-                    let exp = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I64(self.memory.atomic_cmpxchg_i64(addr, exp, repl)))?;
-                }
-                _ if op == Op::MEMORY_ATOMIC_WAIT32 => {
-                    let timeout = self.pop().as_i64();
-                    let expected = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?;
-                }
-                _ if op == Op::MEMORY_ATOMIC_WAIT64 => {
-                    let timeout = self.pop().as_i64();
-                    let expected = self.pop().as_i64();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.wait64(addr, expected, timeout)))?;
-                }
-                _ if op == Op::MEMORY_ATOMIC_NOTIFY => {
-                    let count = self.pop().as_i32();
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    self.push(Value::I32(self.memory.notify(addr, count)))?;
-                }
+                _ if op.prefix() == 0xFE && self.execute_threads_op(op)? => {}
 
                 // -- Memory64 --
                 _ if op == Op::I64_MEMORY_SIZE => {
-                    self.push(Value::I64((self.memory.len() / 65536) as i64))?;
+                    let memidx = self.read_optional_memidx_immediate();
+                    self.push(Value::I64((self.mem_len(memidx) / 65536) as i64))?;
                 }
                 _ if op == Op::I64_MEMORY_GROW => {
+                    let memidx = self.read_optional_memidx_immediate();
                     let pages = self.pop().as_i64() as usize;
-                    let old = self.memory.grow(pages);
+                    let old = self.mem_grow(memidx, pages);
                     let result = if old == usize::MAX { -1 } else { old as i64 };
                     self.push(Value::I64(result))?;
                 }
                 _ if op == Op::I32_LOAD_64 => {
-                    let addr = self.pop().as_i64() as usize;
-                    self.push(Value::I32(self.memory.load_i32(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I32(i32::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I64_LOAD_64 => {
-                    let addr = self.pop().as_i64() as usize;
-                    self.push(Value::I64(self.memory.load_i64(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
+                    self.push(Value::I64(i64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::F64_LOAD_64 => {
-                    let addr = self.pop().as_i64() as usize;
-                    self.push(Value::F64(self.memory.load_f64(addr)?))?;
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
+                    self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I32_STORE_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
                     let v = self.pop().as_i32();
-                    let addr = self.pop().as_i64() as usize;
-                    self.memory.store_i32(addr, v)?;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
                 }
                 _ if op == Op::I64_STORE_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
                     let v = self.pop().as_i64();
-                    let addr = self.pop().as_i64() as usize;
-                    self.memory.store_i64(addr, v)?;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
                 }
                 _ if op == Op::F64_STORE_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
                     let v = self.pop().as_f64();
-                    let addr = self.pop().as_i64() as usize;
-                    self.memory.store_f64(addr, v)?;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
                 }
 
                 // -- Relaxed-SIMD proposal (prefix 0xDD internal, 0xFD 0x100+ in WASM) --

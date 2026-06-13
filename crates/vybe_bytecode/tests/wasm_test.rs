@@ -1026,6 +1026,12 @@ fn simd_v128_bitwise() {
 // Atomics (single-threaded correctness)
 // ============================================================
 
+fn emit_atomic(c: &mut Chunk, op: Op) {
+    c.emit_op(op, 0);
+    c.emit(0, 0);
+    c.emit(0, 0);
+}
+
 #[test]
 fn atomic_rmw_add() {
     let mut chunk = Chunk::new("test");
@@ -1039,12 +1045,12 @@ fn atomic_rmw_add() {
     let c100 = chunk.add_constant(Value::I32(100));
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op_u16(Op::CONST, c100, 0);
-    chunk.emit_op(Op::I32_ATOMIC_STORE, 0);
+    emit_atomic(&mut chunk, Op::I32_ATOMIC_STORE);
     // atomic_rmw_add(0, 42) → old=100, new=142
     chunk.emit_op_u16(Op::CONST, c0, 0);
     let c42 = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, c42, 0);
-    chunk.emit_op(Op::I32_ATOMIC_RMW_ADD, 0);
+    emit_atomic(&mut chunk, Op::I32_ATOMIC_RMW_ADD);
     // Returns old value (100)
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
@@ -1066,17 +1072,17 @@ fn atomic_cmpxchg() {
     let c50 = chunk.add_constant(Value::I32(50));
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op_u16(Op::CONST, c50, 0);
-    chunk.emit_op(Op::I32_ATOMIC_STORE, 0);
+    emit_atomic(&mut chunk, Op::I32_ATOMIC_STORE);
     // cmpxchg(addr=0, expected=50, replacement=99) → old=50, swap happens
     let c99 = chunk.add_constant(Value::I32(99));
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op_u16(Op::CONST, c50, 0);
     chunk.emit_op_u16(Op::CONST, c99, 0);
-    chunk.emit_op(Op::I32_ATOMIC_RMW_CMPXCHG, 0);
+    emit_atomic(&mut chunk, Op::I32_ATOMIC_RMW_CMPXCHG);
     chunk.emit_op(Op::DROP, 0); // drop old (50)
     // Load → should be 99
     chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op(Op::I32_ATOMIC_LOAD, 0);
+    emit_atomic(&mut chunk, Op::I32_ATOMIC_LOAD);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {

@@ -18,6 +18,7 @@ pub(crate) mod jspi;
 pub mod module_record;
 pub mod shared_memory;
 pub(crate) mod simd;
+pub(crate) mod threads;
 pub mod typedef;
 pub(crate) mod upvalues;
 pub mod waitable;

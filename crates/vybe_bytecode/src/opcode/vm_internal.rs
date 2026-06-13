@@ -225,6 +225,9 @@ impl Op {
     pub const CONTEXT_GET: Op = Op::new(0xFF, 0x9B);
     /// canon context.set i — pops [value, index_i32], sets context slot.
     pub const CONTEXT_SET: Op = Op::new(0xFF, 0x9C);
+    /// VM-internal compatibility helper: allocate a new extra linear memory.
+    /// This is not the WASM bulk-memory `memory.init` instruction.
+    pub const MEMORY_NEW: Op = Op::new(0xFF, 0x9D);
 }
 
 opcode_category! {
@@ -392,4 +395,5 @@ opcode_category! {
     [0x7F] str_from_u64 => None, "string.from_u64";
     [0x80] str_from_f64 => None, "string.from_f64";
     [0x81] symbol_eq => None, "symbol.eq";
+    [0x9D] memory_new => None, "memory.new";
 }

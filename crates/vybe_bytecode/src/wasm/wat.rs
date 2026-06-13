@@ -191,6 +191,16 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let value = read_leb_u32(&chunk.code, &mut operand_ip);
             let _ = write!(out, " {value}");
         }
+        OperandFormat::MemArg => {
+            let mut operand_ip = ip + 2;
+            let align = read_leb_u32(&chunk.code, &mut operand_ip);
+            let offset = read_leb_u32(&chunk.code, &mut operand_ip);
+            let _ = write!(out, " align={align} offset={offset}");
+            if align & 0x40 != 0 {
+                let memidx = read_leb_u32(&chunk.code, &mut operand_ip);
+                let _ = write!(out, " memory={memidx}");
+            }
+        }
         OperandFormat::BrTable => {
             let mut operand_ip = ip + 2;
             let count = read_leb_u32(&chunk.code, &mut operand_ip);

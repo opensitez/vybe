@@ -97,6 +97,9 @@ pub struct Chunk {
     pub global_inits: Vec<GlobalInit>,
     /// Continuation tags — typed contracts for suspend/resume.
     pub continuation_tags: Vec<ContinuationTag>,
+    /// Declared linear memories for modules decoded from standard WASM.
+    /// Entries are minimum page counts, in spec memory-index order.
+    pub memory_min_pages: Vec<u64>,
     /// Number of results this function returns. Default 1 (single
     /// externref) matches the pre-multi-value ABI. A chunk that wants
     /// to take advantage of the multi-value proposal sets this >1; the
@@ -139,6 +142,7 @@ impl Chunk {
             type_exports: Vec::new(),
             global_inits: Vec::new(),
             continuation_tags: Vec::new(),
+            memory_min_pages: Vec::new(),
             result_arity: 1,
             is_async: false,
             is_generator: false,

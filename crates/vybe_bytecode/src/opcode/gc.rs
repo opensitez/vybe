@@ -78,8 +78,8 @@ opcode_category! {
     [0x06] array_new          => None,    "array.new";
     [0x07] array_new_default  => None,    "array.new_default";
     [0x08] array_new_fixed    => U16,     "array.new_fixed";
-    [0x09] array_new_data     => U16,     "array.new_data";
-    [0x0A] array_new_elem     => U16,     "array.new_elem";
+    [0x09] array_new_data     => U16_U16, "array.new_data";
+    [0x0A] array_new_elem     => U16_U16, "array.new_elem";
     [0x0B] array_get          => None,    "array.get";
     [0x0C] array_get_s        => None,    "array.get_s";
     [0x0D] array_get_u        => None,    "array.get_u";
@@ -87,8 +87,8 @@ opcode_category! {
     [0x0F] array_length       => None,    "array.len";
     [0x10] array_fill         => None,    "array.fill";
     [0x11] array_copy         => None,    "array.copy";
-    [0x12] array_init_data    => U16,     "array.init_data";
-    [0x13] array_init_elem    => U16,     "array.init_elem";
+    [0x12] array_init_data    => U16_U16, "array.init_data";
+    [0x13] array_init_elem    => U16_U16, "array.init_elem";
     // Reference tests / casts (0x14..=0x19)
     [0x14] ref_test           => U16,    "ref.test";
     [0x15] ref_test_null      => U16,    "ref.test_null";

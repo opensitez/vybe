@@ -95,7 +95,12 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     );
 
     // Memory section
-    write_section(&mut out, SECTION_MEMORY, &sections::encode_memory_section());
+    let memory_section = if sections::module_uses_memory64(chunks) {
+        sections::encode_memory64_section_with(1, None, false)
+    } else {
+        sections::encode_memory_section()
+    };
+    write_section(&mut out, SECTION_MEMORY, &memory_section);
 
     // Tag section (exception-handling + stack-switching proposals).
     // Always emits the `$vybe_exception (param externref)` tag when

@@ -310,62 +310,85 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
 
 #[test]
 fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() {
-    let load_cases: &[(&str, u8, &[u8])] = &[
-        ("i32.load", 0x28, &[0x42, 0x00]),
-        ("i64.load", 0x29, &[0x42, 0x00, 0xA7]),
-        ("f32.load", 0x2A, &[0x42, 0x00, 0x1A, 0x41, 0x00]),
-        ("f64.load", 0x2B, &[0x42, 0x00, 0x1A, 0x41, 0x00]),
-        ("i32.load8_s", 0x2C, &[0x42, 0x00]),
-        ("i32.load8_u", 0x2D, &[0x42, 0x00]),
-        ("i32.load16_s", 0x2E, &[0x42, 0x00]),
-        ("i32.load16_u", 0x2F, &[0x42, 0x00]),
-        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7]),
-        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7]),
-        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7]),
-        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7]),
-        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7]),
-        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7]),
+    let load_cases: &[(&str, u8, &[u8], Option<Op>)] = &[
+        ("i32.load", 0x28, &[0x42, 0x00], Some(Op::I32_LOAD_64)),
+        ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Some(Op::I64_LOAD_64)),
+        ("f32.load", 0x2A, &[0x42, 0x00, 0x1A, 0x41, 0x00], None),
+        ("f64.load", 0x2B, &[0x42, 0x00, 0x1A, 0x41, 0x00], Some(Op::F64_LOAD_64)),
+        ("i32.load8_s", 0x2C, &[0x42, 0x00], None),
+        ("i32.load8_u", 0x2D, &[0x42, 0x00], None),
+        ("i32.load16_s", 0x2E, &[0x42, 0x00], None),
+        ("i32.load16_u", 0x2F, &[0x42, 0x00], None),
+        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], None),
+        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], None),
+        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7], None),
+        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7], None),
+        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7], None),
+        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7], None),
     ];
 
-    for (name, opcode, prefix) in load_cases {
+    for (name, opcode, prefix, decoded_op) in load_cases {
         let mut body = Vec::new();
         body.extend_from_slice(prefix);
         body.extend_from_slice(&[*opcode, 0x02, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
-        let err = wasm::read_wasm(&bytes).unwrap_err();
-        assert!(
-            err.contains("memory64") && err.contains(name),
-            "{name} must be rejected or semantically decoded, got {err}"
-        );
+        if let Some(op) = decoded_op {
+            let chunks = wasm::read_wasm(&bytes).expect("supported memory64 load should decode");
+            assert!(
+                chunks[1]
+                    .code
+                    .windows(2)
+                    .any(|w| w == [op.prefix(), op.sub()]),
+                "{name} must decode to memory64 bytecode"
+            );
+        } else {
+            let err = wasm::read_wasm(&bytes).unwrap_err();
+            assert!(
+                err.contains("memory64") && err.contains(name),
+                "{name} must be rejected until memory64 semantics are implemented, got {err}"
+            );
+        }
     }
 
-    let store_cases: &[(&str, u8, &[u8])] = &[
-        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01]),
-        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01]),
-        ("f32.store", 0x38, &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F]),
+    let store_cases: &[(&str, u8, &[u8], Option<Op>)] = &[
+        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01], Some(Op::I32_STORE_64)),
+        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01], Some(Op::I64_STORE_64)),
+        ("f32.store", 0x38, &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F], None),
         (
             "f64.store",
             0x39,
             &[0x42, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F],
+            Some(Op::F64_STORE_64),
         ),
-        ("i32.store8", 0x3A, &[0x42, 0x00, 0x41, 0x01]),
-        ("i32.store16", 0x3B, &[0x42, 0x00, 0x41, 0x01]),
-        ("i64.store8", 0x3C, &[0x42, 0x00, 0x42, 0x01]),
-        ("i64.store16", 0x3D, &[0x42, 0x00, 0x42, 0x01]),
-        ("i64.store32", 0x3E, &[0x42, 0x00, 0x42, 0x01]),
+        ("i32.store8", 0x3A, &[0x42, 0x00, 0x41, 0x01], None),
+        ("i32.store16", 0x3B, &[0x42, 0x00, 0x41, 0x01], None),
+        ("i64.store8", 0x3C, &[0x42, 0x00, 0x42, 0x01], None),
+        ("i64.store16", 0x3D, &[0x42, 0x00, 0x42, 0x01], None),
+        ("i64.store32", 0x3E, &[0x42, 0x00, 0x42, 0x01], None),
     ];
 
-    for (name, opcode, prefix) in store_cases {
+    for (name, opcode, prefix, decoded_op) in store_cases {
         let mut body = Vec::new();
         body.extend_from_slice(prefix);
         body.extend_from_slice(&[*opcode, 0x02, 0x00]);
         body.extend_from_slice(&[0x41, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
-        let err = wasm::read_wasm(&bytes).unwrap_err();
-        assert!(
-            err.contains("memory64") && err.contains(name),
-            "{name} must be rejected or semantically decoded, got {err}"
-        );
+        if let Some(op) = decoded_op {
+            let chunks = wasm::read_wasm(&bytes).expect("supported memory64 store should decode");
+            assert!(
+                chunks[1]
+                    .code
+                    .windows(2)
+                    .any(|w| w == [op.prefix(), op.sub()]),
+                "{name} must decode to memory64 bytecode"
+            );
+        } else {
+            let err = wasm::read_wasm(&bytes).unwrap_err();
+            assert!(
+                err.contains("memory64") && err.contains(name),
+                "{name} must be rejected until memory64 semantics are implemented, got {err}"
+            );
+        }
     }
 }
 
@@ -415,16 +438,18 @@ fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memo
 fn standard_imported_memory_must_not_decode_without_host_linkage() {
     let bytes = standard_imported_memory_module();
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("imported memory") || err.contains("memory import"));
+    let chunks = wasm::read_wasm(&bytes).expect("memory import should decode");
+    assert_eq!(chunks[0].imports.len(), 1);
+    assert_eq!(chunks[0].imports[0].module, "env");
+    assert_eq!(chunks[0].imports[0].name, "memory");
 }
 
 #[test]
 fn standard_exported_memory_must_not_decode_without_export_linkage() {
     let bytes = standard_exported_memory_module();
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("exported memory") || err.contains("memory export"));
+    let chunks = wasm::read_wasm(&bytes).expect("memory export module should decode");
+    assert_eq!(chunks[0].memory_min_pages, vec![1]);
 }
 
 #[test]

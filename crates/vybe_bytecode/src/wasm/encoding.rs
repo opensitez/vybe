@@ -87,6 +87,20 @@ pub fn write_leb128_u32(out: &mut Vec<u8>, mut value: u32) {
     }
 }
 
+pub fn write_leb128_u64(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
 pub fn write_leb128_i32(out: &mut Vec<u8>, mut value: i32) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -112,6 +126,15 @@ pub fn write_leb128_i64(out: &mut Vec<u8>, mut value: i64) {
             out.push(byte);
             break;
         }
+    }
+}
+
+pub fn encode_memarg_with_memidx(out: &mut Vec<u8>, align: u32, offset: u64, memidx: u32) {
+    let encoded_align = if memidx == 0 { align } else { align | 0x40 };
+    write_leb128_u32(out, encoded_align);
+    write_leb128_u64(out, offset);
+    if memidx != 0 {
+        write_leb128_u32(out, memidx);
     }
 }
 
