@@ -1200,6 +1200,26 @@ fn emit_leb_u64(out: &mut Chunk, mut value: u64) {
 
 #[test]
 fn memory64_grow_and_load() {
+    fn emit_memarg64(out: &mut Chunk, align: u32, offset: u64, memidx: u32) {
+        let encoded_align = if memidx == 0 { align } else { align | 0x40 };
+        out.emit_leb_u32(encoded_align, 0);
+        let mut value = offset;
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.emit(byte, 0);
+            if value == 0 {
+                break;
+            }
+        }
+        if memidx != 0 {
+            out.emit_leb_u32(memidx, 0);
+        }
+    }
+
     let mut chunk = Chunk::new("test");
     // Grow with i64
     let c1 = chunk.add_constant(Value::I64(1));
@@ -1212,9 +1232,11 @@ fn memory64_grow_and_load() {
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op_u16(Op::CONST, c42, 0);
     chunk.emit_op(Op::I32_STORE_64, 0);
+    emit_memarg64(&mut chunk, 2, 0, 0);
     // Load back
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op(Op::I32_LOAD_64, 0);
+    emit_memarg64(&mut chunk, 2, 0, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {

@@ -1,5 +1,5 @@
 use crate::chunk::Chunk;
-use crate::opcode::{Op, OperandFormat, read_leb_u32};
+use crate::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
 
 pub fn disassemble(chunk: &Chunk) -> String {
     let mut out = String::new();
@@ -86,10 +86,28 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let value = read_leb_u32(&chunk.code, &mut next);
             (format!("{} {}", name, value), next)
         }
+        OperandFormat::U32Leb_U32Leb => {
+            let mut next = operand_start;
+            let a = read_leb_u32(&chunk.code, &mut next);
+            let b = read_leb_u32(&chunk.code, &mut next);
+            (format!("{} {} {}", name, a, b), next)
+        }
         OperandFormat::MemArg => {
             let mut next = operand_start;
             let align = read_leb_u32(&chunk.code, &mut next);
             let offset = read_leb_u32(&chunk.code, &mut next);
+            let memidx = if align & 0x40 != 0 {
+                Some(read_leb_u32(&chunk.code, &mut next))
+            } else {
+                None
+            };
+            let mem = memidx.map(|idx| format!(" mem={idx}")).unwrap_or_default();
+            (format!("{} align={} offset={}{}", name, align, offset, mem), next)
+        }
+        OperandFormat::MemArg64 => {
+            let mut next = operand_start;
+            let align = read_leb_u32(&chunk.code, &mut next);
+            let offset = read_leb_u64(&chunk.code, &mut next);
             let memidx = if align & 0x40 != 0 {
                 Some(read_leb_u32(&chunk.code, &mut next))
             } else {

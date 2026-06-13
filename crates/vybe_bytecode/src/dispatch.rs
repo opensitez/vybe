@@ -327,9 +327,6 @@ impl VM {
     }
 
     fn read_optional_memarg64(&mut self) -> (u64, usize) {
-        if self.next_bytes_decode_opcode() {
-            return (0, 0);
-        }
         let chunk_idx = self.frame().chunk_index;
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frame().ip;
@@ -349,6 +346,59 @@ impl VM {
             .checked_add(offset)
             .ok_or_else(|| VMError::new("trap: memory64 address overflow"))?;
         usize::try_from(addr).map_err(|_| VMError::new("trap: memory64 address out of range"))
+    }
+
+    fn read_optional_simd_memarg(&mut self) -> (u64, usize, bool) {
+        let chunk_idx = self.frame().chunk_index;
+        let code = &self.chunks[chunk_idx].code;
+        let mut ip = self.frame().ip;
+        let align = read_leb_u32(code, &mut ip);
+        if align & 0x80 == 0 {
+            return (0, 0, false);
+        }
+        let memory64 = align & 0x100 != 0;
+        let offset = if memory64 {
+            read_leb_u64(code, &mut ip)
+        } else {
+            read_leb_u32(code, &mut ip) as u64
+        };
+        let memidx = if align & 0x40 != 0 {
+            read_leb_u32(code, &mut ip) as usize
+        } else {
+            0
+        };
+        self.frame_mut().ip = ip;
+        (offset, memidx, memory64)
+    }
+
+    fn pop_simd_addr(&mut self) -> Result<(usize, usize), VMError> {
+        let (offset, memidx, memory64) = self.read_optional_simd_memarg();
+        let base = self.pop();
+        let addr = self.simd_effective_addr(base, offset, memory64)?;
+        Ok((memidx, addr))
+    }
+
+    fn simd_effective_addr(
+        &self,
+        base: Value,
+        offset: u64,
+        memory64: bool,
+    ) -> Result<usize, VMError> {
+        if memory64 {
+            self.memory64_effective_addr(base.as_i64(), offset)
+        } else {
+            let base = base.as_i32() as u32 as usize;
+            base.checked_add(offset as usize)
+                .ok_or_else(|| VMError::new("trap: simd memory address overflow"))
+        }
+    }
+
+    fn table64_index(value: Value, context: &str) -> Result<usize, VMError> {
+        let idx = value.as_i64();
+        if idx < 0 {
+            return Err(VMError::new(format!("trap: {context} negative table index")));
+        }
+        usize::try_from(idx).map_err(|_| VMError::new(format!("trap: {context} index too large")))
     }
 
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
@@ -1166,6 +1216,30 @@ impl VM {
                     let table_idx = self.read_byte() as usize;
                     let val = self.pop();
                     let idx = self.pop().as_i32() as usize;
+                    let table = self
+                        .table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
+                    if idx >= table.len() {
+                        return Err(VMError::new("trap: table.set out of bounds"));
+                    }
+                    table[idx] = val;
+                }
+                _ if op == Op::TABLE_GET_64 => {
+                    let table_idx = self.read_byte() as usize;
+                    let idx = Self::table64_index(self.pop(), "table.get")?;
+                    let table = self
+                        .table_ref(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.get unknown table"))?;
+                    let val = table
+                        .get(idx)
+                        .cloned()
+                        .ok_or_else(|| VMError::new("trap: table.get out of bounds"))?;
+                    self.push(val)?;
+                }
+                _ if op == Op::TABLE_SET_64 => {
+                    let table_idx = self.read_byte() as usize;
+                    let val = self.pop();
+                    let idx = Self::table64_index(self.pop(), "table.set")?;
                     let table = self
                         .table_mut(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
@@ -2538,6 +2612,20 @@ impl VM {
                         return Err(VMError::new(format!("{}", val)).with_stack(stack));
                     }
                 }
+                _ if op == Op::RETHROW => {
+                    let chunk_idx = self.frame().chunk_index;
+                    let mut ip = self.frame().ip;
+                    let _depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
+                    self.frame_mut().ip = ip;
+                    let val = self.pop();
+                    self.raise_exception_value(val)?;
+                }
+                _ if op == Op::DELEGATE => {
+                    let chunk_idx = self.frame().chunk_index;
+                    let mut ip = self.frame().ip;
+                    let _depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
+                    self.frame_mut().ip = ip;
+                }
                 _ if op == Op::TRY_TABLE => {
                     // WASM EH Phase 4: [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
                     // Tag 0 = catch-all. Tag N = typed catch for exception_tags[N].
@@ -3292,6 +3380,77 @@ impl VM {
                     let count = self.pop().as_i32().max(0) as usize;
                     let _src = self.pop().as_i32();
                     let _dst = self.pop().as_i32();
+                    if count != 0 {
+                        return Err(VMError::new(
+                            "table.init: element segment payloads are not loaded".to_string(),
+                        ));
+                    }
+                }
+                _ if op == Op::TABLE_SIZE_64 => {
+                    let tidx = self.read_byte() as usize;
+                    let table = self
+                        .table_ref(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.size unknown table"))?;
+                    self.push(Value::I64(table.len() as i64))?;
+                }
+                _ if op == Op::TABLE_GROW_64 => {
+                    let tidx = self.read_byte() as usize;
+                    let delta = Self::table64_index(self.pop(), "table.grow")?;
+                    let init = self.pop();
+                    let table = self
+                        .table_mut(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.grow unknown table"))?;
+                    let old_size = table.len();
+                    let new_size = old_size.saturating_add(delta);
+                    table.resize(new_size, init);
+                    self.push(Value::I64(old_size as i64))?;
+                }
+                _ if op == Op::TABLE_FILL_64 => {
+                    let tidx = self.read_byte() as usize;
+                    let count = Self::table64_index(self.pop(), "table.fill")?;
+                    let value = self.pop();
+                    let dst = Self::table64_index(self.pop(), "table.fill")?;
+                    let table = self
+                        .table_mut(tidx)
+                        .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
+                    let end = dst.saturating_add(count);
+                    if end > table.len() {
+                        return Err(VMError::new("trap: table.fill out of bounds"));
+                    }
+                    for i in dst..end {
+                        table[i] = value.clone();
+                    }
+                }
+                _ if op == Op::TABLE_COPY_64 => {
+                    let table_idx = self.read_byte() as usize;
+                    let count = Self::table64_index(self.pop(), "table.copy")?;
+                    let src = Self::table64_index(self.pop(), "table.copy")?;
+                    let dst = Self::table64_index(self.pop(), "table.copy")?;
+                    let table = self
+                        .table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
+                    let max = table.len();
+                    if src.saturating_add(count) > max || dst.saturating_add(count) > max {
+                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
+                    }
+                    if dst <= src {
+                        for i in 0..count {
+                            table[dst + i] = table[src + i].clone();
+                        }
+                    } else {
+                        for i in (0..count).rev() {
+                            table[dst + i] = table[src + i].clone();
+                        }
+                    }
+                }
+                _ if op == Op::TABLE_INIT_64 => {
+                    let elem_idx = self.read_byte() as u32;
+                    if self.dropped_elems.contains(&elem_idx) {
+                        return Err(VMError::new("table.init: element segment dropped"));
+                    }
+                    let count = Self::table64_index(self.pop(), "table.init")?;
+                    let _src = self.pop().as_i32();
+                    let _dst = Self::table64_index(self.pop(), "table.init")?;
                     if count != 0 {
                         return Err(VMError::new(
                             "table.init: element segment payloads are not loaded".to_string(),
@@ -4462,14 +4621,14 @@ impl VM {
                 // ── SIMD (128-bit vectors) ────────────────────────────────────
                 // Memory
                 _ if op == Op::V128_LOAD => {
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let (memidx, addr) = self.pop_simd_addr()?;
                     let mut b = [0u8; 16];
-                    b.copy_from_slice(&self.read_memory_bytes(0, addr, 16)?);
+                    b.copy_from_slice(&self.read_memory_bytes(memidx, addr, 16)?);
                     self.push(Value::V128(b))?;
                 }
                 _ if op == Op::V128_LOAD8X8_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
                         let b = bytes[i];
@@ -4479,8 +4638,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD8X8_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
                         let b = bytes[i];
@@ -4490,8 +4649,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD16X4_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
                         let lo = bytes[i * 2];
@@ -4502,8 +4661,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD16X4_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
                         let lo = bytes[i * 2];
@@ -4514,8 +4673,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32X2_S => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
                         let v = i32::from_le_bytes(read_le(&bytes[i * 4..i * 4 + 4])) as i64;
@@ -4524,8 +4683,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32X2_U => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
                         let v = u32::from_le_bytes(read_le(&bytes[i * 4..i * 4 + 4])) as u64;
@@ -4534,13 +4693,13 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD8_SPLAT => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let b = self.read_memory_bytes(0, addr, 1)?[0];
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let b = self.read_memory_bytes(memidx, addr, 1)?[0];
                     self.push(Value::V128([b; 16]))?;
                 }
                 _ if op == Op::V128_LOAD16_SPLAT => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 2)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let lo = bytes[0];
                     let hi = bytes[1];
                     let mut out = [0u8; 16];
@@ -4551,8 +4710,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD32_SPLAT => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 4)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let v = i32::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     for i in 0..4 {
@@ -4561,8 +4720,8 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD64_SPLAT => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let v = i64::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
@@ -4571,9 +4730,9 @@ impl VM {
                 }
                 _ if op == Op::V128_STORE => {
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let (memidx, addr) = self.pop_simd_addr()?;
                     if let Value::V128(b) = val {
-                        self.write_memory_bytes(0, addr, &b)?;
+                        self.write_memory_bytes(memidx, addr, &b)?;
                     }
                 }
                 _ if op == Op::V128_CONST => {
@@ -4584,22 +4743,26 @@ impl VM {
                     self.push(Value::V128(b))?;
                 }
                 _ if op == Op::V128_LOAD8_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 15;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(mut v) = val {
-                        v[lane] = self.read_memory_bytes(0, addr, 1)?[0];
+                        v[lane] = self.read_memory_bytes(memidx, addr, 1)?[0];
                         self.push(Value::V128(v))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
                 _ if op == Op::V128_LOAD16_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 7;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(mut v) = val {
-                        let bytes = self.read_memory_bytes(0, addr, 2)?;
+                        let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                         v[lane * 2] = bytes[0];
                         v[lane * 2 + 1] = bytes[1];
                         self.push(Value::V128(v))?;
@@ -4608,11 +4771,13 @@ impl VM {
                     }
                 }
                 _ if op == Op::V128_LOAD32_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 3;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(mut v) = val {
-                        let bytes = self.read_memory_bytes(0, addr, 4)?;
+                        let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                         v[lane * 4..lane * 4 + 4].copy_from_slice(&bytes);
                         self.push(Value::V128(v))?;
                     } else {
@@ -4620,11 +4785,13 @@ impl VM {
                     }
                 }
                 _ if op == Op::V128_LOAD64_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 1;
                     let val = self.pop();
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(mut v) = val {
-                        let bytes = self.read_memory_bytes(0, addr, 8)?;
+                        let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                         v[lane * 8..lane * 8 + 8].copy_from_slice(&bytes);
                         self.push(Value::V128(v))?;
                     } else {
@@ -4632,44 +4799,52 @@ impl VM {
                     }
                 }
                 _ if op == Op::V128_STORE8_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 15;
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(v) = self.pop() {
-                        self.write_memory_bytes(0, addr, &[v[lane]])?;
+                        self.write_memory_bytes(memidx, addr, &[v[lane]])?;
                     }
                 }
                 _ if op == Op::V128_STORE16_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 7;
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(v) = self.pop() {
-                        self.write_memory_bytes(0, addr, &v[lane * 2..lane * 2 + 2])?;
+                        self.write_memory_bytes(memidx, addr, &v[lane * 2..lane * 2 + 2])?;
                     }
                 }
                 _ if op == Op::V128_STORE32_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 3;
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(v) = self.pop() {
-                        self.write_memory_bytes(0, addr, &v[lane * 4..lane * 4 + 4])?;
+                        self.write_memory_bytes(memidx, addr, &v[lane * 4..lane * 4 + 4])?;
                     }
                 }
                 _ if op == Op::V128_STORE64_LANE => {
+                    let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 1;
-                    let addr = self.pop().as_i32() as u32 as usize;
+                    let base = self.pop();
+                    let addr = self.simd_effective_addr(base, offset, memory64)?;
                     if let Value::V128(v) = self.pop() {
-                        self.write_memory_bytes(0, addr, &v[lane * 8..lane * 8 + 8])?;
+                        self.write_memory_bytes(memidx, addr, &v[lane * 8..lane * 8 + 8])?;
                     }
                 }
                 _ if op == Op::V128_LOAD32_ZERO => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 4)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let v = i32::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..4].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::V128_LOAD64_ZERO => {
-                    let addr = self.pop().as_i32() as u32 as usize;
-                    let bytes = self.read_memory_bytes(0, addr, 8)?;
+                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let v = i64::from_le_bytes(read_le(&bytes));
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
@@ -6154,6 +6329,32 @@ impl VM {
                     let result = if old == usize::MAX { -1 } else { old as i64 };
                     self.push(Value::I64(result))?;
                 }
+                _ if op == Op::I64_MEMORY_COPY => {
+                    let dst_mem = self.read_optional_memidx_immediate();
+                    let src_mem = self.read_optional_memidx_immediate();
+                    let count = Self::table64_index(self.pop(), "memory.copy")?;
+                    let src = Self::table64_index(self.pop(), "memory.copy")?;
+                    let dst = Self::table64_index(self.pop(), "memory.copy")?;
+                    if count != 0 {
+                        let bytes = self.read_memory_bytes(src_mem, src, count)?;
+                        self.write_memory_bytes(dst_mem, dst, &bytes)?;
+                    } else {
+                        self.read_memory_bytes(src_mem, src, 0)?;
+                        self.write_memory_bytes(dst_mem, dst, &[])?;
+                    }
+                }
+                _ if op == Op::I64_MEMORY_FILL => {
+                    let memidx = self.read_optional_memidx_immediate();
+                    let count = Self::table64_index(self.pop(), "memory.fill")?;
+                    let value = self.pop().as_i32() as u8;
+                    let dst = Self::table64_index(self.pop(), "memory.fill")?;
+                    if count != 0 {
+                        let bytes = vec![value; count];
+                        self.write_memory_bytes(memidx, dst, &bytes)?;
+                    } else {
+                        self.write_memory_bytes(memidx, dst, &[])?;
+                    }
+                }
                 _ if op == Op::I32_LOAD_64 => {
                     let (offset, memidx) = self.read_optional_memarg64();
                     let base = self.pop().as_i64();
@@ -6175,6 +6376,87 @@ impl VM {
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
                 }
+                _ if op == Op::F32_LOAD_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::F64(f32::from_le_bytes(read_le(&bytes)) as f64))?;
+                }
+                _ if op == Op::I32_LOAD8_S_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.push(Value::I32(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i32,
+                    ))?;
+                }
+                _ if op == Op::I32_LOAD8_U_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.push(Value::I32(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i32,
+                    ))?;
+                }
+                _ if op == Op::I32_LOAD16_S_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    self.push(Value::I32(i16::from_le_bytes(read_le(&bytes)) as i32))?;
+                }
+                _ if op == Op::I32_LOAD16_U_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    self.push(Value::I32(u16::from_le_bytes(read_le(&bytes)) as i32))?;
+                }
+                _ if op == Op::I64_LOAD8_S_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.push(Value::I64(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i64,
+                    ))?;
+                }
+                _ if op == Op::I64_LOAD8_U_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.push(Value::I64(
+                        self.read_memory_bytes(memidx, addr, 1)?[0] as i64,
+                    ))?;
+                }
+                _ if op == Op::I64_LOAD16_S_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    self.push(Value::I64(i16::from_le_bytes(read_le(&bytes)) as i64))?;
+                }
+                _ if op == Op::I64_LOAD16_U_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
+                    self.push(Value::I64(u16::from_le_bytes(read_le(&bytes)) as i64))?;
+                }
+                _ if op == Op::I64_LOAD32_S_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as i64))?;
+                }
+                _ if op == Op::I64_LOAD32_U_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
+                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as u32 as i64))?;
+                }
                 _ if op == Op::I32_STORE_64 => {
                     let (offset, memidx) = self.read_optional_memarg64();
                     let v = self.pop().as_i32();
@@ -6185,6 +6467,48 @@ impl VM {
                 _ if op == Op::I64_STORE_64 => {
                     let (offset, memidx) = self.read_optional_memarg64();
                     let v = self.pop().as_i64();
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
+                }
+                _ if op == Op::F32_STORE_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_f64() as f32;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
+                }
+                _ if op == Op::I32_STORE8_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_i32() as u8;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &[v])?;
+                }
+                _ if op == Op::I32_STORE16_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_i32() as i16;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
+                }
+                _ if op == Op::I64_STORE8_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_i64() as u8;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &[v])?;
+                }
+                _ if op == Op::I64_STORE16_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_i64() as i16;
+                    let base = self.pop().as_i64();
+                    let addr = self.memory64_effective_addr(base, offset)?;
+                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
+                }
+                _ if op == Op::I64_STORE32_64 => {
+                    let (offset, memidx) = self.read_optional_memarg64();
+                    let v = self.pop().as_i64() as i32;
                     let base = self.pop().as_i64();
                     let addr = self.memory64_effective_addr(base, offset)?;
                     self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;

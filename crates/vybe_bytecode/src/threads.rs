@@ -5,7 +5,7 @@
 //! memarg, follow those two opcode bytes in the chunk code.
 
 use crate::error::VMError;
-use crate::opcode::{Op, read_leb_u32};
+use crate::opcode::{Op, read_leb_u32, read_leb_u64};
 use crate::value::Value;
 use crate::vm::VM;
 
@@ -167,28 +167,44 @@ impl VM {
     }
 
     fn pop_atomic_addr(&mut self, width: AtomicWidth) -> Result<(usize, usize), VMError> {
-        let (offset, memidx) = self.read_atomic_memarg();
-        let base = self.pop().as_i32() as u32 as usize;
-        let addr = base
-            .checked_add(offset)
-            .ok_or_else(|| VMError::new("trap: atomic address overflow"))?;
+        let (offset, memidx, memory64) = self.read_atomic_memarg();
+        let addr = if memory64 {
+            let base = self.pop().as_i64();
+            if base < 0 {
+                return Err(VMError::new("trap: atomic memory64 negative address"));
+            }
+            let addr = (base as u64)
+                .checked_add(offset)
+                .ok_or_else(|| VMError::new("trap: atomic memory64 address overflow"))?;
+            usize::try_from(addr)
+                .map_err(|_| VMError::new("trap: atomic memory64 address out of range"))?
+        } else {
+            let base = self.pop().as_i32() as u32 as usize;
+            base.checked_add(offset as usize)
+                .ok_or_else(|| VMError::new("trap: atomic address overflow"))?
+        };
         self.check_atomic_access(memidx, addr, width)?;
         Ok((memidx, addr))
     }
 
-    fn read_atomic_memarg(&mut self) -> (usize, usize) {
+    fn read_atomic_memarg(&mut self) -> (u64, usize, bool) {
         let chunk_idx = self.frame().chunk_index;
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frame().ip;
         let align = read_leb_u32(code, &mut ip);
-        let offset = read_leb_u32(code, &mut ip) as usize;
+        let memory64 = align & 0x80 != 0;
+        let offset = if memory64 {
+            read_leb_u64(code, &mut ip)
+        } else {
+            read_leb_u32(code, &mut ip) as u64
+        };
         let memidx = if align & 0x40 != 0 {
             read_leb_u32(code, &mut ip) as usize
         } else {
             0
         };
         self.frame_mut().ip = ip;
-        (offset, memidx)
+        (offset, memidx, memory64)
     }
 
     fn check_atomic_access(

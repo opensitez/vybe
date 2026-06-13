@@ -21,10 +21,56 @@ fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
     }
 }
 
+fn emit_leb_u64(out: &mut Chunk, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.emit(byte, 0);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
 fn push_section(out: &mut Vec<u8>, id: u8, payload: &[u8]) {
     out.push(id);
     write_leb_u32(out, payload.len() as u32);
     out.extend_from_slice(payload);
+}
+
+fn standard_memory64_threads_module(body_ops: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x01, 0x7f]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+    push_section(
+        &mut out,
+        5,
+        &[
+            0x01, // one memory
+            0x07, // memory64 shared memory with max
+            0x01, // min 1 page
+            0x01, // max 1 page
+        ],
+    );
+
+    let mut body = Vec::new();
+    body.push(0x00); // local decl count
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+
+    let mut code = Vec::new();
+    code.push(0x01);
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+
+    out
 }
 
 fn standard_threads_module(body_ops: &[u8]) -> Vec<u8> {
@@ -90,6 +136,12 @@ fn emit_atomic(c: &mut Chunk, op: Op) {
     c.emit_op(op, 0);
     c.emit(0, 0); // memarg align
     c.emit(0, 0); // memarg offset
+}
+
+fn emit_atomic64(c: &mut Chunk, op: Op, align: u32, offset: u64) {
+    c.emit_op(op, 0);
+    c.emit_leb_u32(align | 0x80, 0); // memory64 marker in bytecode memarg
+    emit_leb_u64(c, offset);
 }
 
 fn emit_atomic_fence(c: &mut Chunk) {
@@ -196,6 +248,37 @@ fn all_standard_atomic_opcodes_decode_to_bytecode() {
             "{name} must be present in bytecode"
         );
     }
+}
+
+#[test]
+fn standard_memory64_atomic_opcodes_decode_with_i64_address_shape() {
+    let bytes = standard_memory64_threads_module(&[
+        0x42, 0x00, // i64.const 0
+        0xFE, 0x10, // i32.atomic.load
+        0x02, 0x00, // memarg align=2 offset=0
+    ]);
+
+    let chunks = wasm::read_wasm(&bytes).expect("memory64 i32.atomic.load should decode");
+    assert!(
+        chunks[1].code.windows(2).any(|w| w == [0xFE, 0x10]),
+        "standard memory64 atomic opcode must remain the 0xFE i32.atomic.load opcode"
+    );
+}
+
+#[test]
+fn memory64_atomic_store_and_load_use_i64_address_and_u64_offset() {
+    let mut vm = VM::new();
+    vm.memory.resize(64, 0);
+    let mut c = Chunk::new("<memory64-atomic>");
+    push_i64(&mut c, 0);
+    push_i32(&mut c, 0x1122_3344);
+    emit_atomic64(&mut c, Op::I32_ATOMIC_STORE, 2, 8);
+    push_i64(&mut c, 0);
+    emit_atomic64(&mut c, Op::I32_ATOMIC_LOAD, 2, 8);
+    c.emit_op(Op::RETURN, 0);
+
+    let result = vm.run(vec![c]).expect("memory64 atomic run failed");
+    assert_eq!(result.as_i32(), 0x1122_3344);
 }
 
 // ── atomic.fence ─────────────────────────────────────────────────────────

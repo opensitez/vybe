@@ -228,6 +228,32 @@ impl Op {
     /// VM-internal compatibility helper: allocate a new extra linear memory.
     /// This is not the WASM bulk-memory `memory.init` instruction.
     pub const MEMORY_NEW: Op = Op::new(0xFF, 0x9D);
+    pub const F32_LOAD_64: Op = Op::new(0xFF, 0x9E);
+    pub const I32_LOAD8_S_64: Op = Op::new(0xFF, 0x9F);
+    pub const I32_LOAD8_U_64: Op = Op::new(0xFF, 0xA0);
+    pub const I32_LOAD16_S_64: Op = Op::new(0xFF, 0xA1);
+    pub const I32_LOAD16_U_64: Op = Op::new(0xFF, 0xA2);
+    pub const I64_LOAD8_S_64: Op = Op::new(0xFF, 0xA3);
+    pub const I64_LOAD8_U_64: Op = Op::new(0xFF, 0xA4);
+    pub const I64_LOAD16_S_64: Op = Op::new(0xFF, 0xA5);
+    pub const I64_LOAD16_U_64: Op = Op::new(0xFF, 0xA6);
+    pub const I64_LOAD32_S_64: Op = Op::new(0xFF, 0xA7);
+    pub const I64_LOAD32_U_64: Op = Op::new(0xFF, 0xA8);
+    pub const F32_STORE_64: Op = Op::new(0xFF, 0xA9);
+    pub const I32_STORE8_64: Op = Op::new(0xFF, 0xAA);
+    pub const I32_STORE16_64: Op = Op::new(0xFF, 0xAB);
+    pub const I64_STORE8_64: Op = Op::new(0xFF, 0xAC);
+    pub const I64_STORE16_64: Op = Op::new(0xFF, 0xAD);
+    pub const I64_STORE32_64: Op = Op::new(0xFF, 0xAE);
+    pub const TABLE_GET_64: Op = Op::new(0xFF, 0xAF);
+    pub const TABLE_SET_64: Op = Op::new(0xFF, 0xB0);
+    pub const TABLE_INIT_64: Op = Op::new(0xFF, 0xB1);
+    pub const TABLE_COPY_64: Op = Op::new(0xFF, 0xB2);
+    pub const TABLE_GROW_64: Op = Op::new(0xFF, 0xB3);
+    pub const TABLE_SIZE_64: Op = Op::new(0xFF, 0xB4);
+    pub const TABLE_FILL_64: Op = Op::new(0xFF, 0xB5);
+    pub const I64_MEMORY_COPY: Op = Op::new(0xFF, 0xB6);
+    pub const I64_MEMORY_FILL: Op = Op::new(0xFF, 0xB7);
 }
 
 opcode_category! {
@@ -367,14 +393,14 @@ opcode_category! {
     [0x66] type_import => U16, "type.import";
     [0x67] type_export => U16, "type.export";
     // Memory64
-    [0x68] i64_memory_size => None, "i64.memory_size";
-    [0x69] i64_memory_grow => None, "i64.memory_grow";
-    [0x6A] i32_load_64 => None, "i32.load_64";
-    [0x6B] i64_load_64 => None, "i64.load_64";
-    [0x6C] f64_load_64 => None, "f64.load_64";
-    [0x6D] i32_store_64 => None, "i32.store_64";
-    [0x6E] i64_store_64 => None, "i64.store_64";
-    [0x6F] f64_store_64 => None, "f64.store_64";
+    [0x68] i64_memory_size => U32Leb, "i64.memory_size";
+    [0x69] i64_memory_grow => U32Leb, "i64.memory_grow";
+    [0x6A] i32_load_64 => MemArg64, "i32.load_64";
+    [0x6B] i64_load_64 => MemArg64, "i64.load_64";
+    [0x6C] f64_load_64 => MemArg64, "f64.load_64";
+    [0x6D] i32_store_64 => MemArg64, "i32.store_64";
+    [0x6E] i64_store_64 => MemArg64, "i64.store_64";
+    [0x6F] f64_store_64 => MemArg64, "f64.store_64";
     // JS primitive creation / testing
     [0x70] undefined => None, "undefined";
     [0x71] symbol => U16, "symbol";
@@ -396,4 +422,30 @@ opcode_category! {
     [0x80] str_from_f64 => None, "string.from_f64";
     [0x81] symbol_eq => None, "symbol.eq";
     [0x9D] memory_new => None, "memory.new";
+    [0x9E] f32_load_64 => MemArg64, "f32.load_64";
+    [0x9F] i32_load8_s_64 => MemArg64, "i32.load8_s_64";
+    [0xA0] i32_load8_u_64 => MemArg64, "i32.load8_u_64";
+    [0xA1] i32_load16_s_64 => MemArg64, "i32.load16_s_64";
+    [0xA2] i32_load16_u_64 => MemArg64, "i32.load16_u_64";
+    [0xA3] i64_load8_s_64 => MemArg64, "i64.load8_s_64";
+    [0xA4] i64_load8_u_64 => MemArg64, "i64.load8_u_64";
+    [0xA5] i64_load16_s_64 => MemArg64, "i64.load16_s_64";
+    [0xA6] i64_load16_u_64 => MemArg64, "i64.load16_u_64";
+    [0xA7] i64_load32_s_64 => MemArg64, "i64.load32_s_64";
+    [0xA8] i64_load32_u_64 => MemArg64, "i64.load32_u_64";
+    [0xA9] f32_store_64 => MemArg64, "f32.store_64";
+    [0xAA] i32_store8_64 => MemArg64, "i32.store8_64";
+    [0xAB] i32_store16_64 => MemArg64, "i32.store16_64";
+    [0xAC] i64_store8_64 => MemArg64, "i64.store8_64";
+    [0xAD] i64_store16_64 => MemArg64, "i64.store16_64";
+    [0xAE] i64_store32_64 => MemArg64, "i64.store32_64";
+    [0xAF] table_get_64 => U8, "table.get_64";
+    [0xB0] table_set_64 => U8, "table.set_64";
+    [0xB1] table_init_64 => U8, "table.init_64";
+    [0xB2] table_copy_64 => U8, "table.copy_64";
+    [0xB3] table_grow_64 => U8, "table.grow_64";
+    [0xB4] table_size_64 => U8, "table.size_64";
+    [0xB5] table_fill_64 => U8, "table.fill_64";
+    [0xB6] i64_memory_copy => U32Leb_U32Leb, "i64.memory.copy";
+    [0xB7] i64_memory_fill => U32Leb, "i64.memory.fill";
 }

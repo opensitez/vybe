@@ -20,9 +20,32 @@ fn push_i32(c: &mut Chunk, v: i32) {
     let k = c.add_constant(Value::I32(v));
     c.emit_op_u16(Op::CONST, k, 0);
 }
+fn push_i64(c: &mut Chunk, v: i64) {
+    let k = c.add_constant(Value::I64(v));
+    c.emit_op_u16(Op::CONST, k, 0);
+}
 fn push_f64(c: &mut Chunk, v: f64) {
     let k = c.add_constant(Value::F64(v));
     c.emit_op_u16(Op::CONST, k, 0);
+}
+
+fn emit_leb_u64(c: &mut Chunk, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        c.emit(byte, 0);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn emit_simd_memarg64(c: &mut Chunk, align: u32, offset: u64) {
+    c.emit_leb_u32(align | 0x80 | 0x100, 0);
+    emit_leb_u64(c, offset);
 }
 
 fn emit_v128_const(c: &mut Chunk, bytes: [u8; 16]) {
@@ -174,6 +197,28 @@ fn v128_store_and_load_roundtrip() {
     c.emit_op(Op::RETURN, 0);
     let r = as_v128(vm.run(vec![c]).expect("run failed"));
     assert_eq!(r, bytes);
+}
+
+#[test]
+fn memory64_v128_store_and_load_use_i64_address_and_u64_offset() {
+    let mut vm = VM::new();
+    vm.memory.resize(64, 0);
+    let bytes: [u8; 16] = [
+        0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41,
+        0x42, 0x43,
+    ];
+    let mut c = Chunk::new("<simd-memory64>");
+    push_i64(&mut c, 0);
+    emit_v128_const(&mut c, bytes);
+    c.emit_op(Op::V128_STORE, 0);
+    emit_simd_memarg64(&mut c, 4, 8);
+    push_i64(&mut c, 0);
+    c.emit_op(Op::V128_LOAD, 0);
+    emit_simd_memarg64(&mut c, 4, 8);
+    c.emit_op(Op::RETURN, 0);
+
+    let result = as_v128(vm.run(vec![c]).expect("memory64 SIMD run failed"));
+    assert_eq!(result, bytes);
 }
 
 // ── i8x16 ────────────────────────────────────────────────────────────────

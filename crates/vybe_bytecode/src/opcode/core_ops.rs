@@ -16,6 +16,7 @@ impl Op {
     pub const IF: Op = Op::new(0x00, 0x04);
     pub const ELSE: Op = Op::new(0x00, 0x05);
     pub const THROW: Op = Op::new(0x00, 0x08);
+    pub const RETHROW: Op = Op::new(0x00, 0x09);
     pub const THROW_REF: Op = Op::new(0x00, 0x0A);
     pub const END: Op = Op::new(0x00, 0x0B);
     pub const BR: Op = Op::new(0x00, 0x0C);
@@ -29,6 +30,7 @@ impl Op {
     pub const RETURN_CALL_INDIRECT: Op = Op::new(0x00, 0x13);
     pub const CALL_REF: Op = Op::new(0x00, 0x14);
     pub const RETURN_CALL_REF: Op = Op::new(0x00, 0x15);
+    pub const DELEGATE: Op = Op::new(0x00, 0x18);
     pub const DROP: Op = Op::new(0x00, 0x1A);
     pub const SELECT: Op = Op::new(0x00, 0x1B);
     pub const SELECT_T: Op = Op::new(0x00, 0x1C);
@@ -234,6 +236,7 @@ opcode_category! {
     [0x04] if_blk => U8, "if";
     [0x05] else_blk => None, "else";
     [0x08] throw => None, "throw";
+    [0x09] rethrow => U32Leb, "rethrow";
     [0x0A] throw_ref => None, "throw_ref";
     [0x0B] end => None, "end";
     [0x0C] br => U32Leb, "br";
@@ -252,6 +255,7 @@ opcode_category! {
     // for our uniform ABI, so the operand is encoded inline in the emitter
     // rather than carried by the bytecode.
     [0x1C] select_t => None, "select_t";
+    [0x18] delegate => U32Leb, "delegate";
     [0x1F] try_table => TryTable, "try_table";
     // Variables
     [0x20] local_get => U16, "local.get";

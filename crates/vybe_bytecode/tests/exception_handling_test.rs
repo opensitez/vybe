@@ -77,8 +77,8 @@ fn standard_rethrow_must_not_decode_as_noop() {
         0x09, 0x00, // rethrow 0
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("rethrow"));
+    let chunks = wasm::read_wasm(&bytes).expect("rethrow should decode");
+    assert!(chunks[1].code.windows(2).any(|w| w == [0x00, 0x09]));
 }
 
 #[test]
@@ -87,8 +87,8 @@ fn standard_delegate_must_not_decode_as_noop() {
         0x18, 0x00, // delegate 0
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("delegate"));
+    let chunks = wasm::read_wasm(&bytes).expect("delegate should decode");
+    assert!(chunks[1].code.windows(2).any(|w| w == [0x00, 0x18]));
 }
 
 /// Emit TRY_TABLE with one catch-all handler pointing `body_bytes` ahead.
@@ -98,6 +98,11 @@ fn emit_try_table_catch_all(c: &mut Chunk, body_bytes: u16) {
     c.emit(0, 0); // tag = 0 (catch-all)
     c.emit((body_bytes >> 8) as u8, 0); // offset hi
     c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
+}
+
+fn emit_rethrow(c: &mut Chunk, depth: u32) {
+    c.emit_op(Op::RETHROW, 0);
+    c.emit_leb_u32(depth, 0);
 }
 
 // ── THROW — uncaught ──────────────────────────────────────────────────────
@@ -148,6 +153,23 @@ fn try_table_catch_all_intercepts_throw() {
         c.emit_op_u16(Op::CONST, ok, 0);
     });
     assert_eq!(r.as_i32(), 99);
+}
+
+#[test]
+fn rethrow_in_inner_handler_is_caught_by_outer_handler() {
+    let r = run(|c| {
+        let err = c.add_constant(Value::String(Arc::from("nested")));
+        let ok = c.add_constant(Value::I32(77));
+
+        emit_try_table_catch_all(c, 15);
+        emit_try_table_catch_all(c, 6);
+        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_op(Op::THROW, 0);
+        emit_rethrow(c, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, ok, 0);
+    });
+    assert_eq!(r.as_i32(), 77);
 }
 
 #[test]

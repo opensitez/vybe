@@ -149,9 +149,14 @@ pub enum OperandFormat {
     U16_I16,
     /// Unsigned LEB128 u32.
     U32Leb,
+    /// Two unsigned LEB128 u32 immediates.
+    U32Leb_U32Leb,
     /// WASM memarg: alignment LEB + offset LEB, with an optional memory index
     /// extension when the high bit used by this VM's multi-memory encoding is set.
     MemArg,
+    /// WASM memory64 memarg: alignment LEB + u64 offset LEB, with the same
+    /// optional memory-index extension as MemArg.
+    MemArg64,
     /// Variable: u16 func_idx + u8 upvalue_count + descriptors.
     Closure,
     /// Variable: u32 LEB count + count × u32 LEB labels + u32 LEB default.
@@ -174,7 +179,13 @@ impl OperandFormat {
             Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
             Self::V128Const | Self::Shuffle => 16,
-            Self::Closure | Self::U32Leb | Self::MemArg | Self::BrTable | Self::TryTable => 0,
+            Self::Closure
+            | Self::U32Leb
+            | Self::U32Leb_U32Leb
+            | Self::MemArg
+            | Self::MemArg64
+            | Self::BrTable
+            | Self::TryTable => 0,
         }
     }
 
@@ -182,7 +193,12 @@ impl OperandFormat {
     pub fn size_in(self, code: &[u8], operand_start: usize) -> usize {
         match self {
             Self::U32Leb => leb_u32_size(code, operand_start),
+            Self::U32Leb_U32Leb => {
+                let first = leb_u32_size(code, operand_start);
+                first + leb_u32_size(code, operand_start + first)
+            }
             Self::MemArg => memarg_size(code, operand_start),
+            Self::MemArg64 => memarg64_size(code, operand_start),
             Self::Closure => {
                 let uv_count_pos = operand_start + 2;
                 let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
@@ -214,6 +230,39 @@ pub fn memarg_size(code: &[u8], operand_start: usize) -> usize {
         let _memidx = read_leb_u32(code, &mut ip);
     }
     ip.saturating_sub(operand_start)
+}
+
+pub fn memarg64_size(code: &[u8], operand_start: usize) -> usize {
+    let mut ip = operand_start;
+    let align_start = ip;
+    let align = read_leb_u32(code, &mut ip);
+    if ip == align_start {
+        return 0;
+    }
+    let offset_start = ip;
+    let _offset = read_leb_u64(code, &mut ip);
+    if ip == offset_start {
+        return ip.saturating_sub(operand_start);
+    }
+    if align & 0x40 != 0 {
+        let _memidx = read_leb_u32(code, &mut ip);
+    }
+    ip.saturating_sub(operand_start)
+}
+
+pub fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
+    let mut result = 0u64;
+    let mut shift = 0u32;
+    while *ip < code.len() && shift < 64 {
+        let byte = code[*ip];
+        *ip += 1;
+        result |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    result
 }
 
 pub fn leb_u32_size(code: &[u8], start: usize) -> usize {

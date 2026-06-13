@@ -24,7 +24,7 @@
 //! ```
 
 use crate::chunk::Chunk;
-use crate::opcode::{Op, OperandFormat, read_leb_u32};
+use crate::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
 use crate::value::Value;
 use std::fmt::Write;
 
@@ -191,10 +191,26 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let value = read_leb_u32(&chunk.code, &mut operand_ip);
             let _ = write!(out, " {value}");
         }
+        OperandFormat::U32Leb_U32Leb => {
+            let mut operand_ip = ip + 2;
+            let a = read_leb_u32(&chunk.code, &mut operand_ip);
+            let b = read_leb_u32(&chunk.code, &mut operand_ip);
+            let _ = write!(out, " {a} {b}");
+        }
         OperandFormat::MemArg => {
             let mut operand_ip = ip + 2;
             let align = read_leb_u32(&chunk.code, &mut operand_ip);
             let offset = read_leb_u32(&chunk.code, &mut operand_ip);
+            let _ = write!(out, " align={align} offset={offset}");
+            if align & 0x40 != 0 {
+                let memidx = read_leb_u32(&chunk.code, &mut operand_ip);
+                let _ = write!(out, " memory={memidx}");
+            }
+        }
+        OperandFormat::MemArg64 => {
+            let mut operand_ip = ip + 2;
+            let align = read_leb_u32(&chunk.code, &mut operand_ip);
+            let offset = read_leb_u64(&chunk.code, &mut operand_ip);
             let _ = write!(out, " align={align} offset={offset}");
             if align & 0x40 != 0 {
                 let memidx = read_leb_u32(&chunk.code, &mut operand_ip);

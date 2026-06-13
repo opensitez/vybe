@@ -165,6 +165,8 @@ fn stack_switching_tag_section_declares_suspend_tag() {
 #[test]
 fn standard_resume_with_handler_vector_must_not_decode_as_noop() {
     let bytes = standard_stack_switching_module(&[
+        0x41, 0x00, // placeholder continuation operand for validation
+        0x41, 0x00, // placeholder resume value for validation
         0xE3, // resume
         0x00, // cont type index
         0x01, // one handler
@@ -173,8 +175,8 @@ fn standard_resume_with_handler_vector_must_not_decode_as_noop() {
         0x00, // label index
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("resume") && err.contains("handler"));
+    let chunks = wasm::read_wasm(&bytes).expect("resume with handler vector should decode");
+    assert!(chunks[1].code.windows(2).any(|w| w == [0xFF, 0x4D]));
 }
 
 // ── VM coroutine semantics ─────────────────────────────────────────

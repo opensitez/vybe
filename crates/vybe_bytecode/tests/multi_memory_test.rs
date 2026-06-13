@@ -69,6 +69,16 @@ fn standard_table64_module_i64_result(body_ops: &[u8]) -> Vec<u8> {
             0x02, // min 2
         ],
     );
+    push_section(
+        &mut out,
+        9,
+        &[
+            0x01, // one passive element segment
+            0x01, // passive, elemkind form
+            0x00, // funcref elemkind
+            0x00, // zero elements
+        ],
+    );
 
     let mut body = Vec::new();
     body.push(0x00);
@@ -215,14 +225,21 @@ fn emit_memarg64(c: &mut Chunk, align: u32, offset: u64, memidx: u32) {
     }
 }
 
+fn decoded_body_contains(bytes: &[u8], op: Op) -> bool {
+    let chunks = wasm::read_wasm(bytes).expect("standard module should decode");
+    chunks[1]
+        .code
+        .windows(2)
+        .any(|w| w == [op.prefix(), op.sub()])
+}
+
 #[test]
 fn standard_table64_size_must_not_decode_as_table32_i32_semantics() {
     let bytes = standard_table64_module_i64_result(&[
         0xFC, 0x10, 0x00, // table.size 0
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("table64") && err.contains("table.size"));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_SIZE_64));
 }
 
 #[test]
@@ -233,8 +250,7 @@ fn standard_table64_grow_must_not_decode_as_table32_i32_semantics() {
         0xFC, 0x0F, 0x00, // table.grow 0
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("table64") && err.contains("table.grow"));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_GROW_64));
 }
 
 #[test]
@@ -247,8 +263,7 @@ fn standard_table64_fill_must_not_decode_as_table32_i32_semantics() {
         0x42, 0x00, // i64.const 0, result sentinel
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("table64") && err.contains("table.fill"));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_FILL_64));
 }
 
 #[test]
@@ -261,13 +276,12 @@ fn standard_table64_copy_must_not_decode_as_table32_i32_semantics() {
         0x42, 0x00, // i64.const 0, result sentinel
     ]);
 
-    let err = wasm::read_wasm(&bytes).unwrap_err();
-    assert!(err.contains("table64") && err.contains("table.copy"));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_COPY_64));
 }
 
 #[test]
 fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
-    let cases: &[(&str, &[u8])] = &[
+    let cases: &[(&str, &[u8], Op)] = &[
         (
             "table.get",
             &[
@@ -276,6 +290,7 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0xD1, // ref.is_null
                 0xAC, // i64.extend_i32_s
             ],
+            Op::TABLE_GET_64,
         ),
         (
             "table.set",
@@ -285,6 +300,7 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0x26, 0x00, // table.set 0
                 0x42, 0x00, // i64.const 0
             ],
+            Op::TABLE_SET_64,
         ),
         (
             "table.init",
@@ -295,36 +311,36 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0xFC, 0x0C, 0x00, 0x00, // table.init elemidx=0 tableidx=0
                 0x42, 0x00, // i64.const 0
             ],
+            Op::TABLE_INIT_64,
         ),
     ];
 
-    for (name, body) in cases {
+    for (name, body, op) in cases {
         let bytes = standard_table64_module_i64_result(body);
-        let err = wasm::read_wasm(&bytes).unwrap_err();
         assert!(
-            err.contains("table64") && err.contains(name),
-            "{name} must be rejected or semantically decoded, got {err}"
+            decoded_body_contains(&bytes, *op),
+            "{name} must decode to table64 bytecode"
         );
     }
 }
 
 #[test]
 fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() {
-    let load_cases: &[(&str, u8, &[u8], Option<Op>)] = &[
-        ("i32.load", 0x28, &[0x42, 0x00], Some(Op::I32_LOAD_64)),
-        ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Some(Op::I64_LOAD_64)),
-        ("f32.load", 0x2A, &[0x42, 0x00, 0x1A, 0x41, 0x00], None),
-        ("f64.load", 0x2B, &[0x42, 0x00, 0x1A, 0x41, 0x00], Some(Op::F64_LOAD_64)),
-        ("i32.load8_s", 0x2C, &[0x42, 0x00], None),
-        ("i32.load8_u", 0x2D, &[0x42, 0x00], None),
-        ("i32.load16_s", 0x2E, &[0x42, 0x00], None),
-        ("i32.load16_u", 0x2F, &[0x42, 0x00], None),
-        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], None),
-        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], None),
-        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7], None),
-        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7], None),
-        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7], None),
-        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7], None),
+    let load_cases: &[(&str, u8, &[u8], Op)] = &[
+        ("i32.load", 0x28, &[0x42, 0x00], Op::I32_LOAD_64),
+        ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Op::I64_LOAD_64),
+        ("f32.load", 0x2A, &[0x42, 0x00, 0x1A, 0x41, 0x00], Op::F32_LOAD_64),
+        ("f64.load", 0x2B, &[0x42, 0x00, 0x1A, 0x41, 0x00], Op::F64_LOAD_64),
+        ("i32.load8_s", 0x2C, &[0x42, 0x00], Op::I32_LOAD8_S_64),
+        ("i32.load8_u", 0x2D, &[0x42, 0x00], Op::I32_LOAD8_U_64),
+        ("i32.load16_s", 0x2E, &[0x42, 0x00], Op::I32_LOAD16_S_64),
+        ("i32.load16_u", 0x2F, &[0x42, 0x00], Op::I32_LOAD16_U_64),
+        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_S_64),
+        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_U_64),
+        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_S_64),
+        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_U_64),
+        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_S_64),
+        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_U_64),
     ];
 
     for (name, opcode, prefix, decoded_op) in load_cases {
@@ -332,39 +348,27 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
         body.extend_from_slice(prefix);
         body.extend_from_slice(&[*opcode, 0x02, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
-        if let Some(op) = decoded_op {
-            let chunks = wasm::read_wasm(&bytes).expect("supported memory64 load should decode");
-            assert!(
-                chunks[1]
-                    .code
-                    .windows(2)
-                    .any(|w| w == [op.prefix(), op.sub()]),
-                "{name} must decode to memory64 bytecode"
-            );
-        } else {
-            let err = wasm::read_wasm(&bytes).unwrap_err();
-            assert!(
-                err.contains("memory64") && err.contains(name),
-                "{name} must be rejected until memory64 semantics are implemented, got {err}"
-            );
-        }
+        assert!(
+            decoded_body_contains(&bytes, *decoded_op),
+            "{name} must decode to memory64 bytecode"
+        );
     }
 
-    let store_cases: &[(&str, u8, &[u8], Option<Op>)] = &[
-        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01], Some(Op::I32_STORE_64)),
-        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01], Some(Op::I64_STORE_64)),
-        ("f32.store", 0x38, &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F], None),
+    let store_cases: &[(&str, u8, &[u8], Op)] = &[
+        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE_64),
+        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE_64),
+        ("f32.store", 0x38, &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F], Op::F32_STORE_64),
         (
             "f64.store",
             0x39,
             &[0x42, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F],
-            Some(Op::F64_STORE_64),
+            Op::F64_STORE_64,
         ),
-        ("i32.store8", 0x3A, &[0x42, 0x00, 0x41, 0x01], None),
-        ("i32.store16", 0x3B, &[0x42, 0x00, 0x41, 0x01], None),
-        ("i64.store8", 0x3C, &[0x42, 0x00, 0x42, 0x01], None),
-        ("i64.store16", 0x3D, &[0x42, 0x00, 0x42, 0x01], None),
-        ("i64.store32", 0x3E, &[0x42, 0x00, 0x42, 0x01], None),
+        ("i32.store8", 0x3A, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE8_64),
+        ("i32.store16", 0x3B, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE16_64),
+        ("i64.store8", 0x3C, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE8_64),
+        ("i64.store16", 0x3D, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE16_64),
+        ("i64.store32", 0x3E, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE32_64),
     ];
 
     for (name, opcode, prefix, decoded_op) in store_cases {
@@ -373,39 +377,30 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
         body.extend_from_slice(&[*opcode, 0x02, 0x00]);
         body.extend_from_slice(&[0x41, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
-        if let Some(op) = decoded_op {
-            let chunks = wasm::read_wasm(&bytes).expect("supported memory64 store should decode");
-            assert!(
-                chunks[1]
-                    .code
-                    .windows(2)
-                    .any(|w| w == [op.prefix(), op.sub()]),
-                "{name} must decode to memory64 bytecode"
-            );
-        } else {
-            let err = wasm::read_wasm(&bytes).unwrap_err();
-            assert!(
-                err.contains("memory64") && err.contains(name),
-                "{name} must be rejected until memory64 semantics are implemented, got {err}"
-            );
-        }
+        assert!(
+            decoded_body_contains(&bytes, *decoded_op),
+            "{name} must decode to memory64 bytecode"
+        );
     }
 }
 
 #[test]
 fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memory() {
-    let cases: &[(&str, &[u8])] = &[
+    let supported: &[(&str, &[u8], Op)] = &[
         (
             "memory.copy",
             &[0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00, 0x41, 0x00],
+            Op::I64_MEMORY_COPY,
         ),
         (
             "memory.fill",
             &[0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0B, 0x00, 0x41, 0x00],
+            Op::I64_MEMORY_FILL,
         ),
         (
             "v128.load",
             &[0x42, 0x00, 0xFD, 0x00, 0x04, 0x00, 0xFD, 0x53],
+            Op::V128_LOAD,
         ),
         (
             "v128.store",
@@ -413,23 +408,25 @@ fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memo
                 0x42, 0x00, 0xFD, 0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0xFD, 0x0B, 0x04, 0x00, 0x41, 0x00,
             ],
+            Op::V128_STORE,
         ),
         (
             "i32.atomic.load",
             &[0x42, 0x00, 0xFE, 0x10, 0x02, 0x00],
+            Op::I32_ATOMIC_LOAD,
         ),
         (
             "i32.atomic.store",
             &[0x42, 0x00, 0x41, 0x01, 0xFE, 0x17, 0x02, 0x00, 0x41, 0x00],
+            Op::I32_ATOMIC_STORE,
         ),
     ];
 
-    for (name, body) in cases {
+    for (name, body, op) in supported {
         let bytes = standard_memory64_module_i32_result(body);
-        let err = wasm::read_wasm(&bytes).unwrap_err();
         assert!(
-            err.contains("memory64") && err.contains(name),
-            "{name} must be rejected or semantically decoded, got {err}"
+            decoded_body_contains(&bytes, *op),
+            "{name} must decode to memory64 bytecode"
         );
     }
 }
@@ -618,6 +615,49 @@ fn spec_memory64_memarg_uses_memory_index() {
 }
 
 #[test]
+fn spec_memory64_all_scalar_widths_execute_with_i64_addresses() {
+    fn run_pair(store_op: Op, load_op: Op, value: Value, expected: Value, align: u32) {
+        let mut vm = VM::new();
+        vm.memory.resize(65536, 0);
+
+        let mut chunk = Chunk::new("<script>");
+        let base = chunk.add_constant(Value::I64(4));
+        let value_idx = chunk.add_constant(value);
+
+        chunk.emit_op_u16(Op::CONST, base, 0);
+        chunk.emit_op_u16(Op::CONST, value_idx, 0);
+        chunk.emit_op(store_op, 0);
+        emit_memarg64(&mut chunk, align, 3, 0);
+
+        chunk.emit_op_u16(Op::CONST, base, 0);
+        chunk.emit_op(load_op, 0);
+        emit_memarg64(&mut chunk, align, 3, 0);
+        chunk.emit_op(Op::HALT, 0);
+
+        let result = vm.run(vec![chunk]).unwrap();
+        match (result, expected) {
+            (Value::F64(a), Value::F64(b)) => assert!((a - b).abs() < 0.00001),
+            (got, want) => assert_eq!(got, want),
+        }
+    }
+
+    run_pair(Op::I32_STORE_64, Op::I32_LOAD_64, Value::I32(0x12345678), Value::I32(0x12345678), 2);
+    run_pair(Op::I64_STORE_64, Op::I64_LOAD_64, Value::I64(0x1122334455667788), Value::I64(0x1122334455667788), 3);
+    run_pair(Op::F32_STORE_64, Op::F32_LOAD_64, Value::F64(1.5), Value::F64(1.5), 2);
+    run_pair(Op::F64_STORE_64, Op::F64_LOAD_64, Value::F64(2.25), Value::F64(2.25), 3);
+    run_pair(Op::I32_STORE8_64, Op::I32_LOAD8_S_64, Value::I32(0xFE), Value::I32(-2), 0);
+    run_pair(Op::I32_STORE8_64, Op::I32_LOAD8_U_64, Value::I32(0xFE), Value::I32(0xFE), 0);
+    run_pair(Op::I32_STORE16_64, Op::I32_LOAD16_S_64, Value::I32(0xFFFE), Value::I32(-2), 1);
+    run_pair(Op::I32_STORE16_64, Op::I32_LOAD16_U_64, Value::I32(0xFFFE), Value::I32(0xFFFE), 1);
+    run_pair(Op::I64_STORE8_64, Op::I64_LOAD8_S_64, Value::I64(0xFE), Value::I64(-2), 0);
+    run_pair(Op::I64_STORE8_64, Op::I64_LOAD8_U_64, Value::I64(0xFE), Value::I64(0xFE), 0);
+    run_pair(Op::I64_STORE16_64, Op::I64_LOAD16_S_64, Value::I64(0xFFFE), Value::I64(-2), 1);
+    run_pair(Op::I64_STORE16_64, Op::I64_LOAD16_U_64, Value::I64(0xFFFE), Value::I64(0xFFFE), 1);
+    run_pair(Op::I64_STORE32_64, Op::I64_LOAD32_S_64, Value::I64(0xFFFF_FFFE), Value::I64(-2), 2);
+    run_pair(Op::I64_STORE32_64, Op::I64_LOAD32_U_64, Value::I64(0xFFFF_FFFE), Value::I64(0xFFFF_FFFE), 2);
+}
+
+#[test]
 fn spec_memory64_size_and_grow_use_memory_index() {
     let mut vm = VM::new();
     vm.memory.resize(2 * 65536, 0);
@@ -648,6 +688,99 @@ fn spec_memory64_size_and_grow_use_memory_index() {
         2 * 65536,
         "memory64.grow memidx=1 must not grow memory 0"
     );
+}
+
+#[test]
+fn spec_memory64_fill_and_copy_use_i64_addresses_and_memory_indices() {
+    let mut vm = VM::new();
+    vm.memory.resize(65536, 0);
+
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 1;
+
+    let pages = chunk.add_constant(Value::I32(1));
+    let zero64 = chunk.add_constant(Value::I64(0));
+    let dst64 = chunk.add_constant(Value::I64(8));
+    let count4 = chunk.add_constant(Value::I64(4));
+    let byte = chunk.add_constant(Value::I32(0x6D));
+
+    chunk.emit_op_u16(Op::CONST, pages, 0);
+    chunk.emit_op(Op::MEMORY_NEW, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+
+    chunk.emit_op_u16(Op::CONST, zero64, 0);
+    chunk.emit_op_u16(Op::CONST, byte, 0);
+    chunk.emit_op_u16(Op::CONST, count4, 0);
+    chunk.emit_op(Op::I64_MEMORY_FILL, 0);
+    chunk.emit_leb_u32(1, 0);
+
+    chunk.emit_op_u16(Op::CONST, dst64, 0);
+    chunk.emit_op_u16(Op::CONST, zero64, 0);
+    chunk.emit_op_u16(Op::CONST, count4, 0);
+    chunk.emit_op(Op::I64_MEMORY_COPY, 0);
+    chunk.emit_leb_u32(1, 0);
+    chunk.emit_leb_u32(1, 0);
+
+    chunk.emit_op_u16(Op::CONST, dst64, 0);
+    chunk.emit_op(Op::I32_LOAD8_U, 0);
+    emit_memarg(&mut chunk, 0, 0, 1);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_i32(), 0x6D);
+    assert_eq!(
+        vm.memory.load_u8(0).unwrap(),
+        0,
+        "memory64 bulk op memidx=1 must not write memory 0"
+    );
+}
+
+#[test]
+fn spec_table64_runtime_uses_i64_indices_and_results() {
+    let mut vm = VM::new();
+    vm.func_table = vec![Value::I32(1), Value::I32(2), Value::I32(3)];
+
+    let mut grow = Chunk::new("<grow>");
+    grow.emit_op(Op::NULL, 0);
+    let delta = grow.add_constant(Value::I64(2));
+    grow.emit_op_u16(Op::CONST, delta, 0);
+    grow.emit_op_u8(Op::TABLE_GROW_64, 0, 0);
+    grow.emit_op(Op::HALT, 0);
+    let result = vm.run(vec![grow]).unwrap();
+    assert_eq!(result.as_i64(), 3);
+    assert_eq!(vm.func_table.len(), 5);
+
+    let mut chunk = Chunk::new("<table64>");
+    let idx1 = chunk.add_constant(Value::I64(1));
+    let idx2 = chunk.add_constant(Value::I64(2));
+    let idx3 = chunk.add_constant(Value::I64(3));
+    let count2 = chunk.add_constant(Value::I64(2));
+    let seven = chunk.add_constant(Value::I32(7));
+    let nine = chunk.add_constant(Value::I32(9));
+
+    chunk.emit_op_u16(Op::CONST, idx1, 0);
+    chunk.emit_op_u16(Op::CONST, seven, 0);
+    chunk.emit_op_u8(Op::TABLE_SET_64, 0, 0);
+
+    chunk.emit_op_u16(Op::CONST, idx2, 0);
+    chunk.emit_op_u16(Op::CONST, nine, 0);
+    chunk.emit_op_u16(Op::CONST, count2, 0);
+    chunk.emit_op_u8(Op::TABLE_FILL_64, 0, 0);
+
+    chunk.emit_op_u16(Op::CONST, idx3, 0);
+    chunk.emit_op_u16(Op::CONST, idx1, 0);
+    chunk.emit_op_u16(Op::CONST, count2, 0);
+    chunk.emit_op_u8(Op::TABLE_COPY_64, 0, 0);
+
+    chunk.emit_op_u16(Op::CONST, idx3, 0);
+    chunk.emit_op_u8(Op::TABLE_GET_64, 0, 0);
+    chunk.emit_op(Op::HALT, 0);
+
+    let result = vm.run(vec![chunk]).unwrap();
+    assert_eq!(result.as_i32(), 7);
+    assert_eq!(vm.func_table[1].as_i32(), 7);
+    assert_eq!(vm.func_table[2].as_i32(), 9);
+    assert_eq!(vm.func_table[3].as_i32(), 7);
 }
 
 #[test]
