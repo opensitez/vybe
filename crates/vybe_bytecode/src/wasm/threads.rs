@@ -11,8 +11,8 @@
 //! | Shared memory              | ⚠  | memory flag emitted when `shared` requested; host must cooperate |
 //! | `atomic.load` / `store`    | ✅ | i32, i64, i32_8u, i32_16u |
 //! | `atomic.rmw.*`             | ✅ | add, sub, and, or, xor, xchg, cmpxchg |
-//! | `memory.atomic.wait32/64`  | ✅ | VM no-ops unless host driver is attached |
-//! | `memory.atomic.notify`     | ✅ | VM no-ops |
+//! | `memory.atomic.wait32/64`  | ✅ | per-address blocking wait with timeout/not-equal results |
+//! | `memory.atomic.notify`     | ✅ | exact wake count for selected waiters |
 //! | `atomic.fence`             | ✅ | |
 //!
 //! All 0xFE-prefix opcodes are emitted by the generic pass-through in

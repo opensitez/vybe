@@ -400,6 +400,7 @@ pub struct ActiveContinuation {
     pub cont: crate::value::Value,
     pub caller_fiber: crate::fiber::Fiber,
     pub mode: ResumeMode,
+    pub handlers: Vec<crate::chunk::StackSwitchHandler>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,6 +469,8 @@ pub struct VM {
     /// Additional memories for multi-memory support.
     /// memory index 0 = self.memory, index 1+ = extra_memories[i-1].
     pub(crate) extra_memories: Vec<Vec<u8>>,
+    /// Maximum page limits for memories 1+ from decoded module types.
+    pub(crate) extra_memory_max_pages: Vec<Option<usize>>,
     /// Bulk-memory data segments that have been dropped.
     pub(crate) dropped_data: HashSet<u32>,
     /// Reference-types element segments that have been dropped.
@@ -636,6 +639,7 @@ impl VM {
             type_registry: crate::typedef::TypeRegistry::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
+            extra_memory_max_pages: Vec::new(),
             dropped_data: HashSet::new(),
             dropped_elems: HashSet::new(),
             data_segments: Vec::new(),
@@ -786,14 +790,26 @@ impl VM {
         }
     }
 
-    fn instantiate_declared_memories(&mut self, min_pages: &[u64]) -> Result<(), crate::VMError> {
+    fn instantiate_declared_memories(
+        &mut self,
+        min_pages: &[u64],
+        max_pages: &[Option<u64>],
+    ) -> Result<(), crate::VMError> {
         for (idx, pages) in min_pages.iter().copied().enumerate() {
             let bytes_u64 = pages
                 .checked_mul(65536)
                 .ok_or_else(|| crate::VMError::new("memory declaration size overflow"))?;
             let bytes = usize::try_from(bytes_u64)
                 .map_err(|_| crate::VMError::new("memory declaration size out of range"))?;
+            let max = max_pages
+                .get(idx)
+                .copied()
+                .flatten()
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| crate::VMError::new("memory maximum out of range"))?;
             if idx == 0 {
+                self.memory.set_max_pages(max);
                 if self.memory.len() < bytes {
                     self.memory.resize(bytes, 0);
                 }
@@ -802,8 +818,33 @@ impl VM {
                 if self.extra_memories.len() <= extra_idx {
                     self.extra_memories.resize_with(extra_idx + 1, Vec::new);
                 }
+                if self.extra_memory_max_pages.len() <= extra_idx {
+                    self.extra_memory_max_pages.resize(extra_idx + 1, None);
+                }
+                self.extra_memory_max_pages[extra_idx] = max;
                 if self.extra_memories[extra_idx].len() < bytes {
                     self.extra_memories[extra_idx].resize(bytes, 0);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn instantiate_declared_tables(&mut self, min_sizes: &[u64]) -> Result<(), crate::VMError> {
+        for (idx, size) in min_sizes.iter().copied().enumerate() {
+            let size = usize::try_from(size)
+                .map_err(|_| crate::VMError::new("table declaration size out of range"))?;
+            if idx == 0 {
+                if self.func_table.len() < size {
+                    self.func_table.resize(size, Value::Null);
+                }
+            } else {
+                let extra_idx = idx - 1;
+                if self.extra_tables.len() <= extra_idx {
+                    self.extra_tables.resize_with(extra_idx + 1, Vec::new);
+                }
+                if self.extra_tables[extra_idx].len() < size {
+                    self.extra_tables[extra_idx].resize(size, Value::Null);
                 }
             }
         }
@@ -819,11 +860,19 @@ impl VM {
             if idx >= self.extra_memories.len() {
                 self.extra_memories.resize_with(idx + 1, Vec::new);
             }
+            if idx >= self.extra_memory_max_pages.len() {
+                self.extra_memory_max_pages.resize(idx + 1, None);
+            }
             let mem = &mut self.extra_memories[idx];
             let old_pages = mem.len() / 65536;
             let Some(new_pages) = old_pages.checked_add(pages) else {
                 return usize::MAX;
             };
+            if let Some(max_pages) = self.extra_memory_max_pages[idx] {
+                if new_pages > max_pages {
+                    return usize::MAX;
+                }
+            }
             if new_pages > 65536 {
                 return usize::MAX;
             }
@@ -1556,7 +1605,85 @@ impl VM {
         self.chunks.extend(adjusted);
 
         let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
-        self.instantiate_declared_memories(&declared_memories)?;
+        let declared_memory_maxes = self.chunks[script_idx].memory_max_pages.clone();
+        self.instantiate_declared_memories(&declared_memories, &declared_memory_maxes)?;
+        let declared_tables = self.chunks[script_idx].table_min_sizes.clone();
+        self.instantiate_declared_tables(&declared_tables)?;
+        let data_segments = self.chunks[script_idx].data_segments.clone();
+        if !data_segments.is_empty() {
+            self.data_segments = data_segments;
+            self.dropped_data.clear();
+        }
+        let elem_segments = self.chunks[script_idx].elem_segments.clone();
+        if !elem_segments.is_empty() {
+            self.elem_segments = elem_segments
+                .into_iter()
+                .map(|segment| {
+                    segment
+                        .into_iter()
+                        .map(|value| match value {
+                            Value::I32(func_idx) if func_idx >= 0 => {
+                                let defined_func_base = if self.chunks[script_idx].name
+                                    == "<script>"
+                                    && self.chunks.len() > script_idx + 1
+                                {
+                                    script_idx + 1
+                                } else {
+                                    script_idx
+                                };
+                                let chunk_idx = defined_func_base + func_idx as usize;
+                                if chunk_idx < self.chunks.len() {
+                                    let chunk = &self.chunks[chunk_idx];
+                                    let func = crate::value::Function {
+                                        name: Some(chunk.name.clone()),
+                                        arity: chunk.arity,
+                                        chunk_index: chunk_idx,
+                                        upvalues: Vec::new(),
+                                    };
+                                    let mut obj = Object::new();
+                                    obj.kind = ObjectKind::Function(func);
+                                    Value::Object(Arc::new(Mutex::new(obj)))
+                                } else {
+                                    Value::Null
+                                }
+                            }
+                            other => other,
+                        })
+                        .collect()
+                })
+                .collect();
+            self.dropped_elems.clear();
+        }
+        let active_data_segments = self.chunks[script_idx].active_data_segments.clone();
+        for init in active_data_segments {
+            let bytes = self
+                .data_segments
+                .get(init.data_index as usize)
+                .ok_or_else(|| crate::VMError::new("active data segment payload missing"))?
+                .clone();
+            let offset = usize::try_from(init.offset)
+                .map_err(|_| crate::VMError::new("active data segment offset out of range"))?;
+            self.write_memory_bytes(init.memory_index as usize, offset, &bytes)?;
+        }
+        let active_elem_segments = self.chunks[script_idx].active_elem_segments.clone();
+        for init in active_elem_segments {
+            let values = self
+                .elem_segments
+                .get(init.elem_index as usize)
+                .ok_or_else(|| crate::VMError::new("active element segment payload missing"))?
+                .clone();
+            let offset = usize::try_from(init.offset)
+                .map_err(|_| crate::VMError::new("active element segment offset out of range"))?;
+            let table = self
+                .table_mut(init.table_index as usize)
+                .ok_or_else(|| crate::VMError::new("active element segment table missing"))?;
+            if offset.saturating_add(values.len()) > table.len() {
+                return Err(crate::VMError::new(
+                    "trap: active element segment out of bounds",
+                ));
+            }
+            table[offset..offset + values.len()].clone_from_slice(&values);
+        }
 
         // Resolve imports for ALL new chunks (not just script chunk).
         // Each chunk has its own import list. We build one unified import table

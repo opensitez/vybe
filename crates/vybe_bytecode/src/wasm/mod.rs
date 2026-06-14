@@ -117,7 +117,11 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         write_section(
             &mut out,
             SECTION_TAG,
-            &exception_handling::encode_tag_section_with(type_ctx.exception_type_idx, suspend_idx),
+            &exception_handling::encode_tag_section_with_continuation_tags(
+                type_ctx.exception_type_idx,
+                suspend_idx,
+                &type_ctx.continuation_tag_type_indices,
+            ),
         );
     }
 

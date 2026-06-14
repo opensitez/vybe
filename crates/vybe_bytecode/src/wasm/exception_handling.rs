@@ -49,18 +49,28 @@ pub fn encode_tag_section_with(
     exception_type_idx: u32,
     suspend_tag_type_idx: Option<u32>,
 ) -> Vec<u8> {
+    encode_tag_section_with_continuation_tags(exception_type_idx, suspend_tag_type_idx, &[])
+}
+
+pub fn encode_tag_section_with_continuation_tags(
+    exception_type_idx: u32,
+    suspend_tag_type_idx: Option<u32>,
+    continuation_tag_type_indices: &[u32],
+) -> Vec<u8> {
     let mut out = Vec::new();
-    let count = if suspend_tag_type_idx.is_some() {
-        2u32
-    } else {
-        1u32
-    };
+    let count = 1u32
+        + u32::from(suspend_tag_type_idx.is_some())
+        + continuation_tag_type_indices.len() as u32;
     write_leb128_u32(&mut out, count);
     out.push(0x00);
     write_leb128_u32(&mut out, exception_type_idx);
     if let Some(idx) = suspend_tag_type_idx {
         out.push(0x00);
         write_leb128_u32(&mut out, idx);
+    }
+    for idx in continuation_tag_type_indices {
+        out.push(0x00);
+        write_leb128_u32(&mut out, *idx);
     }
     out
 }

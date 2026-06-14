@@ -79,27 +79,37 @@ impl VM {
             }
             _ if op == Op::I32_ATOMIC_LOAD8_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W8)?;
-                self.push(Value::I32(self.atomic_load(memidx, addr, AtomicWidth::W8)? as i32))?;
+                self.push(Value::I32(
+                    self.atomic_load(memidx, addr, AtomicWidth::W8)? as i32
+                ))?;
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_LOAD16_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W16)?;
-                self.push(Value::I32(self.atomic_load(memidx, addr, AtomicWidth::W16)? as i32))?;
+                self.push(Value::I32(
+                    self.atomic_load(memidx, addr, AtomicWidth::W16)? as i32,
+                ))?;
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD8_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W8)?;
-                self.push(Value::I64(self.atomic_load(memidx, addr, AtomicWidth::W8)? as i64))?;
+                self.push(Value::I64(
+                    self.atomic_load(memidx, addr, AtomicWidth::W8)? as i64
+                ))?;
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD16_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W16)?;
-                self.push(Value::I64(self.atomic_load(memidx, addr, AtomicWidth::W16)? as i64))?;
+                self.push(Value::I64(
+                    self.atomic_load(memidx, addr, AtomicWidth::W16)? as i64,
+                ))?;
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD32_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push(Value::I64(self.atomic_load(memidx, addr, AtomicWidth::W32)? as i64))?;
+                self.push(Value::I64(
+                    self.atomic_load(memidx, addr, AtomicWidth::W32)? as i64,
+                ))?;
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_STORE => self.atomic_store_i32(AtomicWidth::W32),
@@ -109,48 +119,132 @@ impl VM {
             _ if op == Op::I64_ATOMIC_STORE8 => self.atomic_store_i64(AtomicWidth::W8),
             _ if op == Op::I64_ATOMIC_STORE16 => self.atomic_store_i64(AtomicWidth::W16),
             _ if op == Op::I64_ATOMIC_STORE32 => self.atomic_store_i64(AtomicWidth::W32),
-            _ if op == Op::I32_ATOMIC_RMW_ADD => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Add),
-            _ if op == Op::I32_ATOMIC_RMW_SUB => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Sub),
-            _ if op == Op::I32_ATOMIC_RMW_AND => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::And),
-            _ if op == Op::I32_ATOMIC_RMW_OR => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Or),
-            _ if op == Op::I32_ATOMIC_RMW_XOR => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Xor),
-            _ if op == Op::I32_ATOMIC_RMW_XCHG => self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Xchg),
-            _ if op == Op::I32_ATOMIC_RMW8_ADD_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Add),
-            _ if op == Op::I32_ATOMIC_RMW16_ADD_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Add),
-            _ if op == Op::I32_ATOMIC_RMW8_SUB_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Sub),
-            _ if op == Op::I32_ATOMIC_RMW16_SUB_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Sub),
-            _ if op == Op::I32_ATOMIC_RMW8_AND_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::And),
-            _ if op == Op::I32_ATOMIC_RMW16_AND_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::And),
-            _ if op == Op::I32_ATOMIC_RMW8_OR_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Or),
-            _ if op == Op::I32_ATOMIC_RMW16_OR_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Or),
-            _ if op == Op::I32_ATOMIC_RMW8_XOR_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Xor),
-            _ if op == Op::I32_ATOMIC_RMW16_XOR_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Xor),
-            _ if op == Op::I32_ATOMIC_RMW8_XCHG_U => self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Xchg),
-            _ if op == Op::I32_ATOMIC_RMW16_XCHG_U => self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Xchg),
-            _ if op == Op::I64_ATOMIC_RMW_ADD => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Add),
-            _ if op == Op::I64_ATOMIC_RMW_SUB => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Sub),
-            _ if op == Op::I64_ATOMIC_RMW_AND => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::And),
-            _ if op == Op::I64_ATOMIC_RMW_OR => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Or),
-            _ if op == Op::I64_ATOMIC_RMW_XOR => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Xor),
-            _ if op == Op::I64_ATOMIC_RMW_XCHG => self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Xchg),
-            _ if op == Op::I64_ATOMIC_RMW8_ADD_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Add),
-            _ if op == Op::I64_ATOMIC_RMW16_ADD_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Add),
-            _ if op == Op::I64_ATOMIC_RMW32_ADD_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Add),
-            _ if op == Op::I64_ATOMIC_RMW8_SUB_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Sub),
-            _ if op == Op::I64_ATOMIC_RMW16_SUB_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Sub),
-            _ if op == Op::I64_ATOMIC_RMW32_SUB_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Sub),
-            _ if op == Op::I64_ATOMIC_RMW8_AND_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::And),
-            _ if op == Op::I64_ATOMIC_RMW16_AND_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::And),
-            _ if op == Op::I64_ATOMIC_RMW32_AND_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::And),
-            _ if op == Op::I64_ATOMIC_RMW8_OR_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Or),
-            _ if op == Op::I64_ATOMIC_RMW16_OR_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Or),
-            _ if op == Op::I64_ATOMIC_RMW32_OR_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Or),
-            _ if op == Op::I64_ATOMIC_RMW8_XOR_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Xor),
-            _ if op == Op::I64_ATOMIC_RMW16_XOR_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Xor),
-            _ if op == Op::I64_ATOMIC_RMW32_XOR_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Xor),
-            _ if op == Op::I64_ATOMIC_RMW8_XCHG_U => self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Xchg),
-            _ if op == Op::I64_ATOMIC_RMW16_XCHG_U => self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Xchg),
-            _ if op == Op::I64_ATOMIC_RMW32_XCHG_U => self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Xchg),
+            _ if op == Op::I32_ATOMIC_RMW_ADD => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Add)
+            }
+            _ if op == Op::I32_ATOMIC_RMW_SUB => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Sub)
+            }
+            _ if op == Op::I32_ATOMIC_RMW_AND => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::And)
+            }
+            _ if op == Op::I32_ATOMIC_RMW_OR => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Or)
+            }
+            _ if op == Op::I32_ATOMIC_RMW_XOR => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Xor)
+            }
+            _ if op == Op::I32_ATOMIC_RMW_XCHG => {
+                self.atomic_rmw_i32(AtomicWidth::W32, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_ADD_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Add)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_ADD_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Add)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_SUB_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Sub)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_SUB_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Sub)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_AND_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::And)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_AND_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::And)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_OR_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Or)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_OR_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Or)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_XOR_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Xor)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_XOR_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Xor)
+            }
+            _ if op == Op::I32_ATOMIC_RMW8_XCHG_U => {
+                self.atomic_rmw_i32(AtomicWidth::W8, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I32_ATOMIC_RMW16_XCHG_U => {
+                self.atomic_rmw_i32(AtomicWidth::W16, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_ADD => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Add)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_SUB => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Sub)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_AND => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::And)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_OR => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Or)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_XOR => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Xor)
+            }
+            _ if op == Op::I64_ATOMIC_RMW_XCHG => {
+                self.atomic_rmw_i64(AtomicWidth::W64, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_ADD_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Add)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_ADD_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Add)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_ADD_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Add)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_SUB_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Sub)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_SUB_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Sub)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_SUB_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Sub)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_AND_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::And)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_AND_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::And)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_AND_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::And)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_OR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Or)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_OR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Or)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_OR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Or)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_XOR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Xor)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_XOR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Xor)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_XOR_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Xor)
+            }
+            _ if op == Op::I64_ATOMIC_RMW8_XCHG_U => {
+                self.atomic_rmw_i64(AtomicWidth::W8, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I64_ATOMIC_RMW16_XCHG_U => {
+                self.atomic_rmw_i64(AtomicWidth::W16, AtomicRmw::Xchg)
+            }
+            _ if op == Op::I64_ATOMIC_RMW32_XCHG_U => {
+                self.atomic_rmw_i64(AtomicWidth::W32, AtomicRmw::Xchg)
+            }
             _ if op == Op::I32_ATOMIC_RMW_CMPXCHG => self.atomic_cmpxchg_i32(AtomicWidth::W32),
             _ if op == Op::I32_ATOMIC_RMW8_CMPXCHG_U => self.atomic_cmpxchg_i32(AtomicWidth::W8),
             _ if op == Op::I32_ATOMIC_RMW16_CMPXCHG_U => self.atomic_cmpxchg_i32(AtomicWidth::W16),
@@ -230,12 +324,7 @@ impl VM {
         Ok(())
     }
 
-    fn atomic_load(
-        &self,
-        memidx: usize,
-        addr: usize,
-        width: AtomicWidth,
-    ) -> Result<u64, VMError> {
+    fn atomic_load(&self, memidx: usize, addr: usize, width: AtomicWidth) -> Result<u64, VMError> {
         let bytes = self.read_memory_bytes(memidx, addr, width.bytes())?;
         Ok(match width {
             AtomicWidth::W8 => bytes[0] as u64,
@@ -254,8 +343,12 @@ impl VM {
     ) -> Result<(), VMError> {
         match width {
             AtomicWidth::W8 => self.write_memory_bytes(memidx, addr, &[value as u8]),
-            AtomicWidth::W16 => self.write_memory_bytes(memidx, addr, &(value as u16).to_le_bytes()),
-            AtomicWidth::W32 => self.write_memory_bytes(memidx, addr, &(value as u32).to_le_bytes()),
+            AtomicWidth::W16 => {
+                self.write_memory_bytes(memidx, addr, &(value as u16).to_le_bytes())
+            }
+            AtomicWidth::W32 => {
+                self.write_memory_bytes(memidx, addr, &(value as u32).to_le_bytes())
+            }
             AtomicWidth::W64 => self.write_memory_bytes(memidx, addr, &value.to_le_bytes()),
         }
     }

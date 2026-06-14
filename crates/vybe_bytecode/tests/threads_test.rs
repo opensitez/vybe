@@ -3,6 +3,9 @@
 //!         i64.atomic.load/store, i64.atomic.rmw.*, memory.atomic.wait32/notify.
 //! All operations run single-threaded; wait32 returns 1 (not-equal), notify returns 0.
 
+use std::thread;
+use std::time::Duration;
+use vybe_bytecode::shared_memory::SharedMemory;
 use vybe_bytecode::value::Value;
 use vybe_bytecode::wasm;
 use vybe_bytecode::{Chunk, Op, VM};
@@ -185,50 +188,265 @@ fn all_standard_atomic_opcodes_decode_to_bytecode() {
         ("i64.atomic.load8_u", 0x14, &[0x41, 0x00], &[0xA7]),
         ("i64.atomic.load16_u", 0x15, &[0x41, 0x00], &[0xA7]),
         ("i64.atomic.load32_u", 0x16, &[0x41, 0x00], &[0xA7]),
-        ("i32.atomic.store8", 0x19, &[0x41, 0x00, 0x41, 0x01], &[0x41, 0x00]),
-        ("i32.atomic.store16", 0x1A, &[0x41, 0x00, 0x41, 0x01], &[0x41, 0x00]),
-        ("i64.atomic.store8", 0x1B, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
-        ("i64.atomic.store16", 0x1C, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
-        ("i64.atomic.store32", 0x1D, &[0x41, 0x00, 0x42, 0x01], &[0x41, 0x00]),
-        ("i64.atomic.rmw.and", 0x2D, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw.or", 0x34, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw.xor", 0x3B, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw.xchg", 0x42, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.add_u", 0x20, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.add_u", 0x21, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.add_u", 0x22, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.add_u", 0x23, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.add_u", 0x24, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.sub_u", 0x27, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.sub_u", 0x28, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.sub_u", 0x29, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.sub_u", 0x2A, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.sub_u", 0x2B, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.and_u", 0x2E, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.and_u", 0x2F, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.and_u", 0x30, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.and_u", 0x31, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.and_u", 0x32, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
+        (
+            "i32.atomic.store8",
+            0x19,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[0x41, 0x00],
+        ),
+        (
+            "i32.atomic.store16",
+            0x1A,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[0x41, 0x00],
+        ),
+        (
+            "i64.atomic.store8",
+            0x1B,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0x41, 0x00],
+        ),
+        (
+            "i64.atomic.store16",
+            0x1C,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0x41, 0x00],
+        ),
+        (
+            "i64.atomic.store32",
+            0x1D,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0x41, 0x00],
+        ),
+        (
+            "i64.atomic.rmw.and",
+            0x2D,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw.or",
+            0x34,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw.xor",
+            0x3B,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw.xchg",
+            0x42,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.add_u",
+            0x20,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.add_u",
+            0x21,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.add_u",
+            0x22,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.add_u",
+            0x23,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.add_u",
+            0x24,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.sub_u",
+            0x27,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.sub_u",
+            0x28,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.sub_u",
+            0x29,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.sub_u",
+            0x2A,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.sub_u",
+            0x2B,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.and_u",
+            0x2E,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.and_u",
+            0x2F,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.and_u",
+            0x30,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.and_u",
+            0x31,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.and_u",
+            0x32,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
         ("i32.atomic.rmw8.or_u", 0x35, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.or_u", 0x36, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.or_u", 0x37, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.or_u", 0x38, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.or_u", 0x39, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.xor_u", 0x3C, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.xor_u", 0x3D, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.xor_u", 0x3E, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.xor_u", 0x3F, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.xor_u", 0x40, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.xchg_u", 0x43, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i32.atomic.rmw16.xchg_u", 0x44, &[0x41, 0x00, 0x41, 0x01], &[]),
-        ("i64.atomic.rmw8.xchg_u", 0x45, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw16.xchg_u", 0x46, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i64.atomic.rmw32.xchg_u", 0x47, &[0x41, 0x00, 0x42, 0x01], &[0xA7]),
-        ("i32.atomic.rmw8.cmpxchg_u", 0x4A, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], &[]),
-        ("i32.atomic.rmw16.cmpxchg_u", 0x4B, &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02], &[]),
-        ("i64.atomic.rmw8.cmpxchg_u", 0x4C, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
-        ("i64.atomic.rmw16.cmpxchg_u", 0x4D, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
-        ("i64.atomic.rmw32.cmpxchg_u", 0x4E, &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02], &[0xA7]),
+        (
+            "i32.atomic.rmw16.or_u",
+            0x36,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.or_u",
+            0x37,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.or_u",
+            0x38,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.or_u",
+            0x39,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.xor_u",
+            0x3C,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.xor_u",
+            0x3D,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.xor_u",
+            0x3E,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.xor_u",
+            0x3F,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.xor_u",
+            0x40,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.xchg_u",
+            0x43,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.xchg_u",
+            0x44,
+            &[0x41, 0x00, 0x41, 0x01],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.xchg_u",
+            0x45,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.xchg_u",
+            0x46,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.xchg_u",
+            0x47,
+            &[0x41, 0x00, 0x42, 0x01],
+            &[0xA7],
+        ),
+        (
+            "i32.atomic.rmw8.cmpxchg_u",
+            0x4A,
+            &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02],
+            &[],
+        ),
+        (
+            "i32.atomic.rmw16.cmpxchg_u",
+            0x4B,
+            &[0x41, 0x00, 0x41, 0x01, 0x41, 0x02],
+            &[],
+        ),
+        (
+            "i64.atomic.rmw8.cmpxchg_u",
+            0x4C,
+            &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw16.cmpxchg_u",
+            0x4D,
+            &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02],
+            &[0xA7],
+        ),
+        (
+            "i64.atomic.rmw32.cmpxchg_u",
+            0x4E,
+            &[0x41, 0x00, 0x42, 0x01, 0x42, 0x02],
+            &[0xA7],
+        ),
     ];
 
     for (name, subopcode, operands, result_fixup) in cases {
@@ -241,10 +459,7 @@ fn all_standard_atomic_opcodes_decode_to_bytecode() {
             panic!("{name} should decode to bytecode instead of being skipped: {err}")
         });
         assert!(
-            chunks[1]
-                .code
-                .windows(2)
-                .any(|w| w == [0xFE, *subopcode]),
+            chunks[1].code.windows(2).any(|w| w == [0xFE, *subopcode]),
             "{name} must be present in bytecode"
         );
     }
@@ -769,6 +984,49 @@ fn memory_atomic_notify_returns_zero_waiters() {
         emit_atomic(c, Op::MEMORY_ATOMIC_NOTIFY);
     });
     assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn shared_memory_wait32_returns_ok_when_notified() {
+    let memory = SharedMemory::new(64);
+    memory.store_i32(0, 7).unwrap();
+    let waiter_memory = memory.clone();
+    let waiter = thread::spawn(move || waiter_memory.wait32(0, 7, 5_000_000_000));
+
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(memory.notify(0, 1), 1);
+    assert_eq!(waiter.join().unwrap(), 0);
+}
+
+#[test]
+fn shared_memory_wait64_returns_ok_when_notified() {
+    let memory = SharedMemory::new(64);
+    memory.store_i64(8, 11).unwrap();
+    let waiter_memory = memory.clone();
+    let waiter = thread::spawn(move || waiter_memory.wait64(8, 11, 5_000_000_000));
+
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(memory.notify(8, 1), 1);
+    assert_eq!(waiter.join().unwrap(), 0);
+}
+
+#[test]
+fn shared_memory_notify_wakes_at_most_requested_waiters() {
+    let memory = SharedMemory::new(64);
+    memory.store_i32(0, 13).unwrap();
+
+    let first_memory = memory.clone();
+    let first = thread::spawn(move || first_memory.wait32(0, 13, 5_000_000_000));
+    let second_memory = memory.clone();
+    let second = thread::spawn(move || second_memory.wait32(0, 13, 5_000_000_000));
+
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(memory.notify(0, 1), 1);
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(memory.notify(0, 10), 1);
+
+    assert_eq!(first.join().unwrap(), 0);
+    assert_eq!(second.join().unwrap(), 0);
 }
 
 #[test]

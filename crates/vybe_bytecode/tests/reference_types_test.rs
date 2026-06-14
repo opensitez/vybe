@@ -371,7 +371,7 @@ fn table_copy_overlapping_forward_preserves_source_snapshot() {
     chunk.emit_op_u16(Op::CONST, dst, 0);
     chunk.emit_op_u16(Op::CONST, src, 0);
     chunk.emit_op_u16(Op::CONST, count, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -392,7 +392,7 @@ fn table_copy_destination_oob_traps() {
     chunk.emit_op_u16(Op::CONST, dst, 0);
     chunk.emit_op_u16(Op::CONST, src, 0);
     chunk.emit_op_u16(Op::CONST, count, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -412,7 +412,7 @@ fn table_copy_source_oob_traps() {
     chunk.emit_op_u16(Op::CONST, dst, 0);
     chunk.emit_op_u16(Op::CONST, src, 0);
     chunk.emit_op_u16(Op::CONST, count, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -434,14 +434,18 @@ fn table_copy_routes_to_selected_extra_table() {
     chunk.emit_op_u16(Op::CONST, dst, 0);
     chunk.emit_op_u16(Op::CONST, src, 0);
     chunk.emit_op_u16(Op::CONST, count, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY, 1, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 1, 1, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
     let table0: Vec<i32> = vm.func_table.iter().map(Value::as_i32).collect();
     let table1: Vec<i32> = vm.extra_tables[0].iter().map(Value::as_i32).collect();
-    assert_eq!(table0, vec![10, 20, 30], "table.copy 1 must not touch table 0");
+    assert_eq!(
+        table0,
+        vec![10, 20, 30],
+        "table.copy 1 must not touch table 0"
+    );
     assert_eq!(table1, vec![1, 1, 2]);
 }
 
@@ -456,7 +460,7 @@ fn table_copy_zero_count_at_table_end_is_noop() {
     chunk.emit_op_u16(Op::CONST, end, 0);
     chunk.emit_op_u16(Op::CONST, end, 0);
     chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -475,7 +479,7 @@ fn table_init_after_elem_drop_traps() {
     chunk.emit_op_u16(Op::CONST, zero, 0); // dst
     chunk.emit_op_u16(Op::CONST, zero, 0); // src
     chunk.emit_op_u16(Op::CONST, zero, 0); // count
-    chunk.emit_op_u8(Op::TABLE_INIT, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 

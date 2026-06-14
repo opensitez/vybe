@@ -88,8 +88,17 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
 
 impl VM {
     pub(crate) fn raise_exception_value(&mut self, val: Value) -> Result<(), VMError> {
+        self.raise_exception_value_skipping(val, 0)
+    }
+
+    pub(crate) fn raise_exception_value_skipping(
+        &mut self,
+        val: Value,
+        skip_handlers: usize,
+    ) -> Result<(), VMError> {
         let mut matched_idx = None;
-        for i in (0..self.exception_handlers.len()).rev() {
+        let search_len = self.exception_handlers.len().saturating_sub(skip_handlers);
+        for i in (0..search_len).rev() {
             let handler = &self.exception_handlers[i];
             if handler.tag == 0 {
                 matched_idx = Some(i);
@@ -98,7 +107,7 @@ impl VM {
             let tag_idx = handler.tag as usize;
             let tag_name = self
                 .chunks
-                .get(0)
+                .get(handler._chunk_index)
                 .and_then(|c| c.exception_tags.get(tag_idx))
                 .cloned()
                 .unwrap_or_default();

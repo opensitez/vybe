@@ -204,8 +204,8 @@ fn memory64_v128_store_and_load_use_i64_address_and_u64_offset() {
     let mut vm = VM::new();
     vm.memory.resize(64, 0);
     let bytes: [u8; 16] = [
-        0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41,
-        0x42, 0x43,
+        0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42,
+        0x43,
     ];
     let mut c = Chunk::new("<simd-memory64>");
     push_i64(&mut c, 0);
@@ -846,13 +846,7 @@ fn simd_mem_err(mem_size: usize, emit: impl FnOnce(&mut Chunk)) -> String {
     vm.run(vec![c]).unwrap_err().to_string()
 }
 
-fn simd_store_lane_memory(
-    op: Op,
-    lane: u8,
-    addr: i32,
-    vec: [u8; 16],
-    mem_size: usize,
-) -> Vec<u8> {
+fn simd_store_lane_memory(op: Op, lane: u8, addr: i32, vec: [u8; 16], mem_size: usize) -> Vec<u8> {
     let mut vm = VM::new();
     vm.memory.resize(mem_size, 0);
     let mut c = Chunk::new("<script>");
@@ -1286,7 +1280,12 @@ fn v128_store16_lane_writes_two_bytes() {
     vec[4..6].copy_from_slice(&0x1234u16.to_le_bytes());
     let memory = simd_store_lane_memory(Op::V128_STORE16_LANE, 2, 10, vec, 16);
     assert_eq!(&memory[10..12], &0x1234u16.to_le_bytes());
-    assert!(memory.iter().enumerate().all(|(i, &b)| (10..12).contains(&i) || b == 0));
+    assert!(
+        memory
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| (10..12).contains(&i) || b == 0)
+    );
 }
 
 #[test]
@@ -1295,7 +1294,12 @@ fn v128_store32_lane_writes_four_bytes() {
     vec[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
     let memory = simd_store_lane_memory(Op::V128_STORE32_LANE, 1, 8, vec, 16);
     assert_eq!(&memory[8..12], &0x1234_5678u32.to_le_bytes());
-    assert!(memory.iter().enumerate().all(|(i, &b)| (8..12).contains(&i) || b == 0));
+    assert!(
+        memory
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| (8..12).contains(&i) || b == 0)
+    );
 }
 
 #[test]
@@ -1304,7 +1308,12 @@ fn v128_store64_lane_writes_eight_bytes() {
     vec[8..16].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
     let memory = simd_store_lane_memory(Op::V128_STORE64_LANE, 1, 4, vec, 16);
     assert_eq!(&memory[4..12], &0x0102_0304_0506_0708u64.to_le_bytes());
-    assert!(memory.iter().enumerate().all(|(i, &b)| (4..12).contains(&i) || b == 0));
+    assert!(
+        memory
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| (4..12).contains(&i) || b == 0)
+    );
 }
 
 #[test]

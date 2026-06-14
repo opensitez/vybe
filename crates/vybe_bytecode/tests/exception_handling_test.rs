@@ -105,6 +105,11 @@ fn emit_rethrow(c: &mut Chunk, depth: u32) {
     c.emit_leb_u32(depth, 0);
 }
 
+fn emit_delegate(c: &mut Chunk, depth: u32) {
+    c.emit_op(Op::DELEGATE, 0);
+    c.emit_leb_u32(depth, 0);
+}
+
 // ── THROW — uncaught ──────────────────────────────────────────────────────
 
 #[test]
@@ -170,6 +175,46 @@ fn rethrow_in_inner_handler_is_caught_by_outer_handler() {
         c.emit_op_u16(Op::CONST, ok, 0);
     });
     assert_eq!(r.as_i32(), 77);
+}
+
+#[test]
+fn delegate_in_inner_handler_is_caught_by_outer_handler() {
+    let r = run(|c| {
+        let err = c.add_constant(Value::String(Arc::from("delegated")));
+        let ok = c.add_constant(Value::I32(91));
+
+        emit_try_table_catch_all(c, 15);
+        emit_try_table_catch_all(c, 6);
+        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_op(Op::THROW, 0);
+        emit_delegate(c, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, ok, 0);
+    });
+    assert_eq!(r.as_i32(), 91);
+}
+
+#[test]
+fn delegate_depth_skips_enclosing_handler() {
+    let r = run(|c| {
+        let err = c.add_constant(Value::String(Arc::from("skip-one")));
+        let outer = c.add_constant(Value::I32(111));
+        let middle = c.add_constant(Value::I32(222));
+
+        emit_try_table_catch_all(c, 27);
+        emit_try_table_catch_all(c, 15);
+        emit_try_table_catch_all(c, 6);
+        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_op(Op::THROW, 0);
+        emit_delegate(c, 1);
+
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, middle, 0);
+
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, outer, 0);
+    });
+    assert_eq!(r.as_i32(), 111);
 }
 
 #[test]

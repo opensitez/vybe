@@ -298,11 +298,18 @@ impl VM {
     }
 
     pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
+        let chunk_idx = self.frame().chunk_index;
+        let code = &self.chunks[chunk_idx].code;
+        let mut ip = self.frame().ip;
+        if code.get(ip) == Some(&0xEE) && code.get(ip + 1) == Some(&0x00) {
+            ip += 2;
+            let memidx = read_leb_u32(code, &mut ip) as usize;
+            self.frame_mut().ip = ip;
+            return memidx;
+        }
         if self.next_bytes_decode_opcode() {
             return 0;
         }
-        let chunk_idx = self.frame().chunk_index;
-        let mut ip = self.frame().ip;
         let memidx = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip) as usize;
         self.frame_mut().ip = ip;
         memidx
@@ -396,7 +403,9 @@ impl VM {
     fn table64_index(value: Value, context: &str) -> Result<usize, VMError> {
         let idx = value.as_i64();
         if idx < 0 {
-            return Err(VMError::new(format!("trap: {context} negative table index")));
+            return Err(VMError::new(format!(
+                "trap: {context} negative table index"
+            )));
         }
         usize::try_from(idx).map_err(|_| VMError::new(format!("trap: {context} index too large")))
     }
@@ -1589,21 +1598,34 @@ impl VM {
                         // control back to the caller of RESUME/GEN_NEXT
                         // rather than exiting the VM. Mark the cont as
                         // Done and restore the caller's fiber.
-                        if let Some(ac) = self.active_continuations.pop() {
-                            if let Value::Object(ref obj) = ac.cont {
-                                let o = obj.lock().unwrap();
-                                if let ObjectKind::Continuation(cs) = &o.kind {
-                                    *cs.state.lock().unwrap() =
-                                        crate::value::ContinuationPhase::Done;
+                        //
+                        // This fires ONLY when `frames` is now empty. Per the
+                        // WASM stack-switching proposal a continuation owns its
+                        // stack; `save_fiber` drains all caller frames when the
+                        // continuation is resumed, so during its execution
+                        // `frames` holds the continuation's frames alone and a
+                        // genuine body completion empties them. A non-empty
+                        // `frames.len() < min_depth` here is instead the floor
+                        // of a re-entrant `invoke_callback` (a host HOF callback
+                        // running inside the body) returning — that value must
+                        // flow back to the caller, NOT complete the generator.
+                        if self.frames.is_empty() {
+                            if let Some(ac) = self.active_continuations.pop() {
+                                if let Value::Object(ref obj) = ac.cont {
+                                    let o = obj.lock().unwrap();
+                                    if let ObjectKind::Continuation(cs) = &o.kind {
+                                        *cs.state.lock().unwrap() =
+                                            crate::value::ContinuationPhase::Done;
+                                    }
                                 }
+                                let ret_val = results.pop().unwrap_or(Value::Null);
+                                self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
+                                if ac.mode == ResumeMode::Iterator {
+                                    // has_more = 0 — generator is exhausted
+                                    self.push(Value::I32(0))?;
+                                }
+                                continue;
                             }
-                            let ret_val = results.pop().unwrap_or(Value::Null);
-                            self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
-                            if ac.mode == ResumeMode::Iterator {
-                                // has_more = 0 — generator is exhausted
-                                self.push(Value::I32(0))?;
-                            }
-                            continue;
                         }
                         let last = results.pop().unwrap_or(Value::Null);
                         return Ok(last);
@@ -2560,57 +2582,7 @@ impl VM {
                 }
                 _ if op == Op::THROW || op == Op::THROW_REF => {
                     let val = self.pop();
-                    // Find a matching handler by walking the handler stack.
-                    // Tag 0 = catch-all (always matches).
-                    // Tag N = typed catch — match if exception type matches exception_tags[N].
-                    let mut matched_idx = None;
-                    for i in (0..self.exception_handlers.len()).rev() {
-                        let handler = &self.exception_handlers[i];
-                        if handler.tag == 0 {
-                            // Catch-all — always matches
-                            matched_idx = Some(i);
-                            break;
-                        }
-                        // Typed catch — check if thrown value's type matches the tag
-                        let tag_idx = handler.tag as usize;
-                        let tag_name = self
-                            .chunks
-                            .get(0)
-                            .and_then(|c| c.exception_tags.get(tag_idx))
-                            .cloned()
-                            .unwrap_or_default();
-                        if !tag_name.is_empty() {
-                            // Check: is val an instance of tag_name?
-                            let matches = self.test_type(&val, &tag_name.to_lowercase())
-                                || self.exception_value_matches(&val, &tag_name);
-                            if matches {
-                                matched_idx = Some(i);
-                                break;
-                            }
-                        }
-                        // This handler doesn't match — keep looking
-                    }
-
-                    if let Some(idx) = matched_idx {
-                        // Remove this handler and all handlers above it
-                        let handler = self.exception_handlers[idx].clone();
-                        self.exception_handlers.truncate(idx);
-                        // Unwind: restore stack and frames
-                        while self.frames.len() > handler.frame_depth {
-                            let base = self.frames.last().unwrap().base;
-                            self.close_upvalues(base);
-                            self.frames.pop();
-                        }
-                        self.stack.truncate(handler.stack_depth);
-                        self.push(val)?;
-                        let f = self.frame_mut();
-                        f.ip = handler.catch_ip;
-                    } else {
-                        // Store the thrown value so HostContext::try_invoke can recover it.
-                        self.last_exception = Some(val.clone());
-                        let stack = self.capture_call_stack();
-                        return Err(VMError::new(format!("{}", val)).with_stack(stack));
-                    }
+                    self.raise_exception_value(val)?;
                 }
                 _ if op == Op::RETHROW => {
                     let chunk_idx = self.frame().chunk_index;
@@ -2623,8 +2595,10 @@ impl VM {
                 _ if op == Op::DELEGATE => {
                     let chunk_idx = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
-                    let _depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
+                    let depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
                     self.frame_mut().ip = ip;
+                    let val = self.pop();
+                    self.raise_exception_value_skipping(val, depth as usize)?;
                 }
                 _ if op == Op::TRY_TABLE => {
                     // WASM EH Phase 4: [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
@@ -3066,23 +3040,26 @@ impl VM {
                 // -- call_indirect --
                 _ if op == Op::CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
+                    let tableidx = self.read_byte() as usize;
                     let table_idx_pos = self.stack.len() - 1 - argc;
                     let raw_idx = self.stack[table_idx_pos].as_f64();
-                    if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= self.func_table.len() as f64
-                    {
+                    let table = self
+                        .table_ref(tableidx)
+                        .ok_or_else(|| VMError::new("trap: call_indirect unknown table"))?;
+                    if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
                         return Err(VMError::new(format!(
                             "trap: call_indirect: invalid table index {}",
                             raw_idx
                         )));
                     }
-                    let table_idx = raw_idx as usize;
-                    if table_idx < self.func_table.len() {
-                        self.stack[table_idx_pos] = self.func_table[table_idx].clone();
+                    let elem_idx = raw_idx as usize;
+                    if elem_idx < table.len() {
+                        self.stack[table_idx_pos] = table[elem_idx].clone();
                         self.call_value(argc)?;
                     } else {
                         return Err(VMError::new(format!(
                             "call_indirect: table index {} out of bounds",
-                            table_idx
+                            elem_idx
                         )));
                     }
                 }
@@ -3291,18 +3268,25 @@ impl VM {
                 }
                 _ if op == Op::MEMORY_INIT => {
                     let data_idx = self.read_byte() as u32;
-                    let _memidx = self.read_optional_memidx_immediate();
+                    let memidx = self.read_optional_memidx_immediate() as usize;
                     if self.dropped_data.contains(&data_idx) {
                         return Err(VMError::new("memory.init: data segment dropped"));
                     }
                     let count = self.pop().as_i32().max(0) as usize;
-                    let _src = self.pop().as_i32().max(0) as usize;
-                    let _dst = self.pop().as_i32().max(0) as usize;
-                    if count != 0 {
-                        return Err(VMError::new(
-                            "memory.init: data segment payloads are not loaded".to_string(),
-                        ));
+                    let src = self.pop().as_i32().max(0) as usize;
+                    let dst = self.pop().as_i32().max(0) as usize;
+                    if count == 0 {
+                        continue;
                     }
+                    let data = self
+                        .data_segments
+                        .get(data_idx as usize)
+                        .ok_or_else(|| VMError::new("memory.init: missing data segment"))?;
+                    if src.saturating_add(count) > data.len() {
+                        return Err(VMError::new("trap: memory.init source out of bounds"));
+                    }
+                    let bytes = data[src..src + count].to_vec();
+                    self.write_memory_bytes(memidx, dst, &bytes)?;
                 }
                 // ── reference-types: table operations ─────────────────
                 // Each op reads a `u8 table_idx` operand per spec. Tables
@@ -3346,45 +3330,50 @@ impl VM {
                     }
                 }
                 _ if op == Op::TABLE_COPY => {
-                    // Current bytecode carries one table operand for direct
-                    // tests; binary decoding emits the destination table.
-                    // Use that selected table for both src and dst when no
-                    // separate source operand is present.
-                    let table_idx = self.read_byte() as usize;
+                    let dst_table_idx = self.read_byte() as usize;
+                    let src_table_idx = self.read_byte() as usize;
                     let count = self.pop().as_i32().max(0) as usize;
                     let src = self.pop().as_i32().max(0) as usize;
                     let dst = self.pop().as_i32().max(0) as usize;
-                    let table = self
-                        .table_mut(table_idx)
+                    let source = self
+                        .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
-                    let max = table.len();
-                    if src.saturating_add(count) > max || dst.saturating_add(count) > max {
+                    if src.saturating_add(count) > source.len() {
                         return Err(VMError::new("trap: table.copy out of bounds".to_string()));
                     }
-                    if dst <= src {
-                        for i in 0..count {
-                            table[dst + i] = table[src + i].clone();
-                        }
-                    } else {
-                        for i in (0..count).rev() {
-                            table[dst + i] = table[src + i].clone();
-                        }
+                    let values: Vec<Value> = source[src..src + count].to_vec();
+                    let destination = self
+                        .table_mut(dst_table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
+                    if dst.saturating_add(count) > destination.len() {
+                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
                     }
+                    destination[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::TABLE_INIT => {
                     let elem_idx = self.read_byte() as u32;
+                    let table_idx = self.read_byte() as usize;
                     if self.dropped_elems.contains(&elem_idx) {
                         return Err(VMError::new("table.init: element segment dropped"));
                     }
-                    // No runtime element segments — bounds-check-only no-op.
                     let count = self.pop().as_i32().max(0) as usize;
-                    let _src = self.pop().as_i32();
-                    let _dst = self.pop().as_i32();
-                    if count != 0 {
-                        return Err(VMError::new(
-                            "table.init: element segment payloads are not loaded".to_string(),
-                        ));
+                    let src = self.pop().as_i32().max(0) as usize;
+                    let dst = self.pop().as_i32().max(0) as usize;
+                    let elems = self
+                        .elem_segments
+                        .get(elem_idx as usize)
+                        .ok_or_else(|| VMError::new("table.init: missing element segment"))?;
+                    if src.saturating_add(count) > elems.len() {
+                        return Err(VMError::new("trap: table.init source out of bounds"));
                     }
+                    let values: Vec<Value> = elems[src..src + count].to_vec();
+                    let table = self
+                        .table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.init unknown table"))?;
+                    if dst.saturating_add(count) > table.len() {
+                        return Err(VMError::new("trap: table.init destination out of bounds"));
+                    }
+                    table[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::TABLE_SIZE_64 => {
                     let tidx = self.read_byte() as usize;
@@ -3422,40 +3411,50 @@ impl VM {
                     }
                 }
                 _ if op == Op::TABLE_COPY_64 => {
-                    let table_idx = self.read_byte() as usize;
+                    let dst_table_idx = self.read_byte() as usize;
+                    let src_table_idx = self.read_byte() as usize;
                     let count = Self::table64_index(self.pop(), "table.copy")?;
                     let src = Self::table64_index(self.pop(), "table.copy")?;
                     let dst = Self::table64_index(self.pop(), "table.copy")?;
-                    let table = self
-                        .table_mut(table_idx)
+                    let source = self
+                        .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
-                    let max = table.len();
-                    if src.saturating_add(count) > max || dst.saturating_add(count) > max {
+                    if src.saturating_add(count) > source.len() {
                         return Err(VMError::new("trap: table.copy out of bounds".to_string()));
                     }
-                    if dst <= src {
-                        for i in 0..count {
-                            table[dst + i] = table[src + i].clone();
-                        }
-                    } else {
-                        for i in (0..count).rev() {
-                            table[dst + i] = table[src + i].clone();
-                        }
+                    let values: Vec<Value> = source[src..src + count].to_vec();
+                    let destination = self
+                        .table_mut(dst_table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
+                    if dst.saturating_add(count) > destination.len() {
+                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
                     }
+                    destination[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::TABLE_INIT_64 => {
                     let elem_idx = self.read_byte() as u32;
+                    let table_idx = self.read_byte() as usize;
                     if self.dropped_elems.contains(&elem_idx) {
                         return Err(VMError::new("table.init: element segment dropped"));
                     }
                     let count = Self::table64_index(self.pop(), "table.init")?;
-                    let _src = self.pop().as_i32();
-                    let _dst = Self::table64_index(self.pop(), "table.init")?;
-                    if count != 0 {
-                        return Err(VMError::new(
-                            "table.init: element segment payloads are not loaded".to_string(),
-                        ));
+                    let src = Self::table64_index(self.pop(), "table.init")?;
+                    let dst = Self::table64_index(self.pop(), "table.init")?;
+                    let elems = self
+                        .elem_segments
+                        .get(elem_idx as usize)
+                        .ok_or_else(|| VMError::new("table.init: missing element segment"))?;
+                    if src.saturating_add(count) > elems.len() {
+                        return Err(VMError::new("trap: table.init source out of bounds"));
                     }
+                    let values: Vec<Value> = elems[src..src + count].to_vec();
+                    let table = self
+                        .table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.init unknown table"))?;
+                    if dst.saturating_add(count) > table.len() {
+                        return Err(VMError::new("trap: table.init destination out of bounds"));
+                    }
+                    table[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::ELEM_DROP => {
                     let elem_idx = self.read_byte() as u32;
@@ -3935,6 +3934,9 @@ impl VM {
                 // decide where to stash the fresh fiber.
                 _ if op == Op::CONT_NEW => {
                     let func_val = self.pop();
+                    if matches!(func_val, Value::Null) {
+                        return Err(VMError::new("cont.new: null function reference"));
+                    }
                     let state = crate::value::ContinuationState {
                         entry: func_val,
                         saved: std::sync::Mutex::new(None),
@@ -3951,7 +3953,7 @@ impl VM {
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 _ if op == Op::SUSPEND => {
-                    let _tag = self.read_u16();
+                    let tag = self.read_u16();
                     // Yield a value from the innermost active continuation.
                     // We save the current VM state as a `Fiber`, stash it
                     // into the continuation's saved slot, restore the
@@ -3963,6 +3965,7 @@ impl VM {
                             cont,
                             caller_fiber,
                             mode,
+                            handlers,
                         }) => {
                             let fiber = self.save_fiber();
                             if let Value::Object(ref obj) = cont {
@@ -3978,7 +3981,13 @@ impl VM {
                             // so a GEN_NEXT-driven loop can check without
                             // a second API call.
                             self.resume_fiber_with(caller_fiber, Some(val))?;
-                            if mode == ResumeMode::Iterator {
+                            let handled = handlers
+                                .iter()
+                                .find(|h| h.kind == 0 && h.tag_index == tag as u32)
+                                .map(|h| h.label_index as usize);
+                            if let Some(handler_ip) = handled {
+                                self.frame_mut().ip = handler_ip;
+                            } else if mode == ResumeMode::Iterator {
                                 self.push(Value::I32(1))?;
                             }
                         }
@@ -3991,6 +4000,11 @@ impl VM {
                 }
                 _ if op == Op::RESUME => {
                     let _tag = self.read_u16();
+                    let resume_handlers = self.chunks[self.frame().chunk_index]
+                        .stack_switch_handlers
+                        .get(&opcode_start)
+                        .cloned()
+                        .unwrap_or_default();
                     let resume_val = self.pop();
                     let cont = self.pop();
                     if let Value::Object(ref obj) = cont {
@@ -4060,33 +4074,104 @@ impl VM {
                             cont: cont.clone(),
                             caller_fiber,
                             mode: ResumeMode::Raw,
+                            handlers: resume_handlers,
                         });
                     } else {
                         return Err(VMError::new("resume: not a continuation"));
                     }
                 }
                 _ if op == Op::SWITCH => {
-                    let _tag = self.read_u16();
+                    let tag = self.read_u16();
                     // Symmetric swap: suspend the current cont (top of the
                     // active stack) and resume the target cont in one step.
                     let val = self.pop();
                     let target = self.pop();
-                    if let Some(current) = self.active_continuations.pop() {
-                        let fiber = self.save_fiber();
-                        if let Value::Object(ref obj) = current.cont {
-                            let o = obj.lock().unwrap();
-                            if let ObjectKind::Continuation(cs) = &o.kind {
-                                *cs.saved.lock().unwrap() = Some(fiber);
-                                *cs.state.lock().unwrap() =
-                                    crate::value::ContinuationPhase::Suspended;
+                    let Some(current) = self.active_continuations.pop() else {
+                        return Err(VMError::new("switch: no active continuation handler"));
+                    };
+                    if !current
+                        .handlers
+                        .iter()
+                        .any(|h| h.kind == 1 && h.tag_index == tag as u32)
+                    {
+                        self.active_continuations.push(current);
+                        return Err(VMError::new("switch: no matching continuation handler"));
+                    }
+                    let (phase, entry) = if let Value::Object(ref obj) = target {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Continuation(cs) = &o.kind {
+                            (*cs.state.lock().unwrap(), cs.entry.clone())
+                        } else {
+                            self.active_continuations.push(current);
+                            return Err(VMError::new("switch: not a continuation"));
+                        }
+                    } else {
+                        self.active_continuations.push(current);
+                        return Err(VMError::new("switch: not a continuation"));
+                    };
+                    if matches!(phase, crate::value::ContinuationPhase::Done) {
+                        self.active_continuations.push(current);
+                        return Err(VMError::new("trap: switch to completed continuation"));
+                    }
+                    let fiber = self.save_fiber();
+                    if let Value::Object(ref obj) = current.cont {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Continuation(cs) = &o.kind {
+                            *cs.saved.lock().unwrap() = Some(fiber);
+                            *cs.state.lock().unwrap() = crate::value::ContinuationPhase::Suspended;
+                        }
+                    }
+                    match phase {
+                        crate::value::ContinuationPhase::Ready => {
+                            let bound: Vec<Value> = {
+                                let o = match &target {
+                                    Value::Object(obj) => obj.lock().unwrap(),
+                                    _ => unreachable!(),
+                                };
+                                match o.properties.get("__bound_args") {
+                                    Some(Value::Object(arr)) => {
+                                        let a = arr.lock().unwrap();
+                                        if let ObjectKind::Array(v) = &a.kind {
+                                            v.clone()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    }
+                                    _ => Vec::new(),
+                                }
+                            };
+                            let argc = bound.len() + 1;
+                            self.push(entry)?;
+                            for b in bound {
+                                self.push(b)?;
+                            }
+                            self.push(val)?;
+                            self.call_value_direct(argc)?;
+                        }
+                        crate::value::ContinuationPhase::Suspended => {
+                            let saved = {
+                                let o = match &target {
+                                    Value::Object(obj) => obj.lock().unwrap(),
+                                    _ => unreachable!(),
+                                };
+                                if let ObjectKind::Continuation(cs) = &o.kind {
+                                    cs.saved.lock().unwrap().take()
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(fiber) = saved {
+                                self.resume_fiber_with(fiber, Some(val))?;
                             }
                         }
-                        // Push the target cont + value back on the caller
-                        // stack, then re-enter RESUME semantics.
-                        self.resume_fiber_with(current.caller_fiber, None)?;
+                        crate::value::ContinuationPhase::Done => unreachable!(),
                     }
-                    self.push(target)?;
-                    self.push(val)?;
+                    self.active_continuations.push(ActiveContinuation {
+                        cont: target.clone(),
+                        caller_fiber: current.caller_fiber,
+                        mode: current.mode,
+                        handlers: current.handlers,
+                    });
                 }
                 // `cont.bind argc` — partially apply `argc` args to a
                 // continuation. Stack: [cont, arg0, ..., arg(argc-1)] →
@@ -4103,7 +4188,17 @@ impl VM {
                     let new_cont = if let Value::Object(ref obj) = cont_val {
                         let o = obj.lock().unwrap();
                         if let ObjectKind::Continuation(cs) = &o.kind {
+                            if matches!(
+                                *cs.state.lock().unwrap(),
+                                crate::value::ContinuationPhase::Done
+                            ) {
+                                return Err(VMError::new(
+                                    "cont.bind: continuation already consumed",
+                                ));
+                            }
                             let entry = cs.entry.clone();
+                            *cs.saved.lock().unwrap() = None;
+                            *cs.state.lock().unwrap() = crate::value::ContinuationPhase::Done;
                             // Build a shim entry function: when the new
                             // cont is resumed, it calls the original entry
                             // with the bound args prefixed. Since our
@@ -4144,6 +4239,8 @@ impl VM {
                         } else {
                             return Err(VMError::new("cont.bind: not a continuation"));
                         }
+                    } else if matches!(cont_val, Value::Null) {
+                        return Err(VMError::new("cont.bind: null continuation"));
                     } else {
                         return Err(VMError::new("cont.bind: not a continuation"));
                     };
@@ -4223,6 +4320,7 @@ impl VM {
                             cont: cont.clone(),
                             caller_fiber,
                             mode: ResumeMode::Iterator,
+                            handlers: Vec::new(),
                         });
                     } else {
                         self.push(cont.clone())?;
@@ -4236,6 +4334,11 @@ impl VM {
                 // nearest try_table matching the throw tag.
                 _ if op == Op::RESUME_THROW => {
                     let _tag_idx = self.read_u16();
+                    let resume_handlers = self.chunks[self.frame().chunk_index]
+                        .stack_switch_handlers
+                        .get(&opcode_start)
+                        .cloned()
+                        .unwrap_or_default();
                     let exn = self.pop();
                     let cont = self.pop();
                     if let Value::Object(ref obj) = cont {
@@ -4274,6 +4377,7 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
+                                    handlers: resume_handlers,
                                 });
                                 if self.raise_exception_value(exn).is_err() {
                                     let thrown = self.last_exception.take().unwrap_or(Value::Null);
@@ -4297,6 +4401,7 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
+                                    handlers: resume_handlers,
                                 });
                                 self.push(entry)?;
                                 self.push(exn)?;
@@ -4306,6 +4411,91 @@ impl VM {
                         }
                     } else {
                         return Err(VMError::new("resume_throw: operand is not a continuation"));
+                    }
+                }
+
+                _ if op == Op::RESUME_THROW_REF => {
+                    // `resume_throw_ref $ct (handler)*` — like resume_throw
+                    // but the exception is the exnref already on the stack
+                    // (no tag immediate). Stack: [cont, exnref].
+                    let resume_handlers = self.chunks[self.frame().chunk_index]
+                        .stack_switch_handlers
+                        .get(&opcode_start)
+                        .cloned()
+                        .unwrap_or_default();
+                    let exn = self.pop();
+                    if matches!(exn, Value::Null) {
+                        return Err(VMError::new("resume_throw_ref: null exception reference"));
+                    }
+                    let cont = self.pop();
+                    if let Value::Object(ref obj) = cont {
+                        let (phase, entry) = {
+                            let o = obj.lock().unwrap();
+                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                (*cs.state.lock().unwrap(), cs.entry.clone())
+                            } else {
+                                return Err(VMError::new("resume_throw_ref: not a continuation"));
+                            }
+                        };
+                        if matches!(phase, crate::value::ContinuationPhase::Done) {
+                            return Err(VMError::new(
+                                "trap: resume_throw_ref on completed continuation",
+                            ));
+                        }
+                        let caller_fiber = self.save_fiber();
+                        match phase {
+                            crate::value::ContinuationPhase::Suspended => {
+                                let saved = {
+                                    let o = obj.lock().unwrap();
+                                    if let ObjectKind::Continuation(cs) = &o.kind {
+                                        cs.saved.lock().unwrap().take()
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(fiber) = saved {
+                                    self.resume_fiber_with(fiber, None)?;
+                                }
+                                self.active_continuations.push(ActiveContinuation {
+                                    cont: cont.clone(),
+                                    caller_fiber,
+                                    mode: ResumeMode::Raw,
+                                    handlers: resume_handlers,
+                                });
+                                if self.raise_exception_value(exn).is_err() {
+                                    let thrown = self.last_exception.take().unwrap_or(Value::Null);
+                                    if let Some(ac) = self.active_continuations.pop() {
+                                        if let Value::Object(ref obj) = ac.cont {
+                                            let o = obj.lock().unwrap();
+                                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                                *cs.state.lock().unwrap() =
+                                                    crate::value::ContinuationPhase::Done;
+                                            }
+                                        }
+                                        self.resume_fiber_with(ac.caller_fiber, None)?;
+                                        self.raise_exception_value(thrown)?;
+                                    } else {
+                                        return Err(VMError::new(format!("{}", thrown)));
+                                    }
+                                }
+                            }
+                            crate::value::ContinuationPhase::Ready => {
+                                self.active_continuations.push(ActiveContinuation {
+                                    cont: cont.clone(),
+                                    caller_fiber,
+                                    mode: ResumeMode::Raw,
+                                    handlers: resume_handlers,
+                                });
+                                self.push(entry)?;
+                                self.push(exn)?;
+                                self.call_value(1)?;
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        return Err(VMError::new(
+                            "resume_throw_ref: operand is not a continuation",
+                        ));
                     }
                 }
 

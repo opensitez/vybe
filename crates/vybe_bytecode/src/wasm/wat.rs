@@ -153,6 +153,11 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let v = chunk.code[ip + 2];
             let _ = write!(out, " {v}");
         }
+        OperandFormat::U8_U8 => {
+            let a = chunk.code[ip + 2];
+            let b = chunk.code[ip + 3];
+            let _ = write!(out, " {a} {b}");
+        }
         OperandFormat::U16 => {
             let v = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
             // `const` — look up the constant pool value for readability.

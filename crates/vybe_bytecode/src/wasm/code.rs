@@ -188,7 +188,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 need = need.max(call_argc + 1);
             } else if op == Op::STR_INDEX_OF {
                 need = need.max(5); // need 5 temps
-            } else if op == Op::ARRAY_SET || op == Op::STR_SUBSTRING {
+            } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET || op == Op::STR_SUBSTRING {
                 need = need.max(2); // need 2 temps for 3-operand reorder
             } else if is_binary_typed_op(op)
                 || op == Op::GLOBAL_SET
@@ -235,6 +235,10 @@ fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
 }
 
 fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
+    if chunk.code.get(*ip) == Some(&0xEE) && chunk.code.get(*ip + 1) == Some(&0x00) {
+        *ip += 2;
+        return read_leb_u32(&chunk.code, ip);
+    }
     if next_bytes_decode_opcode(chunk, *ip) {
         return 0;
     }
@@ -267,6 +271,74 @@ fn read_optional_memarg64(chunk: &Chunk, ip: &mut usize, default_align: u32) -> 
         0
     };
     (align & !0x40, offset, memidx)
+}
+
+fn emit_stack_switch_handlers(body: &mut Vec<u8>, chunk: &Chunk, op_start: usize) {
+    if let Some(handlers) = chunk.stack_switch_handlers.get(&op_start) {
+        write_leb128_u32(body, handlers.len() as u32);
+        for handler in handlers {
+            body.push(handler.kind);
+            write_leb128_u32(body, handler.tag_index);
+            if handler.kind == 0 {
+                write_leb128_u32(body, handler.label_index);
+            }
+        }
+    } else {
+        write_leb128_u32(body, 0);
+    }
+}
+
+fn wasm_struct_type_for_chunk_type(chunk: &Chunk, type_ctx: &WasmTypeContext, typeidx: u16) -> u32 {
+    chunk
+        .types
+        .get(typeidx as usize)
+        .and_then(|ty| type_ctx.struct_type(&ty.name))
+        .unwrap_or(typeidx as u32)
+}
+
+fn wasm_struct_type_matching_field_count(
+    chunk: &Chunk,
+    type_ctx: &WasmTypeContext,
+    field_count: u16,
+) -> u32 {
+    let mut matches = chunk
+        .types
+        .iter()
+        .filter(|ty| ty.fields.len() == field_count as usize)
+        .filter_map(|ty| type_ctx.struct_type(&ty.name));
+    let first = matches.next();
+    if matches.next().is_none() {
+        first.unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+fn wasm_struct_field_for_name(
+    chunk: &Chunk,
+    type_ctx: &WasmTypeContext,
+    field_name_idx: u16,
+) -> (u32, u32) {
+    let Some(value) = chunk.constants.get(field_name_idx as usize) else {
+        return (0, 0);
+    };
+    let field_name = format!("{}", value).to_ascii_lowercase();
+    let mut matches = chunk.types.iter().filter_map(|ty| {
+        let field_idx = ty
+            .fields
+            .iter()
+            .position(|field| field.eq_ignore_ascii_case(&field_name))?;
+        Some((
+            type_ctx.struct_type(&ty.name).unwrap_or(0),
+            field_idx as u32,
+        ))
+    });
+    let first = matches.next();
+    if matches.next().is_none() {
+        first.unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    }
 }
 
 fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
@@ -413,6 +485,7 @@ pub fn encode_code_section(
                 ip += 4;
                 continue;
             }
+            let op_start = ip;
             ip += 2;
 
             if op.prefix() == 0x00 && !op.is_vm_internal() {
@@ -421,6 +494,7 @@ pub fn encode_code_section(
                     op,
                     chunk,
                     &mut ip,
+                    op_start,
                     &rt_idx,
                     temp_local_idx,
                     has_temp,
@@ -472,8 +546,10 @@ pub fn encode_code_section(
                     Op::TABLE_INIT => {
                         let elem_idx = chunk.code[ip];
                         ip += 1;
+                        let table_idx = chunk.code[ip];
+                        ip += 1;
                         write_leb128_u32(&mut body, elem_idx as u32);
-                        write_leb128_u32(&mut body, 0); // table index 0
+                        write_leb128_u32(&mut body, table_idx as u32);
                     }
                     Op::ELEM_DROP => {
                         let elem_idx = chunk.code[ip];
@@ -481,10 +557,12 @@ pub fn encode_code_section(
                         write_leb128_u32(&mut body, elem_idx as u32);
                     }
                     Op::TABLE_COPY => {
-                        let table_idx = chunk.code[ip];
+                        let dst_table = chunk.code[ip];
                         ip += 1;
-                        write_leb128_u32(&mut body, table_idx as u32); // dst table
-                        write_leb128_u32(&mut body, table_idx as u32); // src table
+                        let src_table = chunk.code[ip];
+                        ip += 1;
+                        write_leb128_u32(&mut body, dst_table as u32);
+                        write_leb128_u32(&mut body, src_table as u32);
                     }
                     Op::TABLE_GROW | Op::TABLE_SIZE | Op::TABLE_FILL => {
                         let table_idx = chunk.code[ip];
@@ -513,6 +591,7 @@ pub fn encode_code_section(
                     op,
                     chunk,
                     &mut ip,
+                    op_start,
                     &rt_idx,
                     temp_local_idx,
                     type_ctx,
@@ -535,6 +614,7 @@ fn emit_core_op(
     op: Op,
     chunk: &Chunk,
     ip: &mut usize,
+    op_start: usize,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
     _has_temp: bool,
@@ -589,6 +669,24 @@ fn emit_core_op(
                 write_leb128_u32(body, 0); // table index 0
             } else {
                 // No matching type — drop everything, push null
+                body.push(0x1A); // drop table_idx
+                for _ in 0..argc {
+                    body.push(0x1A);
+                }
+                body.push(0xD0);
+                body.push(0x6F);
+            }
+        }
+        _ if op == Op::CALL_INDIRECT => {
+            let argc = chunk.code[*ip];
+            *ip += 1;
+            let table_idx = chunk.code[*ip];
+            *ip += 1;
+            if let Some(&type_idx) = type_ctx.func_type_by_arity.get(&argc) {
+                body.push(0x11);
+                write_leb128_u32(body, type_idx);
+                write_leb128_u32(body, table_idx as u32);
+            } else {
                 body.push(0x1A); // drop table_idx
                 for _ in 0..argc {
                     body.push(0x1A);
@@ -941,6 +1039,47 @@ fn emit_core_op(
             let depth = read_leb_u32(&chunk.code, ip);
             write_leb128_u32(body, depth);
         }
+        // ── Stack-switching proposal: real core opcodes 0xE0..=0xE6 ──
+        _ if op == Op::CONT_NEW => {
+            body.push(super::stack_switching::OP_CONT_NEW);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+        }
+        _ if op == Op::SUSPEND => {
+            let tag_idx = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_SUSPEND);
+            write_leb128_u32(body, tag_idx as u32);
+        }
+        _ if op == Op::RESUME => {
+            let _ = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_RESUME);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            emit_stack_switch_handlers(body, chunk, op_start);
+        }
+        _ if op == Op::SWITCH => {
+            let tag_idx = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_SWITCH);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, tag_idx as u32);
+        }
+        _ if op == Op::CONT_BIND => {
+            let _argc = chunk.code[*ip];
+            *ip += 1;
+            body.push(super::stack_switching::OP_CONT_BIND);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+        }
+        _ if op == Op::RESUME_THROW => {
+            let tag_idx = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_RESUME_THROW);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, tag_idx as u32);
+            emit_stack_switch_handlers(body, chunk, op_start);
+        }
+        _ if op == Op::RESUME_THROW_REF => {
+            body.push(super::stack_switching::OP_RESUME_THROW_REF);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            emit_stack_switch_handlers(body, chunk, op_start);
+        }
 
         _ => {
             // Other core ops: emit WASM byte directly
@@ -1168,34 +1307,43 @@ fn emit_gc_op(
 ) {
     match op {
         _ if op == Op::STRUCT_NEW => {
-            let _prop_count = read_u16(&chunk.code, ip);
+            let prop_count = read_u16(&chunk.code, ip);
+            let typeidx = wasm_struct_type_matching_field_count(chunk, type_ctx, prop_count);
             body.push(0xFB);
             write_leb128_u32(body, 0x00); // struct.new
-            write_leb128_u32(body, 0); // type index TODO: resolve from type context
+            write_leb128_u32(body, typeidx);
             emit_externalize(body); // (ref $struct) → externref
         }
         _ if op == Op::STRUCT_GET => {
-            let _field_name_idx = read_u16(&chunk.code, ip);
+            let field_name_idx = read_u16(&chunk.code, ip);
+            let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             emit_internalize(body); // externref → anyref
-            emit_ref_cast(body, 0); // anyref → (ref $struct) TODO: proper type idx
+            emit_ref_cast(body, typeidx); // anyref → (ref $struct)
             body.push(0xFB);
             write_leb128_u32(body, 0x02); // struct.get
-            write_leb128_u32(body, 0); // type index
-            write_leb128_u32(body, 0); // field index
+            write_leb128_u32(body, typeidx);
+            write_leb128_u32(body, fieldidx);
             // Result is externref (field type) — no conversion needed
         }
         _ if op == Op::STRUCT_SET => {
-            let _field_name_idx = read_u16(&chunk.code, ip);
-            // Stack: [externref_obj, externref_val]. Need obj as (ref $struct).
-            // Can't convert obj without temp — for now emit as-is with conversion TODO
-            emit_internalize(body); // externref → anyref (converts val, wrong!)
-            // TODO: proper operand reordering with temp local
+            let field_name_idx = read_u16(&chunk.code, ip);
+            let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
+            // Stack: [externref_obj, externref_val]. struct.set expects
+            // [(ref $struct), externref_val] and returns void, while the
+            // VM leaves the assigned value on stack. Save the value, cast
+            // the object, set the field, then reload the saved value.
+            body.push(0x21); // local.set $temp = val
+            write_leb128_u32(body, temp_idx);
+            emit_internalize(body); // obj: externref → anyref
+            emit_ref_cast(body, typeidx);
+            body.push(0x20); // local.get $temp = val
+            write_leb128_u32(body, temp_idx);
             body.push(0xFB);
             write_leb128_u32(body, 0x05); // struct.set
-            write_leb128_u32(body, 0);
-            write_leb128_u32(body, 0);
-            body.push(0xD0);
-            body.push(0x6F); // push dummy (struct.set is void in WASM)
+            write_leb128_u32(body, typeidx);
+            write_leb128_u32(body, fieldidx);
+            body.push(0x20); // VM-compatible result: assigned value
+            write_leb128_u32(body, temp_idx);
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
             // Spec: `array.new_fixed $t N` (0xFB 0x08), pops N values.
@@ -1276,11 +1424,13 @@ fn emit_gc_op(
             write_leb128_u32(body, elem_idx as u32);
         }
         _ if op == Op::STRUCT_NEW_DEFAULT => {
-            let _typeidx = read_u16(&chunk.code, ip);
+            let typeidx = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x01);
-            // TODO: emit real struct type index once the compiler attaches one.
-            write_leb128_u32(body, 0);
+            write_leb128_u32(
+                body,
+                wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
+            );
             emit_externalize(body);
         }
         // ── Custom Descriptors proposal emission ─────────────────────────
@@ -1301,33 +1451,43 @@ fn emit_gc_op(
         // modules with descriptors enabled re-derive the shape from the
         // type section).
         _ if op == Op::STRUCT_NEW_DESC => {
-            let typeidx = read_u16(&chunk.code, ip) as u32;
+            let typeidx = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x20);
-            write_leb128_u32(body, typeidx);
+            write_leb128_u32(
+                body,
+                wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
+            );
         }
         _ if op == Op::STRUCT_NEW_DEFAULT_DESC => {
-            let typeidx = read_u16(&chunk.code, ip) as u32;
+            let typeidx = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x21);
-            write_leb128_u32(body, typeidx);
+            write_leb128_u32(
+                body,
+                wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
+            );
         }
         _ if op == Op::REF_GET_DESC => {
-            let typeidx = read_u16(&chunk.code, ip) as u32;
+            let typeidx = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x22);
-            write_leb128_u32(body, typeidx);
+            write_leb128_u32(
+                body,
+                wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
+            );
         }
         _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
             // Our struct.get uses a field-name-constant u16 operand;
             // spec packed variants take typeidx + fieldidx. Emit the
             // spec byte with conservative indices for round-trip sanity.
-            let _field_name_idx = read_u16(&chunk.code, ip);
+            let field_name_idx = read_u16(&chunk.code, ip);
+            let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             emit_internalize(body);
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
-            write_leb128_u32(body, 0);
-            write_leb128_u32(body, 0);
+            write_leb128_u32(body, typeidx);
+            write_leb128_u32(body, fieldidx);
         }
         _ if op == Op::REF_TEST_NULL => {
             // ref.test (ref null ht): `0xFB 0x15 <heaptype>`. Our bytecode
@@ -1627,7 +1787,9 @@ fn emit_table64_fc_op(
     *ip += 1;
     write_leb128_u32(body, table_idx as u32);
     if has_two_indices {
-        write_leb128_u32(body, table_idx as u32);
+        let second_idx = chunk.code.get(*ip).copied().unwrap_or(table_idx);
+        *ip += 1;
+        write_leb128_u32(body, second_idx as u32);
     }
 }
 
@@ -1637,6 +1799,7 @@ fn emit_vm_internal_op(
     op: Op,
     chunk: &Chunk,
     ip: &mut usize,
+    op_start: usize,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
     type_ctx: &WasmTypeContext,
@@ -1782,65 +1945,35 @@ fn emit_vm_internal_op(
             emit_box_i32(body, rt_idx);
         }
 
-        // ── Stack-switching proposal ─────────────────────────────────────
-        // The VM opcodes live at the internal 0xFF prefix; the WASM
-        // binary uses the spec bytes 0xE0..=0xE5 (core prefix). Each
-        // emission references the shared continuation type and suspend
-        // tag registered in `types.rs`.
-        _ if op == Op::CONT_NEW || op == Op::CONT_NEW_TYPED => {
-            // `cont.new $ct` — bytecode operand (if any) is a VM-internal
-            // tag index we don't map to WASM; spec byte needs the
-            // continuation type index from the type section.
-            if op == Op::CONT_NEW_TYPED {
-                let _ = read_u16(&chunk.code, ip);
-            }
+        // ── Typed stack-switching helpers ────────────────────────────────
+        // These VM-internal typed helpers lower to the real proposal bytes.
+        // The untyped stack-switching opcodes themselves live in core 0xE0..=0xE6
+        // and are emitted by `emit_core_op` above.
+        _ if op == Op::CONT_NEW_TYPED => {
+            let _ = read_u16(&chunk.code, ip);
             body.push(super::stack_switching::OP_CONT_NEW);
             write_leb128_u32(body, type_ctx.continuation_type_idx);
         }
-        _ if op == Op::SUSPEND || op == Op::SUSPEND_TYPED => {
-            // `suspend $tag` — our single suspend/resume tag is at index 1
-            // (exception tag is at 0 unless the module has no exceptions,
-            // but if stack-switching is in use we always declare both).
-            let _ = read_u16(&chunk.code, ip); // discard bytecode tag idx
+        _ if op == Op::SUSPEND_TYPED => {
+            let tag_idx = read_u16(&chunk.code, ip);
             body.push(super::stack_switching::OP_SUSPEND);
-            // Tag section order: [exception, suspend] when stack-switching
-            // is active; the suspend tag is at tagidx 1.
-            write_leb128_u32(body, 1);
+            let wasm_tag_idx = chunk
+                .continuation_tags
+                .get(tag_idx as usize)
+                .and_then(|tag| {
+                    type_ctx
+                        .continuation_tag_indices
+                        .get(&super::types::continuation_tag_key(tag))
+                        .copied()
+                })
+                .unwrap_or(1);
+            write_leb128_u32(body, wasm_tag_idx);
         }
-        _ if op == Op::RESUME || op == Op::RESUME_TYPED => {
-            // `resume $ct (handler)*` — simplest valid form: zero
-            // handlers, which traps on any tag suspension encountered
-            // below. Strict engines will accept an empty handler vec.
+        _ if op == Op::RESUME_TYPED => {
             let _ = read_u16(&chunk.code, ip);
             body.push(super::stack_switching::OP_RESUME);
             write_leb128_u32(body, type_ctx.continuation_type_idx);
-            write_leb128_u32(body, 0); // 0 handlers
-        }
-        _ if op == Op::SWITCH => {
-            // `switch $ct $tag` — symmetric coroutine swap.
-            let _ = read_u16(&chunk.code, ip);
-            body.push(super::stack_switching::OP_SWITCH);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-            write_leb128_u32(body, 1); // suspend tag
-        }
-        _ if op == Op::CONT_BIND => {
-            // `cont.bind $ct1 $ct2` — both typeidx operands reference
-            // continuation types. With a single shared continuation
-            // type on our side, we use the same index for both.
-            let _argc = chunk.code[*ip];
-            *ip += 1;
-            body.push(super::stack_switching::OP_CONT_BIND);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-        }
-        _ if op == Op::RESUME_THROW => {
-            // `resume_throw $ct $tag handlers` — tag is our single
-            // exception tag (0); no handlers.
-            let _ = read_u16(&chunk.code, ip);
-            body.push(super::stack_switching::OP_RESUME_THROW);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-            write_leb128_u32(body, 0); // exception tag idx
-            write_leb128_u32(body, 0); // handler count
+            emit_stack_switch_handlers(body, chunk, op_start);
         }
         _ if op == Op::TRUE => {
             // `global.get $js_true` — produces an actual JS `true` boolean,
@@ -2269,32 +2402,68 @@ fn emit_vm_internal_op(
         _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub(), 3),
         _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub(), 2),
         _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub(), 3),
-        _ if op == Op::I32_LOAD8_S_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub(), 0),
-        _ if op == Op::I32_LOAD8_U_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub(), 0),
-        _ if op == Op::I32_LOAD16_S_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub(), 1),
-        _ if op == Op::I32_LOAD16_U_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub(), 1),
-        _ if op == Op::I64_LOAD8_S_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub(), 0),
-        _ if op == Op::I64_LOAD8_U_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub(), 0),
-        _ if op == Op::I64_LOAD16_S_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub(), 1),
-        _ if op == Op::I64_LOAD16_U_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub(), 1),
-        _ if op == Op::I64_LOAD32_S_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub(), 2),
-        _ if op == Op::I64_LOAD32_U_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub(), 2),
+        _ if op == Op::I32_LOAD8_S_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub(), 0)
+        }
+        _ if op == Op::I32_LOAD8_U_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub(), 0)
+        }
+        _ if op == Op::I32_LOAD16_S_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub(), 1)
+        }
+        _ if op == Op::I32_LOAD16_U_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub(), 1)
+        }
+        _ if op == Op::I64_LOAD8_S_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub(), 0)
+        }
+        _ if op == Op::I64_LOAD8_U_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub(), 0)
+        }
+        _ if op == Op::I64_LOAD16_S_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub(), 1)
+        }
+        _ if op == Op::I64_LOAD16_U_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub(), 1)
+        }
+        _ if op == Op::I64_LOAD32_S_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub(), 2)
+        }
+        _ if op == Op::I64_LOAD32_U_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub(), 2)
+        }
         _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub(), 2),
         _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub(), 3),
         _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub(), 2),
         _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub(), 3),
         _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub(), 0),
-        _ if op == Op::I32_STORE16_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub(), 1),
+        _ if op == Op::I32_STORE16_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub(), 1)
+        }
         _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub(), 0),
-        _ if op == Op::I64_STORE16_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub(), 1),
-        _ if op == Op::I64_STORE32_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub(), 2),
+        _ if op == Op::I64_STORE16_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub(), 1)
+        }
+        _ if op == Op::I64_STORE32_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub(), 2)
+        }
         _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub()),
         _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub()),
-        _ if op == Op::TABLE_INIT_64 => emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub(), true),
-        _ if op == Op::TABLE_COPY_64 => emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub(), true),
-        _ if op == Op::TABLE_GROW_64 => emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub(), false),
-        _ if op == Op::TABLE_SIZE_64 => emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub(), false),
-        _ if op == Op::TABLE_FILL_64 => emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub(), false),
+        _ if op == Op::TABLE_INIT_64 => {
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub(), true)
+        }
+        _ if op == Op::TABLE_COPY_64 => {
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub(), true)
+        }
+        _ if op == Op::TABLE_GROW_64 => {
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub(), false)
+        }
+        _ if op == Op::TABLE_SIZE_64 => {
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub(), false)
+        }
+        _ if op == Op::TABLE_FILL_64 => {
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub(), false)
+        }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => {
             body.push(0x01);

@@ -78,11 +78,11 @@ impl Op {
     // IDs 0x42–0x4A are left vacant (not reused) so any legacy bytecode
     // that still carries them fails decode loudly rather than silently
     // aliasing to something else.
-    // Stack switching (proposal not finalized)
-    pub const CONT_NEW: Op = Op::new(0xFF, 0x4B);
-    pub const SUSPEND: Op = Op::new(0xFF, 0x4C);
-    pub const RESUME: Op = Op::new(0xFF, 0x4D);
-    pub const SWITCH: Op = Op::new(0xFF, 0x4E);
+    // Stack-switching spec opcodes (cont.new/suspend/resume/switch/
+    // cont.bind/resume_throw/resume_throw_ref) live at their real
+    // core-prefix spec bytes 0xE0..=0xE6 in core_ops.rs — NOT here.
+    // 0x4B..=0x4E are retired and intentionally left undefined so any
+    // stale bytecode carrying them fails decode loudly.
     // JSPI
     pub const PROMISE_SUSPEND: Op = Op::new(0xFF, 0x4F);
     // GC extensions
@@ -157,15 +157,9 @@ impl Op {
     pub const NULL_FUNC: Op = Op::new(0xFF, 0x82); // → 0xD0 0x70
     pub const NULL_ANY: Op = Op::new(0xFF, 0x83); // → 0xD0 0x6E
     pub const NULL_NONE: Op = Op::new(0xFF, 0x84); // → 0xD0 0x71
-    // ── Stack-switching proposal extras ─────────────────────────────
-    // `cont.bind` partially applies args to a continuation; emits
-    // `0xE1 <src_cont_typeidx> <dst_cont_typeidx>`. `resume_throw`
-    // resumes a continuation by throwing an exception tag into it
-    // instead of passing a value; emits `0xE4 <cont_typeidx>
-    // <tagidx> <handler-count=0>`. Both are VM-internal in our
-    // bytecode (prefix 0xFF) and lower to the spec bytes on emit.
-    pub const CONT_BIND: Op = Op::new(0xFF, 0x85);
-    pub const RESUME_THROW: Op = Op::new(0xFF, 0x86);
+    // `cont.bind` (0xE1) and `resume_throw` (0xE4) are real spec
+    // opcodes defined at their core-prefix bytes in core_ops.rs.
+    // 0x85/0x86 are retired and left undefined.
     /// Iterator-protocol resume: `[cont] → [value, has_more_i32]`.
     /// Advances the continuation one step via the stack-switching
     /// machinery, then reports whether the cont is still Suspended
@@ -269,8 +263,6 @@ opcode_category! {
     [0x82] null_func => None, "ref.null_func";
     [0x83] null_any => None, "ref.null_any";
     [0x84] null_none => None, "ref.null_none";
-    [0x85] cont_bind => U8, "cont.bind";
-    [0x86] resume_throw => U16, "resume_throw";
     [0x87] gen_next => None, "gen.next";
     // CM3 / WASI 0.3 async — Track B
     [0x88] future_await => None, "future.await";
@@ -353,11 +345,8 @@ opcode_category! {
     // 0x42–0x4A: RETIRED — ARRAY_* opcodes removed (Phase E). All callers
     // now route through ecma:array.* imports. Slots vacant; legacy bytecode
     // carrying them fails loudly rather than silently aliasing.
-    // Stack switching
-    [0x4B] cont_new => None, "cont.new";
-    [0x4C] suspend => U16, "suspend";
-    [0x4D] resume => U16, "resume";
-    [0x4E] switch => U16, "switch";
+    // Stack-switching spec opcodes moved to core prefix 0xE0..=0xE6
+    // (core_ops.rs). 0x4B..=0x4E retired/undefined.
     // JSPI
     [0x4F] promise_suspend => None, "promise.suspend";
     // GC extensions
@@ -441,8 +430,8 @@ opcode_category! {
     [0xAE] i64_store32_64 => MemArg64, "i64.store32_64";
     [0xAF] table_get_64 => U8, "table.get_64";
     [0xB0] table_set_64 => U8, "table.set_64";
-    [0xB1] table_init_64 => U8, "table.init_64";
-    [0xB2] table_copy_64 => U8, "table.copy_64";
+    [0xB1] table_init_64 => U8_U8, "table.init_64";
+    [0xB2] table_copy_64 => U8_U8, "table.copy_64";
     [0xB3] table_grow_64 => U8, "table.grow_64";
     [0xB4] table_size_64 => U8, "table.size_64";
     [0xB5] table_fill_64 => U8, "table.fill_64";

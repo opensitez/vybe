@@ -55,9 +55,17 @@ fn reader_ignores_unknown_custom_sections_in_any_position() {
         &named_custom_section("between-type-func", b"ignored"),
     );
     push_section(&mut bytes, 3, &[0x01, 0x00]);
-    push_section(&mut bytes, 0, &named_custom_section("before-code", b"ignored"));
+    push_section(
+        &mut bytes,
+        0,
+        &named_custom_section("before-code", b"ignored"),
+    );
     push_section(&mut bytes, 10, &[0x01, 0x02, 0x00, 0x0B]);
-    push_section(&mut bytes, 0, &named_custom_section("after-code", b"ignored"));
+    push_section(
+        &mut bytes,
+        0,
+        &named_custom_section("after-code", b"ignored"),
+    );
 
     let chunks = wasm::read_wasm(&bytes).expect("custom sections must not affect decoding");
     assert_eq!(chunks.len(), 2);
@@ -292,7 +300,11 @@ fn reader_rejects_global_set_to_immutable_global() {
     push_section(&mut bytes, 1, &[0x01, 0x60, 0x00, 0x00]);
     push_section(&mut bytes, 3, &[0x01, 0x00]);
     push_section(&mut bytes, 6, &global_section);
-    push_section(&mut bytes, 10, &[0x01, 0x05, 0x00, 0x41, 0x01, 0x24, 0x00, 0x0B]);
+    push_section(
+        &mut bytes,
+        10,
+        &[0x01, 0x05, 0x00, 0x41, 0x01, 0x24, 0x00, 0x0B],
+    );
 
     assert!(
         wasm::read_wasm(&bytes).is_err(),
@@ -915,9 +927,30 @@ fn reader_preserves_multi_memory_bulk_indices() {
     let chunks = wasm::read_wasm(&wasm).expect("standard wasm should decode");
     let code = &chunks[1].code;
     for pattern in [
-        &[Op::MEMORY_GROW.prefix(), Op::MEMORY_GROW.sub(), 0x01][..],
-        &[Op::MEMORY_COPY.prefix(), Op::MEMORY_COPY.sub(), 0x01, 0x02][..],
-        &[Op::MEMORY_FILL.prefix(), Op::MEMORY_FILL.sub(), 0x01][..],
+        &[
+            Op::MEMORY_GROW.prefix(),
+            Op::MEMORY_GROW.sub(),
+            0xEE,
+            0x00,
+            0x01,
+        ][..],
+        &[
+            Op::MEMORY_COPY.prefix(),
+            Op::MEMORY_COPY.sub(),
+            0xEE,
+            0x00,
+            0x01,
+            0xEE,
+            0x00,
+            0x02,
+        ][..],
+        &[
+            Op::MEMORY_FILL.prefix(),
+            Op::MEMORY_FILL.sub(),
+            0xEE,
+            0x00,
+            0x01,
+        ][..],
     ] {
         assert!(
             code.windows(pattern.len()).any(|w| w == pattern),

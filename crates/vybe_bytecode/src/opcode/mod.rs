@@ -137,6 +137,8 @@ pub enum OperandFormat {
     None,
     /// 1 byte (arg count, upvalue index, lane index).
     U8,
+    /// 2 independent bytes.
+    U8_U8,
     /// 2 bytes big-endian (const index, local/global index, field name).
     U16,
     /// 2 bytes signed (branch offset).
@@ -175,7 +177,7 @@ impl OperandFormat {
         match self {
             Self::None => 0,
             Self::U8 => 1,
-            Self::U16 | Self::I16 => 2,
+            Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
             Self::V128Const | Self::Shuffle => 16,

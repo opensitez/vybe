@@ -40,6 +40,11 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let arg = chunk.code.get(operand_start).copied().unwrap_or(0);
             (format!("{} {}", name, arg), operand_start + 1)
         }
+        OperandFormat::U8_U8 => {
+            let a = chunk.code.get(operand_start).copied().unwrap_or(0);
+            let b = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
+            (format!("{} {} {}", name, a, b), operand_start + 2)
+        }
         OperandFormat::U16 => {
             let idx = chunk.read_u16(operand_start);
             let extra = if op == Op::CONST && (idx as usize) < chunk.constants.len() {
@@ -102,7 +107,10 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
                 None
             };
             let mem = memidx.map(|idx| format!(" mem={idx}")).unwrap_or_default();
-            (format!("{} align={} offset={}{}", name, align, offset, mem), next)
+            (
+                format!("{} align={} offset={}{}", name, align, offset, mem),
+                next,
+            )
         }
         OperandFormat::MemArg64 => {
             let mut next = operand_start;
@@ -114,7 +122,10 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
                 None
             };
             let mem = memidx.map(|idx| format!(" mem={idx}")).unwrap_or_default();
-            (format!("{} align={} offset={}{}", name, align, offset, mem), next)
+            (
+                format!("{} align={} offset={}{}", name, align, offset, mem),
+                next,
+            )
         }
         OperandFormat::Closure => {
             // ref_func: u16 func_index, u8 upvalue_count, then pairs

@@ -54,10 +54,48 @@ pub struct WasmTypeContext {
     /// single-arg single-result fiber function signature. Zero if
     /// the module doesn't use stack switching.
     pub continuation_type_idx: u32,
+    /// Continuation tag signature/name → emitted Wasm tag index.
+    pub continuation_tag_indices: std::collections::HashMap<(String, String, String), u32>,
+    /// Type indices for typed continuation tags, in tag-section order.
+    pub continuation_tag_type_indices: Vec<u32>,
     /// Whether any `CONT_NEW` / `SUSPEND` / `RESUME` / `SWITCH` op
     /// was observed in the bytecode. Drives whether we emit the
     /// continuation type, the suspend tag, and the tag-section entry.
     pub uses_stack_switching: bool,
+}
+
+pub(crate) fn continuation_tag_key(
+    tag: &crate::chunk::ContinuationTag,
+) -> (String, String, String) {
+    (
+        tag.name.clone(),
+        tag.yield_type.clone(),
+        tag.resume_type.clone(),
+    )
+}
+
+pub(crate) fn continuation_tag_valtype(type_name: &str) -> u8 {
+    match type_name.to_ascii_lowercase().as_str() {
+        "i32" | "bool" | "boolean" => TYPE_I32,
+        "i64" => TYPE_I64,
+        "f32" => TYPE_F32,
+        "f64" | "number" => TYPE_F64,
+        _ => TYPE_EXTERNREF,
+    }
+}
+
+fn collect_continuation_tags(chunks: &[Chunk]) -> Vec<crate::chunk::ContinuationTag> {
+    let mut seen = std::collections::HashSet::new();
+    let mut tags = Vec::new();
+    for chunk in chunks {
+        for tag in &chunk.continuation_tags {
+            let key = continuation_tag_key(tag);
+            if seen.insert(key) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+    tags
 }
 
 impl WasmTypeContext {
@@ -103,6 +141,8 @@ pub fn build_type_context(
         exception_type_idx: 0,
         suspend_tag_type_idx: 0,
         continuation_type_idx: 0,
+        continuation_tag_indices: std::collections::HashMap::new(),
+        continuation_tag_type_indices: Vec::new(),
         uses_stack_switching: false,
     };
 
@@ -190,13 +230,26 @@ pub fn build_type_context(
         false
     });
     ctx.uses_stack_switching = uses_stack_switching;
-    let stack_switching_type_count: u32 = if uses_stack_switching { 2 } else { 0 };
+    let continuation_tags = collect_continuation_tags(chunks);
+    let typed_continuation_type_count = continuation_tags.len() as u32;
+    let stack_switching_type_count: u32 = if uses_stack_switching {
+        2 + typed_continuation_type_count
+    } else {
+        typed_continuation_type_count
+    };
 
-    // Index layout: [gc] [func] [block] [suspend_tag_func] [continuation] [exception]
+    // Index layout: [gc] [func] [block] [suspend_tag_func] [continuation] [typed continuation tag funcs] [exception]
     let ss_base = gc_type_count + func_count + block_type_count;
     if uses_stack_switching {
         ctx.suspend_tag_type_idx = ss_base;
         ctx.continuation_type_idx = ss_base + 1;
+    }
+    let typed_tag_type_base = ss_base + if uses_stack_switching { 2 } else { 0 };
+    for (i, tag) in continuation_tags.iter().enumerate() {
+        ctx.continuation_tag_indices
+            .insert(continuation_tag_key(tag), 2 + i as u32);
+        ctx.continuation_tag_type_indices
+            .push(typed_tag_type_base + i as u32);
     }
     ctx.exception_type_idx = ss_base + stack_switching_type_count;
 
@@ -317,17 +370,9 @@ pub fn build_type_context(
     out.push(GC_MUT);
 
     // ── Function types ──
-    // ── Function types with proper signatures ──
-    // Each unique import signature needs its own type.
-    // wasm:js-number builtins have typed params (i32, f64) and externref results.
-    // Dynamic language imports use externref for everything.
-    // Chunk functions use externref params/results.
-
-    // For now, use distinct types per arity.
-    // Type for 0-param imports: () -> externref
-    // Type for 1-param (externref) imports: (externref) -> externref
-    // Type for chunk functions: (externref * arity) -> externref
-    // TODO: wasm:js-number needs (i32)->externref, (f64)->externref, (externref)->f64 etc.
+    // Host imports use externref ABI types inferred by arity. Proposal
+    // builtins own their exact signatures in their module-specific tables
+    // below, including typed wasm:js-number and wasm:js-string helpers.
 
     // Import function types — per-import typed signatures
     // Host imports from chunk 0 — scan CALL_IMPORT bytecode to find actual arity
@@ -432,6 +477,14 @@ pub fn build_type_context(
         // (cont $ft) — prefix + funcidx
         out.push(super::stack_switching::CONT_TYPE_PREFIX);
         write_leb128_u32(&mut out, ctx.suspend_tag_type_idx);
+    }
+
+    for tag in &continuation_tags {
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, 1);
+        out.push(continuation_tag_valtype(&tag.yield_type));
+        write_leb128_u32(&mut out, 1);
+        out.push(continuation_tag_valtype(&tag.resume_type));
     }
 
     // Exception tag type — `(externref) -> ()` per the exception-handling

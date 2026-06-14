@@ -6,7 +6,9 @@
 //!         br_on_cast/br_on_cast_fail.
 
 use std::sync::Arc;
+use vybe_bytecode::chunk::TypeEntry;
 use vybe_bytecode::value::Value;
+use vybe_bytecode::wasm::write_wasm;
 use vybe_bytecode::{Chunk, Op, VM};
 
 /// Run without appending RETURN — caller is responsible for the full layout.
@@ -29,6 +31,83 @@ fn emit_op_u16_u16(chunk: &mut Chunk, op: Op, first: u16, second: u16, line: u32
     chunk.emit((first & 0xff) as u8, line);
     chunk.emit((second >> 8) as u8, line);
     chunk.emit((second & 0xff) as u8, line);
+}
+
+fn has_bytes(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
+    TypeEntry {
+        name: name.into(),
+        parent: String::new(),
+        fields: fields.iter().map(|field| field.to_string()).collect(),
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+    }
+}
+
+#[test]
+fn gc_emission_maps_chunk_type_index_to_wasm_struct_type_index() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("A", &["x"]));
+    chunk.types.push(type_entry("B", &["y", "z"]));
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    assert!(
+        has_bytes(&wasm, &[0xFB, 0x01, 0x02]),
+        "second chunk-local type should map to described Wasm type index 2"
+    );
+}
+
+#[test]
+fn gc_emission_resolves_unique_struct_field_index() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("A", &["x"]));
+    chunk.types.push(type_entry("B", &["y", "z"]));
+    let field = chunk.add_constant(Value::String(Arc::from("z")));
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, field, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    assert!(
+        has_bytes(&wasm, &[0xFB, 0x02, 0x02, 0x01]),
+        "field z should resolve to struct type index 2, field index 1"
+    );
+}
+
+#[test]
+fn gc_emission_struct_set_reorders_object_and_value_operands() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("A", &["x"]));
+    chunk.types.push(type_entry("B", &["y", "z"]));
+    let field = chunk.add_constant(Value::String(Arc::from("z")));
+    let value = chunk.add_constant(Value::I32(9));
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, field, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    assert!(
+        has_bytes(
+            &wasm,
+            &[
+                0x21, 0x00, // local.set temp = value
+                0xFB, 0x1A, // any.convert_extern on object
+                0xFB, 0x17, 0x02, // ref.cast null typeidx 2
+                0x20, 0x00, // local.get temp = value
+                0xFB, 0x05, 0x02, 0x01, // struct.set typeidx 2 fieldidx 1
+                0x20, 0x00, // reload assigned value for VM-compatible result
+            ],
+        ),
+        "struct.set emission should save value, cast object, set field, and reload value"
+    );
 }
 
 // ── BR_ON_NULL ────────────────────────────────────────────────────────────

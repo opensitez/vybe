@@ -16,7 +16,7 @@
 //! | Op                   | Imported | Emitter wires it? |
 //! |----------------------|----------|-------------------|
 //! | `test`               | ✅        | ✅ `REF_IS_STRING`, `REF_TYPEOF` |
-//! | `cast`               | ✅        | ☐ (declared; no opcode lowers to it yet) |
+//! | `cast`               | ✅        | ✅ `STR_CAST` |
 //! | `concat`             | ✅        | ✅ `STR_CONCAT` |
 //! | `equals`             | ✅        | ✅ `STR_EQUALS` |
 //! | `compare`            | ✅        | ✅ `STR_COMPARE` |
@@ -30,7 +30,7 @@
 //! | `fromCharCodeArray`  | ✅        | ✅ `STR_FROM_CHAR_CODES` |
 //!
 //! Plus, from the js-primitive-builtins extension:
-//! | `fromI32`, `fromU32`, `fromI64`, `fromU64`, `fromF64` | ✅ | ☐ (declared; no opcode lowers yet) |
+//! | `fromI32`, `fromU32`, `fromI64`, `fromU64`, `fromF64` | ✅ | ✅ `STR_FROM_*` |
 
 use super::encoding::*;
 

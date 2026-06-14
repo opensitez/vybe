@@ -94,6 +94,46 @@ fn standard_table64_module_i64_result(body_ops: &[u8]) -> Vec<u8> {
     out
 }
 
+fn standard_table64_module_i64_result_with_elem(body_ops: &[u8], elems: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x01, 0x7e]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+    push_section(
+        &mut out,
+        4,
+        &[
+            0x01, // one table
+            0x70, // funcref
+            0x04, // table64 min-only limits
+            0x04, // min 4
+        ],
+    );
+
+    let mut elem = Vec::new();
+    elem.push(0x01); // one passive element segment
+    elem.push(0x01); // passive, elemkind form
+    elem.push(0x00); // funcref elemkind
+    write_leb_u32(&mut elem, elems.len() as u32);
+    elem.extend_from_slice(elems);
+    push_section(&mut out, 9, &elem);
+
+    let mut body = Vec::new();
+    body.push(0x00);
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+
+    let mut code = Vec::new();
+    code.push(0x01);
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+
+    out
+}
+
 fn standard_memory64_module_i32_result(body_ops: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"\0asm");
@@ -110,6 +150,40 @@ fn standard_memory64_module_i32_result(body_ops: &[u8]) -> Vec<u8> {
             0x01, // min 1
         ],
     );
+
+    let mut body = Vec::new();
+    body.push(0x00);
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+
+    let mut code = Vec::new();
+    code.push(0x01);
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+
+    out
+}
+
+fn standard_memory_module_i32_result_with_limits(
+    min: u32,
+    max: Option<u32>,
+    body_ops: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x01, 0x7f]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+    let mut memory = Vec::new();
+    memory.push(0x01);
+    memory.push(if max.is_some() { 0x01 } else { 0x00 });
+    write_leb_u32(&mut memory, min);
+    if let Some(max) = max {
+        write_leb_u32(&mut memory, max);
+    }
+    push_section(&mut out, 5, &memory);
 
     let mut body = Vec::new();
     body.push(0x00);
@@ -329,18 +403,48 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
     let load_cases: &[(&str, u8, &[u8], Op)] = &[
         ("i32.load", 0x28, &[0x42, 0x00], Op::I32_LOAD_64),
         ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Op::I64_LOAD_64),
-        ("f32.load", 0x2A, &[0x42, 0x00, 0x1A, 0x41, 0x00], Op::F32_LOAD_64),
-        ("f64.load", 0x2B, &[0x42, 0x00, 0x1A, 0x41, 0x00], Op::F64_LOAD_64),
+        (
+            "f32.load",
+            0x2A,
+            &[0x42, 0x00, 0x1A, 0x41, 0x00],
+            Op::F32_LOAD_64,
+        ),
+        (
+            "f64.load",
+            0x2B,
+            &[0x42, 0x00, 0x1A, 0x41, 0x00],
+            Op::F64_LOAD_64,
+        ),
         ("i32.load8_s", 0x2C, &[0x42, 0x00], Op::I32_LOAD8_S_64),
         ("i32.load8_u", 0x2D, &[0x42, 0x00], Op::I32_LOAD8_U_64),
         ("i32.load16_s", 0x2E, &[0x42, 0x00], Op::I32_LOAD16_S_64),
         ("i32.load16_u", 0x2F, &[0x42, 0x00], Op::I32_LOAD16_U_64),
         ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_S_64),
         ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_U_64),
-        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_S_64),
-        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_U_64),
-        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_S_64),
-        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_U_64),
+        (
+            "i64.load16_s",
+            0x32,
+            &[0x42, 0x00, 0xA7],
+            Op::I64_LOAD16_S_64,
+        ),
+        (
+            "i64.load16_u",
+            0x33,
+            &[0x42, 0x00, 0xA7],
+            Op::I64_LOAD16_U_64,
+        ),
+        (
+            "i64.load32_s",
+            0x34,
+            &[0x42, 0x00, 0xA7],
+            Op::I64_LOAD32_S_64,
+        ),
+        (
+            "i64.load32_u",
+            0x35,
+            &[0x42, 0x00, 0xA7],
+            Op::I64_LOAD32_U_64,
+        ),
     ];
 
     for (name, opcode, prefix, decoded_op) in load_cases {
@@ -355,20 +459,62 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
     }
 
     let store_cases: &[(&str, u8, &[u8], Op)] = &[
-        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE_64),
-        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE_64),
-        ("f32.store", 0x38, &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F], Op::F32_STORE_64),
+        (
+            "i32.store",
+            0x36,
+            &[0x42, 0x00, 0x41, 0x01],
+            Op::I32_STORE_64,
+        ),
+        (
+            "i64.store",
+            0x37,
+            &[0x42, 0x00, 0x42, 0x01],
+            Op::I64_STORE_64,
+        ),
+        (
+            "f32.store",
+            0x38,
+            &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F],
+            Op::F32_STORE_64,
+        ),
         (
             "f64.store",
             0x39,
-            &[0x42, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F],
+            &[
+                0x42, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
+            ],
             Op::F64_STORE_64,
         ),
-        ("i32.store8", 0x3A, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE8_64),
-        ("i32.store16", 0x3B, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE16_64),
-        ("i64.store8", 0x3C, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE8_64),
-        ("i64.store16", 0x3D, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE16_64),
-        ("i64.store32", 0x3E, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE32_64),
+        (
+            "i32.store8",
+            0x3A,
+            &[0x42, 0x00, 0x41, 0x01],
+            Op::I32_STORE8_64,
+        ),
+        (
+            "i32.store16",
+            0x3B,
+            &[0x42, 0x00, 0x41, 0x01],
+            Op::I32_STORE16_64,
+        ),
+        (
+            "i64.store8",
+            0x3C,
+            &[0x42, 0x00, 0x42, 0x01],
+            Op::I64_STORE8_64,
+        ),
+        (
+            "i64.store16",
+            0x3D,
+            &[0x42, 0x00, 0x42, 0x01],
+            Op::I64_STORE16_64,
+        ),
+        (
+            "i64.store32",
+            0x3E,
+            &[0x42, 0x00, 0x42, 0x01],
+            Op::I64_STORE32_64,
+        ),
     ];
 
     for (name, opcode, prefix, decoded_op) in store_cases {
@@ -389,12 +535,16 @@ fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memo
     let supported: &[(&str, &[u8], Op)] = &[
         (
             "memory.copy",
-            &[0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00, 0x41, 0x00],
+            &[
+                0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00, 0x41, 0x00,
+            ],
             Op::I64_MEMORY_COPY,
         ),
         (
             "memory.fill",
-            &[0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0B, 0x00, 0x41, 0x00],
+            &[
+                0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0B, 0x00, 0x41, 0x00,
+            ],
             Op::I64_MEMORY_FILL,
         ),
         (
@@ -405,8 +555,8 @@ fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memo
         (
             "v128.store",
             &[
-                0x42, 0x00, 0xFD, 0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0xFD, 0x0B, 0x04, 0x00, 0x41, 0x00,
+                0x42, 0x00, 0xFD, 0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFD, 0x0B,
+                0x04, 0x00, 0x41, 0x00,
             ],
             Op::V128_STORE,
         ),
@@ -436,9 +586,11 @@ fn standard_imported_memory_must_not_decode_without_host_linkage() {
     let bytes = standard_imported_memory_module();
 
     let chunks = wasm::read_wasm(&bytes).expect("memory import should decode");
-    assert_eq!(chunks[0].imports.len(), 1);
-    assert_eq!(chunks[0].imports[0].module, "env");
-    assert_eq!(chunks[0].imports[0].name, "memory");
+    assert!(
+        chunks[0].imports.is_empty(),
+        "memory imports must not be modeled as callable function imports"
+    );
+    assert_eq!(chunks[0].memory_min_pages, vec![1]);
 }
 
 #[test]
@@ -447,6 +599,121 @@ fn standard_exported_memory_must_not_decode_without_export_linkage() {
 
     let chunks = wasm::read_wasm(&bytes).expect("memory export module should decode");
     assert_eq!(chunks[0].memory_min_pages, vec![1]);
+}
+
+#[test]
+fn decoded_standard_imported_memory_is_materialized_for_execution() {
+    let bytes = standard_imported_memory_module();
+    let chunks = wasm::read_wasm(&bytes).expect("memory import should decode");
+
+    let result = VM::new()
+        .run(vec![chunks[1].clone()])
+        .expect("decoded imported memory should be instantiated");
+    assert_eq!(result, Value::I32(0));
+}
+
+#[test]
+fn decoded_standard_memory_grow_respects_module_max_limit() {
+    let bytes = standard_memory_module_i32_result_with_limits(
+        1,
+        Some(1),
+        &[
+            0x41, 0x01, // i32.const 1
+            0x40, 0x00, // memory.grow 0
+        ],
+    );
+    let chunks = wasm::read_wasm(&bytes).expect("memory max module should decode");
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I32(-1));
+    assert_eq!(vm.memory.len(), 65536);
+}
+
+#[test]
+fn decoded_standard_table64_size_returns_i64() {
+    let bytes = standard_table64_module_i64_result(&[
+        0xFC, 0x10, 0x00, // table.size 0
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("table64 module should decode");
+
+    let result = VM::new().run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I64(2));
+}
+
+#[test]
+fn decoded_standard_table64_grow_returns_old_i64_size() {
+    let bytes = standard_table64_module_i64_result(&[
+        0xD0, 0x70, // ref.null func
+        0x42, 0x03, // i64.const 3
+        0xFC, 0x0F, 0x00, // table.grow 0
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("table64 module should decode");
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I64(2));
+    assert_eq!(vm.func_table.len(), 5);
+}
+
+#[test]
+fn decoded_standard_table64_set_and_get_use_i64_index() {
+    let bytes = standard_table64_module_i64_result(&[
+        0x42, 0x01, // i64.const 1
+        0xD0, 0x70, // ref.null func
+        0x26, 0x00, // table.set 0
+        0x42, 0x01, // i64.const 1
+        0x25, 0x00, // table.get 0
+        0xD1, // ref.is_null
+        0xAC, // i64.extend_i32_s
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("table64 module should decode");
+
+    let result = VM::new().run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I64(1));
+}
+
+#[test]
+fn decoded_standard_table64_fill_and_copy_use_i64_indices() {
+    let bytes = standard_table64_module_i64_result(&[
+        0x42, 0x00, // i64.const dst
+        0xD0, 0x70, // ref.null func
+        0x42, 0x02, // i64.const count
+        0xFC, 0x11, 0x00, // table.fill 0
+        0x42, 0x01, // i64.const dst
+        0x42, 0x00, // i64.const src
+        0x42, 0x01, // i64.const count
+        0xFC, 0x0E, 0x00, 0x00, // table.copy 0 0
+        0x42, 0x01, // i64.const 1
+        0x25, 0x00, // table.get 0
+        0xD1, // ref.is_null
+        0xAC, // i64.extend_i32_s
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("table64 module should decode");
+
+    let result = VM::new().run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I64(1));
+}
+
+#[test]
+fn decoded_standard_table64_init_uses_i64_indices() {
+    let bytes = standard_table64_module_i64_result_with_elem(
+        &[
+            0x42, 0x02, // i64.const dst
+            0x41, 0x00, // i32.const src
+            0x42, 0x01, // i64.const count
+            0xFC, 0x0C, 0x00, 0x00, // table.init elemidx=0 tableidx=0
+            0x42, 0x02, // i64.const 2
+            0x25, 0x00, // table.get 0
+            0xD1, // ref.is_null
+            0xAC, // i64.extend_i32_s
+        ],
+        &[0x00],
+    );
+    let chunks = wasm::read_wasm(&bytes).expect("table64 module should decode");
+
+    let result = VM::new().run(vec![chunks[1].clone()]).unwrap();
+    assert_eq!(result, Value::I64(0));
 }
 
 #[test]
@@ -641,20 +908,104 @@ fn spec_memory64_all_scalar_widths_execute_with_i64_addresses() {
         }
     }
 
-    run_pair(Op::I32_STORE_64, Op::I32_LOAD_64, Value::I32(0x12345678), Value::I32(0x12345678), 2);
-    run_pair(Op::I64_STORE_64, Op::I64_LOAD_64, Value::I64(0x1122334455667788), Value::I64(0x1122334455667788), 3);
-    run_pair(Op::F32_STORE_64, Op::F32_LOAD_64, Value::F64(1.5), Value::F64(1.5), 2);
-    run_pair(Op::F64_STORE_64, Op::F64_LOAD_64, Value::F64(2.25), Value::F64(2.25), 3);
-    run_pair(Op::I32_STORE8_64, Op::I32_LOAD8_S_64, Value::I32(0xFE), Value::I32(-2), 0);
-    run_pair(Op::I32_STORE8_64, Op::I32_LOAD8_U_64, Value::I32(0xFE), Value::I32(0xFE), 0);
-    run_pair(Op::I32_STORE16_64, Op::I32_LOAD16_S_64, Value::I32(0xFFFE), Value::I32(-2), 1);
-    run_pair(Op::I32_STORE16_64, Op::I32_LOAD16_U_64, Value::I32(0xFFFE), Value::I32(0xFFFE), 1);
-    run_pair(Op::I64_STORE8_64, Op::I64_LOAD8_S_64, Value::I64(0xFE), Value::I64(-2), 0);
-    run_pair(Op::I64_STORE8_64, Op::I64_LOAD8_U_64, Value::I64(0xFE), Value::I64(0xFE), 0);
-    run_pair(Op::I64_STORE16_64, Op::I64_LOAD16_S_64, Value::I64(0xFFFE), Value::I64(-2), 1);
-    run_pair(Op::I64_STORE16_64, Op::I64_LOAD16_U_64, Value::I64(0xFFFE), Value::I64(0xFFFE), 1);
-    run_pair(Op::I64_STORE32_64, Op::I64_LOAD32_S_64, Value::I64(0xFFFF_FFFE), Value::I64(-2), 2);
-    run_pair(Op::I64_STORE32_64, Op::I64_LOAD32_U_64, Value::I64(0xFFFF_FFFE), Value::I64(0xFFFF_FFFE), 2);
+    run_pair(
+        Op::I32_STORE_64,
+        Op::I32_LOAD_64,
+        Value::I32(0x12345678),
+        Value::I32(0x12345678),
+        2,
+    );
+    run_pair(
+        Op::I64_STORE_64,
+        Op::I64_LOAD_64,
+        Value::I64(0x1122334455667788),
+        Value::I64(0x1122334455667788),
+        3,
+    );
+    run_pair(
+        Op::F32_STORE_64,
+        Op::F32_LOAD_64,
+        Value::F64(1.5),
+        Value::F64(1.5),
+        2,
+    );
+    run_pair(
+        Op::F64_STORE_64,
+        Op::F64_LOAD_64,
+        Value::F64(2.25),
+        Value::F64(2.25),
+        3,
+    );
+    run_pair(
+        Op::I32_STORE8_64,
+        Op::I32_LOAD8_S_64,
+        Value::I32(0xFE),
+        Value::I32(-2),
+        0,
+    );
+    run_pair(
+        Op::I32_STORE8_64,
+        Op::I32_LOAD8_U_64,
+        Value::I32(0xFE),
+        Value::I32(0xFE),
+        0,
+    );
+    run_pair(
+        Op::I32_STORE16_64,
+        Op::I32_LOAD16_S_64,
+        Value::I32(0xFFFE),
+        Value::I32(-2),
+        1,
+    );
+    run_pair(
+        Op::I32_STORE16_64,
+        Op::I32_LOAD16_U_64,
+        Value::I32(0xFFFE),
+        Value::I32(0xFFFE),
+        1,
+    );
+    run_pair(
+        Op::I64_STORE8_64,
+        Op::I64_LOAD8_S_64,
+        Value::I64(0xFE),
+        Value::I64(-2),
+        0,
+    );
+    run_pair(
+        Op::I64_STORE8_64,
+        Op::I64_LOAD8_U_64,
+        Value::I64(0xFE),
+        Value::I64(0xFE),
+        0,
+    );
+    run_pair(
+        Op::I64_STORE16_64,
+        Op::I64_LOAD16_S_64,
+        Value::I64(0xFFFE),
+        Value::I64(-2),
+        1,
+    );
+    run_pair(
+        Op::I64_STORE16_64,
+        Op::I64_LOAD16_U_64,
+        Value::I64(0xFFFE),
+        Value::I64(0xFFFE),
+        1,
+    );
+    run_pair(
+        Op::I64_STORE32_64,
+        Op::I64_LOAD32_S_64,
+        Value::I64(0xFFFF_FFFE),
+        Value::I64(-2),
+        2,
+    );
+    run_pair(
+        Op::I64_STORE32_64,
+        Op::I64_LOAD32_U_64,
+        Value::I64(0xFFFF_FFFE),
+        Value::I64(0xFFFF_FFFE),
+        2,
+    );
 }
 
 #[test]
@@ -770,7 +1121,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     chunk.emit_op_u16(Op::CONST, idx3, 0);
     chunk.emit_op_u16(Op::CONST, idx1, 0);
     chunk.emit_op_u16(Op::CONST, count2, 0);
-    chunk.emit_op_u8(Op::TABLE_COPY_64, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY_64, 0, 0, 0);
 
     chunk.emit_op_u16(Op::CONST, idx3, 0);
     chunk.emit_op_u8(Op::TABLE_GET_64, 0, 0);
@@ -781,6 +1132,34 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     assert_eq!(vm.func_table[1].as_i32(), 7);
     assert_eq!(vm.func_table[2].as_i32(), 9);
     assert_eq!(vm.func_table[3].as_i32(), 7);
+}
+
+#[test]
+fn spec_table64_init_copies_element_segment_with_i64_indices() {
+    let mut vm = VM::new();
+    vm.func_table.resize(6, Value::Null);
+    vm.set_elem_segment(
+        0,
+        vec![
+            Value::I32(21),
+            Value::I32(22),
+            Value::I32(23),
+            Value::I32(24),
+        ],
+    );
+    let mut chunk = Chunk::new("<table64-init>");
+    let dst = chunk.add_constant(Value::I64(3));
+    let src = chunk.add_constant(Value::I64(1));
+    let count = chunk.add_constant(Value::I64(2));
+    chunk.emit_op_u16(Op::CONST, dst, 0);
+    chunk.emit_op_u16(Op::CONST, src, 0);
+    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_INIT_64, 0, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    vm.run(vec![chunk]).expect("table64.init should copy");
+    assert_eq!(vm.func_table[3].as_i32(), 22);
+    assert_eq!(vm.func_table[4].as_i32(), 23);
 }
 
 #[test]
@@ -821,12 +1200,14 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     assert_eq!(chunks[0].memory_min_pages, vec![1, 1]);
 
     let function = chunks.remove(1);
-    assert!(
-        function
-            .code
-            .windows(5)
-            .any(|w| w == [Op::F64_STORE.prefix(), Op::F64_STORE.sub(), 0x43, 0x00, 0x01])
-    );
+    assert!(function.code.windows(5).any(|w| w
+        == [
+            Op::F64_STORE.prefix(),
+            Op::F64_STORE.sub(),
+            0x43,
+            0x00,
+            0x01
+        ]));
     assert!(
         function
             .code
@@ -841,6 +1222,58 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
         vm.memory.load_i64(0).unwrap(),
         0,
         "decoded f64.store memidx=1 must not write memory 0"
+    );
+}
+
+#[test]
+fn decoded_standard_memory_copy_from_memory1_to_memory0_preserves_mixed_indices() {
+    let wasm = standard_multi_memory_module(&[
+        0x41, 0x00, // i32.const 0
+        0x41, 0x2D, // i32.const 45
+        0x36, 0x42, 0x00, 0x01, // i32.store align=2|memidx, offset=0, memidx=1
+        0x41, 0x04, // dst = 4 in memory 0
+        0x41, 0x00, // src = 0 in memory 1
+        0x41, 0x04, // len = 4
+        0xFC, 0x0A, 0x00, 0x01, // memory.copy dstmem=0 srcmem=1
+        0x41, 0x04, // i32.const 4
+        0x28, 0x02, 0x00, // i32.load memory 0
+    ]);
+    let mut chunks = vybe_bytecode::wasm::read_wasm(&wasm).expect("standard wasm should decode");
+    let function = chunks.remove(1);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![function]).unwrap();
+
+    assert_eq!(
+        result.as_i32(),
+        45,
+        "decoded memory.copy must keep dstmem=0 and srcmem=1 distinct"
+    );
+}
+
+#[test]
+fn decoded_standard_memory_copy_from_memory0_to_memory1_preserves_mixed_indices() {
+    let wasm = standard_multi_memory_module(&[
+        0x41, 0x00, // i32.const 0
+        0x41, 0x3A, // i32.const 58
+        0x36, 0x02, 0x00, // i32.store memory 0
+        0x41, 0x08, // dst = 8 in memory 1
+        0x41, 0x00, // src = 0 in memory 0
+        0x41, 0x04, // len = 4
+        0xFC, 0x0A, 0x01, 0x00, // memory.copy dstmem=1 srcmem=0
+        0x41, 0x08, // i32.const 8
+        0x28, 0x42, 0x00, 0x01, // i32.load align=2|memidx, offset=0, memidx=1
+    ]);
+    let mut chunks = vybe_bytecode::wasm::read_wasm(&wasm).expect("standard wasm should decode");
+    let function = chunks.remove(1);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![function]).unwrap();
+
+    assert_eq!(
+        result.as_i32(),
+        58,
+        "decoded memory.copy must keep dstmem=1 and srcmem=0 distinct"
     );
 }
 

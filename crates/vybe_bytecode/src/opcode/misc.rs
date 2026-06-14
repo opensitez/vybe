@@ -53,9 +53,9 @@ opcode_category! {
     [0x09] data_drop   => U8, "data.drop";
     [0x0A] memory_copy => None, "memory.copy";     // emitter appends 0 0
     [0x0B] memory_fill => None, "memory.fill";     // emitter appends 0
-    [0x0C] table_init  => U8, "table.init";
+    [0x0C] table_init  => U8_U8, "table.init";
     [0x0D] elem_drop   => U8, "elem.drop";
-    [0x0E] table_copy  => U8, "table.copy";        // u8 = table index; emitter appends trailing 0
+    [0x0E] table_copy  => U8_U8, "table.copy";
     [0x0F] table_grow  => U8, "table.grow";        // u8 = table index
     [0x10] table_size  => U8, "table.size";        // u8 = table index
     [0x11] table_fill  => U8, "table.fill";        // u8 = table index

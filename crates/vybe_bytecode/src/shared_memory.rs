@@ -12,6 +12,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
+#[derive(Default)]
+struct WaitState {
+    waiters: usize,
+    notifications: usize,
+}
+
+#[derive(Default)]
+struct WaitEntry {
+    state: Mutex<WaitState>,
+    condvar: Condvar,
+}
+
 /// WASM trap on out-of-bounds memory access.
 #[derive(Debug, Clone)]
 pub enum MemoryTrap {
@@ -59,7 +71,7 @@ pub struct SharedMemory {
     /// Wait/notify infrastructure: maps memory addresses to condvars.
     /// When a thread calls wait32(addr), it blocks on the condvar for that addr.
     /// When another thread calls notify(addr), it signals the condvar.
-    waiters: Arc<Mutex<HashMap<usize, Arc<Condvar>>>>,
+    waiters: Arc<Mutex<HashMap<usize, Arc<WaitEntry>>>>,
 }
 
 impl Clone for SharedMemory {
@@ -444,28 +456,45 @@ impl SharedMemory {
             return 2; // timed-out immediately
         }
 
-        // Get or create condvar for this address
-        let condvar = {
+        let entry = {
             let mut waiters = self.waiters.lock().unwrap();
             waiters
                 .entry(addr)
-                .or_insert_with(|| Arc::new(Condvar::new()))
+                .or_insert_with(|| Arc::new(WaitEntry::default()))
                 .clone()
         };
 
-        // Block on condvar
-        let dummy_mutex = Mutex::new(());
-        let guard = dummy_mutex.lock().unwrap();
-
+        let mut state = entry.state.lock().unwrap();
+        state.waiters += 1;
         if timeout_ns < 0 {
-            // Infinite wait
-            let _guard = condvar.wait(guard).unwrap();
-            0 // woken
+            while state.notifications == 0 {
+                state = entry.condvar.wait(state).unwrap();
+            }
+            state.notifications -= 1;
+            state.waiters -= 1;
+            0
         } else {
-            // Timed wait
-            let timeout = std::time::Duration::from_nanos(timeout_ns as u64);
-            let result = condvar.wait_timeout(guard, timeout).unwrap();
-            if result.1.timed_out() { 2 } else { 0 }
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_nanos(timeout_ns as u64);
+            loop {
+                if state.notifications > 0 {
+                    state.notifications -= 1;
+                    state.waiters -= 1;
+                    return 0;
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    state.waiters -= 1;
+                    return 2;
+                }
+                let timeout = deadline.saturating_duration_since(now);
+                let (next_state, result) = entry.condvar.wait_timeout(state, timeout).unwrap();
+                state = next_state;
+                if result.timed_out() && state.notifications == 0 {
+                    state.waiters -= 1;
+                    return 2;
+                }
+            }
         }
     }
 
@@ -488,43 +517,72 @@ impl SharedMemory {
             return 2;
         }
 
-        let condvar = {
+        let entry = {
             let mut waiters = self.waiters.lock().unwrap();
             waiters
                 .entry(addr)
-                .or_insert_with(|| Arc::new(Condvar::new()))
+                .or_insert_with(|| Arc::new(WaitEntry::default()))
                 .clone()
         };
 
-        let dummy_mutex = Mutex::new(());
-        let guard = dummy_mutex.lock().unwrap();
-
+        let mut state = entry.state.lock().unwrap();
+        state.waiters += 1;
         if timeout_ns < 0 {
-            let _guard = condvar.wait(guard).unwrap();
+            while state.notifications == 0 {
+                state = entry.condvar.wait(state).unwrap();
+            }
+            state.notifications -= 1;
+            state.waiters -= 1;
             0
         } else {
-            let timeout = std::time::Duration::from_nanos(timeout_ns as u64);
-            let result = condvar.wait_timeout(guard, timeout).unwrap();
-            if result.1.timed_out() { 2 } else { 0 }
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_nanos(timeout_ns as u64);
+            loop {
+                if state.notifications > 0 {
+                    state.notifications -= 1;
+                    state.waiters -= 1;
+                    return 0;
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    state.waiters -= 1;
+                    return 2;
+                }
+                let timeout = deadline.saturating_duration_since(now);
+                let (next_state, result) = entry.condvar.wait_timeout(state, timeout).unwrap();
+                state = next_state;
+                if result.timed_out() && state.notifications == 0 {
+                    state.waiters -= 1;
+                    return 2;
+                }
+            }
         }
     }
 
     /// Wake up to `count` threads waiting on `addr`.
     /// Returns number of threads actually woken.
     pub fn notify(&self, addr: usize, count: i32) -> i32 {
-        let waiters = self.waiters.lock().unwrap();
-        if let Some(condvar) = waiters.get(&addr) {
-            if count <= 1 {
-                condvar.notify_one();
-                1
-            } else {
-                // notify_all wakes all — we can't limit to `count` with std condvar
-                condvar.notify_all();
-                count // approximate
-            }
-        } else {
-            0
+        if count <= 0 {
+            return 0;
         }
+        let entry = {
+            let waiters = self.waiters.lock().unwrap();
+            waiters.get(&addr).cloned()
+        };
+        let Some(entry) = entry else {
+            return 0;
+        };
+        let woken = {
+            let mut state = entry.state.lock().unwrap();
+            let available = state.waiters.saturating_sub(state.notifications);
+            let woken = available.min(count as usize);
+            state.notifications += woken;
+            woken
+        };
+        for _ in 0..woken {
+            entry.condvar.notify_one();
+        }
+        woken as i32
     }
 }
 

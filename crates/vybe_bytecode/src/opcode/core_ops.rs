@@ -223,6 +223,17 @@ impl Op {
     pub const REF_AS_NON_NULL: Op = Op::new(0x00, 0xD4);
     pub const BR_ON_NULL: Op = Op::new(0x00, 0xD5);
     pub const BR_ON_NON_NULL: Op = Op::new(0x00, 0xD6);
+    // Stack-switching proposal (WebAssembly/stack-switching). These are
+    // real core-prefix WASM opcodes — spec bytes 0xE0..=0xE6, per
+    // proposals/stack-switching/interpreter/binary/encode.ml — NOT
+    // VM-internal opcodes.
+    pub const CONT_NEW: Op = Op::new(0x00, 0xE0);
+    pub const CONT_BIND: Op = Op::new(0x00, 0xE1);
+    pub const SUSPEND: Op = Op::new(0x00, 0xE2);
+    pub const RESUME: Op = Op::new(0x00, 0xE3);
+    pub const RESUME_THROW: Op = Op::new(0x00, 0xE4);
+    pub const RESUME_THROW_REF: Op = Op::new(0x00, 0xE5);
+    pub const SWITCH: Op = Op::new(0x00, 0xE6);
 }
 
 // ── Metadata (name + operand format) ────────────────────────────
@@ -244,7 +255,7 @@ opcode_category! {
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
     [0x10] call => U8, "call";
-    [0x11] call_indirect => U8, "call_indirect";
+    [0x11] call_indirect => U8_U8, "call_indirect";
     [0x12] return_call => U8, "return_call";
     [0x13] return_call_indirect => U8, "return_call_indirect";
     [0x14] call_ref => U8, "call_ref";
@@ -442,4 +453,15 @@ opcode_category! {
     [0xD4] ref_as_non_null => None, "ref.as_non_null";
     [0xD5] br_on_null => I16, "br_on_null";
     [0xD6] br_on_non_null => I16, "br_on_non_null";
+    // Stack-switching proposal (WebAssembly/stack-switching). Spec bytes
+    // 0xE0..=0xE6. The in-memory operand widths below are Vybe's fixed
+    // 2-byte encoding; the .wasm emitter/reader translate to/from the
+    // spec's LEB var + resumetable forms.
+    [0xE0] cont_new => None, "cont.new";
+    [0xE1] cont_bind => U8, "cont.bind";
+    [0xE2] suspend => U16, "suspend";
+    [0xE3] resume => U16, "resume";
+    [0xE4] resume_throw => U16, "resume_throw";
+    [0xE5] resume_throw_ref => None, "resume_throw_ref";
+    [0xE6] switch => U16, "switch";
 }

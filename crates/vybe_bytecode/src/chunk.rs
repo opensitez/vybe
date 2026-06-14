@@ -1,5 +1,6 @@
 use crate::opcode::Op;
 use crate::value::Value;
+use std::collections::BTreeMap;
 
 /// A host function import declaration — (module, name).
 /// Like WASM: (import "vybe:math" "floor" (func ...))
@@ -66,6 +67,30 @@ pub struct ContinuationTag {
     pub resume_type: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ActiveDataSegment {
+    pub memory_index: u32,
+    pub offset: u64,
+    pub data_index: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveElementSegment {
+    pub table_index: u32,
+    pub offset: u64,
+    pub elem_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackSwitchHandler {
+    /// 0 = on-tag-to-label, 1 = on-tag-to-switch.
+    pub kind: u8,
+    pub tag_index: u32,
+    /// For decoded standard Wasm this is the structural label index.
+    /// Direct bytecode VM tests use a resolved bytecode instruction offset.
+    pub label_index: u32,
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -100,6 +125,23 @@ pub struct Chunk {
     /// Declared linear memories for modules decoded from standard WASM.
     /// Entries are minimum page counts, in spec memory-index order.
     pub memory_min_pages: Vec<u64>,
+    /// Declared linear memory maximums for modules decoded from standard WASM.
+    /// Entries align with `memory_min_pages`; `None` means unbounded by the
+    /// module type.
+    pub memory_max_pages: Vec<Option<u64>>,
+    /// Declared reference tables for modules decoded from standard WASM.
+    /// Entries are minimum element counts, in spec table-index order.
+    pub table_min_sizes: Vec<u64>,
+    /// Passive data segment payloads decoded from standard WASM.
+    pub data_segments: Vec<Vec<u8>>,
+    /// Passive element segment payloads decoded from standard WASM.
+    pub elem_segments: Vec<Vec<Value>>,
+    /// Active data segments to instantiate before executing decoded WASM.
+    pub active_data_segments: Vec<ActiveDataSegment>,
+    /// Active element segments to instantiate before executing decoded WASM.
+    pub active_elem_segments: Vec<ActiveElementSegment>,
+    /// Stack-switching handler vectors keyed by bytecode opcode offset.
+    pub stack_switch_handlers: BTreeMap<usize, Vec<StackSwitchHandler>>,
     /// Number of results this function returns. Default 1 (single
     /// externref) matches the pre-multi-value ABI. A chunk that wants
     /// to take advantage of the multi-value proposal sets this >1; the
@@ -143,6 +185,13 @@ impl Chunk {
             global_inits: Vec::new(),
             continuation_tags: Vec::new(),
             memory_min_pages: Vec::new(),
+            memory_max_pages: Vec::new(),
+            table_min_sizes: Vec::new(),
+            data_segments: Vec::new(),
+            elem_segments: Vec::new(),
+            active_data_segments: Vec::new(),
+            active_elem_segments: Vec::new(),
+            stack_switch_handlers: BTreeMap::new(),
             result_arity: 1,
             is_async: false,
             is_generator: false,
@@ -223,6 +272,12 @@ impl Chunk {
     pub fn emit_op_u8(&mut self, op: Op, operand: u8, line: u32) {
         self.emit_op(op, line);
         self.emit(operand, line);
+    }
+
+    pub fn emit_op_u8_u8(&mut self, op: Op, first: u8, second: u8, line: u32) {
+        self.emit_op(op, line);
+        self.emit(first, line);
+        self.emit(second, line);
     }
 
     pub fn emit_leb_u32(&mut self, mut value: u32, line: u32) {

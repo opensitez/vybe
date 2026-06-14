@@ -13,8 +13,9 @@
 
 use vybe_bytecode::wasm::{
     js_array_builtins, js_arraybuffer_builtins, js_map_builtins, js_object_builtins,
-    js_set_builtins, js_typedarray_builtins, js_weakmap_builtins,
+    js_set_builtins, js_string_builtins, js_typedarray_builtins, js_weakmap_builtins, write_wasm,
 };
+use vybe_bytecode::{Chunk, Op, Value};
 
 // ──────────────────────────────────────────────────────────────────────
 // Contract 1: every declared import produces a valid signature
@@ -293,6 +294,123 @@ fn decode_leb128_u32(bytes: &[u8]) -> (u32, usize) {
     (result, pos)
 }
 
+fn section_payload(wasm: &[u8], id: u8) -> Option<&[u8]> {
+    let mut pos = 8;
+    while pos < wasm.len() {
+        let section_id = wasm[pos];
+        pos += 1;
+        let (len, read) = decode_leb128_u32(&wasm[pos..]);
+        pos += read;
+        let end = pos + len as usize;
+        if end > wasm.len() {
+            return None;
+        }
+        if section_id == id {
+            return Some(&wasm[pos..end]);
+        }
+        pos = end;
+    }
+    None
+}
+
+fn read_name(data: &[u8], pos: &mut usize) -> String {
+    let (len, read) = decode_leb128_u32(&data[*pos..]);
+    *pos += read;
+    let end = *pos + len as usize;
+    let name = std::str::from_utf8(&data[*pos..end])
+        .expect("valid UTF-8 import name")
+        .to_string();
+    *pos = end;
+    name
+}
+
+fn imported_functions(wasm: &[u8]) -> Vec<(String, String)> {
+    let imports = section_payload(wasm, 2).expect("import section");
+    let mut pos = 0;
+    let (count, read) = decode_leb128_u32(imports);
+    pos += read;
+    let mut funcs = Vec::new();
+    for _ in 0..count {
+        let module = read_name(imports, &mut pos);
+        let name = read_name(imports, &mut pos);
+        let kind = imports[pos];
+        pos += 1;
+        match kind {
+            0x00 => {
+                let (_, read) = decode_leb128_u32(&imports[pos..]);
+                pos += read;
+                funcs.push((module, name));
+            }
+            0x03 => {
+                pos += 2;
+            }
+            other => panic!("unexpected import kind {other:#x}"),
+        }
+    }
+    funcs
+}
+
+fn emitted_call_targets(wasm: &[u8]) -> Vec<u32> {
+    let code = section_payload(wasm, 10).expect("code section");
+    let mut pos = 0;
+    let (func_count, read) = decode_leb128_u32(code);
+    pos += read;
+    let mut calls = Vec::new();
+    for _ in 0..func_count {
+        let (body_len, read) = decode_leb128_u32(&code[pos..]);
+        pos += read;
+        let body_end = pos + body_len as usize;
+        let (local_group_count, read) = decode_leb128_u32(&code[pos..body_end]);
+        pos += read;
+        for _ in 0..local_group_count {
+            let (_, read) = decode_leb128_u32(&code[pos..body_end]);
+            pos += read;
+            pos += 1;
+        }
+        while pos < body_end {
+            let opcode = code[pos];
+            pos += 1;
+            if opcode == 0x10 {
+                let (idx, read) = decode_leb128_u32(&code[pos..body_end]);
+                pos += read;
+                calls.push(idx);
+            }
+        }
+    }
+    calls
+}
+
+fn wasm_for_single_op(input: Value, op: Op) -> Vec<u8> {
+    let mut chunk = Chunk::new("<script>");
+    let idx = chunk.add_constant(input);
+    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_op(op, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    write_wasm(&[chunk])
+}
+
+fn assert_single_op_calls(input: Value, op: Op, expected: &[(&str, &str)]) {
+    let wasm = wasm_for_single_op(input, op);
+    let imports = imported_functions(&wasm);
+    let call_targets = emitted_call_targets(&wasm);
+    let called_imports: Vec<(&str, &str)> = call_targets
+        .iter()
+        .filter_map(|idx| imports.get(*idx as usize))
+        .map(|(module, name)| (module.as_str(), name.as_str()))
+        .collect();
+
+    for pair in expected {
+        assert!(
+            called_imports.contains(pair),
+            "expected opcode {:?} to call {}.{}, calls were {:?}",
+            op,
+            pair.0,
+            pair.1,
+            called_imports
+        );
+    }
+}
+
 #[test]
 fn array_push_signature_is_externref_externref_to_i32() {
     // vybe:js-array.push: (arr: externref, v: externref) -> i32
@@ -424,6 +542,71 @@ fn bigint64array_get_returns_i64() {
         results,
         vec![0x7E],
         "BigInt64Array.get returns i64 (0x7E) per BigInt typed-array convention"
+    );
+}
+
+#[test]
+fn js_string_cast_and_numeric_format_opcodes_lower_to_proposal_imports() {
+    use std::sync::Arc;
+
+    assert_single_op_calls(
+        Value::String(Arc::from("x")),
+        Op::STR_CAST,
+        &[(js_string_builtins::MODULE, "cast")],
+    );
+    assert_single_op_calls(
+        Value::I32(-12),
+        Op::STR_FROM_I32,
+        &[
+            ("wasm:js-number", "toI32"),
+            (js_string_builtins::MODULE, "fromI32"),
+        ],
+    );
+    assert_single_op_calls(
+        Value::I32(-1),
+        Op::STR_FROM_U32,
+        &[
+            ("wasm:js-number", "toI32"),
+            (js_string_builtins::MODULE, "fromU32"),
+        ],
+    );
+    assert_single_op_calls(
+        Value::I32(-12),
+        Op::STR_FROM_I64,
+        &[
+            ("wasm:js-number", "toI32"),
+            (js_string_builtins::MODULE, "fromI64"),
+        ],
+    );
+    assert_single_op_calls(
+        Value::I32(-1),
+        Op::STR_FROM_U64,
+        &[
+            ("wasm:js-number", "toI32"),
+            (js_string_builtins::MODULE, "fromU64"),
+        ],
+    );
+    assert_single_op_calls(
+        Value::F64(1.25),
+        Op::STR_FROM_F64,
+        &[
+            ("wasm:js-number", "toF64"),
+            (js_string_builtins::MODULE, "fromF64"),
+        ],
+    );
+}
+
+#[test]
+fn js_number_unsigned_boxing_opcodes_lower_to_typed_number_imports() {
+    assert_single_op_calls(
+        Value::I32(-1),
+        Op::NUM_BOX_U32,
+        &[("wasm:js-number", "toI32"), ("wasm:js-number", "fromU32")],
+    );
+    assert_single_op_calls(
+        Value::I32(-1),
+        Op::NUM_UNBOX_U32,
+        &[("wasm:js-number", "toU32"), ("wasm:js-number", "fromI32")],
     );
 }
 

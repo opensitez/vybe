@@ -1,5 +1,7 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 /// Tests for memory operations, table operations, and WASM binary I/O.
+use vybe_bytecode::value::{Function, Object, ObjectKind};
 use vybe_bytecode::{Chunk, Op, VM, Value};
 
 // ============================================================
@@ -345,11 +347,82 @@ fn call_indirect_vm_function() {
     // So stack: [table_idx]
 
     // call_indirect with 0 args
-    main.emit_op_u8(Op::CALL_INDIRECT, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_INDIRECT, 0, 0, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 99.0);
+}
+
+#[test]
+fn decoded_standard_call_indirect_executes_vm_table_function() {
+    let wasm = vec![
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+        0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type: [] -> [i32]
+        0x03, 0x02, 0x01, 0x00, // one function, type 0
+        0x0a, 0x09, 0x01, 0x07, 0x00, // one body, body size 7, no locals
+        0x41, 0x00, // i32.const 0: table index
+        0x11, 0x00, 0x00, // call_indirect type 0 table 0
+        0x0b, // end
+    ];
+    let mut chunks = vybe_bytecode::wasm::read_wasm(&wasm).expect("standard wasm should decode");
+    let caller = chunks.remove(1);
+
+    let mut target = Chunk::new("target");
+    target.arity = 0;
+    target.local_count = 0;
+    let value = target.add_constant(Value::I32(77));
+    target.emit_op_u16(Op::CONST, value, 0);
+    target.emit_op(Op::RETURN, 0);
+
+    let mut function = Object::new();
+    function.kind = ObjectKind::Function(Function {
+        name: Some("target".into()),
+        arity: 0,
+        chunk_index: 1,
+        upvalues: Vec::new(),
+    });
+
+    let mut vm = VM::new();
+    vm.func_table
+        .push(Value::Object(Arc::new(Mutex::new(function))));
+    let result = vm.run(vec![caller, target]).unwrap();
+    assert_eq!(result.as_i32(), 77);
+}
+
+#[test]
+fn decoded_standard_call_indirect_uses_encoded_table_index() {
+    let wasm = vec![
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+        0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type: [] -> [i32]
+        0x03, 0x02, 0x01, 0x00, // one function, type 0
+        0x04, 0x07, 0x02, 0x70, 0x00, 0x01, 0x70, 0x00, 0x01, // tables 0 and 1
+        0x0a, 0x09, 0x01, 0x07, 0x00, // one body, body size 7, no locals
+        0x41, 0x00, // i32.const 0: element index
+        0x11, 0x00, 0x01, // call_indirect type 0 table 1
+        0x0b, // end
+    ];
+    let mut chunks = vybe_bytecode::wasm::read_wasm(&wasm).expect("standard wasm should decode");
+    let caller = chunks.remove(1);
+
+    let mut target = Chunk::new("target_table_1");
+    let value = target.add_constant(Value::I32(88));
+    target.emit_op_u16(Op::CONST, value, 0);
+    target.emit_op(Op::RETURN, 0);
+
+    let mut function = Object::new();
+    function.kind = ObjectKind::Function(Function {
+        name: Some("target_table_1".into()),
+        arity: 0,
+        chunk_index: 1,
+        upvalues: Vec::new(),
+    });
+
+    let mut vm = VM::new();
+    vm.extra_tables
+        .push(vec![Value::Object(Arc::new(Mutex::new(function)))]);
+    let result = vm.run(vec![caller, target]).unwrap();
+    assert_eq!(result.as_i32(), 88);
 }
 
 // ── Missing load/store variants (§5.3 memory instructions) ──────────────
