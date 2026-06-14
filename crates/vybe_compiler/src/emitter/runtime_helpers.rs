@@ -975,14 +975,14 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, lhs, 0);
     c.emit_op(Op::DROP, 0);
 
-    crate::emitter::expressions::emit_rich_compare_locals(
-        &mut c,
-        lhs,
-        key,
-        "__gt__",
-        crate::emitter::ops::emit_dyn_gt,
-        0,
-    );
+    // Use _into variant so imports go to the shared `imports` chunk (chunk[0]),
+    // not directly to `c`. Mixing emit_dyn_gt (adds to c.imports) with
+    // emit_import_call_into (emits CALL_IMPORT with chunk[0] indices) causes
+    // CALL_IMPORT to resolve the wrong host fn at runtime — same collision
+    // documented in emit_len_into's comment above.
+    c.emit_op_u16(Op::LOCAL_GET, lhs, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::emitter::ops::emit_dyn_gt_into(imports, &mut c, 0);
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(1, 0); // exit inner loop (second condition)
 

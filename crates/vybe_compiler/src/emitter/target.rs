@@ -1,8 +1,6 @@
 //! Compilation target — detects whether we're on the Vybe VM or a standard WASM runtime.
 //!
-//! When targeting Vybe, compilers can use optimized host functions (vybe:array/range,
-//! vybe:types/dictKeys, etc.) that are faster than pure-WASM equivalents.
-//!
+//! When targeting Vybe, compilers emit bytecode that uses WASI + ECMA-262 host surfaces.
 //! When targeting standard WASM, compilers emit portable bytecode sequences that work
 //! on any compliant runtime (wasmtime, V8, wasm-micro-runtime).
 //!

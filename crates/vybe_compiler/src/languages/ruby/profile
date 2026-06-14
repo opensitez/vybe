@@ -206,7 +206,7 @@ ceil            = { emit = "opcode:f64_ceil",               min_args = 0, max_ar
 "positive?"     = { emit = "host:ecma:math:isPositive",     min_args = 0, max_args = 0 }
 "negative?"     = { emit = "host:ecma:math:isNegative",     min_args = 0, max_args = 0 }
 "between?"      = { emit = "host:ecma:math:between",        min_args = 2, max_args = 2 }
-clamp           = { emit = "host:ecma:math:clamp",          min_args = 2, max_args = 2 }
+clamp           = { emit = "common:math.clamp",             min_args = 2, max_args = 2 }
 gcd             = { emit = "host:ecma:math:gcd",            min_args = 1, max_args = 1 }
 lcm             = { emit = "host:ecma:math:lcm",            min_args = 1, max_args = 1 }
 digits          = { emit = "host:ecma:math:digits",         min_args = 0, max_args = 1 }

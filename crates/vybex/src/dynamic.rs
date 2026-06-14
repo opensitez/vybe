@@ -587,150 +587,138 @@ impl JsDynamicRuntime {
         }
 
         let trimmed = source.trim();
-
-        if eval_source_is_expression(trimmed) {
-            // Expression eval: use a fresh mini-VM to avoid the import_table mismatch.
-            // The outer VM's import_table is set from the outer script's imports;
-            // the eval compilation uses different import indices. Running in a
-            // separate VM ensures the correct import_table is used — same pattern
-            // as the Function() constructor. Nested-HALT taking over the outer
-            // execute loop is also avoided this way.
-            let fn_name = "__vybe_eval_expr__";
-            let eval_source = format!("function {fn_name}() {{ return ({trimmed}); }}\n");
-
-            let Some(language) = languages::find_by_name("js") else {
-                return Value::Undefined;
-            };
-            let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
-
-            let mut eval_vm = VM::new();
-            vybe_host::register_all(&mut eval_vm);
-            vybe_host::setup_namespaces(&mut eval_vm);
-
-            // Sync scalar / plain-object globals from the outer VM so that
-            // eval expressions can read outer-scope variables. Function values
-            // are excluded: their chunk_index refs belong to the outer VM's
-            // chunk table and would be invalid if called from eval_vm.
-            {
-                let outer_vm = unsafe { &*self.vm };
-                for (k, v) in &outer_vm.globals {
-                    let copy = match v {
-                        Value::Object(obj) => {
-                            let o = obj.lock().unwrap();
-                            match o.kind {
-                                ObjectKind::Function(_) | ObjectKind::HostFunction(_) => false,
-                                _ => true,
-                            }
-                        }
-                        _ => true,
-                    };
-                    if copy {
-                        eval_vm.globals.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-
-            {
-                let mut service =
-                    RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
-                if let Err(e) = service.compile_and_run_bundle(&bundle) {
-                    return throw_dynamic_compile_error(ctx, e);
-                }
-            }
-
-            // compile_and_run_bundle ran the script chunk which stored the
-            // function in eval_vm.globals via GLOBAL_SET; call it now.
-            let fn_val = eval_vm
-                .globals
-                .remove(fn_name)
-                .or_else(|| eval_vm.globals.remove(&fn_name.to_lowercase()))
-                .unwrap_or(Value::Undefined);
-            eval_vm.invoke_callback(&fn_val, &[])
-        } else {
-            // Statement eval: run as top-level script via run_linked.
-            // var declarations go to vm.globals (where the outer script can see them).
-            // Nested HALT fires → outer script continues with null as eval's return.
-            // Per spec, eval of a statement returns undefined — callers that need
-            // the value are already spec-compliant with undefined/null.
-            let Some(language) = languages::find_by_name("js") else {
-                return Value::Undefined;
-            };
-            let bundle = bundle_from_source(trimmed.to_string(), language, PathBuf::from("<eval>"));
-
-            let compiled = {
-                let vm = unsafe { &mut *self.vm };
-                let mut service = RuntimeCompilerService::with_capabilities(vm, self.caps.clone());
-                match service.compile_bundle(&bundle) {
-                    Ok(c) => c,
-                    Err(e) => return throw_dynamic_compile_error(ctx, e),
-                }
-            };
-
-            let vm = unsafe { &mut *self.vm };
-            crate::host_imports::install(vm, &compiled.host_imports);
-
-            let base_idx = vm.chunks.len();
-            let mut eval_chunks = compiled.chunks;
-
-            // Merge imports to preserve outer script's CALL_IMPORT indices after
-            // run_linked replaces the import_table.
-            let eval_imports = eval_chunks
-                .first()
-                .map(|c| c.imports.clone())
-                .unwrap_or_default();
-            let (merged_imports, eval_remap) = merge_imports(&self.active_imports, &eval_imports);
-            if let Err(e) = remap_import_operands(&mut eval_chunks, &eval_remap) {
-                return throw_dynamic_compile_error(ctx, e);
-            }
-            let merged_resolved = match resolve_imports(vm, &merged_imports) {
-                Ok(r) => r,
-                Err(e) => return throw_dynamic_compile_error(ctx, e),
-            };
-
-            if base_idx > 0 {
-                for chunk in &mut eval_chunks {
-                    let code = &mut chunk.code;
-                    let mut ip = 0;
-                    while ip + 1 < code.len() {
-                        let Some(op) = Op::decode(code[ip], code[ip + 1]) else {
-                            ip += 2;
-                            continue;
-                        };
-                        if op == Op::REF_FUNC && ip + 4 < code.len() {
-                            let old = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
-                            let new = old + base_idx as u16;
-                            code[ip + 2] = (new >> 8) as u8;
-                            code[ip + 3] = (new & 0xff) as u8;
-                            ip += 4 + 1;
-                            if ip - 1 < code.len() {
-                                ip += (code[ip - 1] as usize) * 2;
-                            }
-                            continue;
-                        }
-                        ip += 2;
-                        match op.operand_format() {
-                            OperandFormat::Closure => {
-                                ip += 2 + 1;
-                                if ip > 0 && ip - 1 < code.len() {
-                                    ip += (code[ip - 1] as usize) * 2;
-                                }
-                            }
-                            OperandFormat::BrTable => {
-                                if ip < code.len() {
-                                    let count = code[ip] as usize;
-                                    ip += 2 + count;
-                                }
-                            }
-                            fmt => ip += fmt.fixed_size(),
-                        }
-                    }
-                }
-            }
-
-            install_chunk_globals(vm, &eval_chunks, base_idx);
-            let _ = vm.run_linked(eval_chunks, merged_resolved);
-            Value::Undefined
+        if trimmed.is_empty() {
+            return Value::Undefined;
         }
+
+        // §19.2.1 PerformEval: parse first — invalid code throws a
+        // catchable SyntaxError.
+        let module = match vybe_compiler::languages::js::parse(trimmed) {
+            Ok(module) => module,
+            Err(err) => return throw_eval_error(ctx, "SyntaxError", &err),
+        };
+
+        // Directive prologue (§11.2.1): a leading "use strict" turns on the
+        // early errors the (sloppy-mode) parser doesn't enforce.
+        let is_strict =
+            trimmed.starts_with("\"use strict\"") || trimmed.starts_with("'use strict'");
+        if is_strict {
+            if let Some(err) = strict_mode_early_error(trimmed, &module) {
+                return throw_eval_error(ctx, "SyntaxError", &err);
+            }
+        }
+
+        // §19.2.1.1: non-strict direct eval `var` declarations bind in the
+        // caller's variable environment. Blank the `var` keyword of each
+        // top-level declaration (offsets preserved) so it compiles as a
+        // plain assignment — created as a global in the mini-VM and written
+        // back below.
+        let mut source_text = trimmed.to_string();
+        if !is_strict {
+            for s in &module.body {
+                if matches!(
+                    &s.kind,
+                    vybe_compiler::ast::StmtKind::VarDecl {
+                        kind: vybe_compiler::ast::VarDeclKind::Var,
+                        ..
+                    }
+                ) {
+                    if let Some(off) =
+                        line_col_to_offset(&source_text, s.span.start_line, s.span.start_col)
+                    {
+                        if source_text[off..].starts_with("var") {
+                            source_text.replace_range(off..off + 3, "   ");
+                        }
+                    }
+                }
+            }
+        }
+
+        // §19.2.1.1: eval's completion value is the value of the textually
+        // last statement when it is an expression statement. parse() hoists
+        // function declarations to the front, so locate the last statement
+        // by source span, split the SOURCE there, and wrap in a function
+        // whose return yields the completion value. The mini-VM avoids the
+        // outer import-table mismatch — same pattern as the Function()
+        // constructor.
+        let fn_name = "__vybe_eval_expr__";
+        let split_at = module
+            .body
+            .iter()
+            .max_by_key(|s| (s.span.end_line, s.span.end_col))
+            .filter(|s| matches!(s.kind, vybe_compiler::ast::StmtKind::Expr(_)))
+            .and_then(|s| line_col_to_offset(&source_text, s.span.start_line, s.span.start_col));
+        let eval_source = match split_at {
+            Some(offset) => {
+                let (head, tail) = source_text.split_at(offset);
+                let tail = tail.trim_end().trim_end_matches(';');
+                format!("function {fn_name}() {{ {head}\nreturn ({tail}); }}\n")
+            }
+            None => format!("function {fn_name}() {{ {source_text}\n}}\n"),
+        };
+
+        let Some(language) = languages::find_by_name("js") else {
+            return Value::Undefined;
+        };
+        let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
+
+        let mut eval_vm = VM::new();
+        vybe_host::register_all(&mut eval_vm);
+        vybe_host::setup_namespaces(&mut eval_vm);
+
+        // Direct eval shares the caller's (global) scope: copy scalar /
+        // object globals in. Function values are excluded — their
+        // chunk_index refs belong to the outer VM's chunk table and would
+        // be invalid if called from eval_vm.
+        {
+            let outer_vm = unsafe { &*self.vm };
+            for (k, v) in &outer_vm.globals {
+                let copy = match v {
+                    Value::Object(obj) => {
+                        let o = obj.lock().unwrap();
+                        !matches!(o.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+                    }
+                    _ => true,
+                };
+                if copy {
+                    eval_vm.globals.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        {
+            let mut service =
+                RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
+            if let Err(e) = service.compile_and_run_bundle(&bundle) {
+                return throw_eval_error(ctx, "SyntaxError", &e);
+            }
+        }
+
+        // compile_and_run_bundle ran the script chunk which stored the
+        // function in eval_vm.globals via GLOBAL_SET; call it now.
+        let fn_val = eval_vm
+            .globals
+            .remove(fn_name)
+            .or_else(|| eval_vm.globals.remove(&fn_name.to_lowercase()))
+            .unwrap_or(Value::Undefined);
+        let result = eval_vm.invoke_callback(&fn_val, &[]);
+
+        // §19.2.1: assignments inside eval reach the caller's scope — write
+        // non-function globals back. Shared objects were copied by Arc, so
+        // in-place mutation is already visible; this covers rebinding and
+        // new bindings (`eval("y = 99")`).
+        {
+            let outer_vm = unsafe { &mut *self.vm };
+            for (k, v) in &eval_vm.globals {
+                let is_function = matches!(v, Value::Object(obj)
+                    if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
+                if is_function {
+                    continue;
+                }
+                outer_vm.globals.insert(k.clone(), v.clone());
+            }
+        }
+        result
     }
 
     fn handle_function_constructor(&mut self, args: &[Value]) -> Result<Value, String> {
@@ -896,6 +884,104 @@ fn throw_dynamic_compile_error(ctx: &mut HostContext, message: String) -> Value 
     Value::Null
 }
 
+/// Throw a JS-shaped error object (same stamp `vybe_host`'s error machinery
+/// uses) so `catch (e) { e instanceof SyntaxError }` works on eval failures.
+fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
+    let mut obj = Object::new();
+    obj.properties
+        .insert("__type".into(), Value::String(Arc::from(kind)));
+    obj.properties
+        .insert("__exception_type".into(), Value::String(Arc::from(kind)));
+    obj.properties
+        .insert("name".into(), Value::String(Arc::from(kind)));
+    obj.properties
+        .insert("message".into(), Value::String(Arc::from(message)));
+    obj.properties.insert(
+        "stack".into(),
+        Value::String(Arc::from(format!("{kind}: {message}").as_str())),
+    );
+    let chain = Object::new_array(vec![
+        Value::String(Arc::from(kind)),
+        Value::String(Arc::from("Error")),
+    ]);
+    obj.properties
+        .insert("__types".into(), Value::Object(Arc::new(Mutex::new(chain))));
+    ctx.throw_value(Value::Object(Arc::new(Mutex::new(obj))));
+    Value::Undefined
+}
+
+/// Strict-mode early errors (§12.9.4.1 legacy octals, §13.1.1 reserved
+/// words as bindings) that the sloppy-mode parser accepts.
+fn strict_mode_early_error(src: &str, module: &vybe_compiler::ast::Module) -> Option<String> {
+    // Legacy octal literal: `0` followed by octal digits, outside strings,
+    // not a 0x/0o/0b prefix and not part of a longer number/identifier.
+    let bytes = src.as_bytes();
+    let mut in_string: Option<u8> = None;
+    let mut prev: u8 = b' ';
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = in_string {
+            if c == q && prev != b'\\' {
+                in_string = None;
+            }
+        } else if c == b'"' || c == b'\'' || c == b'`' {
+            in_string = Some(c);
+        } else if c == b'0'
+            && !prev.is_ascii_alphanumeric()
+            && prev != b'_'
+            && prev != b'$'
+            && prev != b'.'
+        {
+            let next = bytes.get(i + 1).copied().unwrap_or(b' ');
+            if (b'0'..=b'7').contains(&next) {
+                return Some("Octal literals are not allowed in strict mode".to_string());
+            }
+        }
+        prev = c;
+        i += 1;
+    }
+
+    const RESERVED: [&str; 9] = [
+        "implements",
+        "interface",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "static",
+        "let",
+        "yield",
+    ];
+    for s in &module.body {
+        if let vybe_compiler::ast::StmtKind::VarDecl { declarations, .. } = &s.kind {
+            for d in declarations {
+                if let vybe_compiler::ast::BindingPattern::Ident(name) = &d.pattern {
+                    if RESERVED.contains(&name.as_str()) {
+                        return Some(format!(
+                            "Unexpected strict mode reserved word: {name}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Byte offset of a 0-based (line, col) position in `src`.
+fn line_col_to_offset(src: &str, line: u32, col: u32) -> Option<usize> {
+    let mut current = 0usize;
+    for (i, l) in src.split('\n').enumerate() {
+        if i as u32 == line {
+            let col = col as usize;
+            return (col <= l.len()).then_some(current + col);
+        }
+        current += l.len() + 1;
+    }
+    None
+}
+
 fn ensure_js_runtime_registered(vm: &mut VM) {
     let key = ("vybe:js".to_string(), "function_constructor".to_string());
     if vm.host_registry.contains_key(&key) {
@@ -938,29 +1024,21 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
             })
         }),
     );
-}
 
-fn eval_source_is_expression(s: &str) -> bool {
-    let statement_starters = [
-        "var ",
-        "let ",
-        "const ",
-        "function ",
-        "class ",
-        "if ",
-        "for ",
-        "while ",
-        "do ",
-        "switch ",
-        "try ",
-        "throw ",
-        "return ",
-        "import ",
-        "export ",
-        "async function",
-        "{",
-    ];
-    !statement_starters.iter().any(|kw| s.starts_with(kw))
+    // §19.2.1: eval is also a *value* (`const e = eval; e("…")` — indirect
+    // eval). Expose the registered host fn as a callable global, same shape
+    // vybe_host's namespace machinery uses.
+    if let Some(&idx) = vm
+        .host_registry
+        .get(&("ecma:global".to_string(), "eval".to_string()))
+    {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("name".into(), Value::String(Arc::from("eval")));
+        obj.kind = ObjectKind::HostFunction(idx);
+        vm.globals
+            .insert("eval".to_string(), Value::Object(Arc::new(Mutex::new(obj))));
+    }
 }
 
 fn resolve_php_include_path(entry_path: &Path, caller_path: &Path, target: &str) -> PathBuf {

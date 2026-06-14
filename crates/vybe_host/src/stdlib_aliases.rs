@@ -36,15 +36,6 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("ecma:math", "tanh", "__vybe_tanh"),
     ("ecma:math", "sign", "__vybe_sign"),
     ("ecma:math", "clamp", "__vybe_clamp"),
-    // vybe:array.* aliases retired with the module. Polyfill globals
-    // (`__vybe_range`, `__vybe_sorted`, etc.) are now installed only
-    // by `emit_stdlib_preamble`; no host fn ever overrides them now,
-    // which is fine since these are dynamic-language idioms (Python
-    // range/sorted/enumerate/zip/sum/min/max — Ruby variants too)
-    // that don't have direct ECMA-262 spec equivalents.
-    // __vybe_reversed alias kept — `ecma:array.toReversed` (ES2023) is
-    // a 1:1 spec match for the polyfill, so a host with native
-    // toReversed can override the bytecode.
     ("ecma:array", "toReversed", "__vybe_reversed"),
     // `__vybe_isnumeric` has no ECMA single-call equivalent
     // (`Number.isFinite(Number(s))` composes it). Polyfill keeps running.
@@ -59,11 +50,6 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("ecma:object", "assign", "__vybe_assign"),
     ("ecma:object", "delete", "__vybe_deleteproperty"),
     ("ecma:array", "from", "__vybe_from"),
-    // (vybe:array.redim / vybe:array.sliceStep alias entries removed —
-    // module is gone; the bundled `__vybe_redim` and `__vybe_slicestep`
-    // polyfill chunks remain installed via `emit_stdlib_preamble`.)
-    ("ecma:math", "dynMul", "__vybe_dynmul"),
-    ("ecma:math", "fmod", "__vybe_fmod"),
     ("ecma:array", "lastIndexOf", "__vybe_array_last_index_of"),
     // arrayInsert / arrayRemoveAt / arrayRemoveValue: dead alias entries
     // (host fns never registered). The bundled stdlib polyfills under

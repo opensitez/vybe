@@ -559,11 +559,35 @@ fn register_prototype(vm: &mut VM) {
                 Some(Value::I32(i)) => *i as f64,
                 _ => return Value::String(Arc::from("0")),
             };
-            if n.is_finite() && n.fract() == 0.0 {
-                Value::String(Arc::from(format!("{}", n as i64).as_str()))
-            } else {
-                Value::String(Arc::from(format!("{}", n).as_str()))
+            if !n.is_finite() {
+                return Value::String(Arc::from(format!("{}", n).as_str()));
             }
+            // ECMA-402 §16.2 default formatting: grouped integer part,
+            // up to 3 fraction digits.
+            let rounded = (n * 1000.0).round() / 1000.0;
+            let neg = rounded < 0.0;
+            let abs = rounded.abs();
+            let int_part = abs.trunc();
+            let int_str = format!("{}", int_part as u64);
+            let mut grouped = String::new();
+            for (i, c) in int_str.chars().enumerate() {
+                if i > 0 && (int_str.len() - i) % 3 == 0 {
+                    grouped.push(',');
+                }
+                grouped.push(c);
+            }
+            let frac = abs - int_part;
+            if frac > 0.0 {
+                let frac_str = format!("{:.3}", frac);
+                let frac_str = frac_str[1..].trim_end_matches('0');
+                if frac_str != "." {
+                    grouped.push_str(frac_str);
+                }
+            }
+            if neg {
+                grouped.insert(0, '-');
+            }
+            Value::String(Arc::from(grouped.as_str()))
         }),
     );
 

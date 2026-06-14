@@ -183,8 +183,8 @@ pow                 = { emit = "host:ecma:math:pow",    min_args = 2, max_args =
 "system.math.sinh"  = { emit = "host:ecma:math:sinh",  min_args = 1, max_args = 1 }
 "system.math.cosh"  = { emit = "host:ecma:math:cosh",  min_args = 1, max_args = 1 }
 "system.math.tanh"  = { emit = "host:ecma:math:tanh",  min_args = 1, max_args = 1 }
-"math.clamp"        = { emit = "host:ecma:math:clamp",         min_args = 3, max_args = 3 }
-"system.math.clamp" = { emit = "host:ecma:math:clamp",         min_args = 3, max_args = 3 }
+"math.clamp"        = { emit = "common:math.clamp",            min_args = 3, max_args = 3 }
+"system.math.clamp" = { emit = "common:math.clamp",            min_args = 3, max_args = 3 }
 
 # ── Financial functions ─────────────────────────────────────────────────────
 

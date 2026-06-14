@@ -77,6 +77,30 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op(Op::DROP, line);
 }
 
+/// Re-stamp type identity on an EXISTING object — a child constructor
+/// receives `this` from the parent ctor call carrying the PARENT's
+/// identity, so the child must overwrite `__type` and the WASM GC
+/// type_id with its own (otherwise instanceof/REF_TEST and
+/// constructorOf resolve to the parent class). Same stamps as
+/// `emit_new_typed_object` minus the allocation. `class_name` must be
+/// canonicalised like there.
+pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    let type_str = chunk.add_constant(Value::String(Arc::from(class_name)));
+    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
+    chunk.emit_op_u16(Op::CONST, type_str, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let tid_name = chunk.add_constant(Value::String(Arc::from(
+        format!("__tid_{}", class_name).as_str(),
+    )));
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
+    chunk.emit_op(Op::SET_TYPE_ID, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 /// Stamp `class_name` into `this.__types` array for cross-language instanceof.
 /// If `__types` is null/missing, creates an empty array first, then pushes the name.
 /// Called once per class in the inheritance chain (child calls after parent constructor).

@@ -24,6 +24,51 @@ pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8,
     chunk.emit(arg_count, line);
 }
 
+/// Emit a raw byte write to stdout — NO implicit newline, unlike
+/// `wasi:logging/logging.log` which is one line-oriented record per call.
+///
+/// Composes the WASI 0.3 surface: `canon stream.new` (STREAM_NEW) creates
+/// a `stream<u8>` as (readable, writable) i32 handles, the contents go in
+/// via STREAM_WRITE, the writable end closes (EOF), and the readable end
+/// is passed to `wasi:cli/stdout.write-via-stream(data: stream<u8>)`.
+/// The returned `future<result<_, error-code>>` is discarded; both handle
+/// table entries are dropped afterwards per the canonical ABI.
+///
+/// Stack: [] → []. `push_contents` emits the string to write while the
+/// writable handle is on the stack. `rd_slot`/`wr_slot` are caller-defined
+/// scratch locals for the two canon handles; `write_idx` is the resolved
+/// `wasi:cli/stdout.write-via-stream` import.
+pub fn emit_write_stdout_with_imports(
+    chunk: &mut Chunk,
+    write_idx: u16,
+    rd_slot: u16,
+    wr_slot: u16,
+    line: u32,
+    push_contents: impl FnOnce(&mut Chunk),
+) {
+    // canon stream.new → [rd, wr]
+    chunk.emit_op(Op::STREAM_NEW, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    // stream.write(wr, contents)
+    chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
+    push_contents(chunk);
+    chunk.emit_op(Op::STREAM_WRITE, line);
+    // stream.drop-writable(wr) — signals EOF
+    chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
+    chunk.emit_op(Op::STREAM_DROP_WR, line);
+    // wasi:cli/stdout.write-via-stream(rd) → future (discard)
+    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::DROP, line);
+    // stream.drop-readable(rd)
+    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_op(Op::STREAM_DROP_RD, line);
+}
+
 /// Emit print to stderr (warn/error level). Stack: [message] → []
 pub fn emit_print_error(chunk: &mut Chunk, line: u32) {
     let level_idx = chunk.add_constant(Value::String(std::sync::Arc::from("error")));

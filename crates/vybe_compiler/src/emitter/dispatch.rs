@@ -162,6 +162,7 @@ pub fn emit_common(
         "expressions.f64_mod" => {
             crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line)
         }
+        "math.clamp" => crate::emitter::math::emit_clamp(&mut chunks[current], line),
         "expressions.bool_not" => {
             crate::emitter::expressions::emit_bool_not(&mut chunks[current], line)
         }

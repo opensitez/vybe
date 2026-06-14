@@ -31,6 +31,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+    // TC39 explicit-resource-management classes: when the module references
+    // DisposableStack / AsyncDisposableStack, prepend the canonical JS
+    // implementations so they compile through the common class pipeline —
+    // same pattern as Pascal's synthetic Exception class.
+    if source.contains("DisposableStack") {
+        let mut injected = parse_runtime_class_snippet(DISPOSABLE_STACK_JS);
+        if source.contains("AsyncDisposableStack") {
+            injected.extend(parse_runtime_class_snippet(ASYNC_DISPOSABLE_STACK_JS));
+        }
+        injected.extend(body);
+        body = injected;
+    }
+
     // JS function hoisting: function declarations are visible before their
     // textual position. Reorder so they come first in the body. This mirrors
     // what the JS engine does at parse time — function decls are hoisted to
@@ -60,11 +73,498 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // those cases, but those tests already need runtime install).
     fold_const_computed_names(&mut body);
 
+    // ES2026 explicit resource management — desugar `using` / `await using`
+    // markers into the spec's try/finally shape before any other pass.
+    lower_using_declarations(&mut body);
+
+    // Static TDZ pass — ECMA-262 §14.3.1 / §14.6: a `let` / `const` / `class`
+    // binding is in a temporal dead zone until its declaration executes.
+    apply_static_tdz(&mut body);
+
     Ok(Module {
         name: "main".into(),
         language: Lang::JavaScript,
         body,
         imports,
+    })
+}
+
+// ── Static TDZ pass — ECMA-262 §14.3.1 / §14.6 ──────────────────────────────
+//
+// A reference at a textually earlier statement in the SAME statement list is
+// guaranteed to evaluate inside the binding's temporal dead zone, so the
+// walker rewrites the reference itself into JS-shape AST that throws at
+// evaluation time:
+//
+//   (() => { throw new ReferenceError("Cannot access 'x' before initialization") })()
+//
+// Replacing the read (not the statement) keeps evaluation order faithful:
+// short-circuited or never-reached reads still don't throw. Deferred-execution
+// bodies (Lambda / FunctionExpr / FunctionDecl / class bodies) are skipped — a
+// closure may legally run after initialization. Nested lists that re-declare
+// the name shadow it and stop the descent.
+
+fn apply_static_tdz(stmts: &mut Vec<Statement>) {
+    let mut decls: Vec<(usize, String)> = Vec::new();
+    for (i, s) in stmts.iter().enumerate() {
+        match &s.kind {
+            StmtKind::VarDecl { declarations, kind }
+                if matches!(kind, VarDeclKind::Let | VarDeclKind::Const) =>
+            {
+                for d in declarations {
+                    if let BindingPattern::Ident(n) = &d.pattern {
+                        decls.push((i, n.clone()));
+                    }
+                }
+            }
+            StmtKind::ClassDecl { name, .. } => decls.push((i, name.clone())),
+            _ => {}
+        }
+    }
+    for (decl_idx, name) in &decls {
+        for s in stmts[..*decl_idx].iter_mut() {
+            tdz_rewrite_stmt(s, name);
+        }
+    }
+    // Each nested statement list is its own (block) scope with its own TDZ.
+    for s in stmts.iter_mut() {
+        visit_nested_stmt_lists(&mut s.kind, apply_static_tdz);
+    }
+}
+
+/// Apply `f` to every statement list directly nested in this statement —
+/// shared traversal for the walker's list-level passes (TDZ, `using`).
+fn visit_nested_stmt_lists(kind: &mut StmtKind, f: fn(&mut Vec<Statement>)) {
+    match kind {
+        StmtKind::Block(b) | StmtKind::FunctionDecl { body: b, .. } => f(b),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            f(then_body);
+            for (_, b) in elifs {
+                f(b);
+            }
+            if let Some(b) = else_body {
+                f(b);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(i) = init {
+                visit_nested_stmt_lists(&mut i.kind, f);
+            }
+            f(body);
+        }
+        StmtKind::ForIn {
+            body, else_body, ..
+        }
+        | StmtKind::While {
+            body, else_body, ..
+        } => {
+            f(body);
+            if let Some(b) = else_body {
+                f(b);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => f(body),
+        StmtKind::Switch { cases, default, .. } => {
+            for c in cases {
+                f(&mut c.body);
+            }
+            if let Some(d) = default {
+                f(d);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            f(body);
+            for c in catches {
+                f(&mut c.body);
+            }
+            if let Some(b) = else_body {
+                f(b);
+            }
+            if let Some(b) = finally {
+                f(b);
+            }
+        }
+        StmtKind::ClassDecl { members, .. } => {
+            for m in members {
+                match m {
+                    ClassMember::Method(s) => visit_nested_stmt_lists(&mut s.kind, f),
+                    ClassMember::Constructor { body, .. } => f(body),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Does this statement list declare `name` (any binding form)? Used as the
+/// shadow check when the TDZ rewrite descends into a nested block scope.
+fn tdz_list_declares(stmts: &[Statement], name: &str) -> bool {
+    stmts.iter().any(|s| match &s.kind {
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|d| matches!(&d.pattern, BindingPattern::Ident(n) if n == name)),
+        StmtKind::FunctionDecl { name: n, .. } | StmtKind::ClassDecl { name: n, .. } => n == name,
+        _ => false,
+    })
+}
+
+fn tdz_rewrite_list(stmts: &mut [Statement], name: &str) {
+    if tdz_list_declares(stmts, name) {
+        return;
+    }
+    for s in stmts {
+        tdz_rewrite_stmt(s, name);
+    }
+}
+
+fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
+    match &mut stmt.kind {
+        StmtKind::Expr(e) => tdz_rewrite_expr(e, name),
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(init) = &mut d.init {
+                    tdz_rewrite_expr(init, name);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            tdz_rewrite_expr(value, name);
+            for t in targets {
+                tdz_rewrite_place(t, name);
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            tdz_rewrite_expr(value, name);
+            tdz_rewrite_place(target, name);
+        }
+        StmtKind::Return(Some(e)) => tdz_rewrite_expr(e, name),
+        StmtKind::Throw { expr, cause } => {
+            if let Some(e) = expr {
+                tdz_rewrite_expr(e, name);
+            }
+            if let Some(e) = cause {
+                tdz_rewrite_expr(e, name);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            tdz_rewrite_expr(cond, name);
+            tdz_rewrite_list(then_body, name);
+            for (c, b) in elifs {
+                tdz_rewrite_expr(c, name);
+                tdz_rewrite_list(b, name);
+            }
+            if let Some(b) = else_body {
+                tdz_rewrite_list(b, name);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            tdz_rewrite_expr(cond, name);
+            tdz_rewrite_list(body, name);
+            if let Some(b) = else_body {
+                tdz_rewrite_list(b, name);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            tdz_rewrite_list(body, name);
+            tdz_rewrite_expr(cond, name);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            // `for (let name = …)` shadows the outer binding for the loop.
+            let shadowed = init.as_ref().is_some_and(|i| {
+                matches!(&i.kind, StmtKind::VarDecl { declarations, .. }
+                    if declarations.iter().any(|d| matches!(&d.pattern, BindingPattern::Ident(n) if n == name)))
+            });
+            if let Some(i) = init {
+                tdz_rewrite_stmt(i, name);
+            }
+            if !shadowed {
+                if let Some(c) = cond {
+                    tdz_rewrite_expr(c, name);
+                }
+                if let Some(u) = update {
+                    tdz_rewrite_expr(u, name);
+                }
+                tdz_rewrite_list(body, name);
+            }
+        }
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            tdz_rewrite_expr(iter, name);
+            let shadowed = var == name || key.as_deref() == Some(name);
+            if !shadowed {
+                tdz_rewrite_list(body, name);
+                if let Some(b) = else_body {
+                    tdz_rewrite_list(b, name);
+                }
+            }
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            tdz_rewrite_expr(expr, name);
+            // All switch arms share one block scope (§14.12).
+            let shadowed = cases.iter().any(|c| tdz_list_declares(&c.body, name))
+                || default
+                    .as_ref()
+                    .is_some_and(|d| tdz_list_declares(d, name));
+            if !shadowed {
+                for c in cases {
+                    for cond in &mut c.conditions {
+                        match cond {
+                            CaseCondition::Value(e) => tdz_rewrite_expr(e, name),
+                            CaseCondition::Range { from, to } => {
+                                tdz_rewrite_expr(from, name);
+                                tdz_rewrite_expr(to, name);
+                            }
+                            CaseCondition::Comparison { expr, .. } => tdz_rewrite_expr(expr, name),
+                        }
+                    }
+                    for s in &mut c.body {
+                        tdz_rewrite_stmt(s, name);
+                    }
+                }
+                if let Some(d) = default {
+                    for s in d {
+                        tdz_rewrite_stmt(s, name);
+                    }
+                }
+            }
+        }
+        StmtKind::Block(b) => tdz_rewrite_list(b, name),
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            tdz_rewrite_list(body, name);
+            for c in catches {
+                if c.var_name.as_deref() != Some(name) && c.stack_var.as_deref() != Some(name) {
+                    if let Some(w) = &mut c.when_clause {
+                        tdz_rewrite_expr(w, name);
+                    }
+                    tdz_rewrite_list(&mut c.body, name);
+                }
+            }
+            if let Some(b) = else_body {
+                tdz_rewrite_list(b, name);
+            }
+            if let Some(b) = finally {
+                tdz_rewrite_list(b, name);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for it in items.iter_mut() {
+                tdz_rewrite_expr(&mut it.expr, name);
+            }
+            let shadowed = items.iter().any(|it| it.var.as_deref() == Some(name));
+            if !shadowed {
+                tdz_rewrite_list(body, name);
+            }
+        }
+        StmtKind::Using { var, resource, body } => {
+            tdz_rewrite_expr(resource, name);
+            if var != name {
+                tdz_rewrite_list(body, name);
+            }
+        }
+        StmtKind::Lock { expr, body } => {
+            tdz_rewrite_expr(expr, name);
+            tdz_rewrite_list(body, name);
+        }
+        // Deferred execution / own scope — a body that runs later may
+        // legally observe the initialized binding.
+        StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
+        _ => {}
+    }
+}
+
+/// Assignment-target position: a bare `Ident` is a write (left untouched by
+/// this narrow pass); Member / Index targets still evaluate their object and
+/// index subexpressions as reads.
+fn tdz_rewrite_place(target: &mut Expression, name: &str) {
+    match &mut target.kind {
+        ExprKind::Member { object, .. } => tdz_rewrite_expr(object, name),
+        ExprKind::Index { object, index, .. } => {
+            tdz_rewrite_expr(object, name);
+            tdz_rewrite_expr(index, name);
+        }
+        _ => {}
+    }
+}
+
+fn tdz_rewrite_expr(e: &mut Expression, name: &str) {
+    if let ExprKind::Ident(n) = &e.kind {
+        if n == name {
+            *e = tdz_throw_expr(name);
+        }
+        return;
+    }
+    match &mut e.kind {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
+            tdz_rewrite_expr(left, name);
+            tdz_rewrite_expr(right, name);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. } => tdz_rewrite_expr(expr, name),
+        ExprKind::Yield(Some(expr)) => tdz_rewrite_expr(expr, name),
+        ExprKind::Ternary { cond, then, else_ } => {
+            tdz_rewrite_expr(cond, name);
+            tdz_rewrite_expr(then, name);
+            tdz_rewrite_expr(else_, name);
+        }
+        ExprKind::Member { object, .. } => tdz_rewrite_expr(object, name),
+        ExprKind::Index { object, index, .. } => {
+            tdz_rewrite_expr(object, name);
+            tdz_rewrite_expr(index, name);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            tdz_rewrite_expr(callee, name);
+            for a in args {
+                tdz_rewrite_expr(&mut a.value, name);
+            }
+        }
+        ExprKind::New { class, args } => {
+            tdz_rewrite_expr(class, name);
+            for a in args {
+                tdz_rewrite_expr(&mut a.value, name);
+            }
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for a in args {
+                tdz_rewrite_expr(&mut a.value, name);
+            }
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            tdz_rewrite_place(target, name);
+            tdz_rewrite_expr(value, name);
+        }
+        ExprKind::Array(elems) => {
+            for el in elems {
+                if let Some(k) = &mut el.key {
+                    tdz_rewrite_expr(k, name);
+                }
+                tdz_rewrite_expr(&mut el.value, name);
+            }
+        }
+        ExprKind::Tuple(v) | ExprKind::Set(v) | ExprKind::Sequence(v) => {
+            for x in v {
+                tdz_rewrite_expr(x, name);
+            }
+        }
+        ExprKind::Object(props) => {
+            for p in props {
+                match p {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        tdz_rewrite_expr(key, name);
+                        tdz_rewrite_expr(value, name);
+                    }
+                    ObjectProperty::Spread(e) => tdz_rewrite_expr(e, name),
+                    // Shorthand is a read, but rewriting it needs a
+                    // KeyValue expansion — out of scope for this pass.
+                    // Method / Accessor bodies are deferred execution.
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for p in parts {
+                match p {
+                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                        tdz_rewrite_expr(e, name)
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for o in [lower, upper, step].into_iter().flatten() {
+                tdz_rewrite_expr(o, name);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            tdz_rewrite_expr(start, name);
+            tdz_rewrite_expr(end, name);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            tdz_rewrite_expr(class, name);
+            tdz_rewrite_expr(member, name);
+        }
+        // Deferred execution / own scope.
+        ExprKind::Lambda { .. }
+        | ExprKind::FunctionExpr(_)
+        | ExprKind::ClassExpr { .. }
+        | ExprKind::Comprehension { .. } => {}
+        _ => {}
+    }
+}
+
+/// `(() => { throw new ReferenceError("Cannot access '<name>' before
+/// initialization") })()` — pure JS-shape AST; throws exactly when (and only
+/// when) the dead-zone reference would have been evaluated.
+fn tdz_throw_expr(name: &str) -> Expression {
+    let message = format!("Cannot access '{name}' before initialization");
+    let throw_stmt = Statement::new(StmtKind::Throw {
+        expr: Some(Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("ReferenceError")),
+            args: vec![Argument::positional(Expression::string(&message))],
+        })),
+        cause: None,
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(vec![throw_stmt]),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
     })
 }
 
@@ -93,6 +593,124 @@ fn fold_const_computed_names(body: &mut [Statement]) {
     for stmt in body.iter_mut() {
         rewrite_class_method_names(stmt, &consts);
     }
+}
+
+// ── TC39 explicit-resource-management classes (§12 DisposableStack) ─────────
+//
+// Canonical JS sources compiled through the normal class pipeline. The
+// `Symbol.dispose` / `Symbol.asyncDispose` hooks are constructor-assigned
+// instance properties so the `using` lowering's `x[Symbol.dispose]` lookup
+// resolves through the same runtime-key path object literals use.
+
+const DISPOSABLE_STACK_JS: &str = r#"
+class DisposableStack {
+    constructor() {
+        this.__entries = [];
+        this.disposed = false;
+        this[Symbol.dispose] = () => { this.dispose(); };
+    }
+    use(value) {
+        if (value !== null && value !== undefined) {
+            const d = value[Symbol.dispose];
+            if (typeof d !== "function") { throw new TypeError("Object is not disposable"); }
+            this.__entries.push(() => d.call(value));
+        }
+        return value;
+    }
+    adopt(value, onDispose) {
+        this.__entries.push(() => onDispose(value));
+        return value;
+    }
+    defer(onDispose) {
+        this.__entries.push(onDispose);
+    }
+    move() {
+        const next = new DisposableStack();
+        next.__entries = this.__entries;
+        this.__entries = [];
+        this.disposed = true;
+        return next;
+    }
+    dispose() {
+        if (this.disposed) { return; }
+        this.disposed = true;
+        const entries = this.__entries;
+        this.__entries = [];
+        for (let i = entries.length - 1; i >= 0; i--) { entries[i](); }
+    }
+}
+"#;
+
+const ASYNC_DISPOSABLE_STACK_JS: &str = r#"
+class AsyncDisposableStack {
+    constructor() {
+        this.__entries = [];
+        this.disposed = false;
+        this[Symbol.asyncDispose] = () => this.disposeAsync();
+    }
+    use(value) {
+        if (value !== null && value !== undefined) {
+            const d = value[Symbol.asyncDispose] ?? value[Symbol.dispose];
+            if (typeof d !== "function") { throw new TypeError("Object is not disposable"); }
+            this.__entries.push(() => d.call(value));
+        }
+        return value;
+    }
+    adopt(value, onDispose) {
+        this.__entries.push(() => onDispose(value));
+        return value;
+    }
+    defer(onDispose) {
+        this.__entries.push(onDispose);
+    }
+    move() {
+        const next = new AsyncDisposableStack();
+        next.__entries = this.__entries;
+        this.__entries = [];
+        this.disposed = true;
+        return next;
+    }
+    async disposeAsync() {
+        if (this.disposed) { return; }
+        this.disposed = true;
+        const entries = this.__entries;
+        this.__entries = [];
+        for (let i = entries.length - 1; i >= 0; i--) { await entries[i](); }
+    }
+}
+"#;
+
+/// Parse a trusted runtime-class snippet into statements (no recursive
+/// injection passes — the snippet goes through the main module's passes
+/// after splicing).
+fn parse_runtime_class_snippet(src: &str) -> Vec<Statement> {
+    let Ok(pairs) = JsParser::parse(Rule::program, src) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for top in pairs {
+        let inner = match top.as_rule() {
+            Rule::program => top.into_inner(),
+            Rule::EOI => continue,
+            _ => {
+                if let Ok(s) = walk_statement(top) {
+                    out.push(s);
+                }
+                continue;
+            }
+        };
+        for pair in inner {
+            match pair.as_rule() {
+                Rule::EOI | Rule::NEWLINE | Rule::import_statement => continue,
+                _ => {
+                    if let Ok(s) = walk_statement(pair) {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn js_array_elision_marker() -> ArrayElement {
@@ -520,20 +1138,233 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     })
 }
 
-// ES2025 `using x = expr` / `await using x = expr` — normalize as `const`
-// declarations. The compiler treats them identically for now; disposal
-// semantics would require finalizer support in the VM.
-fn walk_using_decl(pair: Pair<Rule>, _is_await: bool) -> Result<StmtKind, String> {
+// ES2026 `using x = expr` / `await using x = expr` — emit a `StmtKind::Using`
+// marker (empty body; an `__vybe_await_using` sentinel statement marks the
+// await form). `lower_using_declarations` folds the rest of the enclosing
+// statement list into the spec's try/finally desugaring. Multi-declarator or
+// non-identifier forms fall back to plain `const` (spec only allows binding
+// identifiers anyway).
+fn walk_using_decl(pair: Pair<Rule>, is_await: bool) -> Result<StmtKind, String> {
     let mut declarations = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::using_declarator {
             declarations.push(walk_var_declarator(p)?);
         }
     }
+    if declarations.len() == 1 {
+        let d = &declarations[0];
+        if let (BindingPattern::Ident(name), Some(init)) = (&d.pattern, &d.init) {
+            let body = if is_await {
+                vec![Statement::new(StmtKind::Expr(Expression::ident(
+                    "__vybe_await_using",
+                )))]
+            } else {
+                Vec::new()
+            };
+            return Ok(StmtKind::Using {
+                var: name.clone(),
+                resource: init.clone(),
+                body,
+            });
+        }
+    }
     Ok(StmtKind::VarDecl {
         declarations,
         kind: VarDeclKind::Const,
     })
+}
+
+// ── `using` lowering — TC39 explicit-resource-management ────────────────────
+//
+// `using x = expr; rest…` desugars in place (one statement list at a time) to
+//
+//   const x = expr;
+//   const __vybe_using_dispose_N =
+//       (x === null || x === undefined) ? undefined : x[Symbol.dispose];
+//   if (x !== null && x !== undefined &&
+//       typeof __vybe_using_dispose_N !== "function") {
+//       throw new TypeError("Object is not disposable");   // §9.3.3
+//   }
+//   try { rest… } finally {
+//       if (__vybe_using_dispose_N !== undefined) {
+//           __vybe_using_dispose_N.call(x);                 // §9.3.5
+//       }
+//   }
+//
+// `await using` looks up `Symbol.asyncDispose ?? Symbol.dispose` (§9.3.4) and
+// awaits the disposal call. LIFO order for multiple `using`s falls out of the
+// recursive nesting. Pure JS-shape AST — no compiler or VM involvement.
+
+static USING_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn lower_using_declarations(stmts: &mut Vec<Statement>) {
+    for (i, s) in stmts.iter().enumerate() {
+        if matches!(&s.kind, StmtKind::Using { .. }) {
+            let mut tail: Vec<Statement> = stmts.drain(i + 1..).collect();
+            let marker = stmts.pop().expect("using marker");
+            let StmtKind::Using {
+                var,
+                resource,
+                body,
+            } = marker.kind
+            else {
+                unreachable!()
+            };
+            let is_await = !body.is_empty();
+            lower_using_declarations(&mut tail);
+            stmts.extend(lower_one_using(&var, resource, is_await, tail));
+            break;
+        }
+    }
+    for s in stmts.iter_mut() {
+        visit_nested_stmt_lists(&mut s.kind, lower_using_declarations);
+    }
+}
+
+fn lower_one_using(
+    var: &str,
+    resource: Expression,
+    is_await: bool,
+    tail: Vec<Statement>,
+) -> Vec<Statement> {
+    let decl_x = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(var.to_string()),
+            type_hint: None,
+            init: Some(resource),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
+    let mut out = vec![decl_x];
+    out.extend(using_disposal_wrap(var, is_await, tail));
+    out
+}
+
+/// The disposal half of the `using` desugaring — `var` is already bound
+/// (by a const declaration or a for-of loop binding).
+fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<Statement> {
+    let n = USING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let disp = format!("__vybe_using_dispose_{n}");
+    let bin = |op, l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    let sym_lookup = |field: &str| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(var)),
+            index: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("Symbol")),
+                field: field.to_string(),
+                null_safe: false,
+            })),
+            null_safe: false,
+        })
+    };
+    let undefined_lit = || Expression::new(ExprKind::Lit(Literal::Undefined));
+    let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
+    let const_decl = |name: &str, init: Expression| {
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.to_string()),
+                type_hint: None,
+                init: Some(init),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Const,
+        })
+    };
+
+    // §9.3.4 GetDisposeMethod — resolved once, at binding time.
+    let method_lookup = if is_await {
+        Expression::new(ExprKind::NullCoalesce {
+            left: Box::new(sym_lookup("asyncDispose")),
+            right: Box::new(sym_lookup("dispose")),
+        })
+    } else {
+        sym_lookup("dispose")
+    };
+    let is_nullish = bin(
+        BinOp::Or,
+        bin(BinOp::StrictEq, Expression::ident(var), null_lit()),
+        bin(BinOp::StrictEq, Expression::ident(var), undefined_lit()),
+    );
+    let decl_disp = const_decl(
+        &disp,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(is_nullish),
+            then: Box::new(undefined_lit()),
+            else_: Box::new(method_lookup),
+        }),
+    );
+
+    // §9.3.3 AddDisposableResource — non-nullish resource without a callable
+    // dispose method is a TypeError at binding time.
+    let guard_cond = bin(
+        BinOp::And,
+        bin(
+            BinOp::And,
+            bin(BinOp::StrictNotEq, Expression::ident(var), null_lit()),
+            bin(BinOp::StrictNotEq, Expression::ident(var), undefined_lit()),
+        ),
+        bin(
+            BinOp::StrictNotEq,
+            Expression::new(ExprKind::TypeOf(Box::new(Expression::ident(&disp)))),
+            Expression::string("function"),
+        ),
+    );
+    let guard = Statement::new(StmtKind::If {
+        cond: guard_cond,
+        then_body: vec![Statement::new(StmtKind::Throw {
+            expr: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("TypeError")),
+                args: vec![Argument::positional(Expression::string(
+                    "Object is not disposable",
+                ))],
+            })),
+            cause: None,
+        })],
+        elifs: Vec::new(),
+        else_body: None,
+    });
+
+    // finally { if (disp !== undefined) [await] disp.call(x); }
+    let mut call_disp = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&disp)),
+            field: "call".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::ident(var))],
+        optional: false,
+    });
+    if is_await {
+        call_disp = Expression::new(ExprKind::Await(Box::new(call_disp)));
+    }
+    let finally_body = vec![Statement::new(StmtKind::If {
+        cond: bin(
+            BinOp::StrictNotEq,
+            Expression::ident(&disp),
+            undefined_lit(),
+        ),
+        then_body: vec![Statement::new(StmtKind::Expr(call_disp))],
+        elifs: Vec::new(),
+        else_body: None,
+    })];
+
+    let try_stmt = Statement::new(StmtKind::Try {
+        body: tail,
+        catches: Vec::new(),
+        else_body: None,
+        finally: Some(finally_body),
+    });
+
+    vec![decl_disp, guard, try_stmt]
 }
 
 fn walk_binding_pattern(pair: Pair<Rule>) -> Result<BindingPattern, String> {
@@ -876,14 +1707,6 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_generator,
         is_sub: false,
     })
-}
-
-fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
-    walk_params_with_prologue(pair).map(|(params, _)| params)
-}
-
-fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
-    walk_param_with_prologue(pair, 0).map(|(param, _)| param)
 }
 
 fn walk_params_with_prologue(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Statement>), String> {
@@ -1375,7 +2198,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             })
         }
         Rule::for_of_header => {
+            // `for (using r of …)` — the "using" literal is anonymous in the
+            // grammar, so detect it from the header text (no var_kind pair).
+            let is_using_form = header_inner.as_str().trim_start().starts_with("using");
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
+            let is_using_form = is_using_form && parts.iter().all(|p| p.as_rule() != Rule::var_kind);
             let is_let_const = parts
                 .iter()
                 .find(|p| p.as_rule() == Rule::var_kind)
@@ -1397,6 +2224,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             )?;
             let mut full_body = prefix;
             full_body.extend(body);
+            // `for (using r of …)` disposes r at the end of every iteration
+            // (TC39 explicit-resource-management §14.7.5).
+            if is_using_form {
+                full_body = using_disposal_wrap(&var, false, full_body);
+            }
             // Per-iteration binding: wrap body in IIFE when const/let + closures present.
             let body_final = if is_let_const && body_contains_closure(&full_body, &[var.clone()]) {
                 let params = vec![Param {
@@ -1921,7 +2753,284 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let kind = walk_expr_kind(collapse_passthrough_expression(pair)?)?;
-    Ok(Expression::with_span(kind, span))
+    Ok(normalize_optional_chain(Expression::with_span(kind, span)))
+}
+
+// ── Optional chain normalization — ECMA-262 §13.3 ───────────────────────────
+//
+// Once `?.` short-circuits on a nullish base, the ENTIRE remaining chain is
+// skipped (member reads, index expressions, call arguments — no side
+// effects). Normalize each chain whose spine contains an optional link into
+// the spec's guard shape, splitting at the link nearest the top:
+//
+//   obj?.prop[sideEffect()]
+//   → ((p) => p === null || p === undefined ? undefined : p.prop[sideEffect()])(obj)
+//
+// `delete obj?.prop` gets the same split with `true` as the short-circuit
+// value and a real delete in the live branch (§13.5.1.2). Inner chains in
+// arguments / indices are normalized by their own walk_expression calls;
+// remaining optional links below the split point are handled by the
+// recursive call on the head.
+
+static OPTCHAIN_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Split the spine at the optional link nearest the top. Returns
+/// `(head, rebuilt)` where `rebuilt` is the chain with that link made
+/// non-optional and rooted at `Ident(param)`.
+fn split_optional_spine(e: Expression, param: &str) -> Result<(Expression, Expression), Expression> {
+    let span = e.span;
+    match e.kind {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => {
+            if null_safe {
+                let rebuilt = Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(param)),
+                    field,
+                    null_safe: false,
+                });
+                return Ok((*object, rebuilt));
+            }
+            match split_optional_spine(*object, param) {
+                Ok((head, rebuilt_obj)) => Ok((
+                    head,
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(rebuilt_obj),
+                        field,
+                        null_safe: false,
+                    }),
+                )),
+                Err(object) => Err(Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(object),
+                        field,
+                        null_safe: false,
+                    },
+                    span,
+                )),
+            }
+        }
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => {
+            if null_safe {
+                let rebuilt = Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::ident(param)),
+                    index,
+                    null_safe: false,
+                });
+                return Ok((*object, rebuilt));
+            }
+            match split_optional_spine(*object, param) {
+                Ok((head, rebuilt_obj)) => Ok((
+                    head,
+                    Expression::new(ExprKind::Index {
+                        object: Box::new(rebuilt_obj),
+                        index,
+                        null_safe: false,
+                    }),
+                )),
+                Err(object) => Err(Expression::with_span(
+                    ExprKind::Index {
+                        object: Box::new(object),
+                        index,
+                        null_safe: false,
+                    },
+                    span,
+                )),
+            }
+        }
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
+            // A *method* call (member/index callee) must keep its receiver
+            // binding — splitting between the receiver and the call would
+            // rebind `this`. Leave those to the compiler's existing
+            // single-link handling, optional or not.
+            let is_method_call =
+                matches!(&callee.kind, ExprKind::Member { .. } | ExprKind::Index { .. });
+            if optional && !is_method_call {
+                let rebuilt = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(param)),
+                    args,
+                    optional: false,
+                });
+                return Ok((*callee, rebuilt));
+            }
+            if is_method_call {
+                return Err(Expression::with_span(
+                    ExprKind::Call {
+                        callee,
+                        args,
+                        optional,
+                    },
+                    span,
+                ));
+            }
+            match split_optional_spine(*callee, param) {
+                Ok((head, rebuilt_callee)) => Ok((
+                    head,
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(rebuilt_callee),
+                        args,
+                        optional,
+                    }),
+                )),
+                Err(callee) => Err(Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(callee),
+                        args,
+                        optional,
+                    },
+                    span,
+                )),
+            }
+        }
+        kind => Err(Expression::with_span(kind, span)),
+    }
+}
+
+/// Does the member/index/call spine of this expression contain an optional
+/// link? (Arguments and index expressions are separate chains — ignored.)
+fn spine_has_optional(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Member {
+            object, null_safe, ..
+        } => *null_safe || spine_has_optional(object),
+        ExprKind::Index {
+            object, null_safe, ..
+        } => *null_safe || spine_has_optional(object),
+        ExprKind::Call {
+            callee, optional, ..
+        } => *optional || spine_has_optional(callee),
+        _ => false,
+    }
+}
+
+fn normalize_optional_chain(e: Expression) -> Expression {
+    if !spine_has_optional(&e) {
+        return e;
+    }
+    let n = OPTCHAIN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let param = format!("__vybe_optc_{n}");
+    match split_optional_spine(e, &param) {
+        Ok((head, rebuilt)) => {
+            let head = normalize_optional_chain(head);
+            optional_guard_iife(&param, head, rebuilt, Expression::new(ExprKind::Lit(Literal::Undefined)))
+        }
+        Err(unchanged) => unchanged,
+    }
+}
+
+/// Is this expression the optional-guard IIFE `normalize_optional_chain`
+/// produces? Used by the §13.15.1 invalid-assignment-target early error.
+fn is_optional_chain_guard(e: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &e.kind else {
+        return false;
+    };
+    let ExprKind::Lambda { params, .. } = &callee.kind else {
+        return false;
+    };
+    params.len() == 1 && params[0].name.starts_with("__vybe_optc_")
+}
+
+/// Recognize the optional-guard IIFE produced by `normalize_optional_chain`
+/// and rewrite it for `delete` semantics: short-circuit value becomes `true`,
+/// the live chain gets a real `Delete`.
+fn rewrite_optional_delete(operand: &Expression) -> Option<ExprKind> {
+    let ExprKind::Call {
+        callee,
+        args,
+        optional: false,
+    } = &operand.kind
+    else {
+        return None;
+    };
+    let ExprKind::Lambda {
+        params,
+        body: LambdaBody::Expr(body),
+        ..
+    } = &callee.kind
+    else {
+        return None;
+    };
+    if params.len() != 1 || !params[0].name.starts_with("__vybe_optc_") {
+        return None;
+    }
+    let ExprKind::Ternary { cond, then, else_ } = &body.kind else {
+        return None;
+    };
+    if !matches!(then.kind, ExprKind::Lit(Literal::Undefined)) {
+        return None;
+    }
+    let live = Expression::new(ExprKind::Delete(else_.clone()));
+    let guarded = Expression::new(ExprKind::Ternary {
+        cond: cond.clone(),
+        then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+        else_: Box::new(live),
+    });
+    Some(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: params.clone(),
+            body: LambdaBody::Expr(Box::new(guarded)),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: args.clone(),
+        optional: false,
+    })
+}
+
+/// `((param) => param === null || param === undefined ? <short> : <live>)(head)`
+fn optional_guard_iife(
+    param: &str,
+    head: Expression,
+    live: Expression,
+    short: Expression,
+) -> Expression {
+    let nullish = Expression::new(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::ident(param)),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::ident(param)),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+        })),
+    });
+    let body = Expression::new(ExprKind::Ternary {
+        cond: Box::new(nullish),
+        then: Box::new(short),
+        else_: Box::new(live),
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: param.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(body)),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: vec![Argument::positional(head)],
+        optional: false,
+    })
 }
 
 fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
@@ -2107,6 +3216,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 walk_expr_kind(inner.remove(0))
             } else if inner.len() == 3 {
                 let left = walk_expression(inner.remove(0))?;
+                // §13.15.1 early error: an optional chain is not a valid
+                // assignment target. After normalization an optional-chain
+                // target shows up as the guard IIFE.
+                if is_optional_chain_guard(&left) {
+                    return Err("Invalid left-hand side in assignment".to_string());
+                }
                 let op_str = inner.remove(0).as_str();
                 let right = walk_expression(inner.remove(0))?;
                 if op_str == "=" {
@@ -2195,6 +3310,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // delete goes through the runtime property-deletion path.
                 if matches!(operand.kind, ExprKind::Ident(_)) {
                     return Ok(ExprKind::Lit(crate::ast::Literal::Bool(false)));
+                }
+                // `delete obj?.prop` — §13.5.1.2: a short-circuited chain
+                // deletes nothing and yields true. walk_expression already
+                // normalized the chain into the optional-guard IIFE; rewrite
+                // its branches for delete semantics.
+                if let Some(rewritten) = rewrite_optional_delete(&operand) {
+                    return Ok(rewritten);
                 }
                 return Ok(ExprKind::Delete(Box::new(operand)));
             }
@@ -2501,7 +3623,44 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // Function expression
         Rule::function_expression | Rule::async_function_expression => {
-            let stmt_kind = walk_func_decl(pair)?;
+            let mut stmt_kind = walk_func_decl(pair)?;
+            // §15.2.5: a *named* function expression binds its name only
+            // inside its own scope — recursion sees it, the enclosing scope
+            // does not. Normalize to an IIFE holding the binding as a local
+            // const (a nested FunctionDecl would register module-globally):
+            //   (() => { const name = function (…) {…}; return name; })()
+            // The const binding also drives the existing `.name` inference
+            // for anonymous functions, so fn.name stays the source name.
+            if let StmtKind::FunctionDecl { name, .. } = &mut stmt_kind {
+                if !name.is_empty() {
+                    let fn_name = std::mem::take(name);
+                    let init = Expression::new(ExprKind::FunctionExpr(Box::new(
+                        Statement::new(stmt_kind),
+                    )));
+                    let decl = Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(fn_name.clone()),
+                            type_hint: None,
+                            init: Some(init),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Const,
+                    });
+                    let ret =
+                        Statement::new(StmtKind::Return(Some(Expression::ident(&fn_name))));
+                    return Ok(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Lambda {
+                            params: Vec::new(),
+                            body: LambdaBody::Block(vec![decl, ret]),
+                            is_async: false,
+                            captures: Vec::new(),
+                        })),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                }
+            }
             Ok(ExprKind::FunctionExpr(Box::new(Statement::new(stmt_kind))))
         }
 
@@ -3194,6 +4353,28 @@ fn unescape_template(s: &str) -> String {
                     chars.by_ref().take(4).collect()
                 };
                 if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    // §11.8.4: surrogate-pair escapes combine into one
+                    // supplementary code point.
+                    if hex.len() == 4 && (0xD800..=0xDBFF).contains(&n) {
+                        let mut probe = chars.clone();
+                        if probe.next() == Some('\\') && probe.next() == Some('u') {
+                            let lo_hex: String = probe.by_ref().take(4).collect();
+                            if lo_hex.len() == 4 {
+                                if let Ok(lo) = u32::from_str_radix(&lo_hex, 16) {
+                                    if (0xDC00..=0xDFFF).contains(&lo) {
+                                        let cp = 0x10000 + ((n - 0xD800) << 10) + (lo - 0xDC00);
+                                        if let Some(ch) = char::from_u32(cp) {
+                                            for _ in 0..6 {
+                                                chars.next();
+                                            }
+                                            result.push(ch);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(ch) = char::from_u32(n) {
                         result.push(ch);
                         continue;
@@ -3554,14 +4735,23 @@ fn walk_object_accessor(
         prop_pair.as_str().to_string()
     };
     let mut params = Vec::new();
+    let mut prologue = Vec::new();
     let mut body = Vec::new();
     for p in inner {
         match p.as_rule() {
-            Rule::param_list => params = walk_params(p)?,
-            Rule::param => params = vec![walk_param(p)?],
+            Rule::param_list => (params, prologue) = walk_params_with_prologue(p)?,
+            Rule::param => {
+                let (param, init_stmt) = walk_param_with_prologue(p, 0)?;
+                params = vec![param];
+                prologue = init_stmt.into_iter().collect();
+            }
             Rule::function_body => body = walk_body(p)?,
             _ => {}
         }
+    }
+    if !prologue.is_empty() {
+        prologue.extend(body);
+        body = prologue;
     }
     let mut full_params = vec![Param {
         name: "this".to_string(),
@@ -3650,29 +4840,46 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         .map(str::to_string)
         .unwrap_or(raw_key);
     let mut params = Vec::new();
+    let mut prologue = Vec::new();
     let mut body = Vec::new();
     for p in inner {
         match p.as_rule() {
             Rule::async_kw => is_async = true,
-            Rule::param_list => params = walk_params(p)?,
-            Rule::param => params = vec![walk_param(p)?],
+            Rule::param_list => (params, prologue) = walk_params_with_prologue(p)?,
+            Rule::param => {
+                let (param, init_stmt) = walk_param_with_prologue(p, 0)?;
+                params = vec![param];
+                prologue = init_stmt.into_iter().collect();
+            }
             Rule::function_body => body = walk_body(p)?,
             _ => {}
         }
     }
+    if !prologue.is_empty() {
+        prologue.extend(body);
+        body = prologue;
+    }
     let is_generator = has_generator_marker || body_contains_yield(&body);
 
-    // Computed method: return Computed { key: runtime_expr, value: lambda }
+    // Computed method: return Computed { key: runtime_expr, value: function }.
+    // A computed-key method is still a *method* — dynamic `this` per
+    // §15.4.4 MethodDefinitionEvaluation — so emit a function expression,
+    // not a Lambda (Lambdas compile with arrow-style lexical `this`).
     if let Some(key_expr) = computed_expr {
-        let lambda = Expression::new(ExprKind::Lambda {
+        let func = Statement::new(StmtKind::FunctionDecl {
+            name: String::new(),
             params,
-            body: LambdaBody::Block(body),
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
             is_async,
-            captures: Vec::new(),
+            is_generator,
+            is_sub: false,
         });
         return Ok(ObjectProperty::Computed {
             key: key_expr,
-            value: lambda,
+            value: Expression::new(ExprKind::FunctionExpr(Box::new(func))),
         });
     }
 
@@ -3835,6 +5042,35 @@ fn unquote(s: &str) -> String {
                     }
                     if hex.len() == 4 {
                         if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                            // §11.8.4: two \uHHHH escapes forming a surrogate
+                            // pair encode one supplementary code point.
+                            if (0xD800..=0xDBFF).contains(&n) {
+                                let mut probe = chars.clone();
+                                if probe.next() == Some('\\') && probe.next() == Some('u') {
+                                    let mut lo_hex = String::new();
+                                    for _ in 0..4 {
+                                        match probe.next() {
+                                            Some(h) if h.is_ascii_hexdigit() => lo_hex.push(h),
+                                            _ => break,
+                                        }
+                                    }
+                                    if lo_hex.len() == 4 {
+                                        if let Ok(lo) = u32::from_str_radix(&lo_hex, 16) {
+                                            if (0xDC00..=0xDFFF).contains(&lo) {
+                                                let cp =
+                                                    0x10000 + ((n - 0xD800) << 10) + (lo - 0xDC00);
+                                                if let Some(c) = char::from_u32(cp) {
+                                                    for _ in 0..6 {
+                                                        chars.next();
+                                                    }
+                                                    out.push(c);
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(c) = char::from_u32(n) {
                                 out.push(c);
                                 continue;

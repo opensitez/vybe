@@ -192,6 +192,8 @@ fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
         self_keyword: "this".into(),
         base_keyword: Some("super".into()),
         constructor_name: "constructor".into(),
+        class_method_dispatch: "prototype".into(),
+        dynamic_numeric_dispatch: true,
         enum_as_ordinals: false,
         case_sensitive: true,
         string_indexing: StringIndexing::ZeroBased,

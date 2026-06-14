@@ -17,10 +17,25 @@
 use chrono::{
     DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
 
 const MODULE: &str = "ecma:date";
+
+static DATE_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+/// Canonical `%Date.prototype%`. A singleton so the global wiring (which
+/// populates the methods) and the `new Date()` constructor (which links
+/// each instance's `__proto__`) reference the SAME object — making
+/// `Object.getPrototypeOf(new Date()) === Date.prototype` hold.
+pub(crate) fn shared_date_prototype() -> Value {
+    Value::Object(
+        DATE_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
+}
 
 fn dt_from_ms(ms: f64) -> Option<DateTime<Utc>> {
     if !ms.is_finite() {
@@ -482,10 +497,12 @@ pub fn register(vm: &mut VM) {
                 construct_date_from_args(&args[offset..])
             }
         };
-        let mut obj = vybe_bytecode::value::Object::new();
+        let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Date")));
         obj.properties.insert("__time".into(), Value::F64(ms));
-        Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)))
+        obj.properties
+            .insert("__proto__".into(), shared_date_prototype());
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Date.parse(str) → ms since epoch, NaN on failure.

@@ -20,7 +20,9 @@ fn new_proxy(target: Value, handler: Value) -> Value {
 fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
     if let Value::Object(obj) = v {
         let o = obj.lock().unwrap();
-        if o.properties.contains_key(PROXY_TAG) {
+        if o.properties.contains_key(PROXY_TAG)
+            || (o.properties.contains_key(PROXY_TARGET) && o.properties.contains_key(PROXY_HANDLER))
+        {
             drop(o);
             return Some(obj.clone());
         }
@@ -67,8 +69,33 @@ fn get_handler(proxy: &Arc<Mutex<Object>>) -> Value {
 fn target_get(target: &Value, key: &str) -> Value {
     match target {
         Value::Object(obj) => {
-            let o = obj.lock().unwrap();
-            o.properties.get(key).cloned().unwrap_or(Value::Undefined)
+            // Arrays keep elements in ObjectKind::Array, not properties —
+            // mirror ARRAY_GET semantics for the no-trap/non-proxy path.
+            {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::Array(v) = &o.kind {
+                    if key == "length" {
+                        return Value::F64(v.len() as f64);
+                    }
+                    if let Ok(i) = key.parse::<usize>() {
+                        return v.get(i).cloned().unwrap_or(Value::Undefined);
+                    }
+                }
+            }
+            crate::ecma::object::proto_walk_get(obj, key).unwrap_or(Value::Undefined)
+        }
+        Value::String(s) => {
+            if key == "length" {
+                return Value::F64(s.chars().count() as f64);
+            }
+            if let Ok(i) = key.parse::<usize>() {
+                return s
+                    .chars()
+                    .nth(i)
+                    .map(|c| Value::String(Arc::from(c.to_string().as_str())))
+                    .unwrap_or(Value::Undefined);
+            }
+            Value::Undefined
         }
         _ => Value::Undefined,
     }
@@ -76,16 +103,185 @@ fn target_get(target: &Value, key: &str) -> Value {
 
 fn target_set(target: &Value, key: &str, val: Value) {
     if let Value::Object(obj) = target {
+        {
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(v) = &mut o.kind {
+                if let Ok(i) = key.parse::<usize>() {
+                    if i >= v.len() {
+                        v.resize(i + 1, Value::Undefined);
+                    }
+                    v[i] = val;
+                    return;
+                }
+                if key == "length" {
+                    let new_len = val.as_f64() as usize;
+                    v.resize(new_len, Value::Undefined);
+                    return;
+                }
+            }
+        }
         obj.lock().unwrap().properties.insert(key.to_string(), val);
+        if !key.starts_with("__") {
+            crate::ecma::object::track_key(obj, key);
+        }
     }
 }
 
-fn trap_return_value(trap: &Value) -> Option<Value> {
-    if let Value::Object(t) = trap {
-        let t = t.lock().unwrap();
-        t.properties.get("__trap_return").cloned()
+fn key_string(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.to_string(),
+        Value::Symbol(text) => text.to_string(),
+        _ => format!("{}", value),
+    }
+}
+
+fn make_type_error(message: &str) -> Value {
+    crate::ecma::error::new_error("TypeError", message)
+}
+
+fn throw_revoked(ctx: &mut HostContext) -> Value {
+    ctx.throw_value(make_type_error(
+        "Cannot perform operation on a revoked proxy",
+    ));
+    Value::Undefined
+}
+
+fn is_callable(value: &Value) -> bool {
+    matches!(value, Value::Object(obj)
+        if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+}
+
+fn call_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Value {
+    crate::ecma::function::invoke_with_explicit_this(ctx, trap, handler.clone(), args)
+}
+
+fn target_has(target: &Value, key: &str) -> bool {
+    match target {
+        Value::Object(obj) => {
+            {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::Array(v) = &o.kind {
+                    if key == "length" {
+                        return true;
+                    }
+                    if let Ok(i) = key.parse::<usize>() {
+                        return i < v.len();
+                    }
+                }
+            }
+            crate::ecma::object::proto_walk_get(obj, key).is_some()
+        }
+        _ => false,
+    }
+}
+
+fn target_delete(target: &Value, key: &str) -> bool {
+    if let Value::Object(obj) = target {
+        let mut o = obj.lock().unwrap();
+        if crate::ecma::object::is_nonconfig(&o, key) {
+            return false;
+        }
+        o.properties.remove(key);
+    }
+    true
+}
+
+fn target_own_keys(target: &Value) -> Value {
+    if let Value::Object(obj) = target {
+        let o = obj.lock().unwrap();
+        let keys = crate::ecma::object::ordered_own_string_keys(&o)
+            .into_iter()
+            .map(|key| Value::String(Arc::from(key.as_str())))
+            .collect();
+        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+    }
+    Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+}
+
+fn array_values(value: &Value) -> Vec<Value> {
+    if let Value::Object(obj) = value {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Array(values) = &o.kind {
+            return values.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// [[OwnPropertyKeys]] for proxy exotic objects — ECMA-262 §10.5.11.
+/// Returns None when `value` is not a proxy so callers (Object.keys etc.)
+/// keep their ordinary-object path.
+pub(crate) fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> {
+    let proxy_obj = is_proxy(value)?;
+    if proxy_is_revoked(&proxy_obj) {
+        return Some(throw_revoked(ctx));
+    }
+    let handler = get_handler(&proxy_obj);
+    let target = get_target(&proxy_obj);
+    if let Some(trap) = get_trap(&handler, "ownKeys") {
+        if is_callable(&trap) {
+            return Some(call_trap(ctx, &handler, &trap, std::slice::from_ref(&target)));
+        }
+    }
+    Some(target_own_keys(&target))
+}
+
+/// [[Construct]] dispatch — ECMA-262 §10.5.13 for proxy exotic objects,
+/// ordinary construct for everything else. Shared by `ecma:proxy.construct`
+/// and `ecma:reflect.construct` (§28.1.2 routes through [[Construct]]).
+pub(crate) fn construct_dispatch(
+    ctx: &mut HostContext,
+    constructor: &Value,
+    args_list: &Value,
+) -> Value {
+    if let Some(proxy_obj) = is_proxy(constructor) {
+        if proxy_is_revoked(&proxy_obj) {
+            return throw_revoked(ctx);
+        }
+        let handler = get_handler(&proxy_obj);
+        let target = get_target(&proxy_obj);
+        if let Some(trap) = get_trap(&handler, "construct") {
+            if is_callable(&trap) {
+                let result = call_trap(
+                    ctx,
+                    &handler,
+                    &trap,
+                    &[target.clone(), args_list.clone(), constructor.clone()],
+                );
+                if matches!(result, Value::Object(_)) {
+                    return result;
+                }
+                ctx.throw_value(make_type_error("Proxy construct trap must return an object"));
+                return Value::Undefined;
+            }
+        }
+        // No trap: construct the target (recurses for proxy-of-proxy).
+        return construct_dispatch(ctx, &target, args_list);
+    }
+
+    let mut this_value = Object::new();
+    if let Value::Object(target_obj) = constructor {
+        if let Some(proto) = target_obj
+            .lock()
+            .unwrap()
+            .properties
+            .get("prototype")
+            .cloned()
+        {
+            this_value.properties.insert("__proto__".into(), proto);
+        }
+    }
+    let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
+    let result = crate::ecma::function::invoke_with_explicit_this(
+        ctx,
+        constructor,
+        this_obj.clone(),
+        &array_values(args_list),
+    );
+    if matches!(result, Value::Object(_)) {
+        result
     } else {
-        None
+        this_obj
     }
 }
 
@@ -103,38 +299,26 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "get",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
                 None => {
-                    return target_get(
-                        args.first().unwrap_or(&Value::Undefined),
-                        args.get(1)
-                            .and_then(|v| {
-                                if let Value::String(s) = v {
-                                    Some(s.as_ref())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or(""),
-                    );
+                    let key = args.get(1).map(key_string).unwrap_or_default();
+                    return target_get(args.first().unwrap_or(&Value::Undefined), &key);
                 }
             };
             if proxy_is_revoked(&proxy_obj) {
-                return Value::Undefined;
+                return throw_revoked(ctx);
             }
             let handler = get_handler(&proxy_obj);
             let target = get_target(&proxy_obj);
-            let key = match args.get(1) {
-                Some(Value::String(s)) => s.as_ref().to_string(),
-                _ => return Value::Undefined,
-            };
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "get") {
-                if let Some(ret) = trap_return_value(&trap) {
-                    return ret;
+                if is_callable(&trap) {
+                    let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                    return call_trap(ctx, &handler, &trap, &[target, key_value, receiver]);
                 }
-                return target_get(&target, &key);
             }
             target_get(&target, &key)
         }),
@@ -143,23 +327,33 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "set",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
-                None => return Value::Bool(false),
+                None => {
+                    let target = args.first().cloned().unwrap_or(Value::Undefined);
+                    let key = args.get(1).map(key_string).unwrap_or_default();
+                    let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+                    target_set(&target, &key, val);
+                    return Value::Bool(true);
+                }
             };
             if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
+                return throw_revoked(ctx);
             }
             let handler = get_handler(&proxy_obj);
             let target = get_target(&proxy_obj);
-            let key = match args.get(1) {
-                Some(Value::String(s)) => s.as_ref().to_string(),
-                _ => return Value::Bool(false),
-            };
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let key = key_string(&key_value);
             let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-            if let Some(_trap) = get_trap(&handler, "set") {
-                return Value::Bool(true);
+            if let Some(trap) = get_trap(&handler, "set") {
+                if is_callable(&trap) {
+                    let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                    return Value::Bool(
+                        call_trap(ctx, &handler, &trap, &[target, key_value, val, receiver])
+                            .as_bool(),
+                    );
+                }
             }
             target_set(&target, &key, val);
             Value::Bool(true)
@@ -169,84 +363,66 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "has",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
-                None => return Value::Bool(false),
+                None => {
+                    let target = args.first().cloned().unwrap_or(Value::Undefined);
+                    let key = args.get(1).map(key_string).unwrap_or_default();
+                    return Value::Bool(target_has(&target, &key));
+                }
             };
             if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
+                return throw_revoked(ctx);
             }
             let handler = get_handler(&proxy_obj);
             let target = get_target(&proxy_obj);
-            let key = match args.get(1) {
-                Some(Value::String(s)) => s.as_ref().to_string(),
-                _ => return Value::Bool(false),
-            };
-            if let Some(_trap) = get_trap(&handler, "has") {
-                return Value::Bool(true);
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let key = key_string(&key_value);
+            if let Some(trap) = get_trap(&handler, "has") {
+                if is_callable(&trap) {
+                    return Value::Bool(call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool());
+                }
             }
-            if let Value::Object(t) = target {
-                return Value::Bool(t.lock().unwrap().properties.contains_key(&key));
-            }
-            Value::Bool(false)
+            Value::Bool(target_has(&target, &key))
         }),
     );
 
     vm.register_host_fn(
         "ecma:proxy",
         "deleteProperty",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
-                None => return Value::Bool(false),
+                None => {
+                    let target = args.first().cloned().unwrap_or(Value::Undefined);
+                    let key = args.get(1).map(key_string).unwrap_or_default();
+                    return Value::Bool(target_delete(&target, &key));
+                }
             };
             if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
+                return throw_revoked(ctx);
             }
             let handler = get_handler(&proxy_obj);
             let target = get_target(&proxy_obj);
-            let key = match args.get(1) {
-                Some(Value::String(s)) => s.as_ref().to_string(),
-                _ => return Value::Bool(false),
-            };
-            if let Some(_trap) = get_trap(&handler, "deleteProperty") {
-                return Value::Bool(true);
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let key = key_string(&key_value);
+            if let Some(trap) = get_trap(&handler, "deleteProperty") {
+                if is_callable(&trap) {
+                    return Value::Bool(call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool());
+                }
             }
-            if let Value::Object(t) = target {
-                t.lock().unwrap().properties.remove(&key);
-            }
-            Value::Bool(true)
+            Value::Bool(target_delete(&target, &key))
         }),
     );
 
     vm.register_host_fn(
         "ecma:proxy",
         "ownKeys",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Undefined,
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Undefined;
-            }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
-            if let Some(_trap) = get_trap(&handler, "ownKeys") {
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))));
-            }
-            if let Value::Object(t) = target {
-                let keys: Vec<Value> = t
-                    .lock()
-                    .unwrap()
-                    .properties
-                    .keys()
-                    .map(|k| Value::String(Arc::from(k.as_str())))
-                    .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
-            }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            own_keys_dispatch(ctx, &value)
+                .unwrap_or_else(|| target_own_keys(&value))
         }),
     );
 
@@ -313,43 +489,62 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "apply",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
-                None => return Value::Undefined,
+                None => {
+                    let target = args.first().cloned().unwrap_or(Value::Undefined);
+                    // Proxy.revocable's revoke function (§28.2.2.1) is
+                    // modelled as an object carrying __revoke_target.
+                    if let Value::Object(obj) = &target {
+                        let revoke_target = obj.lock().unwrap().properties.get("__revoke_target").cloned();
+                        if let Some(Value::Object(proxy_obj)) = revoke_target {
+                            proxy_obj
+                                .lock()
+                                .unwrap()
+                                .properties
+                                .insert(PROXY_REVOKED.into(), Value::Bool(true));
+                            return Value::Undefined;
+                        }
+                    }
+                    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+                    let invoke_args = args.get(2).map(array_values).unwrap_or_default();
+                    return crate::ecma::function::invoke_with_explicit_this(
+                        ctx,
+                        &target,
+                        this_arg,
+                        &invoke_args,
+                    );
+                }
             };
             if proxy_is_revoked(&proxy_obj) {
-                return Value::Undefined;
+                return throw_revoked(ctx);
             }
             let handler = get_handler(&proxy_obj);
+            let target = get_target(&proxy_obj);
+            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let args_list = args.get(2).cloned().unwrap_or_else(|| {
+                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            });
             if let Some(trap) = get_trap(&handler, "apply") {
-                if let Some(ret) = trap_return_value(&trap) {
-                    return ret;
+                if is_callable(&trap) {
+                    return call_trap(ctx, &handler, &trap, &[target, this_arg, args_list]);
                 }
             }
-            Value::Undefined
+            let invoke_args = array_values(&args_list);
+            crate::ecma::function::invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
         }),
     );
 
     vm.register_host_fn(
         "ecma:proxy",
         "construct",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Undefined,
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Undefined;
-            }
-            let target = get_target(&proxy_obj);
-            match target {
-                Value::Object(_) => {
-                    let obj = Object::new();
-                    Value::Object(Arc::new(Mutex::new(obj)))
-                }
-                _ => Value::Undefined,
-            }
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let proxy_value = args.first().cloned().unwrap_or(Value::Undefined);
+            let args_list = args.get(1).cloned().unwrap_or_else(|| {
+                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            });
+            construct_dispatch(ctx, &proxy_value, &args_list)
         }),
     );
 

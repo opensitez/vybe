@@ -95,7 +95,7 @@ console.log(deleted);
 console.log(p.a);
 "#
         ),
-        vec!["null", "1"]
+        vec!["a", "undefined"]
     );
 }
 

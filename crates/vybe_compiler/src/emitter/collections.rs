@@ -578,9 +578,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Generic stash-and-call: pop `argc` values into scratch locals,
 /// GLOBAL_GET the polyfill func by name, push the args back in order,
-/// CALL_REF. Replaces the legacy `vybe:array.*` host-import path with
-/// a direct call into the bundled `__vybe_*` runtime helper — keeps
-/// emitted bytecode free of the `vybe:*` namespace.
+/// CALL_REF into the bundled `__vybe_*` runtime helper.
 ///
 /// Slots are appended at `chunks[current].local_count`; locals grow
 /// monotonically per call site (no reuse across calls) which trades
@@ -817,10 +815,7 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 /// range(stop) or range(start, stop) or range(start, stop, step).
 /// Stack: [args...] → [array]
 ///
-/// Routes through the bundled `__vybe_range` runtime helper — same
-/// polyfill the host's `vybe:array.range` alias resolves to, just
-/// called directly via GLOBAL_GET + CALL_REF instead of paying the
-/// CALL_IMPORT indirection through a legacy `vybe:*` host name.
+/// Routes through the bundled `__vybe_range` runtime helper via GLOBAL_GET + CALL_REF.
 pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, line: u32) {
     emit_runtime_helper_call(chunks, current, "__vybe_range", arg_count, line);
 }

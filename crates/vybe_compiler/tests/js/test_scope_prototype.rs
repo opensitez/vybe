@@ -536,7 +536,9 @@ console.log(obj.foo?.bar());
 console.log(obj.baz?.bar());
 "#
         ),
-        &["42", "null"]
+        // §13.3.9: an optional chain that short-circuits evaluates to
+        // `undefined` (not null) — matches every other optional-chain test.
+        &["42", "undefined"]
     );
 }
 

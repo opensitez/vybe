@@ -27,11 +27,11 @@ pub fn emit_c_fmod(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a (for subtraction later)
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
-    chunk.emit_op(Op::F64_DIV, line);               // a/b
-    chunk.emit_op(Op::F64_TRUNC, line);             // trunc(a/b)
+    chunk.emit_op(Op::F64_DIV, line); // a/b
+    chunk.emit_op(Op::F64_TRUNC, line); // trunc(a/b)
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
-    chunk.emit_op(Op::F64_MUL, line);               // trunc(a/b)*b
-    chunk.emit_op(Op::F64_SUB, line);               // a - trunc(a/b)*b
+    chunk.emit_op(Op::F64_MUL, line); // trunc(a/b)*b
+    chunk.emit_op(Op::F64_SUB, line); // a - trunc(a/b)*b
 }
 
 /// Python floor modulo: `a - b * floor(a / b)`. Stack: [a, b] → [result].
@@ -77,6 +77,23 @@ pub fn emit_max(chunk: &mut Chunk, line: u32) {
 
 pub fn emit_neg(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_NEG, line);
+}
+
+/// clamp(x, min, max) = min(max(x, min), max). Stack: [x, min, max] → [result].
+/// Pure WASM — no host import needed.
+pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
+    let max_slot = chunk.local_count;
+    let min_slot = chunk.local_count + 1;
+    chunk.local_count += 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, min_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    // stack: [x]
+    chunk.emit_op_u16(Op::LOCAL_GET, min_slot, line); // [x, min]
+    chunk.emit_op(Op::F64_MAX, line);                 // [max(x, min)]
+    chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line); // [max(x,min), max]
+    chunk.emit_op(Op::F64_MIN, line);                 // [min(max(x,min), max)]
 }
 
 // ── Host imports (standard math, same across all languages) ──

@@ -318,7 +318,7 @@ pub fn register(vm: &mut VM) {
             "__proto__",
             crate::ecma::function::shared_function_prototype(),
         );
-        let date_proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+        let date_proto = crate::ecma::date::shared_date_prototype();
         set_prop(&date_proto, "constructor", date.clone());
         set_prop(&date_proto, "__proto__", object_proto.clone());
         for name in &[

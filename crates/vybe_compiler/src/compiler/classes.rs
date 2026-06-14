@@ -229,6 +229,45 @@ impl Compiler {
         Ok(())
     }
 
+    /// Set `__js_new_target` to this class ONLY when currently unset.
+    /// §13.3.7.1: `super()` preserves the active new.target — the chain's
+    /// outermost `new` already set it; this default covers constructors
+    /// invoked without an outer `new` frame.
+    fn emit_default_js_new_target(&mut self, name: &str) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let nt_key = self.str_const("__js_new_target");
+        self.emit_u16(Op::GLOBAL_GET, nt_key);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunks[self.current].emit_if(line);
+        self.emit_var_get(name);
+        self.emit_u16(Op::GLOBAL_SET, nt_key);
+        self.emit(Op::DROP);
+        self.chunks[self.current].emit_end(line);
+    }
+
+    /// Push the prototype object for a new instance's `__proto__` link:
+    /// `(__js_new_target ?? <OwnClass>).prototype`. §9.1.13
+    /// OrdinaryCreateFromConstructor uses new.target's prototype, so
+    /// `this.constructor` resolves to the *invoked* class even while a
+    /// parent constructor body runs under `super()`.
+    fn emit_load_instance_proto(&mut self, class_name: &str) {
+        let nt_key = self.str_const("__js_new_target");
+        self.emit_u16(Op::GLOBAL_GET, nt_key);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunks[self.current].emit_if(line);
+        self.emit(Op::DROP);
+        let class_global = self.str_const(class_name);
+        self.emit_u16(Op::GLOBAL_GET, class_global);
+        self.chunks[self.current].emit_end(line);
+        let prototype_key = self.str_const("prototype");
+        self.emit_u16(Op::STRUCT_GET, prototype_key);
+    }
+
     fn emit_bind_instance_method_with_aliases(
         &mut self,
         this_slot: u16,
@@ -241,6 +280,19 @@ impl Compiler {
         let receiver_key = self.str_const("__vybe_method_receiver");
         let rest_key = self.str_const("__vybe_rest_fixed_arity");
 
+        // Prototype-dispatch profiles: the prototype is the source of truth,
+        // so reassignment (`C.prototype.m = wrap(C.prototype.m)`) reaches
+        // instances constructed afterwards. Falls back to the compiled ref
+        // when the prototype has no entry (capture-carrying methods, class
+        // expressions without a class global).
+        let proto_class = if self.class_prototype_dispatch() && capture_names.is_empty() {
+            self.current_class
+                .clone()
+                .filter(|c| self.defined_classes.contains(&self.canon(c)))
+        } else {
+            None
+        };
+
         let mut bind_names = vec![method_name.to_string()];
         for &alias in common::classes::cross_language_aliases(method_name) {
             if alias != method_name {
@@ -250,7 +302,24 @@ impl Compiler {
 
         for bind_name in bind_names {
             self.emit_u16(Op::LOCAL_GET, this_slot);
-            self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+            if let Some(class_name) = &proto_class {
+                let cname = self.canon(class_name);
+                let class_idx = self.global_name_const_idx(&cname);
+                self.emit_u16(Op::GLOBAL_GET, class_idx);
+                let proto_key = self.str_const("prototype");
+                self.emit_u16(Op::STRUCT_GET, proto_key);
+                let mkey = self.str_const(method_name);
+                self.emit_u16(Op::STRUCT_GET, mkey);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                let line = self.line;
+                self.chunk().emit_if(line);
+                self.emit(Op::DROP);
+                self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+                self.chunks[self.current].emit_end(line);
+            } else {
+                self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+            }
             if bind_receiver {
                 self.emit(Op::DUP);
                 self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -343,10 +412,10 @@ impl Compiler {
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
         self.seed_shared_global_constants(&mut chunk);
-        // Mark the chunk so the WASM emitter can list it in the
-        // `vybe.jspi` custom section — JS hosts wrap promising exports
-        // via `WebAssembly.promising(...)` at load time.
-        chunk.is_async = is_async;
+        // Mark async functions so the WASM emitter can list them in the
+        // `vybe.jspi` custom section. Async generators are still generator
+        // continuations at call time; their async surface is on `.next()`.
+        chunk.is_async = is_async && !is_generator;
         // Generators: when the source marked the function as a
         // generator (Python `yield`, JS `function*`, C# `yield return`),
         // stamp the chunk so the VM wraps invocations in a
@@ -551,7 +620,7 @@ impl Compiler {
         // uncaught exceptions short-circuit to the Promise.reject
         // path. The `await` opcode handles per-await suspension via
         // JSPI; this wrap just covers terminal throw / return.
-        let async_try = if is_async && self.is_js_profile() {
+        let async_try = if is_async && !is_generator && self.is_js_profile() {
             let line = self.line;
             Some(common::functions::emit_async_body_start(
                 &mut self.chunks[self.current],
@@ -1723,10 +1792,7 @@ impl Compiler {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
-                                    if self.is_js_profile() {
-                                        self.emit_var_get(name);
-                                        self.set_js_new_target_from_stack();
-                                    }
+                                    self.emit_default_js_new_target(name);
                                     self.emit_var_get(parent_name);
                                     for a in *bargs {
                                         self.compile_expr(a)?;
@@ -1747,10 +1813,7 @@ impl Compiler {
                         } else if auto_base_needed {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
-                                    if self.is_js_profile() {
-                                        self.emit_var_get(name);
-                                        self.set_js_new_target_from_stack();
-                                    }
+                                    self.emit_default_js_new_target(name);
                                     self.emit_var_get(parent_name);
                                     self.emit_u8(Op::CALL_REF, 0);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -1768,10 +1831,7 @@ impl Compiler {
                         }
                     } else if let Some(parent_name) = parent {
                         if parent_ctor_is_bound {
-                            if self.is_js_profile() {
-                                self.emit_var_get(name);
-                                self.set_js_new_target_from_stack();
-                            }
+                            self.emit_default_js_new_target(name);
                             self.emit_var_get(parent_name);
                             if synthesized_forward_args {
                                 let parent_ctor_slot =
@@ -1843,14 +1903,11 @@ impl Compiler {
                         self.emit_u16(Op::STRUCT_SET, type_key);
                         self.emit(Op::DROP);
 
-                        if self.is_js_profile() {
-                            let class_global = self.str_const(name);
-                            let prototype_key = self.str_const("prototype");
+                        if self.class_prototype_dispatch() {
                             let proto_link_key = self.str_const("__proto__");
                             let proto_local =
                                 self.define_local(&format!("__{}_link_proto", helper_name));
-                            self.emit_u16(Op::GLOBAL_GET, class_global);
-                            self.emit_u16(Op::STRUCT_GET, prototype_key);
+                            self.emit_load_instance_proto(name);
                             self.emit_u16(Op::LOCAL_SET, proto_local);
                             self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
@@ -2121,14 +2178,11 @@ impl Compiler {
                             )?;
                         }
                     }
-                    if self.is_js_profile() {
-                        let class_global = self.str_const(name);
-                        let prototype_key = self.str_const("prototype");
+                    if self.class_prototype_dispatch() {
                         let proto_link_key = self.str_const("__proto__");
                         let proto_local =
                             self.define_local(&format!("__{}_link_proto_base", helper_name));
-                        self.emit_u16(Op::GLOBAL_GET, class_global);
-                        self.emit_u16(Op::STRUCT_GET, prototype_key);
+                        self.emit_load_instance_proto(name);
                         self.emit_u16(Op::LOCAL_SET, proto_local);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
@@ -2165,6 +2219,33 @@ impl Compiler {
                             self.compile_stmt(stmt)?;
                         }
                     }
+                }
+
+                if self.is_php_profile() {
+                    // PHP runtime class identity. This must run AFTER the
+                    // ctor body / parent-ctor call — a child ctor receives
+                    // `this` from the parent (synthesized forward OR
+                    // `parent::__construct()` in the body) carrying the
+                    // PARENT's type_id and constructor, so the child
+                    // re-stamps:
+                    //  - `constructor` → the class object, for `new static`
+                    //    and get_class ($this.constructor.name); the JS
+                    //    path gets this via the prototype chain instead.
+                    //  - `__type` + WASM GC type_id, so instanceof
+                    //    (REF_TEST fast path) sees the runtime class.
+                    let class_global = self.str_const(name);
+                    let ctor_key = self.str_const("constructor");
+                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                    self.emit_u16(Op::GLOBAL_GET, class_global);
+                    self.emit_u16(Op::STRUCT_SET, ctor_key);
+                    self.emit(Op::DROP);
+                    let canon_name = self.canon(name);
+                    common::classes::emit_retype_object(
+                        self.chunk(),
+                        this_slot,
+                        &canon_name,
+                        line,
+                    );
                 }
 
                 common::classes::emit_instanceof_chain(
@@ -2276,6 +2357,17 @@ impl Compiler {
             case_sensitive,
             line,
         );
+        if self.is_php_profile() {
+            // Stamp the declared class name on the ctor function so
+            // `get_class($x)` ($x.constructor.name) returns it. The JS
+            // branch below stamps `name` during prototype wiring; PHP
+            // skips that block, so stamp here.
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.emit_const(Value::String(Arc::from(name)));
+            let name_key = self.str_const("name");
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+        }
         for (arity, _, helper_idx, helper_upvalues) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_upvalues, line);
             let helper_global = format!("{}$arity{}", ctor_global_prefix, arity);
@@ -2283,7 +2375,7 @@ impl Compiler {
             self.emit_u16(Op::GLOBAL_SET, helper_idx_const);
         }
 
-        if self.is_js_profile() {
+        if self.class_prototype_dispatch() {
             self.emit_common("object.new", 0, line);
             let proto_local = self.define_local(&format!("__{}_prototype", name));
             self.emit_u16(Op::LOCAL_SET, proto_local);
@@ -2328,6 +2420,28 @@ impl Compiler {
             let name_key = self.str_const("name");
             self.emit_u16(Op::STRUCT_SET, name_key);
             self.emit(Op::DROP);
+
+            // The prototype is the class's open method table: every
+            // instance method lands on it, so `C.prototype.m` resolves
+            // and reassignment has a real target. Capture-carrying
+            // methods are skipped — their upvalues bind in the
+            // constructor's frame, not at definition scope.
+            for (mname, mci, _, _) in &instance_methods {
+                if mname.starts_with("__get_") || mname.starts_with("__set_") {
+                    continue;
+                }
+                let has_captures = method_capture_name_map
+                    .get(mci)
+                    .is_some_and(|c| !c.is_empty());
+                if has_captures {
+                    continue;
+                }
+                self.emit_u16(Op::LOCAL_GET, proto_local);
+                self.emit_ref_func_with_captures(*mci, &[])?;
+                let key = self.str_const(mname);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
+            }
         }
 
         // Initialize static fields on the constructor object
@@ -2543,8 +2657,14 @@ impl Compiler {
             );
         }
 
+        // Prototype-dispatch profiles resolve instance members through the
+        // prototype chain — statics live on the constructor object only
+        // (§15.7: `instance.staticMethod` is undefined), so keep them out
+        // of the type table's instance-method fallback. Other dispatch
+        // models (VB-style `Instance.SharedMethod`) keep the full list.
         let all_methods: Vec<(String, usize)> = method_chunks
             .iter()
+            .filter(|(_, _, _, is_static)| !self.class_prototype_dispatch() || !*is_static)
             .map(|(n, c, _, _)| (n.clone(), *c))
             .collect();
         // Canonicalise per language case-sensitivity: case-insensitive

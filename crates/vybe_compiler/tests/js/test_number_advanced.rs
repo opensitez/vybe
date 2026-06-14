@@ -75,7 +75,8 @@ console.log(check(n, 2));
 console.log(toggle(n, 0).toString(2));
 "#
         ),
-        vec!["10101", "true", "false", "10100"]
+        // n=10101(21); clear bit2 → 10001(17); toggle bit0 → 10000(16).
+        vec!["10101", "true", "false", "10000"]
     );
 }
 

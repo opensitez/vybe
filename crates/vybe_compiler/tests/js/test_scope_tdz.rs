@@ -101,6 +101,9 @@ console.log(threw);
 
 #[test]
 fn class_declaration_not_hoisted_unlike_function() {
+    // §9.1.1.1.6 GetBindingValue: `typeof Bar` on an uninitialized (TDZ)
+    // class binding throws ReferenceError — typeof only shields
+    // *unresolvable* names, not declared-but-uninitialized ones.
     assert_eq!(
         run_js(
             r#"
@@ -115,7 +118,7 @@ try {
 console.log(threw);
 "#
         ),
-        vec!["object", "false"]
+        vec!["true"]
     );
 }
 

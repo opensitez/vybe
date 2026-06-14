@@ -10,30 +10,16 @@
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
 
 pub mod console;
-// `vybe:array` retired — every former caller now routes through
-// `ecma:array.*` (real ECMA-262 §23.1) or stdlib polyfills (`__vybe_*`
-// chunks via `BuiltinEmit::Stdlib`). The module file is gone.
 pub mod clock;
 pub mod env;
 pub mod fs;
 pub mod random;
-// `vybe:http` (outbound HTTP client) moved to `crate::wasi::http` —
-// it registers `wasi:http/{get,post,fetch}`, the spec-aligned namespace.
-// `vybe:runtime` retired — `callMethod` was the only registration and was
-// never emitted by any compiler pass. VB/C# typed call sites route through
-// component_classes_collections → common emitters; no untyped fallback needed.
 pub mod canvas;
 pub mod data;
 pub mod drawing;
 pub mod gui;
 pub mod sockets;
 pub mod types;
-// `http_server` module retired — moved to `crate::node::http` (Node-aligned
-// `node:http` namespace). The `register` fn is reachable via that path.
-// Note: every `ecma:*` / `wasm:*` host module lives in the sibling
-// `crate::ecma` and `crate::wasm` folders (not under `modules/`). See
-// those `mod.rs` files for the full list. `register_with_capabilities`
-// below calls `crate::ecma::register(vm)` and `crate::wasm::register(vm)`.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

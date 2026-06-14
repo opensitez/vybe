@@ -48,6 +48,43 @@ pub(crate) fn new_ordinary_object_with_proto() -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
+/// Resolve a value's `[[Prototype]]` — ECMA-262 OrdinaryGetPrototypeOf and
+/// the exotic-object / primitive-wrapper variants.
+///
+/// The VM creates arrays and ordinary objects WITHOUT a materialized
+/// `__proto__` (it stays WASM-pure — a bare GC struct has no JS identity).
+/// The canonical [[Prototype]] is therefore resolved here, by kind, so
+/// every reflective op (`getPrototypeOf`, `instanceof`, `constructor`,
+/// inherited-property lookup) sees the one shared prototype object.
+///
+/// An *explicitly present* `__proto__` always wins — including `null` from
+/// `Object.create(null)` / `Object.setPrototypeOf(o, null)` — so the
+/// fallback only fires when the slot was never written.
+pub(crate) fn js_prototype_of(value: &Value) -> Value {
+    match value {
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            if let Some(explicit) = o.properties.get(PROTO_KEY) {
+                return explicit.clone();
+            }
+            match &o.kind {
+                ObjectKind::Array(_) => crate::ecma::array::shared_array_prototype(),
+                // Map/Set/etc. have no dedicated shared prototype object
+                // yet; their instances carry an explicit `__proto__` from
+                // their host constructors, so they're handled above. A bare
+                // collection with no proto falls back to Object.prototype.
+                _ => shared_object_prototype(),
+            }
+        }
+        Value::String(_) => crate::ecma::string::shared_string_prototype(),
+        Value::Bool(_) => crate::ecma::boolean::shared_boolean_prototype(),
+        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+            crate::ecma::number::shared_number_prototype()
+        }
+        _ => Value::Null,
+    }
+}
+
 fn is_object(v: &Value) -> bool {
     matches!(v, Value::Object(_))
 }
@@ -516,12 +553,23 @@ pub(crate) fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Valu
         if let Some(v) = o.properties.get(key) {
             return Some(v.clone());
         }
-        let proto = o.properties.get(PROTO_KEY).cloned();
+        let explicit = o.properties.get(PROTO_KEY).cloned();
         drop(o);
+        // An *absent* `__proto__` means the VM created this object bare
+        // (WASM-pure) — resolve its [[Prototype]] by kind so inherited
+        // members (`[].map`, `arr[Symbol.iterator]`, `{}.hasOwnProperty`)
+        // are found on the canonical shared prototype. The shared
+        // prototypes carry explicit `__proto__` links up to
+        // %Object.prototype% (whose `__proto__` is null), so the walk
+        // always terminates. An *explicit* `null` (Object.create(null))
+        // ends the chain immediately.
+        let proto = match explicit {
+            Some(p) => p,
+            None => js_prototype_of(&Value::Object(current.clone())),
+        };
         match proto {
-            Some(Value::Object(p)) => {
+            Value::Object(p) => {
                 if Arc::ptr_eq(&p, &current) {
-                    // Cycle or self-proto; bail.
                     return None;
                 }
                 current = p;
@@ -1120,9 +1168,29 @@ fn register_access(vm: &mut VM) {
                         if found {
                             return Value::Bool(true);
                         }
+                        // §13.5.1: `in` walks the prototype chain. A bare
+                        // VM-created object has no explicit `__proto__`, so
+                        // resolve its [[Prototype]] by kind (Object/Array
+                        // prototype) — otherwise `"toString" in {}` would
+                        // miss the inherited method. NOTE: must use the
+                        // already-held guard `o` here — calling the locking
+                        // `js_prototype_of` on `current` would re-lock the
+                        // same Mutex and deadlock.
                         match o.properties.get(PROTO_KEY).cloned() {
                             Some(Value::Object(p)) => Some(p),
-                            _ => None,
+                            Some(_) => None, // explicit null proto → chain ends
+                            None => match &o.kind {
+                                ObjectKind::Array(_) => {
+                                    match crate::ecma::array::shared_array_prototype() {
+                                        Value::Object(p) => Some(p),
+                                        _ => None,
+                                    }
+                                }
+                                _ => match shared_object_prototype() {
+                                    Value::Object(p) => Some(p),
+                                    _ => None,
+                                },
+                            },
                         }
                     };
                     match next_proto {
@@ -1423,7 +1491,14 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "keys",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
+            // §20.1.2.17 Object.keys routes through [[OwnPropertyKeys]] —
+            // for proxy exotic objects that is the ownKeys trap.
+            if let Some(value) = args.first() {
+                if let Some(keys) = crate::ecma::proxy::own_keys_dispatch(ctx, value) {
+                    return keys;
+                }
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
@@ -1680,7 +1755,14 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "getOwnPropertyNames",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
+            // §20.1.2.10 routes through [[OwnPropertyKeys]] — the ownKeys
+            // trap for proxy exotic objects.
+            if let Some(value) = args.first() {
+                if let Some(keys) = crate::ecma::proxy::own_keys_dispatch(ctx, value) {
+                    return keys;
+                }
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 let keys: Vec<Value> = ordinary_ordered_keys(&o)
@@ -2060,15 +2142,12 @@ fn register_prototype(vm: &mut VM) {
                     if let Some(trap) = proxy_trap(&handler, "getPrototypeOf") {
                         return invoke_with_explicit_this(ctx, &trap, handler, &[target]);
                     }
-                    if let Value::Object(target_obj) = target {
-                        let o = target_obj.lock().unwrap();
-                        return o.properties.get(PROTO_KEY).cloned().unwrap_or(Value::Null);
-                    }
+                    return js_prototype_of(&target);
                 }
-                let o = obj.lock().unwrap();
-                return o.properties.get(PROTO_KEY).cloned().unwrap_or(Value::Null);
+                return js_prototype_of(&Value::Object(obj));
             }
-            Value::Null
+            // Primitive wrappers also have a [[Prototype]].
+            js_prototype_of(args.first().unwrap_or(&Value::Undefined))
         }),
     );
 

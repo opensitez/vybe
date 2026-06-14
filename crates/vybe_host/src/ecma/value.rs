@@ -419,6 +419,17 @@ fn constructor_of(value: &Value) -> Value {
             constructor_from_prototype(crate::ecma::number::shared_number_prototype())
         }
         Value::Object(obj) => {
+            // §22.1.3.2 / built-ins: array exotic objects resolve their
+            // [[Prototype]] to the canonical %Array.prototype%, whose
+            // `constructor` is the one true `Array` global — return it
+            // directly so `[].constructor === Array` holds regardless of
+            // whatever proto link the literal carries.
+            if matches!(obj.lock().unwrap().kind, ObjectKind::Array(_)) {
+                let c = constructor_from_prototype(crate::ecma::array::shared_array_prototype());
+                if !matches!(c, Value::Undefined) {
+                    return c;
+                }
+            }
             let mut current = Some(obj.clone());
             while let Some(node) = current {
                 let next = {
@@ -435,7 +446,9 @@ fn constructor_of(value: &Value) -> Value {
                     _ => None,
                 };
             }
-            Value::Undefined
+            // A plain ordinary object with no constructor in its chain is an
+            // instance of `Object` (§20.1.3) — return the canonical global.
+            constructor_from_prototype(crate::ecma::object::shared_object_prototype())
         }
         _ => Value::Undefined,
     }

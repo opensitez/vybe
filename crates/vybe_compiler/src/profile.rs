@@ -38,6 +38,16 @@ pub struct LanguageProfile {
     /// Constructor method name (matched case-insensitively for case-insensitive languages).
     pub constructor_name: String,
 
+    /// Class instance-method dispatch model.
+    /// "instance" (default): construction binds compiled method refs
+    /// directly onto the instance.
+    /// "prototype": the class carries its instance methods on an open
+    /// method-table object (`prototype`) and construction binds from it,
+    /// so post-definition reassignment (`C.prototype.m = wrap(...)`)
+    /// reaches instances constructed afterwards (ECMA-262 §15.7, Python
+    /// `__dict__`-style open classes).
+    pub class_method_dispatch: String,
+
     /// Whether enum values are compiled as global ordinal constants.
     pub enum_as_ordinals: bool,
 
@@ -67,6 +77,14 @@ pub struct LanguageProfile {
 
     /// JS: `+` operator uses dynamic add (string concat if either operand is string).
     pub dynamic_add: bool,
+
+    /// Arithmetic operands may be of a type not known until runtime
+    /// (dynamically-typed languages: JS, PHP, Python, Ruby). When set,
+    /// `-`/`*`/`/`/`%` whose operand types aren't statically resolved emit
+    /// the runtime-polymorphic `emit_dyn_*` sequences (which dispatch
+    /// BigInt → `i64.*`, else Number → `f64.*`). Statically-typed languages
+    /// leave this off and keep direct typed opcodes.
+    pub dynamic_numeric_dispatch: bool,
 
     /// JS: support `require()` for CommonJS module loading.
     pub commonjs_require: bool,
@@ -422,6 +440,15 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("constructor")
         .to_string();
+    let class_method_dispatch = compiler
+        .get("class_method_dispatch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("instance")
+        .to_string();
+    let dynamic_numeric_dispatch = compiler
+        .get("dynamic_numeric_dispatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let enum_as_ordinals = compiler
         .get("enum_as_ordinals")
         .and_then(|v| v.as_bool())
@@ -834,6 +861,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         self_keyword,
         base_keyword,
         constructor_name,
+        class_method_dispatch,
+        dynamic_numeric_dispatch,
         enum_as_ordinals,
         case_sensitive,
         string_indexing,

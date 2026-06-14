@@ -430,6 +430,38 @@ pub struct HostImportNamed {
     pub func: String,
 }
 
+/// The number-path opcode for `emit_js_dynamic_arith` (the non-BigInt
+/// branch of a dynamically-dispatched `-`/`*`/`/`/`%`).
+#[derive(Clone, Copy)]
+enum NumberArith {
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+/// Map a compound-assignment operator to its plain binary operator, for
+/// desugaring `t OP= v` → `t = t OP v`. Returns `None` for the logical /
+/// null-coalescing / `+` forms, which have their own short-circuit or
+/// string-concat handling and are left on the direct compound path.
+fn compound_op_to_binop(op: &CompoundOp) -> Option<BinOp> {
+    Some(match op {
+        CompoundOp::Sub => BinOp::Sub,
+        CompoundOp::Mul => BinOp::Mul,
+        CompoundOp::Div => BinOp::Div,
+        CompoundOp::IDiv => BinOp::IDiv,
+        CompoundOp::Mod => BinOp::Mod,
+        CompoundOp::Pow => BinOp::Pow,
+        CompoundOp::BitAnd => BinOp::BitAnd,
+        CompoundOp::BitOr => BinOp::BitOr,
+        CompoundOp::BitXor => BinOp::BitXor,
+        CompoundOp::Shl => BinOp::Shl,
+        CompoundOp::Shr => BinOp::Shr,
+        CompoundOp::UShr => BinOp::UShr,
+        _ => return None,
+    })
+}
+
 /// AST scan: returns true if the statement (or anything nested within
 /// it) constructs a `Proxy` (i.e. contains `new Proxy(...)`). Used to
 /// gate the Member / Index proxy dispatcher emit so non-Proxy code
@@ -527,6 +559,13 @@ fn expr_uses_proxy(expr: &Expression) -> bool {
             args.iter().any(|a| expr_uses_proxy(&a.value))
         }
         ExprKind::Call { callee, args, .. } => {
+            // Proxy.revocable(...) creates a proxy without `new Proxy`.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "revocable" && matches!(&object.kind, ExprKind::Ident(n) if n == "Proxy")
+                {
+                    return true;
+                }
+            }
             expr_uses_proxy(callee) || args.iter().any(|a| expr_uses_proxy(&a.value))
         }
         ExprKind::Binary { left, right, .. } => expr_uses_proxy(left) || expr_uses_proxy(right),
@@ -5380,6 +5419,20 @@ impl Compiler {
                         self.infer_array_element_type_hint(args.iter().map(|arg| &arg.value))
                     ));
                 }
+                // JS conversion builtins have a known result type — e.g.
+                // `BigInt(x)` is a BigInt, so `BigInt(a) % BigInt(b)` routes
+                // through the `ecma:bigint` ops instead of f64 arithmetic.
+                if self.is_js_profile() {
+                    if let ExprKind::Ident(name) = &callee.kind {
+                        match name.as_str() {
+                            "BigInt" => return Some("bigint".into()),
+                            "Number" | "parseInt" | "parseFloat" => return Some("double".into()),
+                            "String" => return Some("string".into()),
+                            "Boolean" => return Some("bool".into()),
+                            _ => {}
+                        }
+                    }
+                }
                 if self.profile.parens_for_index
                     && args.len() == 1
                     && self
@@ -5451,11 +5504,17 @@ impl Compiler {
                         | BinOp::Shr
                 ) =>
             {
-                let left_type = self.infer_expr_type_hint(left)?;
-                let right_type = self.infer_expr_type_hint(right)?;
-                if left_type.eq_ignore_ascii_case("bigint")
-                    && right_type.eq_ignore_ascii_case("bigint")
-                {
+                // BigInt is contagious through arithmetic: if EITHER operand
+                // is a BigInt, the result is a BigInt (the op-selection in
+                // expressions.rs routes to `ecma:bigint`, and a mix with a
+                // known Number throws at runtime). Inferring through chains
+                // like `(a * b) % c` keeps every step on the bigint path even
+                // when intermediate results have no other type evidence.
+                let left_bigint =
+                    self.infer_expr_type_hint(left).as_deref() == Some("bigint");
+                let right_bigint =
+                    self.infer_expr_type_hint(right).as_deref() == Some("bigint");
+                if left_bigint || right_bigint {
                     Some("bigint".into())
                 } else {
                     None
@@ -6412,6 +6471,14 @@ impl Compiler {
         self.profile.name == "js"
     }
 
+    /// Profile-declared class dispatch model — `class_method_dispatch =
+    /// "prototype"` in the language's `[compiler]` section. The shared
+    /// class pipeline stays language-agnostic; languages opt in via the
+    /// profile, never via name checks.
+    pub(crate) fn class_prototype_dispatch(&self) -> bool {
+        self.profile.class_method_dispatch == "prototype"
+    }
+
     fn is_python_profile(&self) -> bool {
         self.profile.name == "python"
     }
@@ -7025,6 +7092,22 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     self.compile_assign_target(target)?;
                     return Ok(());
+                }
+                // Dynamic-typed languages: desugar `t OP= v` → `t = t OP v`
+                // and reuse the full type-aware binary routing so compound
+                // assignment dispatches BigInt/number/string identically to
+                // the plain operator (e.g. `exp >>= 1n` hits the bigint path).
+                if self.profile.dynamic_numeric_dispatch {
+                    if let Some(binop) = compound_op_to_binop(op) {
+                        let binexpr = Expression::new(ExprKind::Binary {
+                            op: binop,
+                            left: Box::new(target.clone()),
+                            right: Box::new(value.clone()),
+                        });
+                        self.compile_expr(&binexpr)?;
+                        self.compile_assign_target(target)?;
+                        return Ok(());
+                    }
                 }
                 // Load current value
                 self.compile_expr(target)?;
@@ -9686,6 +9769,13 @@ impl Compiler {
                     }
                     common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                 } else {
+                    // PHP echo writes raw bytes to stdout (no newline) —
+                    // the WASI 0.3 stream surface, not wasi:logging.log.
+                    let php_write_idx = if php_echo {
+                        Some(self.import("wasi:cli/stdout", "write-via-stream"))
+                    } else {
+                        None
+                    };
                     for expr in exprs {
                         self.compile_expr(expr)?;
                         if php_echo {
@@ -9697,7 +9787,7 @@ impl Compiler {
                             //
                             // Also: PHP `echo null;` writes no bytes (vs.
                             // Vybe's normal flow which would log ""); skip
-                            // the log call when the expression is null so
+                            // the write call when the expression is null so
                             // test-runner output entries match PHP-stdout
                             // bytes.
                             let v_slot = self.define_local("__echo_v");
@@ -9728,7 +9818,19 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, v_slot);
                             self.chunk().emit_end(line);
                             self.emit_common("php.echo_stringify", 1, line);
-                            common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                            let out_slot = self.define_local("__echo_out");
+                            self.emit_u16(Op::LOCAL_SET, out_slot);
+                            self.emit(Op::DROP);
+                            let rd_slot = self.define_local("__echo_rd");
+                            let wr_slot = self.define_local("__echo_wr");
+                            common::io::emit_write_stdout_with_imports(
+                                self.chunk(),
+                                php_write_idx.unwrap(),
+                                rd_slot,
+                                wr_slot,
+                                line,
+                                |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
+                            );
                             self.chunk().emit_end(line);
                         } else {
                             common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
@@ -11328,9 +11430,6 @@ impl Compiler {
                 }
                 // PHP `$arr[] = v` — empty bracket with null index is the
                 // auto-append form; route through collections::emit_push.
-                // Every emit here goes via common::collections so the
-                // provider (ecma:array / vybe:array / polyfill) is
-                // swappable in one place.
                 let is_append = matches!(&index.kind, ExprKind::Lit(crate::ast::Literal::Null));
                 let line = self.line;
                 let tmp = self.define_local("__tmp");
@@ -11865,6 +11964,54 @@ impl Compiler {
         self.emit_to_primitive("number");
     }
 
+    /// Runtime-polymorphic numeric binary op for dynamically-typed
+    /// languages. Stack `[a, b]` → `[result]`. At runtime, if BOTH operands
+    /// are BigInt, calls `ecma:bigint.<bigint_fn>` (which returns a
+    /// `Value::BigInt`, so the result stays BigInt-typed through a chain);
+    /// otherwise runs the SAME number path the static route would
+    /// (`coerce_top_two_to_number` — honouring `valueOf`/ToPrimitive — then
+    /// the f64 op), so non-BigInt behaviour is byte-for-byte unchanged.
+    fn emit_js_dynamic_arith(&mut self, bigint_fn: &str, number_op: NumberArith) {
+        let b_slot = self.define_local("__dynarith_b");
+        self.emit_u16(Op::LOCAL_SET, b_slot);
+        self.emit(Op::DROP);
+        let a_slot = self.define_local("__dynarith_a");
+        self.emit_u16(Op::LOCAL_SET, a_slot);
+        self.emit(Op::DROP);
+
+        let test_bi = self.import("wasm:js-bigint", "test");
+        self.emit_u16(Op::LOCAL_GET, a_slot);
+        self.emit_host_call(test_bi, 1);
+        self.emit_u16(Op::LOCAL_GET, b_slot);
+        self.emit_host_call(test_bi, 1);
+        self.emit(Op::I32_AND);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+
+        // both BigInt → ecma:bigint.<fn>(a, b)
+        self.emit_u16(Op::LOCAL_GET, a_slot);
+        self.emit_u16(Op::LOCAL_GET, b_slot);
+        let bi = self.import("ecma:bigint", bigint_fn);
+        self.emit_host_call(bi, 2);
+
+        self.chunk().emit_else(line);
+        // number path — identical to the static route.
+        self.emit_u16(Op::LOCAL_GET, a_slot);
+        self.emit_u16(Op::LOCAL_GET, b_slot);
+        self.coerce_top_two_to_number();
+        match number_op {
+            NumberArith::Sub => self.emit(Op::F64_SUB),
+            NumberArith::Mul => self.emit(Op::F64_MUL),
+            NumberArith::Div => self.emit(Op::F64_DIV),
+            NumberArith::Mod => {
+                let l = self.line;
+                common::math::emit_c_fmod(self.chunk(), l);
+            }
+        }
+        let line = self.line;
+        self.chunk().emit_end(line);
+    }
+
     /// JS profile: ToPrimitive(hint=number) on both operands. Used
     /// before DYN_LT / DYN_GT / DYN_LE / DYN_GE so string-string lex
     /// compare and Date/valueOf-overriding instances both work.
@@ -12077,22 +12224,34 @@ impl Compiler {
                 }
             }
             BinOp::Sub => {
-                if self.is_js_profile() {
-                    self.coerce_top_two_to_number();
+                if self.profile.dynamic_numeric_dispatch {
+                    self.emit_js_dynamic_arith("sub", NumberArith::Sub);
+                } else {
+                    if self.is_js_profile() {
+                        self.coerce_top_two_to_number();
+                    }
+                    self.emit(Op::F64_SUB);
                 }
-                self.emit(Op::F64_SUB);
             }
             BinOp::Mul => {
-                if self.is_js_profile() {
-                    self.coerce_top_two_to_number();
+                if self.profile.dynamic_numeric_dispatch {
+                    self.emit_js_dynamic_arith("mul", NumberArith::Mul);
+                } else {
+                    if self.is_js_profile() {
+                        self.coerce_top_two_to_number();
+                    }
+                    self.emit(Op::F64_MUL);
                 }
-                self.emit(Op::F64_MUL);
             }
             BinOp::Div => {
-                if self.is_js_profile() {
-                    self.coerce_top_two_to_number();
+                if self.profile.dynamic_numeric_dispatch {
+                    self.emit_js_dynamic_arith("div", NumberArith::Div);
+                } else {
+                    if self.is_js_profile() {
+                        self.coerce_top_two_to_number();
+                    }
+                    self.emit(Op::F64_DIV);
                 }
-                self.emit(Op::F64_DIV);
             }
             BinOp::IDiv => {
                 self.emit(Op::F64_DIV);
@@ -12108,6 +12267,8 @@ impl Compiler {
                 let l = self.line;
                 if self.is_python_profile() {
                     common::math::emit_python_floor_mod(self.chunk(), l);
+                } else if self.profile.dynamic_numeric_dispatch {
+                    self.emit_js_dynamic_arith("rem", NumberArith::Mod);
                 } else {
                     common::math::emit_c_fmod(self.chunk(), l);
                 }
@@ -13069,9 +13230,6 @@ impl Compiler {
             // COBOL's OCCURS walker emits `Array(count, init)`. Emit:
             //   newWithLength(count)  — via common::collections
             //   fill(arr, init, 0, MAX)  — via common::collections
-            // All emits route through compiler_common so the provider
-            // (ecma:array / vybe:array / polyfill) is swappable in
-            // one place.
             self.compile_expr(args[0])?; // push count
             common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             // Array is now on TOS. If the init is null-ish, we're done
@@ -15098,6 +15256,27 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                 }
             }
+            // `constant("NAME")` — read back the global that `define` wrote.
+            // Only the literal-name form is compilable to a direct global
+            // read; a dynamic name yields NULL (no runtime global-by-name
+            // surface yet).
+            "php_constant" => {
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
+                    let global_name = self.canon(name);
+                    let idx = self.str_const(&global_name);
+                    self.emit_u16(Op::GLOBAL_GET, idx);
+                } else {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit(Op::NULL);
+                }
+            }
             "php_function_exists" => {
                 if let Some(Expression {
                     kind: ExprKind::Lit(Literal::Str(name)),
@@ -15351,18 +15530,29 @@ impl Compiler {
                     self.emit_const(Value::I32(0));
                 } else {
                     let result_slot = self.define_local("__php_printf_result");
-                    let log_idx = self.import("wasi:logging/logging", "log");
+                    // PHP printf writes raw bytes to stdout — no newline.
+                    // WASI 0.3 stream surface, NOT wasi:logging.log
+                    // (one line record per call).
+                    let write_idx = self.import("wasi:cli/stdout", "write-via-stream");
+                    let rd_slot = self.define_local("__php_printf_rd");
+                    let wr_slot = self.define_local("__php_printf_wr");
 
                     for arg in args {
                         self.compile_expr(arg)?;
                     }
                     self.emit_common("sprintf.format", args.len() as u8, line);
+                    self.emit_common("php.echo_stringify", 1, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                    self.emit_common("php.echo_stringify", 1, line);
-                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                    common::io::emit_write_stdout_with_imports(
+                        self.chunk(),
+                        write_idx,
+                        rd_slot,
+                        wr_slot,
+                        line,
+                        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
+                    );
 
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     common::strings::emit_length(self.chunk(), line);
@@ -15373,17 +15563,26 @@ impl Compiler {
                     self.emit_const(Value::I32(0));
                 } else {
                     let result_slot = self.define_local("__php_vprintf_result");
-                    let log_idx = self.import("wasi:logging/logging", "log");
+                    // Raw stdout bytes via the 0.3 stream, same as php_printf.
+                    let write_idx = self.import("wasi:cli/stdout", "write-via-stream");
+                    let rd_slot = self.define_local("__php_vprintf_rd");
+                    let wr_slot = self.define_local("__php_vprintf_wr");
 
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
                     self.emit_common("sprintf.format_array", 2, line);
+                    self.emit_common("php.echo_stringify", 1, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
 
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                    self.emit_common("php.echo_stringify", 1, line);
-                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                    common::io::emit_write_stdout_with_imports(
+                        self.chunk(),
+                        write_idx,
+                        rd_slot,
+                        wr_slot,
+                        line,
+                        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
+                    );
 
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     common::strings::emit_length(self.chunk(), line);
@@ -16880,7 +17079,7 @@ impl Compiler {
 
                     // If the map is a literal array, sort entries by key length
                     // (longest first) so longer keys take priority over shorter ones.
-                    use crate::ast::{ArrayElement, ExprKind, Literal};
+                    use crate::ast::{ExprKind, Literal};
                     let sorted_arg: Option<crate::ast::Expression> =
                         if let ExprKind::Array(ref items) = args[1].kind {
                             let mut sorted = items.clone();

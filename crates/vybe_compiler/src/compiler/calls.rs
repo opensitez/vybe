@@ -430,18 +430,42 @@ fn resolves_to_static_container_method(
         .into_iter()
         .any(|container_canon| {
             let method_canon = compiler.js_member_storage_name_for_class(&container_canon, field);
+            // §15.7: statics are inherited through the constructor chain —
+            // `Dog.describe()` where `describe` is declared on `Animal`
+            // resolves to the parent's static. Walk ancestors so the call
+            // site recognizes inherited statics (the runtime copies them
+            // onto the child constructor).
             compiler.defined_classes.contains(&container_canon)
-                && compiler
-                    .pending_classes
-                    .get(container_canon.as_str())
-                    .map(|pending| {
-                        pending
-                            .static_method_names
-                            .iter()
-                            .any(|name| name == &method_canon)
-                    })
-                    .unwrap_or(false)
+                && class_or_ancestor_has_static(compiler, &container_canon, &method_canon)
         })
+}
+
+/// Does `class_canon` or any ancestor declare a static method `method_canon`?
+fn class_or_ancestor_has_static(
+    compiler: &Compiler,
+    class_canon: &str,
+    method_canon: &str,
+) -> bool {
+    let mut current = Some(class_canon.to_string());
+    let mut guard = 0;
+    while let Some(name) = current {
+        guard += 1;
+        if guard > 64 {
+            break;
+        }
+        let Some(pending) = compiler.pending_classes.get(name.as_str()) else {
+            break;
+        };
+        if pending
+            .static_method_names
+            .iter()
+            .any(|n| n == method_canon)
+        {
+            return true;
+        }
+        current = pending.parent.as_ref().map(|p| compiler.canon(p));
+    }
+    false
 }
 
 fn has_explicit_constructor_signature(compiler: &Compiler, class_name: &str) -> bool {
@@ -1251,6 +1275,36 @@ impl Compiler {
         arg_slots: &[u16],
         result_slot: u16,
     ) {
+        // Proxy modules: the callee may be a Proxy whose apply trap must
+        // fire (ECMA-262 §10.5.12). ecma:proxy.apply falls through to an
+        // ordinary invoke for plain callables, so all dynamic calls can
+        // route through it.
+        if self.is_js_profile() && self.uses_proxy && receiver_slot.is_none() {
+            let line = self.line;
+            let args_arr_slot = self.define_local("__proxy_apply_args");
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            self.emit_u16(Op::LOCAL_SET, args_arr_slot);
+            self.emit(Op::DROP);
+            for slot in arg_slots {
+                self.emit_u16(Op::LOCAL_GET, args_arr_slot);
+                self.emit_u16(Op::LOCAL_GET, *slot);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+            }
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            if let Some(this_slot) = js_this_slot {
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+            } else {
+                self.emit(Op::UNDEFINED);
+            }
+            self.emit_u16(Op::LOCAL_GET, args_arr_slot);
+            let idx = self.import("ecma:proxy", "apply");
+            self.emit_host_call(idx, 3);
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.emit(Op::DROP);
+            return;
+        }
+
         let rest_fixed_counts: Vec<u8> = self.rest_fixed_arities.iter().copied().collect();
         if rest_fixed_counts.is_empty() {
             self.emit_normal_call_from_arg_slots(
@@ -1617,7 +1671,44 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot);
     }
 
-    fn compile_call_args_array(
+    /// Spread argument to a `host:*`-bound builtin (`String.raw({raw}, ...v)`).
+    ///
+    /// A fixed-argc CALL_IMPORT cannot represent a runtime-length argument
+    /// list, so route through ECMA's own variadic call primitive instead:
+    /// §13.3.8.1 ArgumentListEvaluation collects the full list into an array
+    /// (spread-aware concat — `compile_call_args_array`), then §28.1.1
+    /// `Reflect.apply(target, undefined, argsList)` makes the call, and the
+    /// spec-shaped host fn receives individually-expanded arguments.
+    fn try_compile_spread_host_builtin(
+        &mut self,
+        callee: &Expression,
+        name: &str,
+        args: &[Argument],
+    ) -> Result<bool, String> {
+        if !self.is_js_profile() || !args.iter().any(|a| a.spread) {
+            return Ok(false);
+        }
+        let Some(def) = self.profile.lookup_builtin(name) else {
+            return Ok(false);
+        };
+        if !matches!(&def.emit, BuiltinEmit::HostCall(..)) {
+            return Ok(false);
+        }
+        // §13.3.6: evaluate the callee reference before the arguments.
+        self.compile_expr(callee)?;
+        let callee_slot = self.define_local("__spread_builtin_callee");
+        self.emit_u16(Op::LOCAL_SET, callee_slot);
+        self.emit(Op::DROP);
+        let (args_slot, _) = self.compile_call_args_array(args, "spread_builtin")?;
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit(Op::UNDEFINED);
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        let idx = self.import("ecma:reflect", "apply");
+        self.emit_host_call(idx, 3);
+        Ok(true)
+    }
+
+    pub(super) fn compile_call_args_array(
         &mut self,
         args: &[Argument],
         local_prefix: &str,
@@ -3054,7 +3145,23 @@ impl Compiler {
                         self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
-                    self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    if self.class_prototype_dispatch() {
+                        // A static method call binds `this` to the class
+                        // object it was fetched from (`this.name` inside
+                        // `static describe()` sees the receiving class —
+                        // including subclasses inheriting the static).
+                        let result_slot = self.define_local("__static_container_result");
+                        self.emit_dispatch_and_store_from_arg_slots(
+                            fn_tmp,
+                            None,
+                            Some(obj_tmp),
+                            &arg_slots,
+                            result_slot,
+                        );
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    } else {
+                        self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    }
                 }
                 if args.iter().any(|arg| arg.by_ref) {
                     let pack_slot = self.define_local("__static_container_by_ref_pack");
@@ -3090,8 +3197,13 @@ impl Compiler {
                         .defined_functions
                         .iter()
                         .any(|g| g.eq_ignore_ascii_case(name)));
-            if !shadows_builtin && self.try_compile_builtin(name, &arg_exprs)? {
-                return Ok(());
+            if !shadows_builtin {
+                if self.try_compile_spread_host_builtin(callee, name, args)? {
+                    return Ok(());
+                }
+                if self.try_compile_builtin(name, &arg_exprs)? {
+                    return Ok(());
+                }
             }
         }
 
@@ -3108,6 +3220,9 @@ impl Compiler {
                 // `try_compile_builtin` below routes to the host fn.
 
                 let compound = format!("{}.{}", obj_name, field);
+                if self.try_compile_spread_host_builtin(callee, &compound, args)? {
+                    return Ok(());
+                }
                 if self.try_compile_builtin(&compound, &arg_exprs)? {
                     return Ok(());
                 }
@@ -4272,6 +4387,23 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if self.is_js_profile()
+                && !self.direct_receiver_has_own_pending_method(object, field)
+                && (field == "call" || field == "apply" || field == "bind")
+            {
+                // §20.2.3.{1,2,3}: call/apply/bind live on
+                // %Function.prototype%. Function objects don't all carry a
+                // proto link to it (static / prototype methods are bare
+                // REF_FUNC values), so route the call form directly to the
+                // host — `ecma:function.<m>(target, ...)`.
+                self.compile_expr(object)?;
+                for arg in &arg_exprs {
+                    self.compile_expr(arg)?;
+                }
+                let idx = self.import("ecma:function", field);
+                self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+                return Ok(());
+            }
             if !self.direct_receiver_has_own_pending_method(object, field)
                 && (field == "call" || field == "apply")
             {
@@ -8279,7 +8411,6 @@ impl Compiler {
             // builds from __bound_args, so without padding it would be placed
             // in the first missing slot rather than the control slot.)
             if let Some(&gen_param_count) = self.generator_param_counts.get(&self.canon(name)) {
-                let line = self.line;
                 let provided = arg_slots.len();
                 for index in provided..gen_param_count {
                     let pad_slot = self.define_local(&format!("__gen_pad_arg_{}", index));
@@ -8517,39 +8648,19 @@ impl Compiler {
             arg_slots.push(arg_slot);
         }
 
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit(Op::REF_IS_NULL);
-        let line = self.line;
-        self.chunk().emit_if(line);
-
-        let saved_js_this = self.bind_js_this_for_call(None, "__js_prev_this_call_ref");
-        let saved_js_new_target =
-            self.save_js_new_target("__js_prev_new_target_call_ref_no_receiver");
-        self.set_js_new_target_undefined();
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        for slot in &arg_slots {
-            self.emit_u16(Op::LOCAL_GET, *slot);
-        }
-        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
-        self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
-        self.restore_js_this(saved_js_this);
-        self.restore_js_new_target(saved_js_new_target);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        for slot in &arg_slots {
-            self.emit_u16(Op::LOCAL_GET, *slot);
-        }
+        // Route through the shared dispatcher so a callee with a rest
+        // parameter (e.g. a returned `(...more) => …`) gets its trailing
+        // args packed via the runtime `__vybe_rest_fixed_arity` stamp —
+        // a plain `CALL_REF` here would pass them unpacked and the rest
+        // array would never form. Handles receiver-null/undefined branching
+        // and `this` binding internally; leaves the result on the stack.
         let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_call_ref");
         self.set_js_new_target_undefined();
-        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+        self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
         self.restore_js_new_target(saved_js_new_target);
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
+        self.chunk().emit_end(line); // close the runtime_index_matched `if`
 
         if has_by_ref_args {
             let mut ref_out_index = 1usize;

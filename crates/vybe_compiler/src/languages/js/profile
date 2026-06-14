@@ -11,6 +11,10 @@ extensions = ["js", "mjs"]
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
+# ECMA-262 §15.7: instance methods live on the class prototype and
+# construction binds from it — decorator-style reassignment
+# (C.prototype.m = wrap(C.prototype.m)) reaches later instances.
+class_method_dispatch = "prototype"
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
@@ -18,6 +22,10 @@ string_indexing = "zero_based"
 hoist_var = true
 # JS-specific: `+` is overloaded for string concatenation (dyn_add handles it)
 dynamic_add = true
+# JS values can be Number or BigInt at runtime; -,*,/,% dispatch
+# polymorphically (BigInt → ecma:bigint, else the f64 number path) when
+# operand types aren't statically known.
+dynamic_numeric_dispatch = true
 # JS-specific: support `require()` for CommonJS module loading
 commonjs_require = true
 # JS switch statements fall through unless there's an explicit break
@@ -568,6 +576,13 @@ module = "ecma:symbol"
 kind = "namespace"
 alias = "Reflect"
 module = "ecma:reflect"
+
+# `new Proxy(...)` is special-cased in the compiler; this alias covers
+# the static side (Proxy.revocable).
+[[esm_default]]
+kind = "namespace"
+alias = "Proxy"
+module = "ecma:proxy"
 
 [[esm_default]]
 kind = "namespace"

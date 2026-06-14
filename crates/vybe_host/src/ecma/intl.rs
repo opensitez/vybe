@@ -191,6 +191,39 @@ fn parse_icu_locale(tag: &str) -> icu::locale::Locale {
 
 // ── Intl.Collator (ECMA-402 §11) ────────────────────────────────────
 
+/// Digit-run-aware comparison for `Intl.Collator(…, { numeric: true })`:
+/// consecutive ASCII digits compare as numbers, everything else as chars.
+fn natural_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < ab.len() && j < bb.len() {
+        if ab[i].is_ascii_digit() && bb[j].is_ascii_digit() {
+            let i0 = i;
+            let j0 = j;
+            while i < ab.len() && ab[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < bb.len() && bb[j].is_ascii_digit() {
+                j += 1;
+            }
+            let na = a[i0..i].trim_start_matches('0');
+            let nb = b[j0..j].trim_start_matches('0');
+            let ord = na.len().cmp(&nb.len()).then_with(|| na.cmp(nb));
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        } else {
+            let ord = ab[i].cmp(&bb[j]);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (ab.len() - i).cmp(&(bb.len() - j))
+}
+
 fn register_collator(vm: &mut VM) {
     // Register compare first so we can look up its index for bound instances.
     vm.register_host_fn(
@@ -217,6 +250,19 @@ fn register_collator(vm: &mut VM) {
                 obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
             if sensitivity == "base" && a.to_lowercase() == b.to_lowercase() {
                 return Value::I32(0);
+            }
+            // ECMA-402 §10.1.2 numeric collation: digit runs compare by
+            // numeric value ("file2" < "file10").
+            let numeric = matches!(
+                collator.lock().unwrap().properties.get("numeric"),
+                Some(Value::Bool(true))
+            );
+            if numeric {
+                return Value::I32(match natural_compare(&a, &b) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                });
             }
             let icu_loc = parse_icu_locale(&locale);
             let prefs = (&icu_loc).into();
@@ -272,6 +318,7 @@ fn register_collator(vm: &mut VM) {
                     }
                 })
                 .unwrap_or_else(|| "variant".into());
+            let numeric = matches!(opts_lock.properties.get("numeric"), Some(Value::Bool(true)));
             drop(opts_lock);
             let result = make_object(vec![
                 ("__type", s_val("Collator")),
@@ -279,6 +326,7 @@ fn register_collator(vm: &mut VM) {
                 ("locale", s_val(&locale)),
                 ("usage", s_val(&usage)),
                 ("sensitivity", s_val(&sensitivity)),
+                ("numeric", Value::Bool(numeric)),
             ]);
             // Attach a bound compare so `coll.compare` passed to Array.sort retains the collator.
             if let Value::Object(coll_arc) = &result {
@@ -374,6 +422,32 @@ fn register_number_format(vm: &mut VM) {
                 .get("maximumFractionDigits")
                 .map(|v| v.as_i32())
                 .unwrap_or(if style == "currency" { 2 } else { 3 });
+            let min_int = ol
+                .properties
+                .get("minimumIntegerDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(1);
+            let notation = ol
+                .properties
+                .get("notation")
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "standard".into());
+            let min_sig = ol
+                .properties
+                .get("minimumSignificantDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0);
+            let max_sig = ol
+                .properties
+                .get("maximumSignificantDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0);
             drop(ol);
             make_object(vec![
                 ("__type", s_val("NumberFormat")),
@@ -383,6 +457,10 @@ fn register_number_format(vm: &mut VM) {
                 ("currency", s_val(&currency)),
                 ("minimumFractionDigits", Value::I32(min_frac)),
                 ("maximumFractionDigits", Value::I32(max_frac)),
+                ("minimumIntegerDigits", Value::I32(min_int)),
+                ("notation", s_val(&notation)),
+                ("minimumSignificantDigits", Value::I32(min_sig)),
+                ("maximumSignificantDigits", Value::I32(max_sig)),
             ])
         }),
     );
@@ -481,6 +559,52 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
         };
     }
 
+    // ECMA-402 §15.5.3 notation handling — compact and scientific bypass
+    // the grouping formatter.
+    let notation = obj_string_prop(nf, "notation").unwrap_or_else(|| "standard".into());
+    if notation == "compact" {
+        return compact_format(value);
+    }
+    if notation == "scientific" {
+        if value == 0.0 {
+            return "0E0".into();
+        }
+        let exp = value.abs().log10().floor() as i32;
+        let mantissa = value / 10f64.powi(exp);
+        let m = format!("{:.3}", mantissa);
+        let m = m.trim_end_matches('0').trim_end_matches('.');
+        return format!("{m}E{exp}");
+    }
+
+    // §15.5.6 significant-digit rounding: derive fraction digits from the
+    // value's magnitude, overriding the fraction-digit settings.
+    let min_sig = {
+        let lock = nf.lock().unwrap();
+        lock.properties
+            .get("minimumSignificantDigits")
+            .map(|v| v.as_i32())
+            .unwrap_or(0)
+    };
+    let max_sig = {
+        let lock = nf.lock().unwrap();
+        lock.properties
+            .get("maximumSignificantDigits")
+            .map(|v| v.as_i32())
+            .unwrap_or(0)
+    };
+    let sig_fracs = if max_sig > 0 && value != 0.0 {
+        let exp = value.abs().log10().floor() as i32;
+        let max_frac_sig = (max_sig - 1 - exp).max(0);
+        let min_frac_sig = if min_sig > 0 {
+            (min_sig - 1 - exp).clamp(0, max_frac_sig)
+        } else {
+            0
+        };
+        Some((min_frac_sig, max_frac_sig, exp))
+    } else {
+        None
+    };
+
     let icu_loc = parse_icu_locale(&locale);
     let formatter = match DecimalFormatter::try_new((&icu_loc).into(), Default::default()) {
         Ok(f) => f,
@@ -493,10 +617,29 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     // zeros down to (effectively) min_frac. ECMA-402 §15 default is
     // min_frac=0 for decimal style — trailing-zero stripping makes
     // 1234.5 render as "1,234.5" rather than "1,234.500".
-    let scaled_value = if style == "percent" {
+    let mut scaled_value = if style == "percent" {
         value * 100.0
     } else {
         value
+    };
+    let (min_frac, max_frac) = if let Some((min_fs, max_fs, exp)) = sig_fracs {
+        // Significant rounding above the decimal point (e.g. 1234 @ 3
+        // significant digits → 1230) pre-rounds the value itself.
+        let raw = max_sig - 1 - exp;
+        if raw < 0 {
+            let pow = 10f64.powi(-raw);
+            scaled_value = (scaled_value / pow).round() * pow;
+        }
+        (min_fs, max_fs)
+    } else {
+        let min_frac = {
+            let lock = nf.lock().unwrap();
+            lock.properties
+                .get("minimumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0)
+        };
+        (min_frac, max_frac)
     };
     let mult = 10f64.powi(max_frac);
     let int_form = (scaled_value * mult).round() as i64;
@@ -504,18 +647,23 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     if max_frac > 0 {
         fd.multiply_pow10(-(max_frac as i16));
     }
-    let min_frac = {
-        let lock = nf.lock().unwrap();
-        lock.properties
-            .get("minimumFractionDigits")
-            .map(|v| v.as_i32())
-            .unwrap_or(0)
-    };
     fd.trim_end();
     // After trim, pad back up to min_frac if needed (e.g. currency
     // wants always 2 decimals).
     if min_frac > 0 {
         fd.pad_end(-(min_frac as i16));
+    }
+    // §15.5.3 minimumIntegerDigits — zero-pad before grouping (42 @ 4
+    // digits → "0,042").
+    let min_int = {
+        let lock = nf.lock().unwrap();
+        lock.properties
+            .get("minimumIntegerDigits")
+            .map(|v| v.as_i32())
+            .unwrap_or(1)
+    };
+    if min_int > 1 {
+        fd.pad_start(min_int as i16);
     }
     let formatted = formatter.format(&fd).to_string();
 
@@ -527,6 +675,32 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
         "percent" => format!("{}%", formatted),
         _ => formatted,
     }
+}
+
+/// ECMA-402 compact notation, short form ("en" CLDR patterns): 1.5K, 1M, 2.3B…
+fn compact_format(value: f64) -> String {
+    let abs = value.abs();
+    let (div, suffix) = if abs >= 1e12 {
+        (1e12, "T")
+    } else if abs >= 1e9 {
+        (1e9, "B")
+    } else if abs >= 1e6 {
+        (1e6, "M")
+    } else if abs >= 1e3 {
+        (1e3, "K")
+    } else {
+        let r = (value * 10.0).round() / 10.0;
+        let s = format!("{r}");
+        return s.trim_end_matches(".0").to_string();
+    };
+    let scaled = (value / div * 10.0).round() / 10.0;
+    let s = format!("{scaled}");
+    let s = if s.ends_with(".0") {
+        s.trim_end_matches(".0").to_string()
+    } else {
+        s
+    };
+    format!("{s}{suffix}")
 }
 
 fn currency_symbol(code: &str) -> &'static str {
@@ -584,6 +758,22 @@ fn register_date_time_format(vm: &mut VM) {
                     }
                 })
                 .unwrap_or_default();
+            let str_opt = |key: &str| {
+                ol.properties
+                    .get(key)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default()
+            };
+            let weekday = str_opt("weekday");
+            let hour = str_opt("hour");
+            let minute = str_opt("minute");
+            let second = str_opt("second");
             drop(ol);
             make_object(vec![
                 ("__type", s_val("DateTimeFormat")),
@@ -592,6 +782,10 @@ fn register_date_time_format(vm: &mut VM) {
                 ("year", s_val(&year)),
                 ("month", s_val(&month)),
                 ("day", s_val(&day)),
+                ("weekday", s_val(&weekday)),
+                ("hour", s_val(&hour)),
+                ("minute", s_val(&minute)),
+                ("second", s_val(&second)),
             ])
         }),
     );
@@ -667,15 +861,53 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
     let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
     let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
     let day_opt = obj_string_prop(dtf, "day").unwrap_or_default();
+    let weekday_opt = obj_string_prop(dtf, "weekday").unwrap_or_default();
+    let hour_opt = obj_string_prop(dtf, "hour").unwrap_or_default();
+    let minute_opt = obj_string_prop(dtf, "minute").unwrap_or_default();
+    let second_opt = obj_string_prop(dtf, "second").unwrap_or_default();
 
-    if !year_opt.is_empty() || !month_opt.is_empty() || !day_opt.is_empty() {
+    if !year_opt.is_empty()
+        || !month_opt.is_empty()
+        || !day_opt.is_empty()
+        || !weekday_opt.is_empty()
+        || !hour_opt.is_empty()
+        || !minute_opt.is_empty()
+        || !second_opt.is_empty()
+    {
         let secs = (ms / 1000.0) as i64;
         let (year, month, day) = epoch_to_ymd(secs);
-        if year_opt == "numeric" && month_opt.is_empty() && day_opt.is_empty() {
+        if year_opt == "numeric"
+            && month_opt.is_empty()
+            && day_opt.is_empty()
+            && weekday_opt.is_empty()
+            && hour_opt.is_empty()
+        {
             return year.to_string();
         }
         let mut out = String::new();
+        if !weekday_opt.is_empty() {
+            // 1970-01-01 (day 0) was a Thursday.
+            let dow = (secs.div_euclid(86400) + 4).rem_euclid(7) as usize;
+            const LONG: [&str; 7] = [
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+            ];
+            let name = LONG[dow];
+            match weekday_opt.as_str() {
+                "short" => out.push_str(&name[..3]),
+                "narrow" => out.push_str(&name[..1]),
+                _ => out.push_str(name),
+            }
+        }
         if !month_opt.is_empty() {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
             out.push_str(&format_month_part(month, &month_opt));
         }
         if !day_opt.is_empty() {
@@ -689,6 +921,31 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
                 out.push_str(", ");
             }
             out.push_str(&year.to_string());
+        }
+        // Time components (UTC — the epoch math is timezone-free).
+        if !hour_opt.is_empty() || !minute_opt.is_empty() || !second_opt.is_empty() {
+            let day_secs = secs.rem_euclid(86400);
+            let (h, m, s) = (day_secs / 3600, (day_secs % 3600) / 60, day_secs % 60);
+            let mut time = String::new();
+            if !hour_opt.is_empty() {
+                time.push_str(&format!("{h:02}"));
+            }
+            if !minute_opt.is_empty() {
+                if !time.is_empty() {
+                    time.push(':');
+                }
+                time.push_str(&format!("{m:02}"));
+            }
+            if !second_opt.is_empty() {
+                if !time.is_empty() {
+                    time.push(':');
+                }
+                time.push_str(&format!("{s:02}"));
+            }
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(&time);
         }
         if !out.is_empty() {
             return out;

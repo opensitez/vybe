@@ -119,38 +119,18 @@ pub fn register(vm: &mut VM) {
 
     // Reflect.construct(target, argsList, newTarget?) → object
     //
+    // §28.1.2 routes through target.[[Construct]]; for proxy exotic
+    // objects that is the construct trap (§10.5.13), so delegate to the
+    // shared dispatch in ecma::proxy.
     vm.register_host_fn(
         "ecma:reflect",
         "construct",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
-            let mut this_value = Object::new();
-            if let Value::Object(target_obj) = &target {
-                if let Some(proto) = target_obj
-                    .lock()
-                    .unwrap()
-                    .properties
-                    .get("prototype")
-                    .cloned()
-                {
-                    this_value.properties.insert("__proto__".into(), proto);
-                }
-            }
-            let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
-            let mut invoke_args: Vec<Value> = Vec::new();
-            if let Some(Value::Object(arr)) = args.get(1) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    invoke_args.extend(v.iter().cloned());
-                }
-            }
-            let result = invoke_with_explicit_this(ctx, &target, this_obj.clone(), &invoke_args);
-            // If the target returns an object, use it; else use the synthetic this.
-            if matches!(result, Value::Object(_)) {
-                result
-            } else {
-                this_obj
-            }
+            let args_list = args.get(1).cloned().unwrap_or_else(|| {
+                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            });
+            crate::ecma::proxy::construct_dispatch(ctx, &target, &args_list)
         }),
     );
 

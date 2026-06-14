@@ -941,10 +941,21 @@ impl Compiler {
                 // `infer_expr_type_hint` returns "bigint" for BigInt literals
                 // and for variables initialised with BigInt values.
                 if self.is_js_profile() {
-                    let left_is_bigint =
-                        self.infer_expr_type_hint(left).as_deref() == Some("bigint");
-                    let right_is_bigint =
-                        self.infer_expr_type_hint(right).as_deref() == Some("bigint");
+                    let left_hint = self.infer_expr_type_hint(left);
+                    let right_hint = self.infer_expr_type_hint(right);
+                    let left_is_bigint = left_hint.as_deref() == Some("bigint");
+                    let right_is_bigint = right_hint.as_deref() == Some("bigint");
+                    // The other operand is "known non-BigInt" only when its
+                    // type was inferred to something concrete that isn't
+                    // bigint. An *unknown* hint (e.g. a reassigned parameter
+                    // holding a BigInt at runtime) is NOT a compile-time mix
+                    // error — §21.2.1.1 mixing is a RUNTIME TypeError, so we
+                    // route to the bigint op and let it coerce/throw.
+                    let other_known_non_bigint = if left_is_bigint {
+                        right_hint.is_some()
+                    } else {
+                        left_hint.is_some()
+                    };
                     if left_is_bigint && right_is_bigint {
                         let fn_name: Option<&str> = match op {
                             BinOp::Add => Some("add"),
@@ -974,26 +985,39 @@ impl Compiler {
                             return Ok(());
                         }
                     } else if left_is_bigint || right_is_bigint {
-                        if matches!(
-                            op,
-                            BinOp::Add
-                                | BinOp::Sub
-                                | BinOp::Mul
-                                | BinOp::Div
-                                | BinOp::Mod
-                                | BinOp::BitAnd
-                                | BinOp::BitOr
-                                | BinOp::BitXor
-                                | BinOp::Shl
-                                | BinOp::Shr
-                        ) {
-                            // §21.2.1.1: arithmetic between BigInt and non-BigInt throws TypeError.
-                            self.emit_const(Value::String(Arc::from(
-                                "Cannot mix BigInt and other types, use explicit conversions",
-                            )));
-                            let line = self.line;
-                            self.emit_js_exception_ctor_from_message_value("TypeError")?;
-                            common::errors::emit_throw(self.chunk(), line);
+                        let arith_fn: Option<&str> = match op {
+                            BinOp::Add => Some("add"),
+                            BinOp::Sub => Some("sub"),
+                            BinOp::Mul => Some("mul"),
+                            BinOp::Div => Some("div"),
+                            BinOp::Mod => Some("rem"),
+                            BinOp::BitAnd => Some("and"),
+                            BinOp::BitOr => Some("or"),
+                            BinOp::BitXor => Some("xor"),
+                            BinOp::Shl => Some("shl"),
+                            BinOp::Shr => Some("shr"),
+                            BinOp::Pow => Some("pow"),
+                            _ => None,
+                        };
+                        if let Some(name) = arith_fn {
+                            if other_known_non_bigint {
+                                // §21.2.1.1: arithmetic between BigInt and a
+                                // KNOWN non-BigInt throws TypeError.
+                                self.emit_const(Value::String(Arc::from(
+                                    "Cannot mix BigInt and other types, use explicit conversions",
+                                )));
+                                let line = self.line;
+                                self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                                common::errors::emit_throw(self.chunk(), line);
+                                return Ok(());
+                            }
+                            // Other operand is unknown — route to the bigint
+                            // op (its `to_bigint` coerces an actual BigInt and
+                            // throws at runtime on a real Number).
+                            let idx = self.import("ecma:bigint", name);
+                            self.compile_expr(left)?;
+                            self.compile_expr(right)?;
+                            self.emit_host_call(idx, 2);
                             return Ok(());
                         } else if matches!(
                             op,
@@ -2948,7 +2972,21 @@ impl Compiler {
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
+                        // §13.3.5: new.target is the invoked constructor for
+                        // the whole construction chain (parent ctor bodies
+                        // under super() included). Unique save slot — nested
+                        // `new` in the same function must not share it.
+                        let saved_nt = self.save_js_new_target(&format!(
+                            "__js_prev_nt_static_{}",
+                            self.chunks[self.current].local_count
+                        ));
+                        if saved_nt.is_some() {
+                            let class_idx = self.global_name_const_idx(&canon_type);
+                            self.emit_u16(Op::GLOBAL_GET, class_idx);
+                            self.set_js_new_target_from_stack();
+                        }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
+                        self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
                     if self.is_js_profile() && self.defined_functions.contains(&canon_type) {
@@ -2962,16 +3000,10 @@ impl Compiler {
                             self.save_js_new_target("__js_prev_new_target_new");
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
                         self.set_js_new_target_from_stack();
+                        let _ = line;
+                        let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
-                        for a in args {
-                            self.compile_expr(&a.value)?;
-                        }
-                        common::collections::emit_array_new(
-                            &mut self.chunks,
-                            self.current,
-                            args.len() as u16,
-                            line,
-                        );
+                        self.emit_u16(Op::LOCAL_GET, args_slot);
                         let reflect_construct = self.import("ecma:reflect", "construct");
                         self.emit_host_call(reflect_construct, 2);
                         self.restore_js_new_target(saved_js_new_target);
@@ -3254,20 +3286,12 @@ impl Compiler {
                     let ctor_slot = self.define_local("__js_ctor");
                     self.emit_u16(Op::LOCAL_SET, ctor_slot);
                     self.emit(Op::DROP);
-                    let line = self.line;
                     let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     self.set_js_new_target_from_stack();
+                    let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
-                    for a in args {
-                        self.compile_expr(&a.value)?;
-                    }
-                    common::collections::emit_array_new(
-                        &mut self.chunks,
-                        self.current,
-                        args.len() as u16,
-                        line,
-                    );
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
                     let reflect_construct = self.import("ecma:reflect", "construct");
                     self.emit_host_call(reflect_construct, 2);
                     self.restore_js_new_target(saved_js_new_target);
@@ -3329,9 +3353,7 @@ impl Compiler {
             // ── Array literal ───────────────────────────────────────────
             ExprKind::Array(elements) => {
                 // Array literals funnel through `common::collections` so
-                // every language and every array-literal site emits the
-                // same import shape. Changing the provider (ecma:array
-                // → vybe:array → polyfill) happens in ONE file, not here.
+                // every language emits the same import shape.
                 //
                 // Dispatch on whether ANY element has an explicit key:
                 //   - no keys  → `ecma:array` path (integer-indexed,
@@ -3606,6 +3628,20 @@ impl Compiler {
                                 } else {
                                     self.canon(k)
                                 };
+                                // Track insertion order BEFORE setting the
+                                // property. `trackKey` dedups by skipping keys
+                                // already present — so `{ ...base, x: 99 }`
+                                // (where `x` arrived via the spread) does NOT
+                                // append a duplicate `x` to `__keys`. Must run
+                                // pre-set: post-set the property always exists
+                                // and tracking would be skipped entirely.
+                                if self.is_js_profile() {
+                                    self.emit(Op::DUP);
+                                    self.emit_const(Value::String(Arc::from(key_name.as_str())));
+                                    let track_idx = self.import("ecma:object", "trackKey");
+                                    self.emit_host_call(track_idx, 2);
+                                    self.emit(Op::DROP);
+                                }
                                 self.emit(Op::DUP);
                                 self.compile_expr(value)?;
                                 if self.is_js_profile() {
@@ -3641,14 +3677,21 @@ impl Compiler {
                                 let idx = self.str_const(&key_name);
                                 self.emit_u16(Op::STRUCT_SET, idx);
                                 self.emit(Op::DROP);
-                                // Track key in __keys
-                                self.emit(Op::DUP);
-                                let keys_key = self.str_const("__keys");
-                                self.emit_u16(Op::STRUCT_GET, keys_key);
-                                self.emit_const(Value::String(Arc::from(key_name.as_str())));
-                                let l = self.line;
-                                common::collections::emit_push(&mut self.chunks, self.current, l);
-                                self.emit(Op::DROP);
+                                // Non-JS: append to __keys directly (JS already
+                                // tracked it via the deduping `trackKey` above).
+                                if !self.is_js_profile() {
+                                    self.emit(Op::DUP);
+                                    let keys_key = self.str_const("__keys");
+                                    self.emit_u16(Op::STRUCT_GET, keys_key);
+                                    self.emit_const(Value::String(Arc::from(key_name.as_str())));
+                                    let l = self.line;
+                                    common::collections::emit_push(
+                                        &mut self.chunks,
+                                        self.current,
+                                        l,
+                                    );
+                                    self.emit(Op::DROP);
+                                }
                             } else {
                                 // Dynamic key — emit_set is
                                 // `ecma:array.set(obj, key, value) → null`
@@ -5164,8 +5207,7 @@ impl Compiler {
                     );
                 } else {
                     // Emit slice parts → [obj, lower, upper, step] then call the
-                    // bundled `__vybe_slicestep` polyfill directly (skips the
-                    // legacy `vybe:array` host-import indirection).
+                    // bundled `__vybe_slicestep` polyfill via GLOBAL_GET + CALL_REF.
                     if let Some(l) = lower {
                         self.compile_expr(l)?;
                     } else {
@@ -5208,15 +5250,22 @@ impl Compiler {
             // ── Delete (JS expression) ──────────────────────────────────
             ExprKind::Delete(inner) => {
                 // delete obj.prop → ecma:object.delete(obj, key), returns true.
+                // Proxy modules route through ecma:proxy.deleteProperty so the
+                // deleteProperty trap fires (non-proxy targets fall through).
+                let delete_import: (&str, &str) = if self.is_js_profile() && self.uses_proxy {
+                    ("ecma:proxy", "deleteProperty")
+                } else {
+                    ("ecma:object", "delete")
+                };
                 if let ExprKind::Member { object, field, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
-                    let idx = self.import("ecma:object", "delete");
+                    let idx = self.import(delete_import.0, delete_import.1);
                     self.emit_host_call(idx, 2);
                 } else if let ExprKind::Index { object, index, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
-                    let idx = self.import("ecma:object", "delete");
+                    let idx = self.import(delete_import.0, delete_import.1);
                     self.emit_host_call(idx, 2);
                 } else {
                     self.compile_expr(inner)?;

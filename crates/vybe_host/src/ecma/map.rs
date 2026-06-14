@@ -431,6 +431,16 @@ pub fn register(vm: &mut VM) {
                             if let ObjectKind::Array(ref mut v) = g.kind {
                                 v.push(item.clone());
                             }
+                            // Keep the `length` property in sync — member
+                            // access `group.length` reads the property, and
+                            // `Object::new_array` stamps it at creation (0),
+                            // so a raw `v.push` would leave it stale.
+                            let len = match &g.kind {
+                                ObjectKind::Array(v) => v.len(),
+                                _ => 0,
+                            };
+                            g.properties
+                                .insert("length".into(), Value::F64(len as f64));
                         }
                     }
                     sync_map_size(&mut mo);

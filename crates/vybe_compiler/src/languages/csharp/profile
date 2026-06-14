@@ -82,7 +82,7 @@ multi_value_tuple_returns = true
 "Math.Cosh"         = { emit = "host:ecma:math:cosh",     min_args = 1, max_args = 1 }
 "Math.Tanh"         = { emit = "host:ecma:math:tanh",     min_args = 1, max_args = 1 }
 "Math.Sign"         = { emit = "host:ecma:math:sign",     min_args = 1, max_args = 1 }
-"Math.Clamp"        = { emit = "host:ecma:math:clamp",    min_args = 3, max_args = 3 }
+"Math.Clamp"        = { emit = "common:math.clamp",       min_args = 3, max_args = 3 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
