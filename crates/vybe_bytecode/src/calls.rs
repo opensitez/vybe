@@ -129,6 +129,11 @@ impl VM {
                 self.close_upvalues(base);
                 self.frames.pop();
             }
+            // Unwind the structured-control label stack to the try's level:
+            // a throw skips the `end`s of any nested block/loop/if inside the
+            // try body, so those entries must be dropped or later `br`s in the
+            // handler's frame (e.g. a loop re-entering this try) mis-target.
+            self.label_stack.truncate(handler.label_depth);
             self.stack.truncate(handler.stack_depth);
             self.push(val)?;
             let f = self.frame_mut();

@@ -444,6 +444,26 @@ enum NumberArith {
 /// desugaring `t OP= v` → `t = t OP v`. Returns `None` for the logical /
 /// null-coalescing / `+` forms, which have their own short-circuit or
 /// string-concat handling and are left on the direct compound path.
+/// JS builtin constructors that the host exposes a canonical `__ctor_<Name>`
+/// anchor for (see `ecma_globals::register`). Bare reads of these as VALUES
+/// resolve through the anchor so `constructor`/`prototype` identity survives
+/// the user-facing global being re-bound by later compile/link passes.
+fn is_js_builtin_ctor_value(name: &str) -> bool {
+    matches!(
+        name,
+        "Object"
+            | "Array"
+            | "Function"
+            | "Number"
+            | "String"
+            | "Boolean"
+            | "Symbol"
+            | "BigInt"
+            | "Date"
+            | "RegExp"
+    )
+}
+
 fn compound_op_to_binop(op: &CompoundOp) -> Option<BinOp> {
     Some(match op {
         CompoundOp::Sub => BinOp::Sub,
@@ -6072,6 +6092,19 @@ impl Compiler {
             && !is_js_runtime_global
         {
             self.emit_const(Value::String(Arc::from(name)));
+            return;
+        }
+        // JS builtin constructor used as a *value* (`x === Array`,
+        // `o.constructor === Object`, `Array.prototype`): resolve through the
+        // stable, host-owned `__ctor_<Name>` anchor instead of the user-facing
+        // global. The latter can be re-bound to a fresh, unwired object by
+        // later compile/link passes (ESM import wiring), which would break
+        // `constructor`/`prototype` identity; `__ctor_<Name>` always points at
+        // the ONE canonical constructor (the same object on the shared
+        // prototype's `.constructor`). Skipped when the user shadows the name.
+        if self.is_js_profile() && !shadows_named_global && is_js_builtin_ctor_value(&cname) {
+            let idx = self.str_const(&format!("__ctor_{cname}"));
+            self.emit_u16(Op::GLOBAL_GET, idx);
             return;
         }
         // Global — canonicalize name for case-insensitive languages

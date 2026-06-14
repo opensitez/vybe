@@ -19,7 +19,7 @@ pub fn register(vm: &mut VM) {
     let object = host_fn_ref(vm, "ecma:object", "Object");
     set_prop(&object, "name", Value::String(Arc::from("Object")));
     let object_proto = crate::ecma::object::shared_object_prototype();
-    set_prop(&object_proto, "constructor", object.clone());
+    set_constructor_once(&object_proto, object.clone());
     if let Value::Object(proto) = &object_proto {
         crate::ecma::object::track_nonenum(proto, "constructor");
         crate::ecma::object::track_nonenum(proto, "constructor");
@@ -76,7 +76,7 @@ pub fn register(vm: &mut VM) {
     let number = host_fn_ref(vm, "ecma:number", "Number");
     set_prop(&number, "name", Value::String(Arc::from("Number")));
     let number_proto = crate::ecma::number::shared_number_prototype();
-    set_prop(&number_proto, "constructor", number.clone());
+    set_constructor_once(&number_proto, number.clone());
     set_prop(&number_proto, "__proto__", object_proto.clone());
     for name in &[
         "toString",
@@ -121,7 +121,7 @@ pub fn register(vm: &mut VM) {
     let string = host_fn_ref(vm, "ecma:string", "String");
     set_prop(&string, "name", Value::String(Arc::from("String")));
     let string_proto = crate::ecma::string::shared_string_prototype();
-    set_prop(&string_proto, "constructor", string.clone());
+    set_constructor_once(&string_proto, string.clone());
     set_prop(&string_proto, "__proto__", object_proto.clone());
     for name in &[
         "toString",
@@ -175,7 +175,7 @@ pub fn register(vm: &mut VM) {
     let boolean = host_fn_ref(vm, "ecma:boolean", "Boolean");
     set_prop(&boolean, "name", Value::String(Arc::from("Boolean")));
     let boolean_proto = crate::ecma::boolean::shared_boolean_prototype();
-    set_prop(&boolean_proto, "constructor", boolean.clone());
+    set_constructor_once(&boolean_proto, boolean.clone());
     set_prop(&boolean_proto, "__proto__", object_proto.clone());
     let boolean_to_string = *vm
         .host_registry
@@ -202,7 +202,7 @@ pub fn register(vm: &mut VM) {
     let function = Value::Object(Arc::new(Mutex::new(Object::new())));
     set_prop(&function, "name", Value::String(Arc::from("Function")));
     let function_proto = crate::ecma::function::shared_function_prototype();
-    set_prop(&function_proto, "constructor", function.clone());
+    set_constructor_once(&function_proto, function.clone());
     set_prop(&function_proto, "__proto__", object_proto.clone());
     for name in &["bind", "call", "apply"] {
         let idx = *vm
@@ -228,7 +228,7 @@ pub fn register(vm: &mut VM) {
         crate::ecma::function::shared_function_prototype(),
     );
     let array_proto = crate::ecma::array::shared_array_prototype();
-    set_prop(&array_proto, "constructor", array.clone());
+    set_constructor_once(&array_proto, array.clone());
     if let Value::Object(proto) = &array_proto {
         crate::ecma::object::track_nonenum(proto, "constructor");
     }
@@ -567,6 +567,43 @@ pub fn register(vm: &mut VM) {
         "globalThis".to_string(),
         crate::ecma::global_this::shared_singleton(),
     );
+
+    // ── Canonical constructor anchors (`__ctor_<Name>`) ────────────────
+    // The user-facing constructor globals (`Array`, `Object`, …) can be
+    // re-bound by later compile/link passes (ESM import wiring, namespace
+    // rebuilds) to a fresh, unwired object — which breaks `x.constructor
+    // === Array` and `getPrototypeOf(x) === Array.prototype` identity.
+    // These `__ctor_<Name>` globals are the constructor-side companion to
+    // `__tid_<Name>` (the type stamp): a stable, host-owned anchor to the
+    // ONE canonical constructor (the same object wired into the shared
+    // prototype's `.constructor`). The compiler resolves bare builtin
+    // constructor *values* through these, so identity is immune to the
+    // user-facing global being clobbered.
+    // Core builtins whose prototype is a process-global singleton: read the
+    // canonical (first-writer-wins) constructor straight off the shared
+    // prototype, so `__ctor_<Name>` matches `x.constructor` across parallel
+    // VMs even though each VM minted its own `<Name>` global.
+    let core_protos: [(&str, Value); 6] = [
+        ("Object", crate::ecma::object::shared_object_prototype()),
+        ("Array", crate::ecma::array::shared_array_prototype()),
+        ("Function", crate::ecma::function::shared_function_prototype()),
+        ("Number", crate::ecma::number::shared_number_prototype()),
+        ("String", crate::ecma::string::shared_string_prototype()),
+        ("Boolean", crate::ecma::boolean::shared_boolean_prototype()),
+    ];
+    for (name, proto) in &core_protos {
+        if let Value::Object(p) = proto {
+            if let Some(ctor) = p.lock().unwrap().properties.get("constructor").cloned() {
+                vm.globals.insert(format!("__ctor_{name}"), ctor);
+            }
+        }
+    }
+    // Remaining builtins (no shared-prototype singleton): per-VM global is fine.
+    for name in &["Symbol", "BigInt", "Date", "RegExp"] {
+        if let Some(ctor) = vm.globals.get(*name).cloned() {
+            vm.globals.insert(format!("__ctor_{name}"), ctor);
+        }
+    }
 }
 
 /// Build a Value that is callable as a host function AND can carry

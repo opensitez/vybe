@@ -1105,6 +1105,10 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     let awaitable_idx = gen_body.add_import("test", "awaitable");
     gen_body.emit_op_u16(Op::CALL_IMPORT, awaitable_idx, 0);
     gen_body.emit(0, 0);
+    // `await awaitable()` — the JSPI suspend point. Per ECMA-262 / JSPI a
+    // pending promise suspends ONLY at the explicit await (PROMISE_SUSPEND),
+    // not implicitly at the import call that produced it.
+    gen_body.emit_op(Op::PROMISE_SUSPEND, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
     gen_body.emit_op(Op::NULL, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -1214,5 +1218,88 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     // 99 = generator survived the host re-entry and yielded post-call.
     // 41 (the callback result) would mean the generator was wrongly
     // completed mid-callback.
+    assert_eq!(result.as_i32(), 99);
+}
+
+#[test]
+fn continuation_started_inside_host_callback_runs_nested_calls_before_first_suspend() {
+    // Per the stack-switching proposal a `resume`d continuation owns its stack
+    // and returns to the resume point only on suspend/return. Vybe implements
+    // this with reified fibers: GEN_NEXT/resume `save_fiber` (drains the
+    // caller's frames) then runs the continuation. The bug this guards against:
+    // when the continuation is *started from inside a host `invoke_callback`*
+    // and its body makes a NESTED CALL before its first `suspend`, that nested
+    // call's RETURN unwinds to a frame depth below the callback's `execute_until`
+    // floor (which was recorded BEFORE `save_fiber` drained the frames). It must
+    // NOT be mistaken for the callback returning — the continuation runs on its
+    // own fiber, so the floor doesn't apply. (Root cause of array-destructuring
+    // `let [a,b]=[0,1]` — which lowers to iterator-protocol `next()` calls — in
+    // a generator driven by `Array.from`/`map`.)
+    let mut vm = VM::new();
+
+    // drive(cb, cont) -> cb(cont): re-entrant host callback that hands the
+    // continuation to the callback. Models `Array.from(arrayLike, mapper)`.
+    vm.register_host_fn(
+        "test",
+        "drive",
+        Box::new(|ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            let cb = args[0].clone();
+            let cont = args.get(1).cloned().unwrap_or(Value::Null);
+            ctx.invoke(&cb, &[cont])
+        }),
+    );
+
+    // helper() -> 7 — the nested call the generator makes before yielding.
+    let mut helper = Chunk::new("helper");
+    helper.arity = 0;
+    helper.local_count = 0;
+    let k7 = helper.add_constant(Value::I32(7));
+    helper.emit_op_u16(Op::CONST, k7, 0);
+    helper.emit_op(Op::RETURN, 0);
+
+    // generator g(): { helper(); yield 99; } — nested call BEFORE first yield.
+    let mut gen_body = Chunk::new("g");
+    gen_body.arity = 0;
+    gen_body.local_count = 0;
+    gen_body.is_generator = true;
+    gen_body.emit_op_u16(Op::REF_FUNC, 3, 0); // helper = chunk index 3
+    gen_body.emit(0, 0);
+    gen_body.emit_op_u8(Op::CALL_REF, 0, 0);
+    gen_body.emit_op(Op::DROP, 0); // discard helper() result (7)
+    let k99 = gen_body.add_constant(Value::I32(99));
+    gen_body.emit_op_u16(Op::CONST, k99, 0);
+    gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
+    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_op(Op::RETURN, 0);
+
+    // cb(cont): GEN_NEXT(cont) → [value, has_more]; drop has_more; return value.
+    let mut cb = Chunk::new("cb");
+    cb.arity = 1;
+    cb.local_count = 1;
+    cb.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    cb.emit_op(Op::GEN_NEXT, 0);
+    cb.emit_op(Op::DROP, 0); // drop has_more, leaving the yielded value
+    cb.emit_op(Op::RETURN, 0);
+
+    // script: cont = g(); return drive(cb, cont).
+    let mut script = Chunk::new("<script>");
+    script.local_count = 1;
+    let drive_idx = script.add_import("test", "drive");
+    script.emit_op_u16(Op::REF_FUNC, 1, 0); // gen_body = chunk index 1
+    script.emit(0, 0);
+    script.emit_op_u8(Op::CALL_REF, 0, 0); // -> continuation
+    script.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    script.emit_op(Op::DROP, 0);
+    script.emit_op_u16(Op::REF_FUNC, 2, 0); // cb = chunk index 2
+    script.emit(0, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 0, 0); // cont
+    script.emit_op_u16(Op::CALL_IMPORT, drive_idx, 0);
+    script.emit(2, 0); // argc = (cb, cont)
+    script.emit_op(Op::RETURN, 0);
+
+    let result = vm.run(vec![script, gen_body, cb, helper]).unwrap();
+    // 99 = the generator ran its nested helper() call and reached `yield 99`.
+    // An empty/early result would mean the nested call's RETURN tripped the
+    // host callback's stale floor and aborted the generator before the yield.
     assert_eq!(result.as_i32(), 99);
 }

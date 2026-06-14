@@ -135,6 +135,27 @@ pub(crate) fn set_prop(ns: &Value, name: &str, value: Value) {
     }
 }
 
+/// Wire a shared prototype singleton's `constructor` exactly once
+/// (first-writer-wins) and return the canonical constructor that's now on it.
+///
+/// The prototype objects are process-global `OnceLock`s, but each VM that runs
+/// `ecma_globals::register` would otherwise re-point `proto.constructor` at its
+/// own fresh constructor — so under parallel VMs (e.g. the test harness) a value
+/// stamped by one VM and a `Ctor` read by another could disagree. Pinning the
+/// constructor on first write makes `x.constructor === Ctor` hold across VMs;
+/// the constructor's host-fn refs use deterministic registry indices, so the
+/// first VM's constructor is valid in every VM.
+pub(crate) fn set_constructor_once(proto: &Value, ctor: Value) -> Value {
+    if let Value::Object(obj) = proto {
+        let mut o = obj.lock().unwrap();
+        if let Some(existing) = o.properties.get("constructor") {
+            return existing.clone();
+        }
+        o.properties.insert("constructor".to_string(), ctor.clone());
+    }
+    ctor
+}
+
 /// Create a HostFunction Value referencing a registered host function.
 pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
     if let Some(&idx) = vm

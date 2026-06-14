@@ -86,6 +86,7 @@ impl VM {
         self.label_stack = fiber.label_stack;
         self.exception_handlers = fiber.exception_handlers;
         self.active_continuations = fiber.active_continuations;
+        self.cur_fiber_id = fiber.fiber_id;
         if let Some(val) = push_value {
             self.push(val)?;
         }
@@ -111,6 +112,7 @@ impl VM {
         self.label_stack = fiber.label_stack;
         self.exception_handlers = fiber.exception_handlers;
         self.active_continuations = fiber.active_continuations;
+        self.cur_fiber_id = fiber.fiber_id;
 
         // Rejected promise: throw the reason into the resuming fiber so that
         // enclosing try/catch blocks fire correctly. This is the JSPI-compliant
@@ -205,5 +207,6 @@ impl VM {
             .with_labels(labels)
             .with_exception_handlers(handlers)
             .with_continuations(conts)
+            .with_fiber_id(self.cur_fiber_id)
     }
 }

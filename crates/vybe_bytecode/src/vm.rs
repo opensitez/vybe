@@ -422,6 +422,12 @@ pub(crate) struct ExceptionHandler {
     pub(crate) stack_depth: usize,
     /// Call frame depth when try_start was executed.
     pub(crate) frame_depth: usize,
+    /// Structured-control label-stack depth when the handler was installed.
+    /// On catch, the label stack is unwound to this — otherwise a throw from
+    /// inside a nested `block`/`loop`/`if` skips that block's `end`, leaking a
+    /// stale label entry that corrupts `br` depths on subsequent execution
+    /// (e.g. a try/catch re-entered each loop iteration).
+    pub(crate) label_depth: usize,
     /// Exception tag index (0 = catch-all, N = typed catch for tag N).
     /// References chunk.exception_tags[tag] for the type name.
     pub(crate) tag: u8,
@@ -501,6 +507,16 @@ pub struct VM {
     /// continuation's `saved` slot, and restores the caller. Empty when
     /// no coroutine is active.
     pub active_continuations: Vec<ActiveContinuation>,
+    /// Identity of the fiber whose frames are currently live. Stack-switching
+    /// (`resume`/`suspend`/`GEN_NEXT`) swaps whole frame stacks via `save_fiber`
+    /// / `resume_fiber_with`; this id travels with each fiber so a nested
+    /// `execute_until` (e.g. a host `invoke_callback`) only honours its
+    /// `min_depth` boundary while running on the same fiber it was entered on.
+    /// A continuation resumed from inside a callback runs on a different fiber,
+    /// so its internal returns can't trip the callback's (now-stale) floor.
+    pub(crate) cur_fiber_id: u64,
+    /// Monotonic source of fresh fiber ids for newly-started continuations.
+    pub(crate) next_fiber_id: u64,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
     /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
@@ -649,6 +665,8 @@ impl VM {
             extra_tables: Vec::new(),
             type_recorder: None,
             active_continuations: Vec::new(),
+            cur_fiber_id: 0,
+            next_fiber_id: 1,
             label_stack: Vec::new(),
             block_tables: HashMap::new(),
             callback_invoker: None,

@@ -35,6 +35,10 @@ pub struct Fiber {
     /// Used when a rejected promise resumes a suspended fiber — the rejection
     /// reason must be thrown (not returned) so enclosing try/catch blocks fire.
     pub resume_exception: Option<Value>,
+    /// Identity of this fiber. Captured from `VM::cur_fiber_id` at `save_fiber`
+    /// and restored on resume so a nested `execute_until`'s `min_depth` boundary
+    /// is only honoured on the fiber it was entered on (see `VM::cur_fiber_id`).
+    pub(crate) fiber_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -61,10 +65,15 @@ impl Fiber {
             active_continuations: Vec::new(),
             resume_value: None,
             resume_exception: None,
+            fiber_id: 0,
         }
     }
     pub fn with_labels(mut self, labels: Vec<crate::vm::LabelEntry>) -> Self {
         self.label_stack = labels;
+        self
+    }
+    pub(crate) fn with_fiber_id(mut self, id: u64) -> Self {
+        self.fiber_id = id;
         self
     }
     pub(crate) fn with_exception_handlers(

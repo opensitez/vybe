@@ -2358,21 +2358,27 @@ fn register_prototype_methods(vm: &mut VM) {
         "isPrototypeOf",
         Box::new(|_ctx, args| {
             // isPrototypeOf: is `self` in `other`'s prototype chain?
+            // Resolve each link via `js_prototype_of` (the same resolver
+            // `getPrototypeOf` uses) rather than reading `__proto__` directly:
+            // VM-created plain objects/arrays carry no explicit `__proto__`,
+            // their `[[Prototype]]` is resolved by kind to the shared
+            // prototype singleton.
             if let (Some(self_obj), Some(other)) = (obj_of(args, 0), obj_of(args, 1)) {
-                let mut current = other;
+                let mut current = Value::Object(other);
                 loop {
-                    let o = current.lock().unwrap();
-                    let proto = o.properties.get(PROTO_KEY).cloned();
-                    drop(o);
-                    match proto {
-                        Some(Value::Object(p)) => {
+                    match js_prototype_of(&current) {
+                        Value::Object(p) => {
                             if Arc::ptr_eq(&p, &self_obj) {
                                 return Value::Bool(true);
                             }
-                            if Arc::ptr_eq(&p, &current) {
-                                return Value::Bool(false);
+                            // Fixed point (e.g. a root prototype whose
+                            // kind-resolved proto is itself) — not found.
+                            if let Value::Object(c) = &current {
+                                if Arc::ptr_eq(&p, c) {
+                                    return Value::Bool(false);
+                                }
                             }
-                            current = p;
+                            current = Value::Object(p);
                         }
                         _ => return Value::Bool(false),
                     }

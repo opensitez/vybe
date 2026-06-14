@@ -254,35 +254,6 @@ impl VM {
         }
     }
 
-    fn pending_promise_id(value: &Value) -> Option<u64> {
-        let Value::Object(obj) = value else {
-            return None;
-        };
-        let o = obj.lock().unwrap();
-        let ty = o
-            .properties
-            .get("__type")
-            .map(|v| format!("{}", v))
-            .unwrap_or_default();
-        if ty != "Promise" {
-            return None;
-        }
-        let state = o
-            .properties
-            .get("__state")
-            .map(|v| format!("{}", v))
-            .unwrap_or_default();
-        if state != "pending" {
-            return None;
-        }
-        Some(
-            o.properties
-                .get("__id")
-                .map(|v| v.as_f64() as u64)
-                .unwrap_or(0),
-        )
-    }
-
     fn suspend_for_pending_promise(&mut self, promise_id: u64) -> VMError {
         let fiber = self.save_fiber();
         self.event_loop
@@ -411,12 +382,18 @@ impl VM {
     }
 
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
+        // The fiber this loop was entered on. Stack-switching swaps whole frame
+        // stacks mid-loop; `min_depth` is only meaningful for THIS fiber, so
+        // the return/end boundaries below are gated on still running it.
+        let entry_fiber_id = self.cur_fiber_id;
         loop {
             let f = self.frame();
             let chunk = &self.chunks[f.chunk_index];
 
             if f.ip >= chunk.code.len() {
-                if self.frames.len() <= 1.max(min_depth + 1) {
+                if self.frames.len() <= 1.max(min_depth + 1)
+                    && self.cur_fiber_id == entry_fiber_id
+                {
                     return Ok(self.stack.pop().unwrap_or(Value::Null));
                 }
                 let base = self.frame().base;
@@ -1592,41 +1569,41 @@ impl VM {
                     self.close_upvalues(base);
                     self.label_stack.truncate(frame_label_base);
                     self.frames.pop();
-                    if self.frames.is_empty() || self.frames.len() < min_depth {
-                        // End-of-continuation: a generator body that
-                        // returned normally (no SUSPEND) transfers
-                        // control back to the caller of RESUME/GEN_NEXT
-                        // rather than exiting the VM. Mark the cont as
-                        // Done and restore the caller's fiber.
-                        //
-                        // This fires ONLY when `frames` is now empty. Per the
-                        // WASM stack-switching proposal a continuation owns its
-                        // stack; `save_fiber` drains all caller frames when the
-                        // continuation is resumed, so during its execution
-                        // `frames` holds the continuation's frames alone and a
-                        // genuine body completion empties them. A non-empty
-                        // `frames.len() < min_depth` here is instead the floor
-                        // of a re-entrant `invoke_callback` (a host HOF callback
-                        // running inside the body) returning — that value must
-                        // flow back to the caller, NOT complete the generator.
-                        if self.frames.is_empty() {
-                            if let Some(ac) = self.active_continuations.pop() {
-                                if let Value::Object(ref obj) = ac.cont {
-                                    let o = obj.lock().unwrap();
-                                    if let ObjectKind::Continuation(cs) = &o.kind {
-                                        *cs.state.lock().unwrap() =
-                                            crate::value::ContinuationPhase::Done;
-                                    }
+                    // Continuation completion: per the WASM stack-switching
+                    // proposal a continuation owns its stack; `save_fiber` drains
+                    // the caller's frames when the continuation is resumed, so
+                    // during its execution `frames` holds the continuation's
+                    // frames alone and a genuine body completion empties them.
+                    // Mark the cont Done and transfer control back to the
+                    // caller of RESUME/GEN_NEXT rather than exiting the VM.
+                    if self.frames.is_empty() {
+                        if let Some(ac) = self.active_continuations.pop() {
+                            if let Value::Object(ref obj) = ac.cont {
+                                let o = obj.lock().unwrap();
+                                if let ObjectKind::Continuation(cs) = &o.kind {
+                                    *cs.state.lock().unwrap() =
+                                        crate::value::ContinuationPhase::Done;
                                 }
-                                let ret_val = results.pop().unwrap_or(Value::Null);
-                                self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
-                                if ac.mode == ResumeMode::Iterator {
-                                    // has_more = 0 — generator is exhausted
-                                    self.push(Value::I32(0))?;
-                                }
-                                continue;
                             }
+                            let ret_val = results.pop().unwrap_or(Value::Null);
+                            self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
+                            if ac.mode == ResumeMode::Iterator {
+                                // has_more = 0 — generator is exhausted
+                                self.push(Value::I32(0))?;
+                            }
+                            continue;
                         }
+                        let last = results.pop().unwrap_or(Value::Null);
+                        return Ok(last);
+                    }
+                    // `execute_until` boundary: a nested loop (e.g. a host
+                    // `invoke_callback`) returns when frames fall below its
+                    // floor — but ONLY while running on the same fiber it was
+                    // entered on. A continuation resumed from inside a callback
+                    // runs on a different fiber whose nested returns must NOT
+                    // trip the callback's (now-stale, pre-`save_fiber`) floor;
+                    // those take the normal-return path below.
+                    if self.frames.len() < min_depth && self.cur_fiber_id == entry_fiber_id {
                         let last = results.pop().unwrap_or(Value::Null);
                         return Ok(last);
                     }
@@ -1716,10 +1693,14 @@ impl VM {
                                 continue;
                             }
 
-                            if let Some(promise_id) = Self::pending_promise_id(&result) {
-                                return Err(self.suspend_for_pending_promise(promise_id));
-                            }
-
+                            // A host fn returning a pending promise is just a
+                            // VALUE (`new Promise(...)`, `fetch()`, a deferred
+                            // promise). Per ECMA-262 / JSPI, suspension happens
+                            // ONLY at an `await` (the explicit `PROMISE_SUSPEND`
+                            // the compiler emits), never implicitly at the call
+                            // that produced the promise — auto-suspending here
+                            // wrongly suspended non-awaited promises (deferred
+                            // resolvers, `.then` chains, `Promise.race`).
                             self.push(result)?;
                         }
                         ImportTarget::ChunkFn { chunk_index, arity } => {
@@ -2573,6 +2554,7 @@ impl VM {
                         _chunk_index: f.chunk_index,
                         stack_depth: self.stack.len(),
                         frame_depth: self.frames.len(),
+                        label_depth: self.label_stack.len(),
                         tag: 0, // catch-all
                     });
                 }
@@ -2615,6 +2597,7 @@ impl VM {
                             catch_ip: ip,
                             stack_depth: self.stack.len(),
                             frame_depth: self.frames.len(),
+                            label_depth: self.label_stack.len(),
                             _chunk_index: self.frame().chunk_index,
                             tag,
                         });
@@ -4049,6 +4032,11 @@ impl VM {
                                 }
                                 self.push(resume_val)?;
                                 self.call_value_direct(argc)?;
+                                // Fresh continuation runs on its own fiber (see
+                                // GEN_NEXT) so internal returns don't trip an
+                                // enclosing callback's stale execute_until floor.
+                                self.cur_fiber_id = self.next_fiber_id;
+                                self.next_fiber_id += 1;
                             }
                             crate::value::ContinuationPhase::Suspended => {
                                 let saved = {
@@ -4261,17 +4249,23 @@ impl VM {
                             } else {
                                 // Non-continuation — emulate a single
                                 // "yielded once" protocol by pushing
-                                // the value as-is then has_more=0.
+                                // the value as-is then has_more=0, then
+                                // continue (do NOT unwind the execute loop).
                                 self.push(cont.clone())?;
                                 self.push(Value::I32(0))?;
-                                return Ok(Value::Null);
+                                continue;
                             }
                         };
                         if matches!(phase, crate::value::ContinuationPhase::Done) {
-                            // Already exhausted — yield (null, 0).
+                            // Already exhausted — yield (null, 0) and move to
+                            // the next instruction. (Must NOT `return` here:
+                            // that would unwind the whole execute loop and
+                            // silently end the caller — a second `it.next()`
+                            // on a finished generator must just produce
+                            // `(undefined, done)` and continue.)
                             self.push(Value::Null)?;
                             self.push(Value::I32(0))?;
-                            return Ok(Value::Null);
+                            continue;
                         }
                         let caller_fiber = self.save_fiber();
                         match phase {
@@ -4297,6 +4291,11 @@ impl VM {
                                 }
                                 self.push(Value::Null)?; // resume value
                                 self.call_value_direct(argc)?;
+                                // Fresh continuation runs on its own fiber so
+                                // its internal returns don't trip an enclosing
+                                // callback's stale execute_until floor.
+                                self.cur_fiber_id = self.next_fiber_id;
+                                self.next_fiber_id += 1;
                             }
                             crate::value::ContinuationPhase::Suspended => {
                                 let saved = {
@@ -4308,6 +4307,8 @@ impl VM {
                                     }
                                 };
                                 if let Some(fiber) = saved {
+                                    // resume_fiber_with restores the cont's own
+                                    // saved fiber id.
                                     self.resume_fiber_with(fiber, Some(Value::Null))?;
                                 }
                             }
@@ -4406,6 +4407,11 @@ impl VM {
                                 self.push(entry)?;
                                 self.push(exn)?;
                                 self.call_value(1)?;
+                                // Fresh continuation runs on its own fiber so
+                                // its internal returns don't trip an enclosing
+                                // callback's stale execute_until floor.
+                                self.cur_fiber_id = self.next_fiber_id;
+                                self.next_fiber_id += 1;
                             }
                             _ => unreachable!(),
                         }
@@ -4489,6 +4495,11 @@ impl VM {
                                 self.push(entry)?;
                                 self.push(exn)?;
                                 self.call_value(1)?;
+                                // Fresh continuation runs on its own fiber so
+                                // its internal returns don't trip an enclosing
+                                // callback's stale execute_until floor.
+                                self.cur_fiber_id = self.next_fiber_id;
+                                self.next_fiber_id += 1;
                             }
                             _ => unreachable!(),
                         }

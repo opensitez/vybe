@@ -163,10 +163,13 @@ function* flatten(arr, depth = 1) {
     }
 }
 const nested = [1, [2, [3, [4]]], 5];
-console.log([...flatten(nested, 2)].join(","));
+// JSON.stringify (not join): join would render the still-nested [4] as
+// "4" (Array.prototype.join calls toString on elements), hiding the very
+// thing this test checks — that depth-limited flatten leaves [4] nested.
+console.log(JSON.stringify([...flatten(nested, 2)]));
 "#
         ),
-        vec!["1,2,3,[4],5"]
+        vec!["[1,2,3,[4],5]"]
     );
 }
 

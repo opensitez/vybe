@@ -253,12 +253,23 @@ debugger_statement = { "debugger" ~ terminator }
 
 // ASI: return/break/continue/throw — expression must be on same line.
 // If NEWLINE follows the keyword, no expression is consumed.
-return_statement = { "return" ~ (!NEWLINE ~ expression)? ~ terminator }
-break_statement = { "break" ~ (!NEWLINE ~ ident_name)? ~ terminator }
-continue_statement = { "continue" ~ (!NEWLINE ~ ident_name)? ~ terminator }
+//
+// Each keyword is matched via an atomic rule with a trailing word-boundary
+// check (`!(ASCII_ALPHANUMERIC | "_")`) so identifiers that merely START with
+// the keyword (`returnCalled`, `throwError`, `breakpoint`) are NOT mis-lexed
+// as the keyword + a following expression. The boundary must live inside an
+// atomic rule: an inline `~ !(...)` in these non-atomic rules would consume
+// the whitespace after the keyword first, breaking `return x`.
+return_kw = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+break_kw = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+continue_kw = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+throw_kw = @{ "throw" ~ !(ASCII_ALPHANUMERIC | "_") }
+return_statement = { return_kw ~ (!NEWLINE ~ expression)? ~ terminator }
+break_statement = { break_kw ~ (!NEWLINE ~ ident_name)? ~ terminator }
+continue_statement = { continue_kw ~ (!NEWLINE ~ ident_name)? ~ terminator }
 // throw REQUIRES an expression (no ASI between throw and expression in spec,
 // but we still don't consume across newline for safety)
-throw_statement = { "throw" ~ !NEWLINE ~ expression ~ terminator }
+throw_statement = { throw_kw ~ !NEWLINE ~ expression ~ terminator }
 
 // ── Try / Catch / Finally ───────────────────────────────────────────────────
 

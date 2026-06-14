@@ -21,6 +21,20 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.add_host_method(0, "gethashcode", idx);
         vm.type_registry.add_host_method(0, "equals", idx);
     }
+    // §20.1.3 Object.prototype methods — universal on every object so
+    // `obj.hasOwnProperty` / `obj.isPrototypeOf` resolve as VALUES (not just
+    // as direct calls). The lookup key is lowercased by the TypeRegistry.
+    for (key, fname) in &[
+        ("hasownproperty", "hasOwnProperty"),
+        ("isprototypeof", "isPrototypeOf"),
+        ("propertyisenumerable", "propertyIsEnumerable"),
+        ("valueof", "valueOf"),
+        ("tolocalestring", "toLocaleString"),
+    ] {
+        if let Some(idx) = h(vm, "ecma:object", fname) {
+            vm.type_registry.add_host_method(0, key, idx);
+        }
+    }
 
     // --- String ---
     //

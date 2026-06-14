@@ -2451,7 +2451,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let expr = pair
         .into_inner()
-        .find(|p| p.as_rule() != Rule::NEWLINE)
+        .find(|p| !matches!(p.as_rule(), Rule::NEWLINE | Rule::return_kw))
         .map(walk_expression)
         .transpose()?;
     Ok(StmtKind::Return(expr))
@@ -2480,7 +2480,11 @@ fn walk_continue(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = walk_expression(first_meaningful(pair)?)?;
+    let expr_pair = pair
+        .into_inner()
+        .find(|p| !matches!(p.as_rule(), Rule::NEWLINE | Rule::throw_kw))
+        .ok_or("throw: expected expression")?;
+    let expr = walk_expression(expr_pair)?;
     Ok(StmtKind::Throw {
         expr: Some(expr),
         cause: None,
