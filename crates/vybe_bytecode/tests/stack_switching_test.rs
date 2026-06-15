@@ -9,6 +9,56 @@ use vybe_bytecode::wasm;
 use vybe_bytecode::wasm::write_wasm;
 use vybe_bytecode::{Chunk, Op, VM, Value};
 
+/// Spec-`resume` generator iterator-advance, mirroring the compiler's
+/// `emitter::generators::emit_next`. Stack: `[cont]` -> `[value, has_more_i32]`.
+/// Uses `resume` + an `(on yield -> handler)` table — the retired custom
+/// `GEN_NEXT` opcode's spec replacement.
+fn emit_spec_gen_next(chunk: &mut Chunk) {
+    let cont_slot = chunk.local_count;
+    chunk.local_count += 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, 0);
+    chunk.emit_op(Op::DROP, 0);
+
+    let done_key = chunk.add_constant(Value::String(Arc::from("__gen_done")));
+    let _block = chunk.emit_block_typed(0, 2);
+
+    // Done guard: completed continuation → (null, 0) without re-resuming.
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
+    chunk.emit_op_u16(Op::STRUCT_GET, done_key, 0);
+    chunk.emit_op(Op::REF_IS_NULL, 0);
+    chunk.emit_op(Op::I32_EQZ, 0);
+    let _done_if = chunk.emit_if(0);
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_br(1, 0);
+    chunk.emit_end(0);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
+    chunk.emit_op(Op::NULL, 0);
+    let resume_ip = chunk.code.len();
+    chunk.emit_op_u16(Op::RESUME, 0, 0);
+    // Completion arm: stamp done, push has_more = 0.
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_br(0, 0);
+    // Yield arm (VM jumps here on suspend tag 0): push has_more = 1.
+    let handler_ip = chunk.code.len();
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_end(0);
+
+    chunk.stack_switch_handlers.insert(
+        resume_ip,
+        vec![StackSwitchHandler {
+            kind: 0,
+            tag_index: 0,
+            label_index: handler_ip as u32,
+        }],
+    );
+}
+
 fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -1023,7 +1073,7 @@ fn generator_resume_preserves_loop_label_stack() {
 
     for _ in 0..2 {
         script.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        script.emit_op(Op::GEN_NEXT, 0);
+        emit_spec_gen_next(&mut script);
         script.emit_op_u16(Op::LOCAL_SET, 2, 0);
         script.emit_op(Op::DROP, 0);
         script.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -1058,7 +1108,11 @@ fn jspi_fulfilled_promise_suspend_unwraps_value() {
     let mut chunk = Chunk::new("<script>");
     let promise = chunk.add_constant(make_promise(1, "fulfilled", Value::I32(88)));
     chunk.emit_op_u16(Op::CONST, promise, 0);
-    chunk.emit_op(Op::PROMISE_SUSPEND, 0);
+    {
+        let aw = chunk.add_import("jspi", "await");
+        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+        chunk.emit(1, 0);
+    }
     chunk.emit_op(Op::RETURN, 0);
 
     let result = VM::new().run(vec![chunk]).unwrap();
@@ -1075,9 +1129,14 @@ fn jspi_rejected_promise_suspend_enters_wasm_catch_handler() {
     ));
     let handled = chunk.add_constant(Value::I32(91));
 
-    emit_try_table_catch_all(&mut chunk, 6);
+    // Try body = CONST(4 bytes) + `jspi.await` CALL_IMPORT(5 bytes) = 9 bytes.
+    emit_try_table_catch_all(&mut chunk, 9);
     chunk.emit_op_u16(Op::CONST, promise, 0);
-    chunk.emit_op(Op::PROMISE_SUSPEND, 0);
+    {
+        let aw = chunk.add_import("jspi", "await");
+        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+        chunk.emit(1, 0);
+    }
 
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, handled, 0);
@@ -1108,7 +1167,11 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     // `await awaitable()` — the JSPI suspend point. Per ECMA-262 / JSPI a
     // pending promise suspends ONLY at the explicit await (PROMISE_SUSPEND),
     // not implicitly at the import call that produced it.
-    gen_body.emit_op(Op::PROMISE_SUSPEND, 0);
+    {
+        let aw = gen_body.add_import("jspi", "await");
+        gen_body.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+        gen_body.emit(1, 0);
+    }
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
     gen_body.emit_op(Op::NULL, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -1122,7 +1185,7 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    script.emit_op(Op::GEN_NEXT, 0);
+    emit_spec_gen_next(&mut script);
     script.emit_op_u16(Op::LOCAL_SET, 2, 0);
     script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -1206,7 +1269,7 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    script.emit_op(Op::GEN_NEXT, 0); // -> [value, has_more]
+    emit_spec_gen_next(&mut script); // -> [value, has_more]
     script.emit_op_u16(Op::LOCAL_SET, 2, 0); // has_more
     script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0); // value
@@ -1277,7 +1340,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     cb.arity = 1;
     cb.local_count = 1;
     cb.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    cb.emit_op(Op::GEN_NEXT, 0);
+    emit_spec_gen_next(&mut cb);
     cb.emit_op(Op::DROP, 0); // drop has_more, leaving the yielded value
     cb.emit_op(Op::RETURN, 0);
 

@@ -144,21 +144,40 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 // Python `async def`, Dart `async`, JS `async function`, C# `async Task`
 // all compile to the same opcodes.
 
-/// Emit an await expression (WASM JSPI: promise_suspend).
+/// Module/name of the JSPI suspending import that `await` lowers to. JSPI
+/// (JS Promise Integration — stack switching at the JS-promise boundary) marks
+/// an import as `WebAssembly.Suspending`; calling it suspends the computation
+/// until the returned Promise settles. The VM recognises this import as the
+/// suspender (the embedder-side marking) and runs the await/suspend logic.
+pub const JSPI_SUSPEND_MODULE: &str = "jspi";
+pub const JSPI_SUSPEND_NAME: &str = "await";
+
+/// Emit an `await` expression via JSPI — a plain `call` to a suspending import.
 /// Caller must have compiled the awaited expression onto the stack.
-/// If the value is a Promise, the VM suspends the current fiber until resolved.
-/// If the value is not a Promise, it passes through unchanged.
-/// Stack before: [value_or_promise]  Stack after: [resolved_value]
+/// Stack before: `[value_or_promise]`  Stack after: `[resolved_value]`
 pub fn emit_await(chunk: &mut Chunk, line: u32) {
-    // `await` is the JSPI suspend point, and JSPI is the stack-switching
-    // proposal applied to JS Promises — so it lowers to the spec `suspend`
-    // instruction (the same one generators use), NOT a custom opcode.
-    //
-    // It carries the dedicated `AWAIT_SUSPEND_TAG` so the VM can tell `await`
-    // apart from a generator `yield` (tag 0): the VM's `SUSPEND` handler routes
-    // this tag to Promise-await semantics — fulfilled → unwrap, rejected →
-    // throw, pending → suspend the fiber on the event loop until it settles.
-    crate::emitter::generators::emit_suspend_tagged(chunk, vybe_bytecode::AWAIT_SUSPEND_TAG, line);
+    // Per the JSPI proposal, the suspend point is a normal `call` to a
+    // `WebAssembly.Suspending`-marked import — NOT a custom opcode and NOT a
+    // magic `suspend` tag. `await x` → `call $jspi.await(x)`, which lowers to
+    // the core `call` (0x10) — valid `.wasm`. The VM treats this import as the
+    // suspender: fulfilled → unwrap, rejected → throw, pending → suspend the
+    // fiber on the event loop (the engine-internal stack switch JSPI mandates)
+    // until the Promise settles, then resume with its value. A non-Promise
+    // value passes straight through (proposal §"nosuspend").
+    let idx = chunk.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(1, line); // argc = 1 (the awaited value)
+}
+
+/// Two-chunk `await` for runtime-helper builders: the awaited-value `call` is
+/// emitted into `code`, but the `jspi.await` import is registered on `imports`
+/// (chunks[0]) — matching how those builders register every other import.
+/// Adding it to `code`'s own import list instead would shift `code`'s import
+/// indices and mis-resolve its other `CALL_IMPORT`s.
+pub fn emit_await_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    let idx = imports.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
+    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    code.emit(1, line); // argc = 1 (the awaited value)
 }
 
 /// Emit async function wrapper: wraps the body chunk as a continuation.

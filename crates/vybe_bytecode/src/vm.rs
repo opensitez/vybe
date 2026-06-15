@@ -376,6 +376,12 @@ pub enum ImportTarget {
     ChunkFn { chunk_index: usize, arity: u8 },
     /// Runtime global lookup (stdlib functions registered via globals)
     StdlibRedirect(String),
+    /// JSPI suspending import (`jspi`.`await`, a `WebAssembly.Suspending`
+    /// import). `await x` lowers to a `call` to this import; the VM (acting as
+    /// the engine) implements the suspension itself rather than dispatching to a
+    /// host fn — fulfilled → unwrap, rejected → throw, pending → suspend the
+    /// fiber on the event loop until the Promise settles.
+    JspiSuspend,
 }
 
 #[derive(Debug, Clone)]
@@ -1535,6 +1541,9 @@ impl VM {
                         self.import_table.push(ImportTarget::StdlibRedirect(name));
                     }
                 }
+                ImportTarget::JspiSuspend => {
+                    self.import_table.push(ImportTarget::JspiSuspend);
+                }
             }
         }
 
@@ -1714,6 +1723,11 @@ impl VM {
         // different modules may have different imports. We resolve the union.
         self.import_table.clear();
         for (_i, import) in self.chunks[script_idx].imports.iter().enumerate() {
+            // 0. JSPI suspending import (`await`): handled by the VM itself.
+            if import.module == "jspi" && import.name == "await" {
+                self.import_table.push(ImportTarget::JspiSuspend);
+                continue;
+            }
             // 1. Try host function registry (exact module:name match)
             if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
                 self.import_table.push(ImportTarget::Host(idx));
@@ -1940,6 +1954,10 @@ impl VM {
         else {
             return Ok(None);
         };
+
+        if import.module == "jspi" && import.name == "await" {
+            return Ok(Some(ImportTarget::JspiSuspend));
+        }
 
         if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
             return Ok(Some(ImportTarget::Host(idx)));

@@ -1366,7 +1366,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
-    crate::emitter::functions::emit_await(&mut c, 0);
+    crate::emitter::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1466,7 +1466,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
-    crate::emitter::functions::emit_await(&mut c, 0);
+    crate::emitter::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
     c.emit_op(Op::DROP, 0);
 

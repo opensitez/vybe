@@ -262,8 +262,8 @@ impl VM {
         VMError::new(format!("__jspi__:{}", promise_id))
     }
 
-    /// `await val` — the JSPI suspend behaviour, reached via the spec
-    /// `suspend` instruction carrying `AWAIT_SUSPEND_TAG` (see `emit_await`).
+    /// `await val` — the JSPI suspend behaviour, reached via a `call` to the
+    /// `jspi.await` suspending import (WebAssembly.Suspending; see `emit_await`).
     ///
     /// ECMA-262 §27.5.1.3.2 Await semantics, modelled on stack switching:
     ///   - fulfilled promise → unwrap and push the value (resume the fiber)
@@ -1847,6 +1847,19 @@ impl VM {
                                     global_name
                                 )));
                             }
+                        }
+                        ImportTarget::JspiSuspend => {
+                            // `await x` — JSPI suspending import. The VM (engine)
+                            // implements the suspension itself: fulfilled →
+                            // unwrap, rejected → throw, pending → suspend the
+                            // fiber on the event loop until the Promise settles.
+                            // Takes one operand (the awaited value); drop extras
+                            // defensively (emit_await always passes exactly one).
+                            let val = if argc == 0 { Value::Undefined } else { self.pop() };
+                            for _ in 1..argc {
+                                self.pop();
+                            }
+                            self.do_await(val)?;
                         }
                     }
                 }
@@ -4056,13 +4069,6 @@ impl VM {
                 _ if op == Op::SUSPEND => {
                     let tag = self.read_u16();
                     let val = self.pop();
-                    // `await` carries the dedicated AWAIT_SUSPEND_TAG and is
-                    // handled as a JSPI suspend point regardless of any active
-                    // generator continuation (a generator `yield` uses tag 0).
-                    if tag == crate::AWAIT_SUSPEND_TAG {
-                        self.do_await(val)?;
-                        continue;
-                    }
                     // Yield a value from the innermost active continuation.
                     // We save the current VM state as a `Fiber`, stash it
                     // into the continuation's saved slot, restore the

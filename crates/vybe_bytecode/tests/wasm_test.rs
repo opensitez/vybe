@@ -1307,7 +1307,11 @@ fn jspi_resolved_promise_returns_immediately() {
     // The result is a fulfilled promise — JSPI should NOT suspend.
     // It should push the promise object (call_import doesn't auto-unwrap fulfilled).
     // To unwrap, we use promise_suspend opcode.
-    chunk.emit_op(Op::PROMISE_SUSPEND, 0);
+    {
+        let aw = chunk.add_import("jspi", "await");
+        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+        chunk.emit(1, 0);
+    }
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -1358,7 +1362,13 @@ fn jspi_pending_promise_suspends() {
     let idx = chunk.add_import("test", "slow_fetch");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     chunk.emit(0, 0);
-    // This should never reach — the host call suspends via JSPI
+    // `await slow_fetch()` — the JSPI suspend point. A non-suspending import
+    // returning a pending promise does NOT itself suspend; suspension happens
+    // at the explicit `await` (the `jspi.await` suspending import).
+    let aw = chunk.add_import("jspi", "await");
+    chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+    chunk.emit(1, 0);
+    // This should never reach — the await suspends via JSPI
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]);
@@ -1413,10 +1423,13 @@ fn jspi_suspend_then_resume() {
     chunk.emit(1, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    // Step 2: call async_load — this suspends via JSPI
+    // Step 2: `await async_load()` — the JSPI suspend point.
     let load_idx = chunk.add_import("test", "async_load");
     chunk.emit_op_u16(Op::CALL_IMPORT, load_idx, 0);
     chunk.emit(0, 0);
+    let aw = chunk.add_import("jspi", "await");
+    chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+    chunk.emit(1, 0);
 
     // Step 3: log the result (only reached after resume)
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
@@ -1472,7 +1485,11 @@ fn jspi_promise_suspend_opcode() {
     chunk.emit_op_u16(Op::STRUCT_NEW, 3, 0);
 
     // promise_suspend should extract the value
-    chunk.emit_op(Op::PROMISE_SUSPEND, 0);
+    {
+        let aw = chunk.add_import("jspi", "await");
+        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
+        chunk.emit(1, 0);
+    }
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
