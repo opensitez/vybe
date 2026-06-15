@@ -3464,8 +3464,8 @@ impl Compiler {
                                 // array which replaces the one on TOS. JS
                                 // generators (Continuation values) can't be
                                 // spread by the host concat fn — the iterator
-                                // protocol needs Op::GEN_NEXT (WASM stack
-                                // switching). When we know at compile time that
+                                // protocol needs spec stack-switching `resume`
+                                // (emit_next). When we know at compile time that
                                 // the spread value is a direct generator call,
                                 // use the common emitter (emit_drain_into_array)
                                 // which emits an inline GEN_NEXT loop — the same
@@ -4687,9 +4687,9 @@ impl Compiler {
                 // arrays — Set, Map, String — get coerced to an array
                 // first via the polymorphic Symbol.iterator helper
                 // (`ecma:object.iterForOf`). Generators (Continuation
-                // values) need WASM stack-switching (`Op::GEN_NEXT`)
-                // to drive their iterator protocol, which a host fn
-                // can't do — route them through the
+                // values) need spec WASM stack-switching `resume`
+                // (emit_next) to drive their iterator protocol, which a
+                // host fn can't do — route them through the
                 // `__stdlib_drain_generator` bytecode helper.
                 let inner_slot = self.define_local("__spread_iter");
                 self.emit_u16(Op::LOCAL_SET, inner_slot);

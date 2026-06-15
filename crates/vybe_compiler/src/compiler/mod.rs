@@ -1490,6 +1490,19 @@ impl Compiler {
 
         self.predeclare_type_names(&merged_body, None);
         self.predeclare_interface_signatures_in_body(&merged_body);
+
+        // Pre-collect every rest-parameter arity in the program so call-site
+        // rest packing is emitted even when the callee (e.g. a `const f =
+        // (...xs) => ...` arrow) is declared after a hoisted function body that
+        // calls it. Without this, those calls silently drop arguments.
+        {
+            let mut rest_arities = Vec::new();
+            crate::ast::collect_rest_param_arities(&merged_body, &mut rest_arities);
+            for arity in rest_arities {
+                self.rest_fixed_arities.insert(arity);
+            }
+        }
+
         self.reserve_runtime_global_names();
         let shared_global_names = self.shared_global_names.clone();
         for name in shared_global_names {

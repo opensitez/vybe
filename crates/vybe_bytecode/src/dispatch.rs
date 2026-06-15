@@ -274,88 +274,110 @@ impl VM {
     /// On Ok the dispatch loop continues at the (possibly relocated, for a
     /// caught rejection) ip with the value on the stack. On Err it propagates a
     /// JSPI suspension signal or an unhandled rejection up the stack.
+    ///
+    /// `await` flattens recursively (ECMA-262 §27.2.1.3.2 Await resolves a
+    /// thenable, and the resolution may itself be a thenable): a fulfilled
+    /// promise whose value is *another* promise is awaited again. This loop
+    /// keeps unwrapping fulfilled-promise chains; it suspends the moment it
+    /// reaches a pending link and throws the moment it reaches a rejected one.
     fn do_await(&mut self, val: Value) -> Result<(), VMError> {
-        let Value::Object(ref obj) = val else {
-            // Primitive — pass through as-is.
-            self.push(val.clone())?;
-            return Ok(());
-        };
-        let o = obj.lock().unwrap();
-        let ty = o
-            .properties
-            .get("__type")
-            .map(|v| format!("{}", v))
-            .unwrap_or_default();
-        if ty != "Promise" {
-            drop(o);
-            // Non-promise object — pass through as-is.
-            self.push(val.clone())?;
-            return Ok(());
-        }
-        let state = o
-            .properties
-            .get("__state")
-            .map(|v| format!("{}", v))
-            .unwrap_or_default();
-        if state == "pending" {
-            let promise_id = o
+        let mut val = val;
+        loop {
+            // Clone the Arc so `val` is free to be reassigned for the next
+            // flatten iteration without a borrow conflict.
+            let arc = match &val {
+                Value::Object(o) => o.clone(),
+                // Primitive — pass through as-is.
+                _ => {
+                    self.push(val)?;
+                    return Ok(());
+                }
+            };
+            let o = arc.lock().unwrap();
+            let ty = o
                 .properties
-                .get("__id")
-                .map(|v| v.as_f64() as u64)
-                .unwrap_or(0);
-            drop(o);
-            return Err(self.suspend_for_pending_promise(promise_id));
-        }
-        let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
-        if state == "rejected" {
-            // await on a rejected promise throws the rejection reason. Walk the
-            // exception handler stack exactly like THROW so an enclosing
-            // try/catch in the async wrapper fires.
-            drop(o);
-            let mut matched_idx = None;
-            for i in (0..self.exception_handlers.len()).rev() {
-                let handler = &self.exception_handlers[i];
-                if handler.tag == 0 {
-                    matched_idx = Some(i);
-                    break;
-                }
-                let tag_idx = handler.tag as usize;
-                let tag_name = self
-                    .chunks
-                    .get(0)
-                    .and_then(|c| c.exception_tags.get(tag_idx))
-                    .cloned()
-                    .unwrap_or_default();
-                if !tag_name.is_empty()
-                    && (self.test_type(&value, &tag_name.to_lowercase())
-                        || self.exception_value_matches(&value, &tag_name))
-                {
-                    matched_idx = Some(i);
-                    break;
-                }
-            }
-            if let Some(idx) = matched_idx {
-                let handler = self.exception_handlers[idx].clone();
-                self.exception_handlers.truncate(idx);
-                while self.frames.len() > handler.frame_depth {
-                    let base = self.frames.last().unwrap().base;
-                    self.close_upvalues(base);
-                    self.frames.pop();
-                }
-                self.stack.truncate(handler.stack_depth);
-                self.push(value)?;
-                let f = self.frame_mut();
-                f.ip = handler.catch_ip;
+                .get("__type")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            if ty != "Promise" {
+                drop(o);
+                // Non-promise object — pass through as-is.
+                self.push(val)?;
                 return Ok(());
             }
-            self.last_exception = Some(value.clone());
-            let stack = self.capture_call_stack();
-            return Err(VMError::new(format!("{}", value)).with_stack(stack));
+            let state = o
+                .properties
+                .get("__state")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            if state == "pending" {
+                let promise_id = o
+                    .properties
+                    .get("__id")
+                    .map(|v| v.as_f64() as u64)
+                    .unwrap_or(0);
+                drop(o);
+                return Err(self.suspend_for_pending_promise(promise_id));
+            }
+            let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+            if state == "rejected" {
+                // await on a rejected promise throws the rejection reason. Walk
+                // the exception handler stack exactly like THROW so an enclosing
+                // try/catch in the async wrapper fires.
+                drop(o);
+                let mut matched_idx = None;
+                for i in (0..self.exception_handlers.len()).rev() {
+                    let handler = &self.exception_handlers[i];
+                    if handler.tag == 0 {
+                        matched_idx = Some(i);
+                        break;
+                    }
+                    let tag_idx = handler.tag as usize;
+                    let tag_name = self
+                        .chunks
+                        .get(0)
+                        .and_then(|c| c.exception_tags.get(tag_idx))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !tag_name.is_empty()
+                        && (self.test_type(&value, &tag_name.to_lowercase())
+                            || self.exception_value_matches(&value, &tag_name))
+                    {
+                        matched_idx = Some(i);
+                        break;
+                    }
+                }
+                if let Some(idx) = matched_idx {
+                    let handler = self.exception_handlers[idx].clone();
+                    self.exception_handlers.truncate(idx);
+                    while self.frames.len() > handler.frame_depth {
+                        let base = self.frames.last().unwrap().base;
+                        self.close_upvalues(base);
+                        self.frames.pop();
+                    }
+                    self.stack.truncate(handler.stack_depth);
+                    self.push(value)?;
+                    let f = self.frame_mut();
+                    f.ip = handler.catch_ip;
+                    return Ok(());
+                }
+                self.last_exception = Some(value.clone());
+                let stack = self.capture_call_stack();
+                return Err(VMError::new(format!("{}", value)).with_stack(stack));
+            }
+            // fulfilled — flatten if the resolved value is itself a promise,
+            // otherwise unwrap and continue.
+            drop(o);
+            if matches!(&value, Value::Object(inner)
+                if inner.lock().unwrap().properties.get("__type")
+                    .map(|v| format!("{}", v)).as_deref() == Some("Promise"))
+            {
+                val = value;
+                continue;
+            }
+            self.push(value)?;
+            return Ok(());
         }
-        // fulfilled — unwrap and continue.
-        drop(o);
-        self.push(value)?;
-        Ok(())
     }
 
     fn next_bytes_decode_opcode(&self) -> bool {
@@ -4337,101 +4359,6 @@ impl VM {
                     };
                     self.push(new_cont)?;
                 }
-                // `gen.next` — iterator-protocol resume. Takes [cont],
-                // advances it, leaves [value, has_more_i32] on the
-                // caller's stack. Semantically identical to RESUME but
-                // with `mode: Iterator` so SUSPEND / final-RETURN know
-                // to append the has_more flag.
-                _ if op == Op::GEN_NEXT => {
-                    let cont = self.pop();
-                    if let Value::Object(ref obj) = cont {
-                        let (phase, entry) = {
-                            let o = obj.lock().unwrap();
-                            if let ObjectKind::Continuation(cs) = &o.kind {
-                                (*cs.state.lock().unwrap(), cs.entry.clone())
-                            } else {
-                                // Non-continuation — emulate a single
-                                // "yielded once" protocol by pushing
-                                // the value as-is then has_more=0, then
-                                // continue (do NOT unwind the execute loop).
-                                self.push(cont.clone())?;
-                                self.push(Value::I32(0))?;
-                                continue;
-                            }
-                        };
-                        if matches!(phase, crate::value::ContinuationPhase::Done) {
-                            // Already exhausted — yield (null, 0) and move to
-                            // the next instruction. (Must NOT `return` here:
-                            // that would unwind the whole execute loop and
-                            // silently end the caller — a second `it.next()`
-                            // on a finished generator must just produce
-                            // `(undefined, done)` and continue.)
-                            self.push(Value::Null)?;
-                            self.push(Value::I32(0))?;
-                            continue;
-                        }
-                        let caller_fiber = self.save_fiber();
-                        match phase {
-                            crate::value::ContinuationPhase::Ready => {
-                                let bound: Vec<Value> = {
-                                    let o = obj.lock().unwrap();
-                                    match o.properties.get("__bound_args") {
-                                        Some(Value::Object(arr)) => {
-                                            let a = arr.lock().unwrap();
-                                            if let ObjectKind::Array(v) = &a.kind {
-                                                v.clone()
-                                            } else {
-                                                Vec::new()
-                                            }
-                                        }
-                                        _ => Vec::new(),
-                                    }
-                                };
-                                let argc = bound.len() + 1;
-                                self.push(entry)?;
-                                for b in bound {
-                                    self.push(b)?;
-                                }
-                                self.push(Value::Null)?; // resume value
-                                self.call_value_direct(argc)?;
-                                // Fresh continuation runs on its own fiber so
-                                // its internal returns don't trip an enclosing
-                                // callback's stale execute_until floor.
-                                self.cur_fiber_id = self.next_fiber_id;
-                                self.next_fiber_id += 1;
-                            }
-                            crate::value::ContinuationPhase::Suspended => {
-                                let saved = {
-                                    let o = obj.lock().unwrap();
-                                    if let ObjectKind::Continuation(cs) = &o.kind {
-                                        cs.saved.lock().unwrap().take()
-                                    } else {
-                                        None
-                                    }
-                                };
-                                if let Some(fiber) = saved {
-                                    // resume_fiber_with restores the cont's own
-                                    // saved fiber id.
-                                    self.resume_fiber_with(fiber, Some(Value::Null))?;
-                                }
-                            }
-                            _ => unreachable!(),
-                        }
-                        // Same ordering rule as RESUME: push the AC
-                        // AFTER `resume_fiber_with` has replaced the
-                        // active_continuations stack.
-                        self.active_continuations.push(ActiveContinuation {
-                            cont: cont.clone(),
-                            caller_fiber,
-                            mode: ResumeMode::Iterator,
-                            handlers: Vec::new(),
-                        });
-                    } else {
-                        self.push(cont.clone())?;
-                        self.push(Value::I32(0))?;
-                    }
-                }
-
                 // `resume_throw $ct $tag handlers` — resume a continuation
                 // by throwing an exception into it. Stack:
                 // [cont, exn_value] → control transfers into the cont's
@@ -7186,100 +7113,6 @@ impl VM {
                         self.push(Value::V128(out))?;
                     } else {
                         self.push(Value::V128([0; 16]))?;
-                    }
-                }
-
-                // -- JS Promise Integration (JSPI) --
-                _ if op == Op::PROMISE_SUSPEND => {
-                    // Explicit JSPI suspend point. Like await, but can be inserted
-                    // by the compiler for synchronous-looking code that calls async APIs.
-                    // ECMA-262 §25.6.1.3.2 Await:
-                    //   - fulfilled promise → unwrap and push value
-                    //   - rejected promise  → throw rejection reason (caught by enclosing try)
-                    //   - pending promise   → suspend fiber until settled
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        let ty = o
-                            .properties
-                            .get("__type")
-                            .map(|v| format!("{}", v))
-                            .unwrap_or_default();
-                        if ty == "Promise" {
-                            let state = o
-                                .properties
-                                .get("__state")
-                                .map(|v| format!("{}", v))
-                                .unwrap_or_default();
-                            if state == "pending" {
-                                let promise_id = o
-                                    .properties
-                                    .get("__id")
-                                    .map(|v| v.as_f64() as u64)
-                                    .unwrap_or(0);
-                                drop(o);
-                                return Err(self.suspend_for_pending_promise(promise_id));
-                            }
-                            let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                            if state == "rejected" {
-                                // await on a rejected promise throws the rejection reason.
-                                // Walk the exception handler stack exactly like THROW so
-                                // an enclosing try/catch in the wrapper function fires.
-                                drop(o);
-                                let mut matched_idx = None;
-                                for i in (0..self.exception_handlers.len()).rev() {
-                                    let handler = &self.exception_handlers[i];
-                                    if handler.tag == 0 {
-                                        matched_idx = Some(i);
-                                        break;
-                                    }
-                                    let tag_idx = handler.tag as usize;
-                                    let tag_name = self
-                                        .chunks
-                                        .get(0)
-                                        .and_then(|c| c.exception_tags.get(tag_idx))
-                                        .cloned()
-                                        .unwrap_or_default();
-                                    if !tag_name.is_empty()
-                                        && (self.test_type(&value, &tag_name.to_lowercase())
-                                            || self.exception_value_matches(&value, &tag_name))
-                                    {
-                                        matched_idx = Some(i);
-                                        break;
-                                    }
-                                }
-                                if let Some(idx) = matched_idx {
-                                    let handler = self.exception_handlers[idx].clone();
-                                    self.exception_handlers.truncate(idx);
-                                    while self.frames.len() > handler.frame_depth {
-                                        let base = self.frames.last().unwrap().base;
-                                        self.close_upvalues(base);
-                                        self.frames.pop();
-                                    }
-                                    self.stack.truncate(handler.stack_depth);
-                                    self.push(value)?;
-                                    let f = self.frame_mut();
-                                    f.ip = handler.catch_ip;
-                                } else {
-                                    self.last_exception = Some(value.clone());
-                                    let stack = self.capture_call_stack();
-                                    return Err(
-                                        VMError::new(format!("{}", value)).with_stack(stack)
-                                    );
-                                }
-                                continue;
-                            }
-                            // fulfilled — unwrap and continue
-                            drop(o);
-                            self.push(value)?;
-                        } else {
-                            drop(o);
-                            // Non-promise value — pass through as-is (spec: Await(v) = Await(Promise.resolve(v)))
-                            self.push(val)?;
-                        }
-                    } else {
-                        // Primitive — pass through as-is
-                        self.push(val)?;
                     }
                 }
 

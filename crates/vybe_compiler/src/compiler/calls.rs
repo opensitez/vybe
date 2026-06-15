@@ -5855,7 +5855,8 @@ impl Compiler {
                 // Generator `.next()` / `.next(v)`: if receiver is a
                 // Continuation, drive via WASM stack-switching opcodes
                 // and wrap into spec `{value, done}`.
-                //   - `g.next()`     → Op::GEN_NEXT (pushes value+has_more)
+                //   - `g.next()`     → spec `resume` + `(on yield)` handler
+                //                       (emit_next; pushes value+has_more)
                 //   - `g.next(v)`    → Op::RESUME with v as resume_val
                 //                       (pushes yielded value), then
                 //                       check `isGeneratorDone` for the

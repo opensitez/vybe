@@ -1488,6 +1488,384 @@ fn case_condition_has_yield(condition: &CaseCondition) -> bool {
     }
 }
 
+// ── Rest-parameter arity collection ──────────────────────────────────────────
+//
+// The runtime rest-arg packing at a call site is only emitted when the
+// compiler already knows some callable has a rest parameter of that fixed
+// arity (`Compiler::rest_fixed_arities`). That set is populated lazily as each
+// function/lambda body is compiled — but hoisted function declarations are
+// compiled before later `const f = (...xs) => ...` arrow bindings, so a call to
+// such an arrow from inside a hoisted function would miss the packing and drop
+// arguments. This walker pre-collects every rest arity in the program so the
+// set is complete before any body is compiled. Over-collecting is harmless: an
+// arity that never matches a callee's `__vybe_rest_fixed_arity` stamp just adds
+// an inert packing branch.
+
+/// Collect the fixed arity (`params.len() - 1`) of every function, lambda,
+/// method, or constructor that ends in a rest parameter, recursing through all
+/// bodies and nested closures.
+pub fn collect_rest_param_arities(stmts: &[Statement], out: &mut Vec<u8>) {
+    for stmt in stmts {
+        collect_rest_in_stmt(stmt, out);
+    }
+}
+
+fn push_rest_arity(params: &[Param], out: &mut Vec<u8>) {
+    if params.last().is_some_and(|p| p.is_rest) {
+        out.push((params.len().saturating_sub(1)) as u8);
+    }
+}
+
+fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { params, body, .. } => {
+            push_rest_arity(params, out);
+            collect_rest_param_arities(body, out);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    collect_rest_in_expr(init, out);
+                }
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                collect_rest_in_member(member, out);
+            }
+        }
+        StmtKind::EnumDecl { body_members, .. } => {
+            for member in body_members {
+                collect_rest_in_member(member, out);
+            }
+        }
+        StmtKind::NamespaceDecl { body, .. } => collect_rest_param_arities(body, out),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            collect_rest_in_expr(cond, out);
+            collect_rest_param_arities(then_body, out);
+            for (econd, ebody) in elifs {
+                collect_rest_in_expr(econd, out);
+                collect_rest_param_arities(ebody, out);
+            }
+            if let Some(eb) = else_body {
+                collect_rest_param_arities(eb, out);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_rest_in_stmt(init, out);
+            }
+            if let Some(cond) = cond {
+                collect_rest_in_expr(cond, out);
+            }
+            if let Some(update) = update {
+                collect_rest_in_expr(update, out);
+            }
+            collect_rest_param_arities(body, out);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_rest_in_expr(iter, out);
+            collect_rest_param_arities(body, out);
+            if let Some(eb) = else_body {
+                collect_rest_param_arities(eb, out);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            collect_rest_in_expr(cond, out);
+            collect_rest_param_arities(body, out);
+            if let Some(eb) = else_body {
+                collect_rest_param_arities(eb, out);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            collect_rest_param_arities(body, out);
+            collect_rest_in_expr(cond, out);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            collect_rest_in_expr(expr, out);
+            for case in cases {
+                collect_rest_param_arities(&case.body, out);
+            }
+            if let Some(d) = default {
+                collect_rest_param_arities(d, out);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            collect_rest_param_arities(body, out);
+            for catch in catches {
+                collect_rest_param_arities(&catch.body, out);
+            }
+            if let Some(eb) = else_body {
+                collect_rest_param_arities(eb, out);
+            }
+            if let Some(f) = finally {
+                collect_rest_param_arities(f, out);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                collect_rest_in_expr(&item.expr, out);
+            }
+            collect_rest_param_arities(body, out);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            collect_rest_in_expr(resource, out);
+            collect_rest_param_arities(body, out);
+        }
+        StmtKind::Lock { expr, body } => {
+            collect_rest_in_expr(expr, out);
+            collect_rest_param_arities(body, out);
+        }
+        StmtKind::Return(expr) => {
+            if let Some(e) = expr {
+                collect_rest_in_expr(e, out);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(e) = expr {
+                collect_rest_in_expr(e, out);
+            }
+            if let Some(c) = cause {
+                collect_rest_in_expr(c, out);
+            }
+        }
+        StmtKind::Expr(expr) => collect_rest_in_expr(expr, out),
+        StmtKind::Block(body) => collect_rest_param_arities(body, out),
+        StmtKind::Assign { targets, value } => {
+            for t in targets {
+                collect_rest_in_expr(t, out);
+            }
+            collect_rest_in_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_rest_in_expr(target, out);
+            collect_rest_in_expr(value, out);
+        }
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            if let Some(d) = declaration {
+                collect_rest_in_stmt(d, out);
+            }
+            if let Some(e) = default {
+                collect_rest_in_expr(e, out);
+            }
+        }
+        StmtKind::Labeled { body, .. } => collect_rest_in_stmt(body, out),
+        StmtKind::MatchStatement { subject, cases } => {
+            collect_rest_in_expr(subject, out);
+            for case in cases {
+                collect_rest_param_arities(&case.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_rest_in_member(member: &ClassMember, out: &mut Vec<u8>) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            collect_rest_in_stmt(stmt, out)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            push_rest_arity(params, out);
+            collect_rest_param_arities(body, out);
+        }
+        ClassMember::Field { init, .. } => {
+            if let Some(e) = init {
+                collect_rest_in_expr(e, out);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(g) = getter {
+                collect_rest_param_arities(g, out);
+            }
+            if let Some(s) = setter {
+                collect_rest_param_arities(&s.body, out);
+            }
+        }
+        ClassMember::Const { value, .. } => collect_rest_in_expr(value, out),
+        _ => {}
+    }
+}
+
+fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
+    match &expr.kind {
+        ExprKind::Lambda { params, body, .. } => {
+            push_rest_arity(params, out);
+            match body {
+                LambdaBody::Expr(e) => collect_rest_in_expr(e, out),
+                LambdaBody::Block(stmts) => collect_rest_param_arities(stmts, out),
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => collect_rest_in_stmt(stmt, out),
+        ExprKind::ClassExpr { members, .. } => {
+            for member in members {
+                collect_rest_in_member(member, out);
+            }
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args, .. } => {
+            collect_rest_in_expr(callee, out);
+            for arg in args {
+                collect_rest_in_expr(&arg.value, out);
+            }
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                collect_rest_in_expr(&arg.value, out);
+            }
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            collect_rest_in_expr(left, out);
+            collect_rest_in_expr(right, out);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            collect_rest_in_expr(class, out);
+            collect_rest_in_expr(member, out);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::RefLoad(expr) => collect_rest_in_expr(expr, out),
+        ExprKind::Yield(expr) => {
+            if let Some(e) = expr {
+                collect_rest_in_expr(e, out);
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_rest_in_expr(cond, out);
+            collect_rest_in_expr(then, out);
+            collect_rest_in_expr(else_, out);
+        }
+        ExprKind::Member { object, .. } => collect_rest_in_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_rest_in_expr(object, out);
+            collect_rest_in_expr(index, out);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(k) = &item.key {
+                    collect_rest_in_expr(k, out);
+                }
+                collect_rest_in_expr(&item.value, out);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                collect_rest_in_expr(item, out);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        collect_rest_in_expr(key, out);
+                        collect_rest_in_expr(value, out);
+                    }
+                    ObjectProperty::Spread(e) => collect_rest_in_expr(e, out),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => collect_rest_in_stmt(value, out),
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                        collect_rest_in_expr(e, out)
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Match { subject, arms } => {
+            collect_rest_in_expr(subject, out);
+            for arm in arms {
+                if let Some(conds) = &arm.conditions {
+                    for c in conds {
+                        collect_rest_in_expr(c, out);
+                    }
+                }
+                collect_rest_in_expr(&arm.body, out);
+            }
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            collect_rest_in_expr(element, out);
+            for comp_gen in generators {
+                collect_rest_in_expr(&comp_gen.target, out);
+                collect_rest_in_expr(&comp_gen.iter, out);
+                for c in &comp_gen.conditions {
+                    collect_rest_in_expr(c, out);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for e in [lower, upper, step].into_iter().flatten() {
+                collect_rest_in_expr(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn normalize_array_index_operand(
     index: Expression,
     semantics: ArrayIndexSemantics,

@@ -304,6 +304,18 @@ fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {
             }
         }
     }
+    // Any program with a generator needs the continuation protocol helpers.
+    // `attach_continuation_protocols` (VM) wires `__vybe_generator_next` /
+    // `__vybe_generator_self` onto every continuation as its real `next` /
+    // `[Symbol.iterator]` methods — `__stdlib_generator_next` is a pure
+    // bytecode driver (`emit_next` → spec `resume`). Generators drive via
+    // inline `emit_next`, so nothing *references* these globals by name; force
+    // them in so a generator is a first-class iterator (`it.next` is readable
+    // and callable) for generic for-of / `Iterator.from` / spread paths.
+    if chunks.iter().any(|chunk| chunk.is_generator) {
+        exports.insert("__stdlib_generator_next");
+        exports.insert("__stdlib_generator_self");
+    }
     exports
 }
 

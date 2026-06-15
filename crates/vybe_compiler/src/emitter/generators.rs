@@ -5,9 +5,10 @@
 //! the single compiler-side surface for WebAssembly stack-switching generator
 //! opcodes.
 
-use vybe_bytecode::Chunk;
+use std::sync::Arc;
 use vybe_bytecode::chunk::StackSwitchHandler;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::collections;
 use crate::emitter::ops;
@@ -85,13 +86,38 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, line); // LOCAL_SET tees the value…
     chunk.emit_op(Op::DROP, line); // …DROP clears it → [cont] becomes []
 
+    let done_key = chunk.add_constant(Value::String(Arc::from("__gen_done")));
+
     // block (result: value, has_more_i32)
     let block_p = chunk.emit_block_typed(line, 2);
+
+    // Done guard. The spec `resume` instruction TRAPS on a completed
+    // continuation, but the JS iterator protocol requires `.next()` after
+    // completion to keep returning `{value: undefined, done: true}`. So we
+    // stamp `__gen_done` on the continuation when it completes (below) and
+    // short-circuit here before ever resuming a finished generator.
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, done_key, line); // null if never set, else I32(1)
+    chunk.emit_op(Op::REF_IS_NULL, line); // i32: 1 if not-yet-done
+    chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if already done
+    let done_if = chunk.emit_if(line); // if already done {
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::I32_CONST_0, line); // [null, 0]
+    chunk.emit_br(1, line); //   br $block → exit with (undefined, done)
+    chunk.emit_end(line); // }
+    chunk.patch_block(done_if);
+
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [cont]
     chunk.emit_op(Op::NULL, line); // resume value → [cont, null]
     let resume_ip = chunk.code.len();
     chunk.emit_op_u16(Op::RESUME, GEN_YIELD_TAG, line);
-    // Completion arm (generator returned): stack = [return_value]
+    // Completion arm (generator returned): stack = [return_value]. Stamp the
+    // continuation done so the next call hits the guard above instead of the
+    // `resume`-on-completed trap.
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [retval, cont]
+    chunk.emit_op(Op::I32_CONST_1, line); // [retval, cont, 1]
+    chunk.emit_op_u16(Op::STRUCT_SET, done_key, line); // [retval, 1]
+    chunk.emit_op(Op::DROP, line); // [retval]
     chunk.emit_op(Op::I32_CONST_0, line); // has_more = 0 → [retval, 0]
     chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
     // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]

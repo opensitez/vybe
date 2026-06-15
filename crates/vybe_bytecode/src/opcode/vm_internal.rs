@@ -81,10 +81,10 @@ impl Op {
     // Stack-switching spec opcodes (cont.new/suspend/resume/switch/
     // cont.bind/resume_throw/resume_throw_ref) live at their real
     // core-prefix spec bytes 0xE0..=0xE6 in core_ops.rs — NOT here.
-    // 0x4B..=0x4E are retired and intentionally left undefined so any
-    // stale bytecode carrying them fails decode loudly.
-    // JSPI
-    pub const PROMISE_SUSPEND: Op = Op::new(0xFF, 0x4F);
+    // 0x4B..=0x4F are retired and intentionally left undefined so any
+    // stale bytecode carrying them fails decode loudly. 0x4F was the old
+    // `PROMISE_SUSPEND` (JS `await`), now lowered to spec `suspend` with
+    // `AWAIT_SUSPEND_TAG`.
     // GC extensions
     pub const SET_TYPE_ID: Op = Op::new(0xFF, 0x50);
     // Weak references
@@ -162,12 +162,9 @@ impl Op {
     // 0x85/0x86 are retired and left undefined.
     /// Iterator-protocol resume: `[cont] → [value, has_more_i32]`.
     /// Advances the continuation one step via the stack-switching
-    /// machinery, then reports whether the cont is still Suspended
-    /// (1) or has completed (0). Drives `for v in gen()` loops in
-    /// languages whose generator is opt-in via stack switching.
-    /// VM-only; not emitted to the WASM binary (the for-in expansion
-    /// uses core ops only on the wire).
-    pub const GEN_NEXT: Op = Op::new(0xFF, 0x87);
+    // 0x87 is retired: the old `GEN_NEXT` (generator iterator-advance) is now
+    // lowered to spec `resume` + an `(on yield)` handler. Left undefined so any
+    // stale bytecode carrying it fails decode loudly.
     // CM3 / WASI 0.3 async (Track B — high-level objects, not CM3 binary ABI)
     /// Await a future: pops a Future object, suspends if pending, pushes resolved value.
     /// Mirrors PROMISE_SUSPEND but operates on ObjectKind::Future via the EventLoop registry.

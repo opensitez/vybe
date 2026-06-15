@@ -105,6 +105,32 @@ fn values_from_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
     Some(vec.iter().skip(start).cloned().collect())
 }
 
+/// ECMA-262 §7.3.18 array-like fallback: a plain (`Ordinary`) object carrying a
+/// numeric `length` is read as `obj[0]..obj[length-1]`. Only consulted when the
+/// object exposes no `Symbol.iterator` / `Symbol.asyncIterator` (so `Array.from`
+/// / `Array.fromAsync` of an array-like still work), never for iterables.
+fn values_from_object_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
+    let o = obj.lock().unwrap();
+    if !matches!(o.kind, ObjectKind::Ordinary) {
+        return None;
+    }
+    let length = o.properties.get("length")?.as_f64();
+    if !length.is_finite() || length <= 0.0 {
+        return Some(Vec::new());
+    }
+    let len = length as usize;
+    let mut out = Vec::with_capacity(len.min(4096));
+    for i in 0..len {
+        out.push(
+            o.properties
+                .get(&i.to_string())
+                .cloned()
+                .unwrap_or(Value::Undefined),
+        );
+    }
+    Some(out)
+}
+
 fn values_from_materialized(value: Value) -> Vec<Value> {
     if let Value::Object(obj) = value {
         let o = obj.lock().unwrap();
@@ -188,6 +214,11 @@ pub(crate) fn try_materialize_iterable_values(
                 crate::ecma::object::collect_protocol_iterable_result(ctx, obj, second)
             {
                 return values.map(values_from_materialized);
+            }
+            // No iterator protocol — fall back to ECMA-262 array-like access
+            // (`Array.from` / `Array.fromAsync` of `{0:…, 1:…, length:n}`).
+            if let Some(values) = values_from_object_array_like(obj) {
+                return Ok(values);
             }
             Ok(Vec::new())
         }
