@@ -136,7 +136,10 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 //
 //   await expression:
 //     1. Compile the expression (produces a value or Promise)
-//     2. Emit Op::PROMISE_SUSPEND (WASM JSPI) — VM checks if Promise, suspends fiber if pending
+//     2. Emit the spec stack-switching `suspend` instruction tagged with
+//        AWAIT_SUSPEND_TAG (JSPI is stack switching applied to JS Promises) —
+//        the VM checks if it's a Promise and suspends the fiber if pending.
+//        No custom opcode is involved.
 //
 // Python `async def`, Dart `async`, JS `async function`, C# `async Task`
 // all compile to the same opcodes.
@@ -147,7 +150,15 @@ pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
 /// If the value is not a Promise, it passes through unchanged.
 /// Stack before: [value_or_promise]  Stack after: [resolved_value]
 pub fn emit_await(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::PROMISE_SUSPEND, line);
+    // `await` is the JSPI suspend point, and JSPI is the stack-switching
+    // proposal applied to JS Promises — so it lowers to the spec `suspend`
+    // instruction (the same one generators use), NOT a custom opcode.
+    //
+    // It carries the dedicated `AWAIT_SUSPEND_TAG` so the VM can tell `await`
+    // apart from a generator `yield` (tag 0): the VM's `SUSPEND` handler routes
+    // this tag to Promise-await semantics — fulfilled → unwrap, rejected →
+    // throw, pending → suspend the fiber on the event loop until it settles.
+    crate::emitter::generators::emit_suspend_tagged(chunk, vybe_bytecode::AWAIT_SUSPEND_TAG, line);
 }
 
 /// Emit async function wrapper: wraps the body chunk as a continuation.

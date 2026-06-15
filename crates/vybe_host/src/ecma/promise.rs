@@ -44,6 +44,36 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // Promise.all element resolver. bound-args=[aggregate, index],
+    // runtime-arg=value. Stores the value at its slot and settles the
+    // aggregate once every element has fulfilled.
+    vm.register_host_fn(
+        "ecma:promise",
+        "__all_element",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
+            let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let value = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let complete = aggregate_record_element(&aggregate, index, value);
+            if let Some(results) = complete {
+                settle_and_drain(ctx, &[aggregate, results], "fulfilled");
+            }
+            Value::Undefined
+        }),
+    );
+    // Aggregate rejecter (Promise.all / Promise.race short-circuit).
+    // bound-args=[aggregate], runtime-arg=reason.
+    vm.register_host_fn(
+        "ecma:promise",
+        "__aggregate_reject",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
+            let reason = args.get(1).cloned().unwrap_or(Value::Undefined);
+            settle_and_drain(ctx, &[aggregate, reason], "rejected");
+            Value::Undefined
+        }),
+    );
+
     let resolve_idx = vm
         .host_registry
         .get(&("ecma:promise".to_string(), "__settle_fulfilled".to_string()))
@@ -54,6 +84,16 @@ pub fn register(vm: &mut VM) {
         .get(&("ecma:promise".to_string(), "__settle_rejected".to_string()))
         .copied()
         .expect("__settle_rejected just registered");
+    let all_element_idx = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__all_element".to_string()))
+        .copied()
+        .expect("__all_element just registered");
+    let aggregate_reject_idx = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__aggregate_reject".to_string()))
+        .copied()
+        .expect("__aggregate_reject just registered");
 
     vm.register_host_fn(
         "ecma:promise",
@@ -135,30 +175,60 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:promise",
         "all",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(arr)) = args.first() {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = o.kind {
-                    let mut results = Vec::with_capacity(elems.len());
-                    for p in elems {
-                        if let Some(v) = unwrap_promise(p, "fulfilled") {
-                            results.push(v);
-                        } else if let Some(reason) = unwrap_promise(p, "rejected") {
-                            return make_promise("rejected", reason);
-                        } else {
-                            results.push(p.clone());
-                        }
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let inputs: Vec<Value> = match args.first() {
+                Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
+                    ObjectKind::Array(elems) => elems.clone(),
+                    _ => vec![],
+                },
+                _ => vec![],
+            };
+            let n = inputs.len();
+            // Aggregate promise: pending until every element fulfils (then
+            // fulfils with an in-order results array) or any rejects (then
+            // rejects with that reason). Pending inputs are awaited via
+            // reactions so `await Promise.all([...])` resumes once all settle.
+            let aggregate = make_promise("pending", Value::Undefined);
+            let id = ctx.next_promise_id();
+            let results = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                    Value::Undefined;
+                    n
+                ]))));
+            if let Value::Object(ref obj) = aggregate {
+                let mut o = obj.lock().unwrap();
+                o.properties.insert("__id".into(), Value::F64(id as f64));
+                o.properties
+                    .insert("__all_results".into(), results.clone());
+                o.properties
+                    .insert("__all_remaining".into(), Value::F64(n as f64));
+            }
+            if n == 0 {
+                settle_and_drain(ctx, &[aggregate.clone(), results], "fulfilled");
+                return aggregate;
+            }
+            for (i, p) in inputs.iter().enumerate() {
+                if !is_promise(p) {
+                    if let Some(done) = aggregate_record_element(&aggregate, i, p.clone()) {
+                        settle_and_drain(ctx, &[aggregate.clone(), done], "fulfilled");
                     }
-                    return make_promise(
-                        "fulfilled",
-                        Value::Object(Arc::new(Mutex::new(Object::new_array(results)))),
+                } else if let Some(v) = unwrap_promise(p, "fulfilled") {
+                    if let Some(done) = aggregate_record_element(&aggregate, i, v) {
+                        settle_and_drain(ctx, &[aggregate.clone(), done], "fulfilled");
+                    }
+                } else if let Some(reason) = unwrap_promise(p, "rejected") {
+                    settle_and_drain(ctx, &[aggregate.clone(), reason], "rejected");
+                    return aggregate;
+                } else {
+                    let on_f = bound_settler2(
+                        all_element_idx,
+                        aggregate.clone(),
+                        Value::F64(i as f64),
                     );
+                    let on_r = bound_settler(aggregate_reject_idx, aggregate.clone());
+                    add_reaction(p, on_f, on_r, make_promise("pending", Value::Undefined));
                 }
             }
-            make_promise(
-                "fulfilled",
-                Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))),
-            )
+            aggregate
         }),
     );
 
@@ -721,6 +791,43 @@ fn bound_settler(idx: usize, promise: Value) -> Value {
     );
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+/// Host-fn ref bound to two args (e.g. Promise.all's `[aggregate, index]`).
+fn bound_settler2(idx: usize, a: Value, b: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![a, b])))),
+    );
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+/// Record a fulfilled `Promise.all` element. Returns `Some(results)` once the
+/// last outstanding element settles (so the caller settles the aggregate).
+fn aggregate_record_element(aggregate: &Value, index: usize, value: Value) -> Option<Value> {
+    let Value::Object(obj) = aggregate else {
+        return None;
+    };
+    let mut o = obj.lock().unwrap();
+    let results = o.properties.get("__all_results").cloned();
+    if let Some(Value::Object(ref arr)) = results {
+        if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
+            if index < elems.len() {
+                elems[index] = value;
+            }
+        }
+    }
+    let remaining = o
+        .properties
+        .get("__all_remaining")
+        .map(|v| v.as_f64() as i64)
+        .unwrap_or(0)
+        - 1;
+    o.properties
+        .insert("__all_remaining".into(), Value::F64(remaining as f64));
+    if remaining <= 0 { results } else { None }
 }
 
 /// Extract the `.then` method from a thenable object if it is callable.

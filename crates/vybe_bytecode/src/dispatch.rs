@@ -262,6 +262,102 @@ impl VM {
         VMError::new(format!("__jspi__:{}", promise_id))
     }
 
+    /// `await val` — the JSPI suspend behaviour, reached via the spec
+    /// `suspend` instruction carrying `AWAIT_SUSPEND_TAG` (see `emit_await`).
+    ///
+    /// ECMA-262 §27.5.1.3.2 Await semantics, modelled on stack switching:
+    ///   - fulfilled promise → unwrap and push the value (resume the fiber)
+    ///   - rejected promise  → throw the rejection reason (walk try/catch)
+    ///   - pending promise   → suspend the fiber until the promise settles
+    ///   - non-promise value → pass through (Await(v) = Await(Promise.resolve(v)))
+    ///
+    /// On Ok the dispatch loop continues at the (possibly relocated, for a
+    /// caught rejection) ip with the value on the stack. On Err it propagates a
+    /// JSPI suspension signal or an unhandled rejection up the stack.
+    fn do_await(&mut self, val: Value) -> Result<(), VMError> {
+        let Value::Object(ref obj) = val else {
+            // Primitive — pass through as-is.
+            self.push(val.clone())?;
+            return Ok(());
+        };
+        let o = obj.lock().unwrap();
+        let ty = o
+            .properties
+            .get("__type")
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        if ty != "Promise" {
+            drop(o);
+            // Non-promise object — pass through as-is.
+            self.push(val.clone())?;
+            return Ok(());
+        }
+        let state = o
+            .properties
+            .get("__state")
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        if state == "pending" {
+            let promise_id = o
+                .properties
+                .get("__id")
+                .map(|v| v.as_f64() as u64)
+                .unwrap_or(0);
+            drop(o);
+            return Err(self.suspend_for_pending_promise(promise_id));
+        }
+        let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+        if state == "rejected" {
+            // await on a rejected promise throws the rejection reason. Walk the
+            // exception handler stack exactly like THROW so an enclosing
+            // try/catch in the async wrapper fires.
+            drop(o);
+            let mut matched_idx = None;
+            for i in (0..self.exception_handlers.len()).rev() {
+                let handler = &self.exception_handlers[i];
+                if handler.tag == 0 {
+                    matched_idx = Some(i);
+                    break;
+                }
+                let tag_idx = handler.tag as usize;
+                let tag_name = self
+                    .chunks
+                    .get(0)
+                    .and_then(|c| c.exception_tags.get(tag_idx))
+                    .cloned()
+                    .unwrap_or_default();
+                if !tag_name.is_empty()
+                    && (self.test_type(&value, &tag_name.to_lowercase())
+                        || self.exception_value_matches(&value, &tag_name))
+                {
+                    matched_idx = Some(i);
+                    break;
+                }
+            }
+            if let Some(idx) = matched_idx {
+                let handler = self.exception_handlers[idx].clone();
+                self.exception_handlers.truncate(idx);
+                while self.frames.len() > handler.frame_depth {
+                    let base = self.frames.last().unwrap().base;
+                    self.close_upvalues(base);
+                    self.frames.pop();
+                }
+                self.stack.truncate(handler.stack_depth);
+                self.push(value)?;
+                let f = self.frame_mut();
+                f.ip = handler.catch_ip;
+                return Ok(());
+            }
+            self.last_exception = Some(value.clone());
+            let stack = self.capture_call_stack();
+            return Err(VMError::new(format!("{}", value)).with_stack(stack));
+        }
+        // fulfilled — unwrap and continue.
+        drop(o);
+        self.push(value)?;
+        Ok(())
+    }
+
     fn next_bytes_decode_opcode(&self) -> bool {
         let f = self.frame();
         let code = &self.chunks[f.chunk_index].code;
@@ -3937,12 +4033,19 @@ impl VM {
                 }
                 _ if op == Op::SUSPEND => {
                     let tag = self.read_u16();
+                    let val = self.pop();
+                    // `await` carries the dedicated AWAIT_SUSPEND_TAG and is
+                    // handled as a JSPI suspend point regardless of any active
+                    // generator continuation (a generator `yield` uses tag 0).
+                    if tag == crate::AWAIT_SUSPEND_TAG {
+                        self.do_await(val)?;
+                        continue;
+                    }
                     // Yield a value from the innermost active continuation.
                     // We save the current VM state as a `Fiber`, stash it
                     // into the continuation's saved slot, restore the
                     // caller's pre-RESUME state, then push the yielded
                     // value onto the caller's stack.
-                    let val = self.pop();
                     match self.active_continuations.pop() {
                         Some(ActiveContinuation {
                             cont,

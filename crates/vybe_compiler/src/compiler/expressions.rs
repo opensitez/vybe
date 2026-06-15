@@ -4714,9 +4714,10 @@ impl Compiler {
 
             // ── Await ───────────────────────────────────────────────────
             ExprKind::Await(inner) => {
-                // ECMA-262 §27.2: WASM JSPI suspend point.
-                // PROMISE_SUSPEND unwraps fulfilled, throws rejected, suspends
-                // fiber on pending, and passes non-promise values through unchanged.
+                // ECMA-262 §27.2: WASM JSPI suspend point, lowered to the spec
+                // stack-switching `suspend` (AWAIT_SUSPEND_TAG). The VM unwraps
+                // fulfilled, throws rejected, suspends the fiber on pending, and
+                // passes non-promise values through unchanged.
                 self.compile_expr(inner)?;
                 let line = self.line;
                 crate::emitter::functions::emit_await(self.chunk(), line);

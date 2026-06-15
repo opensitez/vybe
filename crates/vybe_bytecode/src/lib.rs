@@ -25,6 +25,16 @@ pub mod waitable;
 
 pub use chunk::{Chunk, Import};
 pub use error::VMError;
+
+/// Suspend tag reserved for JS `await`.
+///
+/// `await` lowers to the spec stack-switching `suspend` instruction (JSPI is
+/// the stack-switching proposal applied to JS Promises). To keep `await`
+/// distinct from a generator `yield` — both of which use `suspend` — `await`
+/// carries this dedicated tag. The VM's `SUSPEND` handler routes this tag to
+/// the Promise-await behaviour (settle/throw/suspend-on-pending) regardless of
+/// any active generator continuation, while tag 0 stays generator `yield`.
+pub const AWAIT_SUSPEND_TAG: u16 = 0xFFFF;
 pub use event_loop::EventLoop;
 pub use module_record::{ExportEntry, ModuleKind, ModuleRecord, ModuleRequest, ModuleStatus};
 pub use opcode::Op;
