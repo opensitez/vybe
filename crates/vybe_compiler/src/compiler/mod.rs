@@ -264,6 +264,16 @@ pub struct Compiler {
     function_label_base: u32,
     pub(crate) line: u32,
     pub(crate) defined_globals: HashSet<String>,
+    /// Canonical names of top-level `const` bindings (JS). Reassigning one
+    /// via `emit_var_set` is a runtime `TypeError`. Block/function-scoped
+    /// const bindings are tracked on the `Local` itself (`is_const`).
+    pub(crate) const_globals: HashSet<String>,
+    /// ECMA-262 strict mode (§11.2.2) of the function currently being
+    /// compiled. Set by a `"use strict"` directive prologue, inherited by
+    /// nested functions, and always on inside class bodies (§15.7). Drives
+    /// strict-only behaviors (undeclared-assignment ReferenceError, etc.).
+    /// Saved/restored around each function-body compilation.
+    pub(crate) in_strict: bool,
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
     pub(crate) defined_functions: HashSet<String>,
@@ -835,6 +845,8 @@ impl Compiler {
             function_label_base: 0,
             line: 1,
             defined_globals: HashSet::new(),
+            const_globals: HashSet::new(),
+            in_strict: false,
             shared_global_slots: HashMap::new(),
             shared_global_names: Vec::new(),
             defined_functions: HashSet::new(),
@@ -6144,7 +6156,56 @@ impl Compiler {
 
         self.chunk().emit_end(line);
     }
+    /// ECMA-262 §11.2.1 Directive Prologue: returns `true` if the leading
+    /// run of string-literal expression statements contains `"use strict"`.
+    pub(crate) fn stmts_have_use_strict_directive(stmts: &[Statement]) -> bool {
+        for s in stmts {
+            match &s.kind {
+                // The walker emits `Empty` for newlines between statements;
+                // they don't terminate the directive prologue.
+                StmtKind::Empty => continue,
+                StmtKind::Expr(e) => match &e.kind {
+                    ExprKind::Lit(Literal::Str(v)) => {
+                        if v == "use strict" {
+                            return true;
+                        }
+                        // Another directive — keep scanning the prologue.
+                    }
+                    _ => break,
+                },
+                _ => break,
+            }
+        }
+        false
+    }
+
     fn emit_var_set(&mut self, name: &str) {
+        // ECMA-262 §13.15.2 / §6.2.4.7: assigning to a `const` binding is a
+        // runtime `TypeError` ("Assignment to constant variable."). The
+        // binding is known to the compiler — a `const` local in scope, or a
+        // top-level `const` global — so emit an unconditional throw at the
+        // assignment site. (Declaration init and direct loop-variable rebinds
+        // use `LOCAL_SET`/`GLOBAL_SET` directly and never reach here.)
+        if self.is_js_profile() {
+            let is_const_local = self.scope().resolve_is_const(name);
+            let is_const_global = !is_const_local
+                && self.scope().resolve(name).is_none()
+                && (self.const_globals.contains(name)
+                    || self.const_globals.contains(&self.canon(name)));
+            if is_const_local || is_const_global {
+                let line = self.line;
+                self.emit_u16(Op::STRUCT_NEW, 0);
+                self.emit(Op::DUP);
+                self.emit_const(Value::String(Arc::from("Assignment to constant variable.")));
+                crate::emitter::errors::emit_exception_new_finalize(
+                    self.chunk(),
+                    "TypeError",
+                    line,
+                );
+                crate::emitter::errors::emit_throw(self.chunk(), line);
+                return;
+            }
+        }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             if self.binding_uses_pointer_cell(name) {
@@ -6265,6 +6326,39 @@ impl Compiler {
         let shadows_named_global = self.defined_globals.contains(&cname)
             || self.defined_functions.contains(&cname)
             || self.defined_classes.contains(&cname);
+        // ECMA-262 §6.2.5.6 PutValue / §9.1.1.4.5: in strict mode, assigning
+        // to an unresolvable reference (a name bound nowhere in the scope
+        // chain or on the global object) is a `ReferenceError` — sloppy mode
+        // would silently create a global. Reaching here means the name is not
+        // a local/upvalue/static/class-field/declared-global. We can only
+        // throw for names that cannot be a host-provided builtin global, so
+        // exclude the known builtin constructors and global-object aliases.
+        // Gated on `in_strict` (rare) to keep sloppy-mode global-creation,
+        // which the rest of the suite relies on, intact.
+        if self.in_strict
+            && self.is_js_profile()
+            && !shadows_named_global
+            && !cname.starts_with("__")
+            && !is_js_builtin_ctor_value(&cname)
+            && !matches!(
+                name,
+                "globalThis" | "window" | "self" | "global" | "globalObject" | "arguments"
+            )
+        {
+            let line = self.line;
+            self.emit_u16(Op::STRUCT_NEW, 0);
+            self.emit(Op::DUP);
+            self.emit_const(Value::String(Arc::from(
+                format!("{name} is not defined").as_str(),
+            )));
+            crate::emitter::errors::emit_exception_new_finalize(
+                self.chunk(),
+                "ReferenceError",
+                line,
+            );
+            crate::emitter::errors::emit_throw(self.chunk(), line);
+            return;
+        }
         if !shadows_named_global && self.emit_with_target_set(name) {
             return;
         }
@@ -10626,6 +10720,9 @@ impl Compiler {
                         self.global_type_hints
                             .insert(cn.clone(), Self::normalize_type_hint(type_hint));
                     }
+                    if *kind == VarDeclKind::Const && self.is_js_profile() {
+                        self.const_globals.insert(cn.clone());
+                    }
                     self.defined_globals.insert(cn);
                 } else {
                     // ECMA-262 §10.2.11: `var` is function-scoped (must
@@ -10640,6 +10737,9 @@ impl Compiler {
                     } else {
                         self.define_local_typed(name, inferred_type_hint.clone())
                     };
+                    if *kind == VarDeclKind::Const && self.is_js_profile() {
+                        self.scope_mut().mark_const(slot);
+                    }
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
                 }

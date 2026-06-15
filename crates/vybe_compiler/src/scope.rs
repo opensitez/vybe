@@ -7,6 +7,12 @@ pub struct Local {
     pub slot: u16,
     pub is_captured: bool,
     pub type_hint: Option<String>,
+    /// `true` for bindings introduced by `const` (ECMA-262 immutable
+    /// bindings). Reassigning one is a runtime `TypeError`. Only the
+    /// `emit_var_set` assignment path consults this — declaration init
+    /// and direct loop-variable rebinds use `LOCAL_SET` directly, so
+    /// they are unaffected.
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +57,7 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
+            is_const: false,
         });
         self.next_slot += 1;
         slot
@@ -69,9 +76,31 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
+            is_const: false,
         });
         self.next_slot += 1;
         slot
+    }
+
+    /// Mark the most-recently-defined local with the given slot as a
+    /// `const` binding (see `Local::is_const`).
+    pub fn mark_const(&mut self, slot: u16) {
+        for l in self.locals.iter_mut().rev() {
+            if l.slot == slot {
+                l.is_const = true;
+                return;
+            }
+        }
+    }
+
+    /// Returns `true` if a binding for `name` is in scope and is `const`.
+    pub fn resolve_is_const(&self, name: &str) -> bool {
+        for l in self.locals.iter().rev() {
+            if l.name == name {
+                return l.is_const;
+            }
+        }
+        false
     }
 
     pub fn resolve(&self, name: &str) -> Option<u16> {

@@ -68,12 +68,11 @@ fn clone_object(
     active: &mut HashSet<usize>,
 ) -> Result<Value, Value> {
     let id = Arc::as_ptr(obj) as usize;
-    if active.contains(&id) {
-        return Err(crate::ecma::error::new_error(
-            "TypeError",
-            "Cannot clone circular structure",
-        ));
-    }
+    // Cycle handling (HTML structured-clone preserves the reference graph, incl.
+    // circular references): every container cloner inserts its freshly-allocated
+    // target into `seen` BEFORE recursing, so a back-reference to an in-progress
+    // object resolves to that same target — `clone.self === clone`. Check `seen`
+    // first so cycles are preserved rather than rejected.
     if let Some(already) = seen.get(&id) {
         return Ok(already.clone());
     }
@@ -93,16 +92,21 @@ fn clone_object(
         KindTag::Set => clone_set(obj, id, seen, active),
         KindTag::ArrayBuffer => clone_arraybuffer(obj, id, seen),
         KindTag::TypedArray => clone_typedarray(obj, id, seen),
-        // Per spec: functions, host functions — DataCloneError.
-        // MVP returns null. Module Namespace Objects are frozen
-        // spec-exotic objects — structuredClone on them is not
-        // spec-defined; null is the conservative MVP result.
-        KindTag::Function
-        | KindTag::HostFunction
-        | KindTag::Continuation
-        | KindTag::ModuleNamespace
-        | KindTag::Future
-        | KindTag::Stream => Ok(Value::Null),
+        // HTML structured-clone (§ StructuredSerializeInternal): a callable
+        // (function / host function / generator continuation) is not
+        // serializable → throw a DataCloneError. `?`-propagated by the array /
+        // object / map / set cloners, so a function nested anywhere aborts the
+        // whole clone, matching the spec and browsers.
+        KindTag::Function | KindTag::HostFunction | KindTag::Continuation => {
+            Err(crate::ecma::error::new_error(
+                "DataCloneError",
+                "could not be cloned (functions are not structured-cloneable)",
+            ))
+        }
+        // Module Namespace Objects are frozen spec-exotic objects;
+        // structuredClone on them is not spec-defined. Futures/streams are
+        // VM-internal. `null` is the conservative result for these.
+        KindTag::ModuleNamespace | KindTag::Future | KindTag::Stream => Ok(Value::Null),
     };
     active.remove(&id);
     result

@@ -10905,6 +10905,16 @@ impl Compiler {
         let saved = self.current;
         self.current = ci;
         let saved_fn = self.current_func_name.replace("<lambda>".into());
+        // ECMA-262 §11.2.2: strict mode is inherited by nested functions and
+        // additionally turned on by a `"use strict"` directive prologue in
+        // this function's own block body. Arrow expression bodies cannot carry
+        // a prologue, so they only inherit.
+        let saved_strict = self.in_strict;
+        if let LambdaBody::Block(stmts) = body {
+            if Self::stmts_have_use_strict_directive(stmts) {
+                self.in_strict = true;
+            }
+        }
         for p in params {
             self.define_local_typed(&p.name, p.type_hint.clone());
             if let Some(ref default) = p.default {
@@ -10992,6 +11002,7 @@ impl Compiler {
         }
 
         self.current_func_name = saved_fn;
+        self.in_strict = saved_strict;
 
         let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
         self.chunks[ci].local_count = locals;

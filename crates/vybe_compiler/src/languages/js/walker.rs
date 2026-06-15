@@ -1119,6 +1119,16 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             declarations.push(walk_var_declarator(p)?);
         }
     }
+    // ECMA-262 §13.3.1: a `const` LexicalBinding requires an Initializer
+    // (`const x;` is a SyntaxError). `let`/`var` may omit it. `for (const x of
+    // …)` / `for (const x in …)` bindings don't reach here (they use
+    // `extract_for_target`), so this only rejects genuinely-uninitialized
+    // standalone `const` declarations.
+    if matches!(var_kind, VarDeclKind::Const) {
+        if declarations.iter().any(|d| d.init.is_none()) {
+            return Err("Missing initializer in const declaration".to_string());
+        }
+    }
     Ok(StmtKind::VarDecl {
         declarations,
         kind: var_kind,

@@ -703,6 +703,17 @@ impl JsDynamicRuntime {
             .unwrap_or(Value::Undefined);
         let result = eval_vm.invoke_callback(&fn_val, &[]);
 
+        // §19.2.1.3: an exception thrown by the eval'd code and not caught
+        // within it propagates to the *caller's* execution context. The mini
+        // VM records an uncaught throw in `last_exception`; re-throw it into
+        // the outer VM (via `ctx`) so the surrounding `try/catch` sees it.
+        // Without this, runtime errors inside eval (const reassignment,
+        // TDZ reads, etc.) would be silently swallowed.
+        if let Some(exc) = eval_vm.last_exception.take() {
+            ctx.throw_value(exc);
+            return Value::Undefined;
+        }
+
         // §19.2.1: assignments inside eval reach the caller's scope — write
         // non-function globals back. Shared objects were copied by Arc, so
         // in-place mutation is already visible; this covers rebinding and

@@ -455,6 +455,12 @@ impl Compiler {
         self.function_label_base = self.label_depth;
         let saved_fn = self.current_func_name.take();
         self.current_func_name = Some(name.to_string());
+        // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
+        // a `"use strict"` directive prologue in this function's body.
+        let saved_strict = self.in_strict;
+        if Self::stmts_have_use_strict_directive(body) {
+            self.in_strict = true;
+        }
         self.js_arguments_bindings.push(None);
 
         let js_arguments_source_slot = if uses_js_arguments {
@@ -479,7 +485,13 @@ impl Compiler {
 
         let mut aliased_params = HashMap::new();
         let mut aliased_indices = HashMap::new();
+        // ECMA-262 §10.4.4: only a *non-strict* function with a simple
+        // parameter list gets a mapped `arguments` object whose elements
+        // alias the named parameters. Strict functions get an unmapped
+        // (independent) copy, so `arguments[0] = …` must NOT change the
+        // parameter (and vice versa).
         let simple_arguments_alias = uses_js_arguments
+            && !self.in_strict
             && params
                 .iter()
                 .all(|param| param.default.is_none() && !param.is_rest);
@@ -692,6 +704,7 @@ impl Compiler {
         }
 
         self.current_func_name = saved_fn;
+        self.in_strict = saved_strict;
         self.current_result_slot = saved_rs;
         self.current_ref_out_params = saved_ref_out;
 

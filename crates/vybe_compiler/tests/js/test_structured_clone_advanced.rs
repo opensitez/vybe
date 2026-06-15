@@ -189,20 +189,20 @@ console.log(structuredClone(undefined) === undefined);
 
 #[test]
 fn structuredclone_circular_reference_throws() {
+    // Per the HTML structured-clone spec, a circular reference is PRESERVED,
+    // not rejected: the clone's back-edge points at the clone itself. (This
+    // corrects the old assertion that it throws — browsers do not throw here.)
     assert_eq!(
         run_js(
             r#"
 const obj = {};
 obj.self = obj;
-try {
-  structuredClone(obj);
-  console.log("no error");
-} catch (e) {
-  console.log("error");
-}
+const clone = structuredClone(obj);
+console.log(clone !== obj);
+console.log(clone.self === clone);
 "#
         ),
-        vec!["error"]
+        vec!["true", "true"]
     );
 }
 
