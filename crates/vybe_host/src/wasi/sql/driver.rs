@@ -9,6 +9,7 @@ pub(super) trait SqlDriver: Send + Sync {
     fn query(&self, sql: &str, params: &[String]) -> Result<Vec<Value>, String>;
     fn query_columns(&self, sql: &str, params: &[String]) -> Result<Vec<String>, String>;
     fn exec(&self, sql: &str, params: &[String]) -> Result<u64, String>;
+    #[allow(dead_code)]
     fn url(&self) -> &str;
     /// Introspection: list all user tables.
     fn tables_sql(&self) -> &'static str;

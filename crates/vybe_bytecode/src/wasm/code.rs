@@ -1649,6 +1649,7 @@ fn emit_gc_op(
 
 /// Emit inline dyn_add: type check both operands, f64 arithmetic if numbers, string concat if not.
 /// Uses wasm:js-number and wasm:js-string builtins (standard WASM proposals).
+#[allow(dead_code)]
 fn emit_dyn_binary_numeric(
     body: &mut Vec<u8>,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -1669,6 +1670,7 @@ fn emit_dyn_binary_numeric(
 }
 
 /// Emit inline dyn comparison: unbox both as f64, compare, box i32 result.
+#[allow(dead_code)]
 fn emit_dyn_binary_cmp(
     body: &mut Vec<u8>,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,

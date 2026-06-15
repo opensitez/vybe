@@ -904,7 +904,6 @@ fn subtle_has_import_export_key_methods() {
 
 #[test]
 fn generate_key_pair_sync_rsa_returns_object_pair() {
-    use std::collections::HashMap;
     use vybe_bytecode::value::Object;
     let opts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new({
         let mut o = Object::new();

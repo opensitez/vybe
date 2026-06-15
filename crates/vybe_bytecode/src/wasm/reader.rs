@@ -422,8 +422,7 @@ fn validate_element_section(data: &[u8], table_count: usize) -> Result<(), Strin
         let (flags, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         if flags == 2 {
-            let (table_idx, read) = read_leb128_u32(&data[pos..]);
-            pos += read;
+            let (table_idx, _) = read_leb128_u32(&data[pos..]);
             if table_idx as usize >= table_count {
                 return Err("Invalid WASM: element segment table index out of range".into());
             }
@@ -459,8 +458,7 @@ fn validate_data_sections(
         let (flags, read) = read_leb128_u32(&data_section[pos..]);
         pos += read;
         if flags == 2 {
-            let (memidx, read) = read_leb128_u32(&data_section[pos..]);
-            pos += read;
+            let (memidx, _) = read_leb128_u32(&data_section[pos..]);
             if memidx as usize >= memory_count {
                 return Err("Invalid WASM: data segment memory index out of range".into());
             }
@@ -2691,6 +2689,7 @@ fn read_stack_switch_handlers(data: &[u8], pos: &mut usize) -> Vec<StackSwitchHa
     handlers
 }
 
+#[allow(dead_code)]
 fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), String> {
     while *pos < data.len() {
         let op = data[*pos];
@@ -2819,6 +2818,7 @@ fn read_emit_memarg64(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {
     }
 }
 
+#[allow(dead_code)]
 fn simd_memory_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x00 => "v128.load",
@@ -2827,6 +2827,7 @@ fn simd_memory_opcode_name(sub: u32) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn atomic_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x10 => "i32.atomic.load",

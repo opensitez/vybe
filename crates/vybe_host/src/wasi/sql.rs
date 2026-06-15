@@ -150,6 +150,7 @@ fn string_value(value: &str) -> Value {
     Value::String(Arc::from(value))
 }
 
+#[allow(dead_code)]
 fn bool_prop(obj: &Arc<Mutex<Object>>, key: &str) -> bool {
     match obj.lock().unwrap().properties.get(key) {
         Some(Value::Bool(value)) => *value,

@@ -3614,7 +3614,7 @@ pub fn flatten_module_value_exports(
 ) -> HashMap<String, HashMap<String, vybe_bytecode::Value>> {
     let mut out: HashMap<String, HashMap<String, vybe_bytecode::Value>> = HashMap::new();
     for (specifier, record) in modules {
-        for (name, entry) in &record.exports {
+        for (name, _entry) in &record.exports {
             // Follow Indirect chains
             let terminal = {
                 let mut visited: Vec<(String, String)> = Vec::new();

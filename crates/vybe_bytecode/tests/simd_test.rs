@@ -167,8 +167,8 @@ fn v128_any_true_all_zero() {
 
 #[test]
 fn v128_bitselect() {
-    let mut v1 = [0xFFu8; 16];
-    let mut v2 = [0x00u8; 16];
+    let v1 = [0xFFu8; 16];
+    let v2 = [0x00u8; 16];
     let mask = [0xF0u8; 16];
     let r = as_v128(run(|c| {
         emit_v128_const(c, v1);

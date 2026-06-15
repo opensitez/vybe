@@ -146,6 +146,7 @@ impl VM {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_dunder_binary(
         &mut self,
         obj: &Arc<Mutex<crate::value::Object>>,

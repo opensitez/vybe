@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 /// Tests for VM import resolution, global scoping, call mechanics, and edge cases.

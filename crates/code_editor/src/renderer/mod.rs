@@ -15,8 +15,7 @@ use winit::event::ElementState;
 use serde::{Deserialize, Serialize};
 
 use crate::editor::Editor as MyEditor;
-use crate::language::load_language;
-use crate::lsp_client::{LspClient, LspRequest};
+use crate::lsp_client::LspClient;
 use vybe_widgets::code_editor_widget::{CodeEditorWidget, Theme};
 use vybe_widgets::layout::WidgetEvent;
 use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent};

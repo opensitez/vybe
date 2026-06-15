@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use vybe_bytecode::value::{Function, Object, ObjectKind};

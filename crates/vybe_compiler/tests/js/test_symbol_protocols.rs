@@ -91,6 +91,7 @@ console.log(ma.sum());
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbol_toPrimitive_all_hints() {
     assert_eq!(
         run_js(
@@ -141,6 +142,7 @@ console.log(Direction.UP !== Direction.DOWN);
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbol_nonEnumerable_hiding() {
     assert_eq!(
         run_js(

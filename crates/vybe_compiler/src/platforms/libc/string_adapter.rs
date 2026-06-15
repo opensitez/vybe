@@ -13,6 +13,7 @@ fn lit_int(n: i64) -> Expression {
     e(ExprKind::Lit(Literal::Int(n)))
 }
 
+#[allow(dead_code)]
 fn lit_null() -> Expression {
     e(ExprKind::Lit(Literal::Null))
 }

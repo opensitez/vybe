@@ -21,6 +21,7 @@ pub enum LspEvent {
     Definition(String, Position),
 }
 
+#[allow(dead_code)]
 pub enum LspRequest {
     Init(String, String, String), // content, language_id, uri
     Change(String, String),       // content, uri

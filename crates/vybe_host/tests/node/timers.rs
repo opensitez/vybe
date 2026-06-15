@@ -17,7 +17,6 @@
 //! `queueMicrotask` surface. Full async sequencing (callback ordering,
 //! `unref`/`ref`, `hasRef`) is deferred — those require a running event loop.
 
-use std::sync::Arc;
 use vybe_bytecode::value::Value;
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};

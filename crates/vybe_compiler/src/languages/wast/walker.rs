@@ -792,7 +792,7 @@ fn walk_folded_core(
 
 fn map_instr_to_ast(
     name: String,
-    mut args: Vec<Expression>,
+    args: Vec<Expression>,
     span: Span,
 ) -> Result<Expression, String> {
     match name.as_str() {

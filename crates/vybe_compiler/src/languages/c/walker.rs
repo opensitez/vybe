@@ -1493,7 +1493,7 @@ impl Walker {
         let mut in_default = false;
         let mut started = false;
 
-        let mut flush = |conds: &mut Vec<CaseCondition>,
+        let flush = |conds: &mut Vec<CaseCondition>,
                          body: &mut Vec<Statement>,
                          is_default: bool,
                          cases: &mut Vec<SwitchCase>,

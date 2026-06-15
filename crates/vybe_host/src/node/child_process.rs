@@ -378,7 +378,7 @@ pub fn register(vm: &mut VM) {
         "node:child_process",
         "fork",
         Box::new(|_ctx, _args| {
-            let mut cp = make_child_process(std::process::id() + 1);
+            let cp = make_child_process(std::process::id() + 1);
             // fork ChildProcess always has IPC — add send/disconnect
             if let Value::Object(ref o) = cp {
                 let mut o = o.lock().unwrap();

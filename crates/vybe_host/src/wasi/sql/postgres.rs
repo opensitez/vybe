@@ -5,6 +5,7 @@ use vybe_bytecode::value::Object;
 
 pub(super) struct PostgresDriver {
     client: Mutex<postgres::Client>,
+    #[allow(dead_code)]
     url: String,
 }
 

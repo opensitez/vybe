@@ -209,7 +209,6 @@ pub fn emit_adodb_conn_commit_trans(chunks: &mut [Chunk], current: usize, _argc:
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::String(Arc::from("COMMIT")), line);
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
-    drop(chunk);
     call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
     call_import(
         chunks,
@@ -232,7 +231,6 @@ pub fn emit_adodb_conn_rollback_trans(chunks: &mut [Chunk], current: usize, _arg
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::String(Arc::from("ROLLBACK")), line);
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
-    drop(chunk);
     call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
     call_import(
         chunks,

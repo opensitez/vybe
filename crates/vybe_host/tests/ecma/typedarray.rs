@@ -47,6 +47,7 @@ fn arr(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
 }
 
+#[allow(dead_code)]
 fn elems(v: &Value) -> Vec<Value> {
     match v {
         Value::Object(o) => match &o.lock().unwrap().kind {

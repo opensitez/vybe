@@ -348,6 +348,7 @@ pub fn emit_php_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_end(line);
 }
 
+#[allow(dead_code)]
 fn emit_object_from_keys(
     chunks: &mut [Chunk],
     current: usize,

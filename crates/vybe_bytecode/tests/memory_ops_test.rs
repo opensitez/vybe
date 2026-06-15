@@ -123,7 +123,7 @@ fn memory_fill_via_rust() {
     vm.memory.resize(256, 0);
     // Fill bytes 0..16 with 0xFF
     for i in 0..16 {
-        vm.memory.store_u8(i, 0xFF);
+        let _ = vm.memory.store_u8(i, 0xFF);
     }
     // Verify via i32_load
     let mut chunk = Chunk::new("<script>");
@@ -140,7 +140,7 @@ fn memory_fill_via_rust() {
 fn memory_copy_via_rust() {
     let mut vm = VM::new();
     vm.memory.resize(256, 0);
-    vm.memory.store_i32(0, 42);
+    let _ = vm.memory.store_i32(0, 42);
     // Copy 4 bytes from offset 0 to offset 16
     vm.memory.with_buffer_mut(|buf| {
         buf.copy_within(0..4, 16);
@@ -341,7 +341,7 @@ fn call_indirect_vm_function() {
 
     // Stack: [func_obj, table_idx]
     // Save func_obj to local, keep table_idx for call_indirect
-    let tmp = 1u16;
+    let _tmp = 1u16;
     // Swap: drop func_obj from under table_idx
     // Actually struct_get popped func_obj and pushed table_idx
     // So stack: [table_idx]
@@ -428,7 +428,7 @@ fn decoded_standard_call_indirect_uses_encoded_table_index() {
 // ── Missing load/store variants (§5.3 memory instructions) ──────────────
 
 fn mem_vm() -> VM {
-    let mut vm = VM::new();
+    let vm = VM::new();
     vm.memory.resize(1024, 0);
     vm
 }

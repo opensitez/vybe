@@ -80,6 +80,7 @@ fn as_string(value: &Value) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn is_array(value: &Value) -> bool {
     if let Value::Object(obj) = value {
         let o = obj.lock().unwrap();

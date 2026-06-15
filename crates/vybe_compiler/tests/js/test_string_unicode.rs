@@ -184,6 +184,7 @@ console.log(normalized.length);
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn well_formed_string_toWellFormed_unchanged() {
     assert_eq!(
         run_js(

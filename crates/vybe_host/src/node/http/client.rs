@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_bytecode::value::{Object, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))

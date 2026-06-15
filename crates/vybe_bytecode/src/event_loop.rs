@@ -16,6 +16,7 @@ use std::collections::{HashMap, VecDeque};
 /// Timer callbacks escape their creating stack frame and run in a fresh
 /// execution context, so any Open(slot) upvalue would index an invalid stack.
 /// This converts them to Closed(value) using the current stack snapshot.
+#[allow(dead_code)]
 fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
     use crate::value::{ObjectKind, UpvalueLocation};
     if let Value::Object(obj) = val {

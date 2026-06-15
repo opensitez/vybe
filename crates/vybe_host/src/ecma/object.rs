@@ -879,7 +879,7 @@ fn register_construction(vm: &mut VM) {
             // `ordinary_ordered_keys` reads (the same mechanism object literals
             // use; `__`-prefixed keys are excluded from enumeration).
             let mut order: Vec<Value> = Vec::new();
-            let mut put = |obj: &mut Object, order: &mut Vec<Value>, key: String, val: Value| {
+            let put = |obj: &mut Object, order: &mut Vec<Value>, key: String, val: Value| {
                 if !obj.properties.contains_key(&key) {
                     order.push(Value::String(Arc::from(key.as_str())));
                 }

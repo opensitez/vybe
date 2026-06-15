@@ -5,6 +5,7 @@ use vybe_bytecode::value::Object;
 
 pub(super) struct SqliteDriver {
     conn: Mutex<rusqlite::Connection>,
+    #[allow(dead_code)]
     url: String,
 }
 

@@ -55,6 +55,7 @@ pub struct HostContext<'a> {
     globals_slot: *mut HashMap<String, Value>,
     /// Raw pointer to VM.stack for closing escaped upvalues in timer callbacks.
     /// Null when no VM is attached (HostContext::empty()).
+    #[allow(dead_code)]
     stack_slot: *const Vec<Value>,
     /// Raw pointer to the CM3 handle table, so host functions receiving a
     /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
@@ -561,6 +562,7 @@ pub struct VM {
     /// Active CM3 tasks (keyed by task ID). Each async export invocation creates one.
     pub cm_tasks: Vec<crate::cm_task::CMTask>,
     /// Next CM3 task ID.
+    #[allow(dead_code)]
     pub(crate) next_cm_task_id: u32,
     /// Waitable set registry.
     pub waitable_sets: crate::waitable::WaitableRegistry,
@@ -1201,6 +1203,7 @@ impl VM {
     /// When a closure is stored in a macrotask queue (setTimeout), it will run in
     /// a fresh execution context. Any `Open(slot)` upvalue referencing the current
     /// stack must be converted to `Closed(value)` so the slot index remains valid.
+    #[allow(dead_code)]
     pub(crate) fn close_escaped_upvalues(&self, val: &Value) {
         use crate::value::ObjectKind;
         use crate::value::UpvalueLocation;

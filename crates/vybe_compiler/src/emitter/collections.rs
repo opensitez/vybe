@@ -71,11 +71,13 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+#[allow(dead_code)]
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(value)));
     chunk.emit_op_u16(Op::CONST, idx, line);
 }
 
+#[allow(dead_code)]
 fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
     let idx = chunk.add_constant(Value::F64(value));
     chunk.emit_op_u16(Op::CONST, idx, line);

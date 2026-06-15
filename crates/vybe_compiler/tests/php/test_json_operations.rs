@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::compile_ok;
 
 // ── json_encode basic indexed array ──────────────────────────────
 #[test]

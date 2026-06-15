@@ -5,6 +5,7 @@ use vybe_bytecode::value::Object;
 
 pub(super) struct MySqlDriver {
     conn: Mutex<mysql::Conn>,
+    #[allow(dead_code)]
     url: String,
 }
 

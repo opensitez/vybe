@@ -168,6 +168,7 @@ echo Planet::HABITABLE->name;
     );
 }
 #[test]
+#[allow(non_snake_case)]
 fn backed_enum_from_tryFrom() {
     assert_eq!(
         run_prints(

@@ -11,7 +11,7 @@
 //! Functions marked `trap()` in the spec call `ctx.throw_value(...)` here.
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::ObjectKind;
 use vybe_bytecode::{HostContext, VM, Value};
 
 fn trap(ctx: &mut HostContext, msg: &str) {

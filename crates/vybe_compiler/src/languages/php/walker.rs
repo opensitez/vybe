@@ -7514,7 +7514,7 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         let tag_end = tag_start
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(tag_start.len());
-        let tag = &tag_start[..tag_end];
+        let _tag = &tag_start[..tag_end];
         // Content starts after the first newline following the tag line
         let header_end = raw.find('\n').map(|i| i + 1).unwrap_or(raw.len());
         let content_raw = &raw[header_end..];
@@ -7596,6 +7596,7 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
 
 /// Strip common leading indentation from flexible heredoc content (PHP 7.3+).
 /// The closing tag's indentation determines how much to strip from every line.
+#[allow(dead_code)]
 fn strip_heredoc_indentation(content: &str) -> String {
     // Find the minimum indentation (spaces/tabs) across non-empty lines.
     let min_indent = content

@@ -1,8 +1,8 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_bytecode::value::*;
 use vybe_bytecode::*;
 
+#[allow(dead_code)]
 fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
     let mut chunk = Chunk::new("<test>");
     build(&mut chunk);

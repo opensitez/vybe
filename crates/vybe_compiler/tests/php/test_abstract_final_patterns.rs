@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 // ── Abstract class basics ────────────────────────────────────
 

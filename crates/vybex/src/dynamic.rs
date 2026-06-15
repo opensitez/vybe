@@ -1439,7 +1439,7 @@ mod tests {
 
         let value = {
             let mut runtime = JsDynamicRuntime::new(vybe_host::Capabilities::all());
-            let _guard = runtime.activate(&mut vm);
+            let _guard = runtime.activate(&mut vm, vec![], vec![]);
             runtime
                 .handle_function_constructor(&[
                     Value::String("a".into()),
@@ -1485,7 +1485,7 @@ mod tests {
 
         {
             let mut runtime = JsDynamicRuntime::new(vybe_host::Capabilities::all());
-            let _guard = runtime.activate(&mut vm);
+            let _guard = runtime.activate(&mut vm, vec![], vec![]);
             vm.run_linked(
                 vec![chunk],
                 vec![vybe_bytecode::ImportTarget::Host(host_idx)],

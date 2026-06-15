@@ -312,7 +312,7 @@ fn same_value(a: &Value, b: &Value) -> bool {
 pub fn dispatch_weakref_method(
     obj: Arc<Mutex<Object>>,
     method: &str,
-    args: &[Value],
+    _args: &[Value],
 ) -> Option<Value> {
     let wr = Value::Object(obj);
     match method {

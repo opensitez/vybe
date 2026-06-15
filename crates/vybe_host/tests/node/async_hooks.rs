@@ -26,7 +26,7 @@
 //!   - AsyncIterator context propagation
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_bytecode::value::{Object, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
 
@@ -58,6 +58,7 @@ fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
 }
 
+#[allow(dead_code)]
 fn prop(obj: &Value, key: &str) -> Value {
     match obj {
         Value::Object(o) => {

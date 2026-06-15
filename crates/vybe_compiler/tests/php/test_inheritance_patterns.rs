@@ -200,6 +200,7 @@ echo is_subclass_of(Animal::class, Dog::class) ? 'yes' : 'no', "\n";
 // ── Magic method in inheritance ───────────────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn toString_inherited() {
     assert_eq!(
         run_prints(
@@ -213,6 +214,7 @@ echo new Child2, "\n";
     );
 }
 #[test]
+#[allow(non_snake_case)]
 fn toString_overridden() {
     assert_eq!(
         run_prints(

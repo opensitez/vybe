@@ -25,8 +25,7 @@
 //!   NULL         → `lit_int(0)` / null (unchanged)
 
 use crate::ast::{
-    Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Expression, Literal, ObjectProperty,
-    Statement, StmtKind, VarDeclKind, VarDeclarator,
+    Argument, BinOp, ExprKind, Expression, Literal, ObjectProperty,
 };
 
 pub const REF_KIND_KEY: &str = "__ref_kind";

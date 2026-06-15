@@ -24,6 +24,7 @@ fn run_chunks(chunks: Vec<Chunk>) -> Value {
     vm.run(chunks).unwrap()
 }
 
+#[allow(dead_code)]
 fn run_vm(chunks: Vec<Chunk>) -> VM {
     let mut vm = VM::new();
     vm.run(chunks).unwrap();
@@ -1211,7 +1212,6 @@ fn array_set() {
 // `vybe:js-array.*` imports the VM now dispatches — same runtime
 // behaviour, spec-compliant surface.
 
-#[test]
 #[test]
 fn array_fill() {
     let mut chunk = Chunk::new("test");

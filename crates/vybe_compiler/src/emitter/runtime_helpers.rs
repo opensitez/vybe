@@ -139,6 +139,7 @@ pub(crate) fn build_polyfill_batch(
     out
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_polyfill(
     imports: &mut Chunk,
     source: &str,

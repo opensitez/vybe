@@ -261,7 +261,7 @@ fn write_stream_has_get_color_depth_method() {
 
 #[test]
 fn write_stream_get_color_depth_returns_valid_depth() {
-    let stream = call_tty("WriteStream", vec![Value::I32(1)]);
+    let _stream = call_tty("WriteStream", vec![Value::I32(1)]);
     // call the method through the module — we can't invoke object methods from here
     // but we can check the module-level function
     let result = call_tty("getColorDepth", vec![]);

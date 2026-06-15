@@ -194,6 +194,7 @@ console.log(obj.propertyIsEnumerable("inherited"));
 // ── hasOwnProperty edge cases ─────────────────────────────────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn has_own_property_false_for_inherited_toString() {
     assert_eq!(
         run_js(

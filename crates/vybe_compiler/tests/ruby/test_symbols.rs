@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_ruby, run_ruby_one};
+use super::helpers::{compile_ok, run_ruby_one};
 
 // -- Symbol#to_s converts to string
 

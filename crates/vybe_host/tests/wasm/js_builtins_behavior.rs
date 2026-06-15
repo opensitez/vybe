@@ -972,6 +972,7 @@ fn subarray_shares_storage_with_parent() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn slice_does_NOT_share_storage_with_parent() {
     // Per ECMA-262 §23.2.3.24, slice() copies bytes into a new
     // buffer — writes through the slice do NOT affect the parent.

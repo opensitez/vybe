@@ -70,18 +70,21 @@ fn str_arg(args: &[Value], idx: usize) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn sha1_hex(data: &[u8]) -> String {
     use sha1::{Digest, Sha1};
     let result = Sha1::digest(data);
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+#[allow(dead_code)]
 fn sha512_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha512};
     let result = Sha512::digest(data);
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+#[allow(dead_code)]
 fn digest_hex(algo: &str, data: &[u8]) -> String {
     match algo.to_lowercase().as_str() {
         "sha256" => sha256_hex(data),
@@ -241,6 +244,7 @@ fn is_prime(n: u64) -> bool {
     true
 }
 
+#[allow(dead_code)]
 fn make_crypto_fn_ref(vm: &VM, name: &str) -> Value {
     if let Some(&idx) = vm
         .host_registry
@@ -255,6 +259,7 @@ fn make_crypto_fn_ref(vm: &VM, name: &str) -> Value {
 }
 
 // Get accumulated data bytes from a hash/hmac object (args[0] = receiver)
+#[allow(dead_code)]
 fn get_obj_bytes(args: &[Value], key: &str) -> Vec<u8> {
     if let Some(Value::Object(obj)) = args.first() {
         let obj = obj.lock().unwrap();

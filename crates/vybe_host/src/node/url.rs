@@ -202,7 +202,7 @@ fn params_to_query(params: &Object) -> String {
         .join("&")
 }
 
-fn get_sp_object(v: &Value) -> Option<std::sync::MutexGuard<Object>> {
+fn get_sp_object(v: &Value) -> Option<std::sync::MutexGuard<'_, Object>> {
     if let Value::Object(o) = v {
         Some(o.lock().unwrap())
     } else {

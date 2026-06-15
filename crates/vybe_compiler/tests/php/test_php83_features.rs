@@ -199,6 +199,7 @@ if (function_exists('mb_str_pad')) {
 // ── Fibers improvements (PHP 8.2 / 8.3) ──────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn fiber_getCurrent_inside_fiber() {
     assert_eq!(
         run_prints(

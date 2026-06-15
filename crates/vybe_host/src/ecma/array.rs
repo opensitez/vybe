@@ -192,6 +192,7 @@ pub(crate) fn is_array_hole(object: &Object, index: usize) -> bool {
     hole_indices(object).contains(&index)
 }
 
+#[allow(dead_code)]
 fn mark_array_hole(object: &mut Object, index: usize) {
     let mut holes = hole_indices(object);
     holes.insert(index);

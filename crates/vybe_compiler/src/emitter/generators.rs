@@ -6,6 +6,7 @@
 //! opcodes.
 
 use vybe_bytecode::Chunk;
+use vybe_bytecode::chunk::StackSwitchHandler;
 use vybe_bytecode::opcode::Op;
 
 use crate::emitter::collections;
@@ -50,12 +51,63 @@ pub fn emit_resume_throw(chunk: &mut Chunk, line: u32) {
     emit_resume_throw_tagged(chunk, 0, line);
 }
 
-/// Generator iterator advance.
+/// Tag carried by a generator `yield` `suspend` (see `emit_suspend`). The
+/// `resume` handler emitted by `emit_next` keys on this tag so a yield is
+/// routed to the "more values" path; anything else (a generator that simply
+/// returns) falls through `resume` as completion.
+const GEN_YIELD_TAG: u16 = 0;
+
+/// Generator iterator advance — spec WASM stack-switching, no custom opcode.
 ///
 /// Stack before: `[continuation]`
-/// Stack after: `[value, has_more_i32]`
+/// Stack after:  `[value, has_more_i32]`
+///
+/// This is the spec-compliant replacement for the former VM-internal
+/// `GEN_NEXT` (0xFF) opcode. It drives one step of the generator with the
+/// stack-switching `resume` instruction plus an `(on $yield -> handler)`
+/// handler vector — exactly the proposal's iteration shape:
+///
+///   - The generator `suspend`s (tag 0 = yield): the VM routes control to this
+///     `resume`'s recorded handler offset with the yielded value on the stack;
+///     we push `has_more = 1`.
+///   - The generator returns (completes): `resume` falls through with the
+///     return value; we push `has_more = 0`.
+///
+/// Both arms converge through a result-2 `block` so the `[value, has_more]`
+/// stack contract the drivers below consume is unchanged.
 pub fn emit_next(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::GEN_NEXT, line);
+    // The continuation must not straddle the BLOCK boundary: the VM records a
+    // block's entry stack height, and `resume` consumes the continuation inside
+    // the block, which would desync that height. Park it in a fresh local and
+    // reload inside the block, leaving the block stack-neutral on entry.
+    let cont_slot = chunk.local_count;
+    chunk.local_count += 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, line); // LOCAL_SET tees the value…
+    chunk.emit_op(Op::DROP, line); // …DROP clears it → [cont] becomes []
+
+    // block (result: value, has_more_i32)
+    let block_p = chunk.emit_block_typed(line, 2);
+    chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [cont]
+    chunk.emit_op(Op::NULL, line); // resume value → [cont, null]
+    let resume_ip = chunk.code.len();
+    chunk.emit_op_u16(Op::RESUME, GEN_YIELD_TAG, line);
+    // Completion arm (generator returned): stack = [return_value]
+    chunk.emit_op(Op::I32_CONST_0, line); // has_more = 0 → [retval, 0]
+    chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
+    // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]
+    let handler_ip = chunk.code.len();
+    chunk.emit_op(Op::I32_CONST_1, line); // has_more = 1 → [yieldval, 1]
+    chunk.emit_end(line); // end $block → [value, has_more]
+    chunk.patch_block(block_p);
+
+    chunk.stack_switch_handlers.insert(
+        resume_ip,
+        vec![StackSwitchHandler {
+            kind: 0, // on-tag-to-label
+            tag_index: GEN_YIELD_TAG as u32,
+            label_index: handler_ip as u32,
+        }],
+    );
 }
 
 /// Drain a generator continuation into a new array using pure WASM opcodes.

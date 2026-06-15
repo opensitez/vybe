@@ -7,9 +7,8 @@
 //! - ref_test opcode with registered types
 //! - Cross-language instanceof using __type and __types properties
 
-use std::cell::RefCell;
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{Chunk, Method, Op, TypeDef, VM, Value};
 
 fn is_wasm_true(value: &Value) -> bool {

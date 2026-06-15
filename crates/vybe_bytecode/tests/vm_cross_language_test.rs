@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::Object;
 /// Cross-language compatibility tests.
 /// Verify that objects created by different language compilers are interoperable.
 use vybe_bytecode::*;
@@ -31,6 +30,7 @@ fn make_js_object() -> Value {
 }
 
 /// Simulate what VB `New With {.Name = "Rex", .Age = 3}` compiles to
+#[allow(dead_code)]
 fn make_vb_object() -> Value {
     let mut obj = Object::new();
     obj.properties
@@ -314,9 +314,9 @@ fn cls_case_resolution_at_link_time() {
     vb_script.emit_op(Op::NULL, 0);
     vb_script.emit_op(Op::HALT, 0);
     // VB's constant pool has lowercased "name" from VB compiler
-    let name_idx = vb_script.add_constant(Value::String(Arc::from("name")));
-    let breed_idx = vb_script.add_constant(Value::String(Arc::from("breed")));
-    let bark_idx = vb_script.add_constant(Value::String(Arc::from("bark")));
+    let _name_idx = vb_script.add_constant(Value::String(Arc::from("name")));
+    let _breed_idx = vb_script.add_constant(Value::String(Arc::from("breed")));
+    let _bark_idx = vb_script.add_constant(Value::String(Arc::from("bark")));
 
     let vb_comp = Component {
         name: "vb-app".into(),

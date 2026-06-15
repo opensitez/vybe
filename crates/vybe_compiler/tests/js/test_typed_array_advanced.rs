@@ -253,6 +253,7 @@ console.log(ta[0]);    // new value
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn atomics_compareExchange() {
     assert_eq!(
         run_js(

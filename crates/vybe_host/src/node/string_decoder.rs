@@ -139,7 +139,6 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
             (s, vec![])
         }
         "base64" => {
-            use std::fmt::Write as FmtWrite;
             const TABLE: &[u8] =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let mut out = String::new();
@@ -155,7 +154,7 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
                 } else {
                     0
                 };
-                out.push(TABLE[(b0 >> 2)] as char);
+                out.push(TABLE[b0 >> 2] as char);
                 out.push(TABLE[((b0 & 3) << 4) | (b1 >> 4)] as char);
                 if chunk.len() > 1 {
                     out.push(TABLE[((b1 & 0xF) << 2) | (b2 >> 6)] as char);

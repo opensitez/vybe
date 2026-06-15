@@ -192,6 +192,7 @@ console.log(capturedKind);
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn decorator_addInitializer_runs_after_class() {
     assert_eq!(
         run_js(

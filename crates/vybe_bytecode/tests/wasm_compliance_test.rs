@@ -1364,6 +1364,7 @@ fn core_opcodes_have_prefix_0x00() {
     assert_eq!(Op::END.prefix(), 0x00);
 }
 
+#[allow(non_snake_case)]
 #[test]
 fn gc_opcodes_have_prefix_0xFB() {
     assert_eq!(Op::STRUCT_NEW.prefix(), 0xFB);
@@ -1371,6 +1372,7 @@ fn gc_opcodes_have_prefix_0xFB() {
     assert_eq!(Op::ARRAY_GET.prefix(), 0xFB);
 }
 
+#[allow(non_snake_case)]
 #[test]
 fn vm_internal_opcodes_have_prefix_0xFF() {
     // Representative VM-internal opcodes — all use the non-spec `0xFF`
@@ -2142,7 +2144,7 @@ fn str_into_char_codes_produces_array() {
 fn str_from_char_codes_builds_string() {
     use std::sync::Arc;
     use std::sync::Mutex;
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_bytecode::value::Object;
 
     // Build an array [72, 105] via the VM and feed it to STR_FROM_CHAR_CODES.
     let mut script = Chunk::new("<script>");
@@ -2465,8 +2467,8 @@ fn emitted_wasm_has_export_section() {
 #[test]
 fn every_proposal_module_exposes_uniform_surface() {
     use vybe_bytecode::wasm::{
-        bulk_memory, compilation_hints as _, esm_integration, exception_handling,
-        extended_name_section as _, gc, js_primitive_builtins, js_string_builtins, multi_value,
+        bulk_memory, esm_integration, exception_handling,
+        gc, js_primitive_builtins, js_string_builtins, multi_value,
         reference_types, simd, tail_call, threads,
     };
 

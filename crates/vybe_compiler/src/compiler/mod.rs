@@ -8434,7 +8434,7 @@ impl Compiler {
                 name,
                 members,
                 is_flags,
-                backing_type,
+                backing_type: _,
                 interfaces,
                 body_members,
                 ..

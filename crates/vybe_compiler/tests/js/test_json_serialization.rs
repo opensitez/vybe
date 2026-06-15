@@ -76,6 +76,7 @@ console.log(lines[0]);
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn json_custom_toJSON() {
     assert_eq!(
         run_js(

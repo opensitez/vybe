@@ -20,7 +20,7 @@
 //! Deferred:
 //!   - `PerformanceObserver` callback invocation (requires event loop)
 
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_bytecode::value::{ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};
 

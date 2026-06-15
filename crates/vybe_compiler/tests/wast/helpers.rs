@@ -8,6 +8,7 @@ pub fn parse_ok(src: &str) {
 }
 
 /// Parse and expect a parse error (negative test).
+#[allow(dead_code)]
 pub fn parse_err(src: &str) {
     assert!(
         vybe_compiler::languages::wast::parse(src).is_err(),

@@ -169,6 +169,7 @@ console.log(obj.pi);
 // ── defineProperty accessor ───────────────────────────────────────────────────
 
 #[test]
+#[allow(non_snake_case)]
 fn defineProperty_creates_accessor() {
     assert_eq!(
         run_js(

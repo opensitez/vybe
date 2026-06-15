@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_bytecode::value::*;
 use vybe_bytecode::*;
@@ -731,7 +730,7 @@ fn roundtrip_memory_ops() {
 
     let wasm_bytes = wasm::write_wasm(&vec![chunk]);
     let restored = wasm::read_wasm(&wasm_bytes).unwrap();
-    let (vm, result) = run_with_host(restored);
+    let (vm, _result) = run_with_host(restored);
     assert_eq!(vm.memory.len(), 65536);
 }
 

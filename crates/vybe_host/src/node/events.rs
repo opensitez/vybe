@@ -46,7 +46,7 @@ fn evo_key(event: &str) -> String {
     format!("__evo_{event}")
 }
 
-fn get_emitter_mut(v: &Value) -> Option<std::sync::MutexGuard<Object>> {
+fn get_emitter_mut(v: &Value) -> Option<std::sync::MutexGuard<'_, Object>> {
     if let Value::Object(o) = v {
         Some(o.lock().unwrap())
     } else {

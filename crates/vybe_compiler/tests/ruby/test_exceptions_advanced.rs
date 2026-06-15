@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_ruby, run_ruby_one};
+use super::helpers::{compile_ok, run_ruby};
 
 #[test]
 fn custom_exception_class() {
