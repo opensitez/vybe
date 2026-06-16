@@ -429,6 +429,19 @@ impl VM {
                 if let Some(v) = ob.properties.get(name) {
                     return Ok(v.clone());
                 }
+
+                // 1b. Typed fields from TypeDef (for typed objects like Error with field layout)
+                let type_id = ob.type_id;
+                if type_id > 0 {
+                    if let Some(td) = self.type_registry.get(type_id) {
+                        if let Some(field_idx) = td.field_index(name) {
+                            if let Some(v) = ob.fields.get(field_idx) {
+                                return Ok(v.clone());
+                            }
+                        }
+                    }
+                }
+
                 if let ObjectKind::Array(ref elems) = ob.kind {
                     if let Ok(idx) = name.parse::<usize>() {
                         if idx < elems.len() {

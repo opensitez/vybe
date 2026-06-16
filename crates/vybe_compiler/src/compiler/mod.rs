@@ -50,6 +50,12 @@ struct LoopCtx {
     /// True for actual loops (while/for/for-in); false for switch blocks
     /// and labeled non-loop blocks. `continue` skips non-continuable contexts.
     is_continuable: bool,
+    /// Length of `active_finally_blocks` when this loop was entered. A
+    /// `break`/`continue` targeting this loop must execute the finally
+    /// blocks pushed *inside* it (those at indices >= this value) before
+    /// branching out — ECMA-262 §14.2: abrupt loop completion still runs
+    /// pending `finally` bodies.
+    finally_depth: usize,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1527,6 +1533,12 @@ impl Compiler {
             }
         }
 
+        // ECMA-262 §11.2.1: Detect top-level "use strict" directive prologue
+        // so strict mode rules apply to module-level code
+        if self.is_js_profile() && Self::stmts_have_use_strict_directive(&merged_body) {
+            self.in_strict = true;
+        }
+
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
                 continue;
@@ -2928,6 +2940,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: Some(it_slot),
             is_continuable: true,
+            finally_depth: self.active_finally_blocks.len(),
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -3078,6 +3091,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: None,
             is_continuable: true,
+            finally_depth: self.active_finally_blocks.len(),
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -3617,6 +3631,66 @@ impl Compiler {
             }
         }
         self.emit_return();
+        Ok(())
+    }
+
+    fn emit_break_through_finally(&mut self, label: Option<&str>) -> Result<(), String> {
+        let target_ctx = if let Some(lbl) = label {
+            self.loops
+                .iter()
+                .rev()
+                .find(|c| c.label.as_deref() == Some(lbl))
+        } else {
+            self.loops.last()
+        };
+
+        if let Some(ctx) = target_ctx {
+            let target_finally_depth = ctx.finally_depth;
+            let nested_finally_count = self.active_finally_blocks.len().saturating_sub(target_finally_depth);
+            if nested_finally_count > 0 {
+                let original = self.active_finally_blocks.clone();
+                for idx in (target_finally_depth..original.len()).rev() {
+                    self.active_finally_blocks = original[..idx].to_vec();
+                    self.emit_finally_action(&original[idx])?;
+                }
+                self.active_finally_blocks = original;
+            }
+        }
+
+        if let Some(depth) = self.break_depth(label) {
+            let line = self.line;
+            self.chunk().emit_br(depth.into(), line);
+        }
+        Ok(())
+    }
+
+    fn emit_continue_through_finally(&mut self, label: Option<&str>) -> Result<(), String> {
+        let target_ctx = if let Some(lbl) = label {
+            self.loops
+                .iter()
+                .rev()
+                .find(|c| c.label.as_deref() == Some(lbl) && c.is_continuable)
+        } else {
+            self.loops.iter().rev().find(|c| c.is_continuable)
+        };
+
+        if let Some(ctx) = target_ctx {
+            let target_finally_depth = ctx.finally_depth;
+            let nested_finally_count = self.active_finally_blocks.len().saturating_sub(target_finally_depth);
+            if nested_finally_count > 0 {
+                let original = self.active_finally_blocks.clone();
+                for idx in (target_finally_depth..original.len()).rev() {
+                    self.active_finally_blocks = original[..idx].to_vec();
+                    self.emit_finally_action(&original[idx])?;
+                }
+                self.active_finally_blocks = original;
+            }
+        }
+
+        if let Some(depth) = self.continue_depth(label) {
+            let line = self.line;
+            self.chunk().emit_br(depth.into(), line);
+        }
         Ok(())
     }
 
@@ -6133,8 +6207,43 @@ impl Compiler {
             return;
         }
         // Global — canonicalize name for case-insensitive languages
+        // But in strict mode, if this is genuinely undeclared, throw ReferenceError
         let idx = self.global_name_const_idx(&cname);
-        self.emit_u16(Op::GLOBAL_GET, idx);
+
+        if self.is_js_profile() && self.in_strict {
+            // In strict mode, throw ReferenceError for undeclared variable access
+            let line = self.line;
+            // Stack sequence:
+            // global_get idx → [value]
+            // dup → [value, value]
+            // Check if value === undefined: emit UNDEFINED, emit_dyn_eq
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit(Op::DUP);
+            common::expressions::emit_undefined(self.chunk(), line);
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            let line_inner = self.line;
+            self.chunk().emit_if(line_inner);
+            // Stack: [value, true]
+            self.emit(Op::DROP); // Stack: [value]
+            self.emit(Op::DROP); // Stack: []
+            self.emit_u16(Op::STRUCT_NEW, 0);
+            self.emit(Op::DUP);
+            let msg = Arc::from(format!("{} is not defined", name));
+            self.emit_const(Value::String(msg));
+            crate::emitter::errors::emit_exception_new_finalize(
+                self.chunk(),
+                "ReferenceError",
+                line_inner,
+            );
+            crate::emitter::errors::emit_throw(self.chunk(), line_inner);
+            self.chunk().emit_else(line_inner);
+            // Stack: [value, false]
+            self.emit(Op::DROP); // Stack: [value]
+            self.chunk().emit_end(line_inner);
+            // After end: stack has [value]
+        } else {
+            self.emit_u16(Op::GLOBAL_GET, idx);
+        }
         if self.binding_uses_pointer_cell(name) {
             common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         }
@@ -7358,6 +7467,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
+                    finally_depth: self.active_finally_blocks.len(),
                 });
                 self.compile_expr(cond)?;
                 let line = self.line;
@@ -7437,6 +7547,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
+                    finally_depth: self.active_finally_blocks.len(),
                 });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
                     self.capture_by_value_vars.push(loop_capture_name);
@@ -7741,6 +7852,7 @@ impl Compiler {
                         did_break_slot,
                         iterator_close_slot: None,
                         is_continuable: true,
+                        finally_depth: self.active_finally_blocks.len(),
                     });
                     for s in body {
                         self.compile_stmt(s)?;
@@ -7799,6 +7911,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
+                    finally_depth: self.active_finally_blocks.len(),
                 });
                 for s in body {
                     self.compile_stmt(s)?;
@@ -7841,6 +7954,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: false,
+                    finally_depth: self.active_finally_blocks.len(),
                 });
 
                 // Merge legacy `default` field into the cases list.
@@ -8396,9 +8510,7 @@ impl Compiler {
                         if let Some(iterator_slot) = self.iterator_close_slot_for_break(None) {
                             self.emit_js_iterator_close(iterator_slot);
                         }
-                        if let Some(depth) = self.break_depth(None) {
-                            self.chunk().emit_br(depth.into(), line);
-                        }
+                        self.emit_break_through_finally(None)?;
                     }
                     BreakTarget::Label(label) => {
                         if let Some(slot) = self
@@ -8416,9 +8528,7 @@ impl Compiler {
                         {
                             self.emit_js_iterator_close(iterator_slot);
                         }
-                        if let Some(depth) = self.break_depth(Some(label)) {
-                            self.chunk().emit_br(depth.into(), line);
-                        }
+                        self.emit_break_through_finally(Some(label))?;
                     }
                     BreakTarget::Value(expr) => {
                         self.compile_expr(expr)?;
@@ -8429,19 +8539,14 @@ impl Compiler {
 
             // ── Continue ────────────────────────────────────────────────
             StmtKind::Continue(target) => {
-                let line = self.line;
                 match target {
                     ContinueTarget::Implicit
                     | ContinueTarget::Kind(_)
                     | ContinueTarget::Level(_) => {
-                        if let Some(depth) = self.continue_depth(None) {
-                            self.chunk().emit_br(depth.into(), line);
-                        }
+                        self.emit_continue_through_finally(None)?;
                     }
                     ContinueTarget::Label(label) => {
-                        if let Some(depth) = self.continue_depth(Some(&label)) {
-                            self.chunk().emit_br(depth.into(), line);
-                        }
+                        self.emit_continue_through_finally(Some(label))?;
                     }
                 }
             }
@@ -9867,6 +9972,7 @@ impl Compiler {
                         did_break_slot: None,
                         iterator_close_slot: None,
                         is_continuable: false,
+                        finally_depth: self.active_finally_blocks.len(),
                     });
                     Some(bp)
                 } else {

@@ -2885,7 +2885,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
     pos += name_len as usize;
 
     // Version byte
-    let _version = data[pos];
+    let version = data[pos];
     pos += 1;
 
     let (count, read) = read_leb128_u32(&data[pos..]);
@@ -2951,6 +2951,111 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
             lines.push(line);
         }
 
+        // Type entries (v2+) with WASM Annotations format field descriptors
+        let mut types = Vec::new();
+        if version >= 2 {
+            let (type_count, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..type_count {
+                // Type name
+                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let type_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += nlen as usize;
+
+                // Parent type name
+                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let parent = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += nlen as usize;
+
+                // Fields with descriptors
+                let (field_count, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let mut fields = Vec::new();
+                let mut field_descriptors = std::collections::HashMap::new();
+                for _ in 0..field_count {
+                    let (nlen, read) = read_leb128_u32(&data[pos..]);
+                    pos += read;
+                    let field_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                        .unwrap_or("")
+                        .to_string();
+                    pos += nlen as usize;
+                    fields.push(field_name.clone());
+
+                    // Decode field descriptor flags (WASM Annotations format)
+                    let flags = data[pos];
+                    pos += 1;
+                    let descriptor = crate::chunk::PropertyDescriptor {
+                        writable: (flags & 0x01) != 0,
+                        enumerable: (flags & 0x02) != 0,
+                        configurable: (flags & 0x04) != 0,
+                    };
+                    field_descriptors.insert(field_name, descriptor);
+                }
+
+                // Methods
+                let (method_count, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let mut methods = Vec::new();
+                for _ in 0..method_count {
+                    let (nlen, read) = read_leb128_u32(&data[pos..]);
+                    pos += read;
+                    let method_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                        .unwrap_or("")
+                        .to_string();
+                    pos += nlen as usize;
+                    let (chunk_idx, read) = read_leb128_u32(&data[pos..]);
+                    pos += read;
+                    methods.push((method_name, chunk_idx as usize));
+                }
+
+                // is_interface
+                let is_interface = data[pos] != 0;
+                pos += 1;
+
+                // implements
+                let (impl_count, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let mut implements = Vec::new();
+                for _ in 0..impl_count {
+                    let (nlen, read) = read_leb128_u32(&data[pos..]);
+                    pos += read;
+                    let iface_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                        .unwrap_or("")
+                        .to_string();
+                    pos += nlen as usize;
+                    implements.push(iface_name);
+                }
+
+                // constructor_chunk
+                let has_ctor = data[pos] != 0;
+                pos += 1;
+                let constructor_chunk = if has_ctor {
+                    let (idx, read) = read_leb128_u32(&data[pos..]);
+                    pos += read;
+                    Some(idx as usize)
+                } else {
+                    None
+                };
+
+                types.push(crate::chunk::TypeEntry {
+                    name: type_name,
+                    parent,
+                    fields,
+                    methods,
+                    is_interface,
+                    implements,
+                    constructor_chunk,
+                    field_descriptors,
+                });
+            }
+        }
+
         let mut chunk = Chunk::new(&name);
         chunk.arity = arity;
         chunk.local_count = lc as u16;
@@ -2958,6 +3063,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
         chunk.imports = imports;
         chunk.code = code;
         chunk.lines = lines;
+        chunk.types = types;
         chunks.push(chunk);
     }
     Ok(chunks)

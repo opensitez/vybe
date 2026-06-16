@@ -46,6 +46,7 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
     }
 }
 

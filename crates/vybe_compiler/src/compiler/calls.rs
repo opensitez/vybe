@@ -2038,10 +2038,47 @@ impl Compiler {
         self.emit(Op::DROP);
 
         if self.is_js_profile() {
+            // Fix property descriptors to be non-enumerable per ECMA-262 §20.5.
+            // message, name, and internal properties (__type, __exception_type) should be non-enumerable.
+            let define_prop_idx = self.import("ecma:object", "defineProperty");
+
+            for prop_name in &["__type", "__exception_type", "message", "name"] {
+                self.emit_u16(Op::LOCAL_GET, exc_tmp);
+                let key_const = self.str_const(prop_name);
+                self.emit_u16(Op::CONST, key_const);
+                common::dict::emit_new(&mut self.chunks, self.current, line);
+                self.emit(Op::DUP);
+                self.emit_u16(Op::LOCAL_GET, exc_tmp);
+                let prop_key = self.str_const(prop_name);
+                self.emit_u16(Op::STRUCT_GET, prop_key);
+                let val_key = self.str_const("value");
+                self.emit_u16(Op::STRUCT_SET, val_key);
+                self.emit(Op::DROP);
+                self.emit(Op::DUP);
+                self.emit_const(Value::Bool(false));
+                let enum_key = self.str_const("enumerable");
+                self.emit_u16(Op::STRUCT_SET, enum_key);
+                self.emit(Op::DROP);
+                self.emit_host_call(define_prop_idx, 3);
+                self.emit(Op::DROP);
+            }
+
+            // Set tostringtag as non-enumerable
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
-            self.emit_const(Value::String(Arc::from("Error")));
             let tag_key = self.str_const("tostringtag");
-            self.emit_u16(Op::STRUCT_SET, tag_key);
+            self.emit_u16(Op::CONST, tag_key);
+            common::dict::emit_new(&mut self.chunks, self.current, line);
+            self.emit(Op::DUP);
+            self.emit_const(Value::String(Arc::from("Error")));
+            let val_key = self.str_const("value");
+            self.emit_u16(Op::STRUCT_SET, val_key);
+            self.emit(Op::DROP);
+            self.emit(Op::DUP);
+            self.emit_const(Value::Bool(false));
+            let enum_key = self.str_const("enumerable");
+            self.emit_u16(Op::STRUCT_SET, enum_key);
+            self.emit(Op::DROP);
+            self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
         }
 
@@ -2053,11 +2090,33 @@ impl Compiler {
         let stack_val = self.define_local("__stack_val");
         self.emit_u16(Op::LOCAL_SET, stack_val);
         self.emit(Op::DROP);
-        self.emit_u16(Op::LOCAL_GET, exc_tmp);
-        self.emit_u16(Op::LOCAL_GET, stack_val);
-        let stack_key = self.str_const("stack");
-        self.emit_u16(Op::STRUCT_SET, stack_key);
-        self.emit(Op::DROP);
+
+        if self.is_js_profile() {
+            // Set stack as non-enumerable using Object.defineProperty
+            let define_prop_idx = self.import("ecma:object", "defineProperty");
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            let stack_key = self.str_const("stack");
+            self.emit_u16(Op::CONST, stack_key);
+            common::dict::emit_new(&mut self.chunks, self.current, line);
+            self.emit(Op::DUP);
+            self.emit_u16(Op::LOCAL_GET, stack_val);
+            let val_key = self.str_const("value");
+            self.emit_u16(Op::STRUCT_SET, val_key);
+            self.emit(Op::DROP);
+            self.emit(Op::DUP);
+            self.emit_const(Value::Bool(false));
+            let enum_key = self.str_const("enumerable");
+            self.emit_u16(Op::STRUCT_SET, enum_key);
+            self.emit(Op::DROP);
+            self.emit_host_call(define_prop_idx, 3);
+            self.emit(Op::DROP);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            self.emit_u16(Op::LOCAL_GET, stack_val);
+            let stack_key = self.str_const("stack");
+            self.emit_u16(Op::STRUCT_SET, stack_key);
+            self.emit(Op::DROP);
+        }
 
         if self.is_js_profile() {
             for name in Self::js_error_instanceof_chain(type_name) {

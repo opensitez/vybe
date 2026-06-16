@@ -212,6 +212,9 @@ fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
         linq_queries: false,
         switch_fallthrough: true,
         uses_normalize_class: false,
+        string_aware_relational: false,
+        supports_autoload: false,
+        buffered_iterator_methods: false,
         builtins: {
             let mut b = HashMap::new();
             b.insert(

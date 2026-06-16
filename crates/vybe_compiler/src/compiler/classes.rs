@@ -2695,6 +2695,7 @@ impl Compiler {
             false,
             Vec::new(),
             Some(ctor_idx),
+            std::collections::HashMap::new(),
         );
 
         Ok(())

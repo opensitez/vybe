@@ -86,6 +86,7 @@ mod test_error_handling_patterns;
 mod test_error_hierarchy;
 mod test_error_types;
 mod test_error_types_deep;
+mod test_exceptions;
 mod test_es2023_2025_features;
 mod test_esm_host_imports;
 mod test_eval_dynamic_code;

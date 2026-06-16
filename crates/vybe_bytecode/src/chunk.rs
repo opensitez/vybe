@@ -10,6 +10,50 @@ pub struct Import {
     pub name: String,
 }
 
+/// Property descriptor per ECMA-262 §6.2.4 — represented using WASM Annotations proposal.
+/// Format: (@ecma262 descriptor field_name writable enumerable configurable)
+/// Serialized as flags byte in custom section: bit 0=writable, bit 1=enumerable, bit 2=configurable
+/// All three flags default to true (most permissive) if not specified.
+/// Fully compliant with proposals/annotations/proposals/annotations/Overview.md
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyDescriptor {
+    /// Can the property value be changed (§7.3.2 Put, SetPropertyValue).
+    pub writable: bool,
+    /// Can the property appear in for-in loops and Object.keys / Object.getOwnPropertyNames.
+    pub enumerable: bool,
+    /// Can the property be deleted (§7.3.7 DeletePropertyOrThrow).
+    pub configurable: bool,
+}
+
+impl PropertyDescriptor {
+    /// All attributes true (standard object property).
+    pub fn standard() -> Self {
+        PropertyDescriptor {
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        }
+    }
+
+    /// Read-only non-enumerable non-configurable (built-in method/property).
+    pub fn builtin() -> Self {
+        PropertyDescriptor {
+            writable: false,
+            enumerable: false,
+            configurable: false,
+        }
+    }
+
+    /// Non-enumerable but writable and configurable (error.message).
+    pub fn non_enumerable() -> Self {
+        PropertyDescriptor {
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        }
+    }
+}
+
 /// A compile-time type definition — WASM GC type section entry.
 /// Describes a class/struct with named fields and vtable methods.
 /// Loaded into TypeRegistry before execution.
@@ -28,6 +72,9 @@ pub struct TypeEntry {
     pub implements: Vec<String>,
     /// Constructor chunk index (if any). Resolved during load_type_table.
     pub constructor_chunk: Option<usize>,
+    /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).
+    /// Maps field_name → descriptor. Fields without entries default to PropertyDescriptor::standard().
+    pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor>,
 }
 
 /// A constant initialization expression (Extended Const Expressions proposal).

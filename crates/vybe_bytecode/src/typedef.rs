@@ -27,6 +27,9 @@ pub struct FieldDef {
     pub name: String,
     /// Index in Object.fields[] for fast access
     pub index: usize,
+    /// Property descriptor per ECMA-262 §6.2.4 (writable, enumerable, configurable).
+    /// Defaults to standard() if not specified.
+    pub descriptor: crate::chunk::PropertyDescriptor,
 }
 
 /// Unified type definition — covers GC structs, resources, user classes, host types.
@@ -90,6 +93,11 @@ pub struct TypeDef {
     pub interface: Option<String>,
     /// Source component name (for tracking origin during linking).
     pub source_component: Option<String>,
+
+    // -- WASM Annotations (Stage 2 Proposal) --
+    /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).
+    /// Maps field_name → descriptor. Fields without entries default to PropertyDescriptor::standard().
+    pub field_descriptors: HashMap<String, crate::chunk::PropertyDescriptor>,
 }
 
 impl TypeDef {
@@ -111,6 +119,7 @@ impl TypeDef {
             shared: false,
             interface: None,
             source_component: None,
+            field_descriptors: HashMap::new(),
         }
     }
 
@@ -121,11 +130,22 @@ impl TypeDef {
 
     /// Add a named field. Returns the field index.
     pub fn add_field(&mut self, name: &str) -> usize {
+        self.add_field_with_descriptor(name, crate::chunk::PropertyDescriptor::standard())
+    }
+
+    /// Add a named field with property descriptor (ECMA-262 §6.2.4).
+    /// Returns the field index.
+    pub fn add_field_with_descriptor(
+        &mut self,
+        name: &str,
+        descriptor: crate::chunk::PropertyDescriptor,
+    ) -> usize {
         let idx = self.field_defs.len();
         let key = name.to_lowercase();
         self.field_defs.push(FieldDef {
             name: key.clone(),
             index: idx,
+            descriptor,
         });
         self.field_map.insert(key, idx);
         idx
@@ -187,6 +207,33 @@ impl TypeDef {
     /// This preserves that interface.
     pub fn fields(&self) -> Vec<String> {
         self.field_defs.iter().map(|f| f.name.clone()).collect()
+    }
+
+    /// Get property descriptor for a field (WASM Annotations proposal @ecma262 namespace).
+    /// Returns the descriptor or PropertyDescriptor::standard() if not specified.
+    pub fn get_field_descriptor(
+        &self,
+        field_name: &str,
+    ) -> crate::chunk::PropertyDescriptor {
+        self.field_descriptors
+            .get(&field_name.to_lowercase())
+            .cloned()
+            .unwrap_or_else(crate::chunk::PropertyDescriptor::standard)
+    }
+
+    /// Check if a field is non-enumerable.
+    pub fn is_non_enumerable(&self, field_name: &str) -> bool {
+        !self.get_field_descriptor(field_name).enumerable
+    }
+
+    /// Check if a field is non-writable.
+    pub fn is_non_writable(&self, field_name: &str) -> bool {
+        !self.get_field_descriptor(field_name).writable
+    }
+
+    /// Check if a field is non-configurable.
+    pub fn is_non_configurable(&self, field_name: &str) -> bool {
+        !self.get_field_descriptor(field_name).configurable
     }
 }
 
@@ -521,6 +568,13 @@ impl TypeRegistry {
                     if typedef.field_index(field_name).is_none() {
                         typedef.add_field(field_name);
                     }
+                }
+
+                // Copy field descriptors from TypeEntry (WASM Annotations proposal @ecma262)
+                for (field_name, descriptor) in &entry.field_descriptors {
+                    typedef
+                        .field_descriptors
+                        .insert(field_name.clone(), descriptor.clone());
                 }
 
                 // Mark as interface if flagged

@@ -167,7 +167,11 @@ pub fn is_exception_type(name: &str) -> bool {
 ///    then emits the message expression to push `[obj, obj, msg]`.
 /// 2. Caller invokes `emit_exception_new_finalize(chunk, exc_name, line)`
 ///    which consumes the inner `[obj, msg]` pair into `obj.message=msg`,
-///    then stamps `__type`, `__exception_type`, `name` onto the outer obj.
+///    then stamps `__type`, `__exception_type` onto the outer obj.
+///
+/// Per ECMA-262 §20.5, name and constructor are inherited from Error.prototype,
+/// not own properties, so they are not set here. JavaScript callers should ensure
+/// proper prototype chain setup if needed.
 ///
 /// Stack before: `[obj, obj, msg]`   Stack after: `[obj]`
 ///
@@ -183,8 +187,6 @@ pub fn is_exception_type(name: &str) -> bool {
 /// can therefore catch each other across language boundaries.
 pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32) {
     let canon = canonical_exception_name(exc_name);
-    // Preserve the original name for the `name` property (JS expects
-    // `Error`, `RangeError`, etc. — not the canonical cross-language form).
     let original = exc_name.trim();
 
     // [obj, obj, msg] → [obj, msg_val] via struct_set "message"
@@ -194,12 +196,10 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_op(Op::DROP, line);
 
     // __type and __exception_type use the canonical name (for cross-language
-    // catch dispatch). `name` uses the original (language-specific) name
-    // so `err.name` returns what the language expects.
+    // catch dispatch).
     for (key, val) in [
         ("__type", canon),
         ("__exception_type", canon),
-        ("name", original),
     ] {
         chunk.emit_op(Op::DUP, line);
         let v = chunk.add_constant(Value::String(Arc::from(val)));
@@ -209,19 +209,14 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_op(Op::DROP, line);
     }
 
-    // constructor = { name: original } — so e.constructor.name works per ECMA-262 §20.5.3.
-    // Stack: [obj]
-    chunk.emit_op(Op::DUP, line); // [obj, obj]
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line); // [obj, obj, ctor]
-    chunk.emit_op(Op::DUP, line); // [obj, obj, ctor, ctor]
-    let cn_val = chunk.add_constant(Value::String(Arc::from(original)));
-    chunk.emit_op_u16(Op::CONST, cn_val, line); // [obj, obj, ctor, ctor, name]
-    let cn_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, cn_key, line); // [obj, obj, ctor, ?]
-    chunk.emit_op(Op::DROP, line); // [obj, obj, ctor]
-    let ctor_key = chunk.add_constant(Value::String(Arc::from("constructor")));
-    chunk.emit_op_u16(Op::STRUCT_SET, ctor_key, line); // [obj, ?]
-    chunk.emit_op(Op::DROP, line); // [obj]
+    // Set name as a dynamic (non-indexed) property with the original language-specific name.
+    // It will be added to __nonenum at the type level, making it non-enumerable.
+    chunk.emit_op(Op::DUP, line);
+    let n_val = chunk.add_constant(Value::String(Arc::from(original)));
+    chunk.emit_op_u16(Op::CONST, n_val, line);
+    let n_key = chunk.add_constant(Value::String(Arc::from("name")));
+    chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// Emit the disposal half of a resource-management block (C# `using`,

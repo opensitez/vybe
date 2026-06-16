@@ -1284,9 +1284,10 @@ pub fn dispatch_dataview_method(
                 } else {
                     u32::from_be_bytes(arr)
                 };
-                return Some(Value::I32(v as i32));
+                // Return as F64 to preserve full u32 range (JS numbers are f64)
+                return Some(Value::F64(v as f64));
             }
-            Some(Value::I32(0))
+            Some(Value::F64(0.0))
         }
         "getFloat32" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
@@ -1368,7 +1369,7 @@ pub fn dispatch_dataview_method(
         }
         "setUint32" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            let val = args.get(1).map(|v| v.as_i32() as u32).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(0);
             let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
             let bytes = if le {
                 val.to_le_bytes()

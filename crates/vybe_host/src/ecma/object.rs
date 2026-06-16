@@ -1060,8 +1060,20 @@ fn register_access(vm: &mut VM) {
                         return Value::Null;
                     }
                 }
+                // ECMA-262 §20.5.2.1: Error.prototype.name is a data property,
+                // not an accessor. But some Error instances may have spurious
+                // __set_name setters from the type system. Ignore them for
+                // Error types to allow `e.name = "CustomError"` to work.
+                let is_error_type = {
+                    let o = obj.lock().unwrap();
+                    o.properties.get("__exception_type").is_some()
+                };
+                let skip_setter = is_error_type && (key == "name" || key == "message");
+
                 let setter_key = format!("__set_{}", key);
-                let setter = {
+                let setter = if skip_setter {
+                    None
+                } else {
                     let o = obj.lock().unwrap();
                     o.properties.get(&setter_key).cloned()
                 };
@@ -1095,7 +1107,15 @@ fn register_access(vm: &mut VM) {
                         return Value::Null;
                     }
                 }
-                obj.lock().unwrap().properties.insert(key, val);
+                {
+                    let mut o = obj.lock().unwrap();
+                    o.properties.insert(key.clone(), val.clone());
+                    // For typed objects (Error etc.), also update the fields Vec.
+                    // Error types have "message" at field index 0.
+                    if o.type_id > 0 && key == "message" && !o.fields.is_empty() {
+                        o.fields[0] = val.clone();
+                    }
+                }
                 let kind_skip = {
                     let o = obj.lock().unwrap();
                     matches!(o.kind, ObjectKind::Array(_))

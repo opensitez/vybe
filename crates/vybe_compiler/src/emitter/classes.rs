@@ -641,6 +641,7 @@ pub fn register_type(
     is_interface: bool,
     implements: Vec<String>,
     constructor_chunk: Option<usize>,
+    field_descriptors: std::collections::HashMap<String, vybe_bytecode::chunk::PropertyDescriptor>,
 ) {
     // The walker is responsible for case-canonicalising the name per
     // its language's case-sensitivity (`Compiler::canon` lowercases
@@ -655,6 +656,7 @@ pub fn register_type(
         is_interface,
         implements,
         constructor_chunk,
+        field_descriptors,
     });
 }
 
@@ -678,6 +680,7 @@ pub fn register_interface(
         is_interface: true,
         implements: parent_interfaces,
         constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
     });
 }
 
@@ -702,6 +705,7 @@ pub fn register_class_with_interfaces(
         false,
         implements,
         constructor_chunk,
+        std::collections::HashMap::new(),
     );
 }
 

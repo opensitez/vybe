@@ -294,6 +294,7 @@ fn cls_case_resolution_at_link_time() {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
     });
     // Add "Name" as a constant (simulates C# accessing obj.Name)
     cs_script.add_constant(Value::String(Arc::from("Name")));

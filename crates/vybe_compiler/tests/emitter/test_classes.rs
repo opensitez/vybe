@@ -195,6 +195,7 @@ fn register_type_adds_entry() {
         false,
         vec![],
         Some(2),
+        std::collections::HashMap::new(),
     );
     assert_eq!(chunks[0].types.len(), 1);
     // register_type preserves the source-language name verbatim;

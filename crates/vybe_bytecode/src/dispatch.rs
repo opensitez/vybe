@@ -779,7 +779,20 @@ impl VM {
                             self.stack.truncate(stack_save);
                             self.push(val)?;
                         } else {
+                            // Set property in properties HashMap
                             o.lock().unwrap().set(name.clone(), val.clone());
+                            // For typed objects, also update the fields Vec if this property is a field
+                            let type_id = o.lock().unwrap().type_id;
+                            if type_id > 0 {
+                                if let Some(td) = self.type_registry.get(type_id) {
+                                    if let Some(field_idx) = td.field_index(&name) {
+                                        let mut ob = o.lock().unwrap();
+                                        if field_idx < ob.fields.len() {
+                                            ob.fields[field_idx] = val.clone();
+                                        }
+                                    }
+                                }
+                            }
                             self.push(val)?;
                         }
                     } else {
@@ -7488,7 +7501,25 @@ impl VM {
                     let type_id = self.pop().as_i32() as usize;
                     let obj = self.peek(0);
                     if let Value::Object(o) = obj {
-                        o.lock().unwrap().type_id = type_id;
+                        let mut obj_mut = o.lock().unwrap();
+                        obj_mut.type_id = type_id;
+
+                        // Populate __nonenum with non-enumerable field names from TypeDef
+                        if let Some(td) = self.type_registry.get(type_id) {
+                            let nonenum_fields: Vec<Value> = td.field_defs
+                                .iter()
+                                .filter(|f| !f.descriptor.enumerable)
+                                .map(|f| Value::String(Arc::from(f.name.as_str())))
+                                .collect();
+
+                            if !nonenum_fields.is_empty() {
+                                let nonenum_arr = Object::new_array(nonenum_fields);
+                                obj_mut.properties.insert(
+                                    "__nonenum".to_string(),
+                                    Value::Object(Arc::new(Mutex::new(nonenum_arr))),
+                                );
+                            }
+                        }
                     }
                 }
 

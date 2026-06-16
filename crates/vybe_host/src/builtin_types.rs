@@ -1472,8 +1472,10 @@ fn register_enums(vm: &mut VM) {
     let exc_base = vm.type_registry.register(TypeDef::new("Exception"));
     let mut error_td = TypeDef::new("Error");
     error_td.parent = Some(exc_base);
-    error_td.add_field("message");
-    error_td.add_field("name");
+    // Per ECMA-262 §20.5:
+    // - message: writable, non-enumerable, configurable (own property on instances)
+    // - name: writable, non-enumerable, configurable (dynamic property, not a typed field)
+    error_td.add_field_with_descriptor("message", vybe_bytecode::chunk::PropertyDescriptor::non_enumerable());
     let error_id = vm.type_registry.register(error_td);
 
     let exc_types_under_exception = [
@@ -1501,8 +1503,8 @@ fn register_enums(vm: &mut VM) {
     for name in &exc_types_under_exception {
         let mut td = TypeDef::new(name);
         td.parent = Some(exc_base);
-        td.add_field("message");
-        td.add_field("name");
+        // Non-enumerable per cross-language convention
+        td.add_field_with_descriptor("message", vybe_bytecode::chunk::PropertyDescriptor::non_enumerable());
         vm.type_registry.register(td);
     }
 
@@ -1520,8 +1522,7 @@ fn register_enums(vm: &mut VM) {
     for name in &js_error_types {
         let mut td = TypeDef::new(name);
         td.parent = Some(error_id);
-        td.add_field("message");
-        td.add_field("name");
+        td.add_field_with_descriptor("message", vybe_bytecode::chunk::PropertyDescriptor::non_enumerable());
         vm.type_registry.register(td);
     }
 }

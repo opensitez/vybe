@@ -216,13 +216,18 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
 }
 
 // ── Custom section (Vybe metadata for round-trip) ───────────────────────
+// WASM Annotations Compliance (proposals/annotations/proposals/annotations/Overview.md):
+// - Property descriptors are stored per-field using a flags byte (writable, enumerable, configurable)
+// - Format: (@ecma262 descriptor field_name writable enumerable configurable)
+// - Serialized in the "vybe" custom section with type entries
+// - Follows WASM annotations proposal: metadata attached to struct fields in standardized format
 
 fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     let mut out = Vec::new();
     write_name(&mut out, "vybe");
 
     // Version
-    out.push(1);
+    out.push(2); // Version 2: adds type information with field descriptors (WASM Annotations format)
 
     // Number of chunks
     write_leb128_u32(&mut out, chunks.len() as u32);
@@ -254,6 +259,51 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
         write_leb128_u32(&mut out, chunk.lines.len() as u32);
         for &line in &chunk.lines {
             write_leb128_u32(&mut out, line);
+        }
+
+        // Type entries with WASM Annotations format field descriptors (v2+)
+        write_leb128_u32(&mut out, chunk.types.len() as u32);
+        for type_entry in &chunk.types {
+            write_name(&mut out, &type_entry.name);
+            write_name(&mut out, &type_entry.parent);
+
+            // Fields with descriptors (WASM Annotations proposal @ecma262 namespace)
+            write_leb128_u32(&mut out, type_entry.fields.len() as u32);
+            for field in &type_entry.fields {
+                write_name(&mut out, field);
+                // Encode field descriptor as WASM annotation format
+                if let Some(descriptor) = type_entry.field_descriptors.get(field) {
+                    // Flags byte: bit 0 = writable, bit 1 = enumerable, bit 2 = configurable
+                    let mut flags: u8 = 0;
+                    if descriptor.writable { flags |= 0x01; }
+                    if descriptor.enumerable { flags |= 0x02; }
+                    if descriptor.configurable { flags |= 0x04; }
+                    out.push(flags);
+                } else {
+                    // Standard descriptor: all flags set
+                    out.push(0x07); // writable | enumerable | configurable
+                }
+            }
+
+            // Methods
+            write_leb128_u32(&mut out, type_entry.methods.len() as u32);
+            for (method_name, chunk_idx) in &type_entry.methods {
+                write_name(&mut out, method_name);
+                write_leb128_u32(&mut out, *chunk_idx as u32);
+            }
+
+            // Other metadata
+            out.push(if type_entry.is_interface { 1 } else { 0 });
+            write_leb128_u32(&mut out, type_entry.implements.len() as u32);
+            for iface in &type_entry.implements {
+                write_name(&mut out, iface);
+            }
+            if let Some(ctor_idx) = type_entry.constructor_chunk {
+                out.push(1);
+                write_leb128_u32(&mut out, ctor_idx as u32);
+            } else {
+                out.push(0);
+            }
         }
     }
     out
