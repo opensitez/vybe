@@ -73,6 +73,8 @@ struct Walker {
     var_types: HashMap<String, String>,
     /// variable/parameter name → precomputed sizeof value (accounts for arrays)
     var_sizes: HashMap<String, i64>,
+    /// variable name → explicit `_Alignas(N)` / `alignas(N)` alignment, when present.
+    var_alignments: HashMap<String, i64>,
     /// function-like macros: name → (params, body text)
     macros: HashMap<String, (Vec<String>, String)>,
     /// object-like macros: name → raw replacement text
@@ -91,6 +93,8 @@ struct Walker {
     current_char_param_indices: HashMap<String, usize>,
     /// function name → char* parameter writes `(param_index, index, value)`.
     char_param_writes: HashMap<String, Vec<(usize, Expression, Expression)>>,
+    /// `atexit` handlers registered while walking the current `main` body.
+    current_atexit_finalizers: Vec<Statement>,
 }
 
 fn stmt(kind: StmtKind) -> Statement {
@@ -148,6 +152,7 @@ impl Walker {
                     out.push(s);
                 }
             }
+            Rule::static_assert_statement => out.push(self.walk_static_assert(pair)),
             Rule::declaration => self.walk_declaration(pair, out),
             _ => {}
         }
@@ -231,6 +236,7 @@ impl Walker {
         let mut name = String::new();
         let mut params = Vec::new();
         let mut body = Vec::new();
+        let previous_atexit_finalizers = std::mem::take(&mut self.current_atexit_finalizers);
         for p in pair.into_inner() {
             match p.as_rule() {
                 Rule::declaration_specifiers => return_type = Some(self.type_text(p)),
@@ -288,6 +294,16 @@ impl Walker {
                             );
                         }
                     }
+                    if name == "main" && !self.current_atexit_finalizers.is_empty() {
+                        let mut finally = std::mem::take(&mut self.current_atexit_finalizers);
+                        finally.reverse();
+                        body = vec![stmt(StmtKind::Try {
+                            body,
+                            catches: vec![],
+                            else_body: None,
+                            finally: Some(finally),
+                        })];
+                    }
                 }
                 _ => {}
             }
@@ -299,6 +315,7 @@ impl Walker {
             name.clone(),
             params.iter().map(|param| param.type_hint.clone()).collect(),
         );
+        self.current_atexit_finalizers = previous_atexit_finalizers;
         Some(stmt(StmtKind::FunctionDecl {
             name,
             params,
@@ -508,6 +525,7 @@ impl Walker {
             }));
         }
 
+        let declared_alignment = explicit_alignment_value(specs.as_str());
         let struct_fields = self.struct_type_of_specifiers(&specs);
         let type_text = self.type_text(specs);
 
@@ -614,6 +632,23 @@ impl Walker {
             }
             if name.is_empty() {
                 continue;
+            }
+            if is_pointer_decl {
+                let pointee_type = normalized_c_type_name(type_text.trim_end_matches('*').trim());
+                if let Some(fields) = self.structs.get(&pointee_type) {
+                    if let Some(ExprKind::Array(elems)) = init.as_ref().map(|i| &i.kind) {
+                        let zeroed: Vec<ArrayElement> = elems
+                            .iter()
+                            .map(|_| ArrayElement {
+                                value: self.zero_struct(Some(&pointee_type), fields),
+                                spread: false,
+                                key: None,
+                                by_ref: false,
+                            })
+                            .collect();
+                        init = Some(expr(ExprKind::Array(zeroed)));
+                    }
+                }
             }
             if type_text.split_whitespace().any(|w| w == "extern") && init.is_none() {
                 continue;
@@ -794,6 +829,9 @@ impl Walker {
             }
             // Record the type for sizeof resolution
             self.var_types.insert(name.clone(), metadata_type.clone());
+            if let Some(alignment) = declared_alignment {
+                self.var_alignments.insert(name.clone(), alignment);
+            }
             // Record sizeof for this variable.
             // NOTE: compute from init elem count when array_bounds has been cleared by zero-fill.
             let sz = if is_pointer_decl {
@@ -1290,10 +1328,63 @@ impl Walker {
     }
 
     fn type_text(&self, pair: Pair<Rule>) -> String {
-        pair.as_str()
+        strip_alignment_specifiers(pair.as_str())
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    fn assert_stmt_from_expr(&self, expr: &Expression) -> Option<Statement> {
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return None;
+        };
+        if name != "assert" {
+            return None;
+        }
+        if self.object_macros.contains_key("NDEBUG") {
+            return Some(stmt(StmtKind::Empty));
+        }
+        let test = args.first()?.value.clone();
+        Some(stmt(StmtKind::Assert { test, msg: None }))
+    }
+
+    fn walk_static_assert(&mut self, pair: Pair<Rule>) -> Statement {
+        let mut inner = pair.into_inner();
+        let test = inner
+            .next()
+            .map(|p| self.walk_expression(p))
+            .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Bool(true))));
+        let msg = inner.next().map(|p| {
+            expr(ExprKind::Lit(Literal::Str(parse_string_literal(
+                p.as_str().trim(),
+            ))))
+        });
+        stmt(StmtKind::Assert { test, msg })
+    }
+
+    fn capture_atexit_from_expr(&mut self, expression: &Expression) -> bool {
+        if self.current_function != "main" {
+            return false;
+        }
+        let ExprKind::Call { callee, args, .. } = &expression.kind else {
+            return false;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return false;
+        };
+        if name != "atexit" || args.len() != 1 {
+            return false;
+        }
+        let finalizer = stmt(StmtKind::Expr(expr(ExprKind::Call {
+            callee: Box::new(args[0].value.clone()),
+            args: vec![],
+            optional: false,
+        })));
+        self.current_atexit_finalizers.push(finalizer);
+        true
     }
 
     // ── Statements ─────────────────────────────────────────────────────────
@@ -1320,9 +1411,17 @@ impl Walker {
                 }
             }
             Rule::declaration => self.walk_declaration(inner, out),
+            Rule::static_assert_statement => out.push(self.walk_static_assert(inner)),
             Rule::expression_statement => {
                 let e = inner.into_inner().next().unwrap();
                 let expr = self.walk_expression(e);
+                if let Some(assert_stmt) = self.assert_stmt_from_expr(&expr) {
+                    out.push(assert_stmt);
+                    return;
+                }
+                if self.capture_atexit_from_expr(&expr) {
+                    return;
+                }
                 let expr = self.rewrite_carray_postfix_discard(expr);
                 out.push(stmt(StmtKind::Expr(expr)));
             }
@@ -1861,6 +1960,201 @@ impl Walker {
             .collect()
     }
 
+    fn byte_count_to_usize(&self, value: &Expression) -> Option<usize> {
+        match &value.kind {
+            ExprKind::Lit(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
+            _ => None,
+        }
+    }
+
+    fn dest_element_size(&self, value: &Expression) -> usize {
+        let Some(name) = base_ident_name(value) else {
+            return 1;
+        };
+        self.var_types
+            .get(&name)
+            .map(|ty| sizeof_from_type_text(ty).max(1) as usize)
+            .unwrap_or(1)
+    }
+
+    fn char_copy_slice(&self, src: Expression, count: usize) -> Expression {
+        if let Some((base, offset)) = char_buffer_target_offset(&src) {
+            let end = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(offset.clone()),
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
+            });
+            return expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(ident(&base)),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(offset), Argument::positional(end)],
+                optional: false,
+            });
+        }
+        match &src.kind {
+            ExprKind::Lit(Literal::Str(s)) => {
+                expr(ExprKind::Lit(Literal::Str(s.chars().take(count).collect())))
+            }
+            _ => expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(src),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(expr(ExprKind::Lit(Literal::Int(count as i64))))],
+                optional: false,
+            }),
+        }
+    }
+
+    fn rewrite_memcpy_like(&mut self, dst: Expression, src: Expression, bytes: Expression) -> Expression {
+        if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) {
+            self.char_pointers.insert(dst_name.clone());
+            let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
+            let copied = self.char_copy_slice(src, count);
+            if is_zero_int_expr(&dst_offset) {
+                return expr(ExprKind::Assign {
+                    target: Box::new(ident(&dst_name)),
+                    value: Box::new(copied),
+                });
+            }
+            let base = ident(&dst_name);
+            let prefix = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base.clone()),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(dst_offset.clone())],
+                optional: false,
+            });
+            let suffix_start = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(dst_offset),
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
+            });
+            let suffix = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base.clone()),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(suffix_start)],
+                optional: false,
+            });
+            let updated = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(expr(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(prefix),
+                    right: Box::new(copied),
+                })),
+                right: Box::new(suffix),
+            });
+            return expr(ExprKind::Assign {
+                target: Box::new(base),
+                value: Box::new(updated),
+            });
+        }
+        if let Some(name) = base_ident_name(&dst) {
+            if self.is_fixed_array_var(&name) {
+                let src_value = carray_base_expr(&src).unwrap_or(src);
+                return expr(ExprKind::Assign {
+                    target: Box::new(ident(&name)),
+                    value: Box::new(src_value),
+                });
+            }
+        }
+        expr(ExprKind::Assign {
+            target: Box::new(dst),
+            value: Box::new(src),
+        })
+    }
+
+    fn rewrite_memset(&mut self, dst: Expression, fill: Expression, bytes: Expression) -> Expression {
+        if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) {
+            self.char_pointers.insert(dst_name.clone());
+            let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
+            let repeated = match &fill.kind {
+                ExprKind::Lit(Literal::Int(code)) => {
+                    let ch = char::from_u32(*code as u32).unwrap_or('\0');
+                    expr(ExprKind::Lit(Literal::Str(ch.to_string().repeat(count))))
+                }
+                _ => {
+                    let pieces = (0..count)
+                        .map(|_| char_assignment_value_to_string(fill.clone()))
+                        .collect::<Vec<_>>();
+                    concat_sequence_to_string(pieces)
+                }
+            };
+            if is_zero_int_expr(&dst_offset) {
+                return expr(ExprKind::Assign {
+                    target: Box::new(ident(&dst_name)),
+                    value: Box::new(repeated),
+                });
+            }
+            let base = ident(&dst_name);
+            let prefix = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base.clone()),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(dst_offset.clone())],
+                optional: false,
+            });
+            let suffix_start = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(dst_offset),
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
+            });
+            let suffix = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base.clone()),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(suffix_start)],
+                optional: false,
+            });
+            let updated = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(expr(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(prefix),
+                    right: Box::new(repeated),
+                })),
+                right: Box::new(suffix),
+            });
+            return expr(ExprKind::Assign {
+                target: Box::new(base),
+                value: Box::new(updated),
+            });
+        }
+        if let Some(name) = base_ident_name(&dst) {
+            if self.is_fixed_array_var(&name) && is_zero_int_expr(&fill) {
+                let elem_size = self.dest_element_size(&dst).max(1);
+                let count = self.byte_count_to_usize(&bytes).unwrap_or(0) / elem_size;
+                let zeros: Vec<ArrayElement> = (0..count)
+                    .map(|_| ArrayElement {
+                        value: expr(ExprKind::Lit(Literal::Int(0))),
+                        spread: false,
+                        key: None,
+                        by_ref: false,
+                    })
+                    .collect();
+                return expr(ExprKind::Assign {
+                    target: Box::new(ident(&name)),
+                    value: Box::new(expr(ExprKind::Array(zeros))),
+                });
+            }
+        }
+        expr(ExprKind::Lit(Literal::Null))
+    }
+
     fn walk_conditional(&mut self, pair: Pair<Rule>) -> Expression {
         let mut it = pair.into_inner();
         let cond = self.walk_binary(it.next().unwrap());
@@ -2232,6 +2526,29 @@ impl Walker {
                             expr(ExprKind::Lit(Literal::Int(8)))
                         }
                     }
+                    Rule::alignof_expression => {
+                        let raw_alignof = first.as_str().trim().to_string();
+                        let raw_inner = raw_alignof
+                            .strip_prefix("_Alignof")
+                            .or_else(|| raw_alignof.strip_prefix("alignof"))
+                            .map(str::trim)
+                            .unwrap_or(raw_alignof.as_str());
+                        let raw_inner = raw_inner
+                            .strip_prefix('(')
+                            .and_then(|s| s.strip_suffix(')'))
+                            .unwrap_or(raw_inner)
+                            .trim();
+                        if let Some(align) = self.alignof_from_expr_text(raw_inner) {
+                            return expr(ExprKind::Lit(Literal::Int(align)));
+                        }
+                        let inner = first.into_inner().next();
+                        if let Some(p) = inner {
+                            let align = self.alignof_from_rule(&p);
+                            expr(ExprKind::Lit(Literal::Int(align)))
+                        } else {
+                            expr(ExprKind::Lit(Literal::Int(8)))
+                        }
+                    }
                     Rule::prefix_op => {
                         let op = first.as_str();
                         let operand = self.walk_unary(it.next().unwrap());
@@ -2575,6 +2892,15 @@ impl Walker {
         } else {
             return operand;
         };
+        if let ExprKind::Ident(name) = &operand.kind {
+            if let (Some(alignment), Some(type_text)) =
+                (self.var_alignments.get(name), self.var_types.get(name))
+            {
+                if type_text.contains('[') {
+                    return expr(ExprKind::Lit(Literal::Int(*alignment)));
+                }
+            }
+        }
         expr(ExprKind::Cast {
             expr: Box::new(operand),
             type_name: canon.to_string(),
@@ -3087,8 +3413,15 @@ impl Walker {
                 }
 
                 // ── stdlib.h — heap allocation → arrays ──────────────────────
-                // malloc(n) / realloc(p, n) → [] (GC-managed array)
-                "malloc" | "realloc" => {
+                // malloc(n) → [] (GC-managed array)
+                "malloc" => {
+                    return expr(ExprKind::Array(Vec::new()));
+                }
+                // realloc(p, n) → preserve the existing backing store
+                "realloc" => {
+                    if let Some(first) = args.into_iter().next() {
+                        return first.value;
+                    }
                     return expr(ExprKind::Array(Vec::new()));
                 }
                 // calloc(count, size) → pre-filled zero array
@@ -3116,6 +3449,28 @@ impl Walker {
                 }
                 "free" => {
                     // noop — GC handles deallocation
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memcpy" | "memmove" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dst), Some(src), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                        return self.rewrite_memcpy_like(dst.value, src.value, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memset" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                        return self.rewrite_memset(dst.value, fill.value, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memchr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(buf), Some(ch), Some(_bytes)) = (it.next(), it.next(), it.next()) {
+                        let needle = char_assignment_value_to_string(ch.value);
+                        return strchr_expr(buf.value, needle);
+                    }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
 
@@ -3246,7 +3601,7 @@ impl Walker {
                 if let Some(mangled) = self.static_renames.get(name) {
                     ident(mangled)
                 } else if name == "NULL" {
-                    expr(ExprKind::Lit(Literal::Int(0)))
+                    expr(ExprKind::Lit(Literal::Null))
                 } else if let Some(value) = self.enum_constants.get(name) {
                     expr(ExprKind::Lit(Literal::Int(*value)))
                 } else if self.address_taken.contains(name) {
@@ -3493,6 +3848,32 @@ impl Walker {
         }
     }
 
+    fn alignof_struct_union(&self, text: &str) -> i64 {
+        let tag = if let Some(t) = text.strip_prefix("struct ") {
+            t.trim()
+        } else if let Some(t) = text.strip_prefix("union ") {
+            t.trim()
+        } else {
+            text.trim()
+        };
+        let field_types = match self.struct_field_types.get(tag) {
+            Some(field_types) => field_types,
+            None => return 0,
+        };
+        field_types
+            .values()
+            .map(|field_type| {
+                let nested = self.alignof_struct_union(field_type);
+                if nested > 0 {
+                    nested
+                } else {
+                    alignof_from_type_text(field_type)
+                }
+            })
+            .max()
+            .unwrap_or(1)
+    }
+
     fn sizeof_from_rule(&self, pair: &Pair<Rule>) -> i64 {
         match pair.as_rule() {
             Rule::sizeof_expression => {
@@ -3608,6 +3989,81 @@ impl Walker {
         }
     }
 
+    fn alignof_from_rule(&self, pair: &Pair<Rule>) -> i64 {
+        match pair.as_rule() {
+            Rule::alignof_expression => {
+                for inner in pair.clone().into_inner() {
+                    return self.alignof_from_rule(&inner);
+                }
+                8
+            }
+            Rule::cast_expression => {
+                let mut inners = pair.clone().into_inner();
+                if let Some(first) = inners.next() {
+                    if first.as_rule() == Rule::type_name {
+                        return self.alignof_from_rule(&first);
+                    }
+                }
+                alignof_from_type_text(pair.as_str().trim())
+            }
+            Rule::type_name
+            | Rule::declaration_specifiers
+            | Rule::type_specifier
+            | Rule::type_specifier_strict => {
+                let text = pair.as_str().trim();
+                if let Some(ty) = self.var_types.get(text) {
+                    let nested = self.alignof_struct_union(ty);
+                    return if nested > 0 {
+                        nested
+                    } else {
+                        alignof_from_type_text(ty)
+                    };
+                }
+                if let Some(align) = self.alignof_from_expr_text(text) {
+                    return align;
+                }
+                let nested = self.alignof_struct_union(text);
+                if nested > 0 {
+                    return nested;
+                }
+                alignof_from_type_text(text)
+            }
+            Rule::unary_expression
+            | Rule::postfix_expression
+            | Rule::primary_expression
+            | Rule::expression
+            | Rule::assignment_expression => {
+                let text = pair.as_str().trim();
+                let text = text.trim_start_matches('(').trim_end_matches(')').trim();
+                if text.starts_with('\'') {
+                    return 1;
+                }
+                if text.starts_with('"') {
+                    return 1;
+                }
+                if let Some(ty) = self.var_types.get(text) {
+                    let nested = self.alignof_struct_union(ty);
+                    return if nested > 0 {
+                        nested
+                    } else {
+                        alignof_from_type_text(ty)
+                    };
+                }
+                if let Some(align) = self.alignof_from_expr_text(text) {
+                    return align;
+                }
+                for inner in pair.clone().into_inner() {
+                    let align = self.alignof_from_rule(&inner);
+                    if align != 8 || text.contains('*') || text.contains("double") {
+                        return align;
+                    }
+                }
+                alignof_from_type_text(text)
+            }
+            _ => alignof_from_type_text(pair.as_str().trim()),
+        }
+    }
+
     fn sizeof_indexed_expr(&self, base_name: &str, ty: &str, dims_used: usize) -> i64 {
         let base_size = sizeof_from_type_text(ty);
         let total_size = self.var_sizes.get(base_name).copied().unwrap_or(base_size);
@@ -3692,6 +4148,59 @@ impl Walker {
         None
     }
 
+    fn alignof_from_expr_text(&self, text: &str) -> Option<i64> {
+        let text = text.trim();
+        let text = text
+            .strip_suffix("++")
+            .or_else(|| text.strip_suffix("--"))
+            .map(str::trim)
+            .unwrap_or(text);
+        if let Some(ty) = self.var_types.get(text) {
+            let nested = self.alignof_struct_union(ty);
+            let base = if nested > 0 {
+                nested
+            } else {
+                alignof_from_type_text(ty)
+            };
+            return Some(self.var_alignments.get(text).copied().unwrap_or(base).max(base));
+        }
+        if let Some((_, rhs)) = text.rsplit_once(',') {
+            return self.alignof_from_expr_text(rhs.trim());
+        }
+        if text.parse::<f64>().is_ok() && text.contains('.') {
+            return Some(8);
+        }
+        if text.parse::<i64>().is_ok() {
+            return Some(4);
+        }
+        if let Some(base_name) = text.split('[').next().map(|s| s.trim()) {
+            if base_name != text {
+                if let Some(ty) = self.var_types.get(base_name) {
+                    let nested = self.alignof_struct_union(ty);
+                    return Some(if nested > 0 {
+                        nested
+                    } else {
+                        alignof_from_type_text(ty)
+                    });
+                }
+            }
+        }
+        if let Some((object_text, _)) = text.rsplit_once("->").or_else(|| text.rsplit_once('.')) {
+            let object_name = object_text
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .next_back()
+                .unwrap_or("")
+                .trim();
+            if let Some(object_type) = self.var_types.get(object_name) {
+                let nested = self.alignof_struct_union(object_type.trim_end_matches('*').trim());
+                if nested > 0 {
+                    return Some(nested);
+                }
+            }
+        }
+        None
+    }
+
     fn sizeof_member_expr_text(&self, text: &str) -> Option<i64> {
         let (object_text, field_text) = text.rsplit_once("->").or_else(|| text.rsplit_once('.'))?;
         let field_name = field_text
@@ -3763,8 +4272,27 @@ fn sizeof_from_type_text(text: &str) -> i64 {
     }
 }
 
+fn alignof_from_type_text(text: &str) -> i64 {
+    let t = normalized_c_type_name(text);
+    let t = t.split('[').next().unwrap_or(t.as_str()).trim();
+    if t.contains('*') {
+        return 8;
+    }
+    match t {
+        "char" | "int8_t" | "uint8_t" | "_Bool" | "bool" => 1,
+        "short" | "int16_t" | "uint16_t" => 2,
+        "int" | "float" | "int32_t" | "uint32_t" => 4,
+        "long" | "double" | "long long" | "int64_t" | "uint64_t" | "size_t" | "ssize_t"
+        | "ptrdiff_t" => 8,
+        "long double" => 16,
+        "void" => 1,
+        _ => 8,
+    }
+}
+
 fn normalized_c_type_name(text: &str) -> String {
-    let t = text
+    let stripped = strip_alignment_specifiers(text);
+    let t = stripped
         .replace("const ", "")
         .replace("volatile ", "")
         .replace("static ", "")
@@ -3781,6 +4309,52 @@ fn normalized_c_type_name(text: &str) -> String {
         .to_string()
 }
 
+
+fn strip_alignment_specifiers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &text[index..];
+        let marker = if rest.starts_with("_Alignas(") {
+            Some("_Alignas(")
+        } else if rest.starts_with("alignas(") {
+            Some("alignas(")
+        } else {
+            None
+        };
+        if let Some(prefix) = marker {
+            index += prefix.len();
+            let mut depth = 1usize;
+            while index < bytes.len() && depth > 0 {
+                match bytes[index] as char {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                index += 1;
+            }
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            continue;
+        }
+        out.push(bytes[index] as char);
+        index += 1;
+    }
+    out
+}
+
+fn explicit_alignment_value(text: &str) -> Option<i64> {
+    ["_Alignas(", "alignas("]
+        .into_iter()
+        .find_map(|marker| {
+            let start = text.find(marker)? + marker.len();
+            let rest = &text[start..];
+            let end = rest.find(')')?;
+            rest[..end].trim().parse::<i64>().ok()
+        })
+}
 /// `strchr(s, needle_str)` — find first occurrence, return suffix or null.
 fn strchr_expr(s: Expression, needle: Expression) -> Expression {
     if is_putchar_zero_call(&needle) {
@@ -4016,14 +4590,89 @@ fn is_putchar_zero_call(e: &Expression) -> bool {
     matches!(args[0].value.kind, ExprKind::Lit(Literal::Int(0)))
 }
 
+fn is_zero_int_expr(e: &Expression) -> bool {
+    matches!(e.kind, ExprKind::Lit(Literal::Int(0)))
+}
+
+fn base_ident_name(value: &Expression) -> Option<String> {
+    match &value.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Index { object, .. } => base_ident_name(object),
+        ExprKind::Object(props) => props.iter().find_map(|prop| {
+            let ObjectProperty::KeyValue { key, value } = prop else {
+                return None;
+            };
+            let ExprKind::Lit(Literal::Str(field)) = &key.kind else {
+                return None;
+            };
+            if field == CARRAY_BASE_KEY {
+                base_ident_name(value)
+            } else {
+                None
+            }
+        }),
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            if field == "substring" || field == "slice" {
+                base_ident_name(object)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn char_buffer_target_offset(value: &Expression) -> Option<(String, Expression)> {
+    match &value.kind {
+        ExprKind::Ident(name) => Some((name.clone(), expr(ExprKind::Lit(Literal::Int(0))))),
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            if (field != "substring" && field != "slice") || args.is_empty() {
+                return None;
+            }
+            let ExprKind::Ident(base) = &object.kind else {
+                return None;
+            };
+            Some((base.clone(), args[0].value.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn concat_sequence_to_string(mut pieces: Vec<Expression>) -> Expression {
+    if pieces.is_empty() {
+        return expr(ExprKind::Lit(Literal::Str(String::new())));
+    }
+    let mut current = pieces.remove(0);
+    for piece in pieces {
+        current = expr(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(current),
+            right: Box::new(piece),
+        });
+    }
+    current
+}
+
 fn char_pointer_offset_from_init(init: &Option<Expression>) -> Option<(String, Expression)> {
-    let ExprKind::Call { callee, args, .. } = &init.as_ref()?.kind else {
+    let init_expr = init.as_ref()?;
+    let candidate = if let ExprKind::Ternary { then, .. } = &init_expr.kind {
+        then.as_ref()
+    } else {
+        init_expr
+    };
+    let ExprKind::Call { callee, args, .. } = &candidate.kind else {
         return None;
     };
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
-    if field != "substring" || args.len() != 1 {
+    if (field != "substring" && field != "slice") || args.len() != 1 {
         return None;
     }
     let ExprKind::Ident(base) = &object.kind else {
@@ -4032,8 +4681,30 @@ fn char_pointer_offset_from_init(init: &Option<Expression>) -> Option<(String, E
     Some((base.clone(), args[0].value.clone()))
 }
 
+fn carray_base_expr(value: &Expression) -> Option<Expression> {
+    let ExprKind::Object(props) = &value.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return None;
+        };
+        let ExprKind::Lit(Literal::Str(field)) = &key.kind else {
+            return None;
+        };
+        if field == CARRAY_BASE_KEY {
+            Some(value.clone())
+        } else {
+            None
+        }
+    })
+}
+
 fn char_assignment_value_to_string(value: Expression) -> Expression {
     if let ExprKind::Lit(Literal::Int(code)) = &value.kind {
+        if *code == 0 {
+            return expr(ExprKind::Lit(Literal::Str(String::new())));
+        }
         if let Some(ch) = char::from_u32(*code as u32) {
             return expr(ExprKind::Lit(Literal::Str(ch.to_string())));
         }

@@ -125,6 +125,8 @@ uses_normalize_class = false
 "RAND_MAX" = 2147483647
 "EOF"    = -1
 "NULL"   = 0
+"EXIT_SUCCESS" = 0
+"EXIT_FAILURE" = 1
 
 [namespaces]
 use_dotnet = false

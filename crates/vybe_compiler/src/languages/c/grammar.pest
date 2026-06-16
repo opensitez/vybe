@@ -21,6 +21,7 @@ program = { SOI ~ top_level_item* ~ EOI }
 top_level_item = _{
     preproc_directive
     | function_definition
+    | static_assert_statement
     | declaration
     | ";"
 }
@@ -67,6 +68,10 @@ type_qualifier = @{
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
+alignment_specifier = {
+    ("_Alignas" | "alignas") ~ "(" ~ (type_name | assignment_expression) ~ ")"
+}
+
 struct_or_union_spec = {
     ("struct" | "union") ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
 }
@@ -106,8 +111,8 @@ type_specifier = {
 // We ban a typedef_name from following a strict specifier to prevent greedily
 // consuming the declarator name.
 declaration_specifiers = {
-    (type_qualifier | "typedef")+ ~ typedef_name
-    | (type_qualifier | "typedef")* ~ type_specifier_strict ~ (type_qualifier | type_specifier_strict)*
+    (type_qualifier | alignment_specifier | "typedef")+ ~ typedef_name
+    | (type_qualifier | alignment_specifier | "typedef")* ~ type_specifier_strict ~ (type_qualifier | alignment_specifier | type_specifier_strict)*
     | typedef_name
 }
 
@@ -181,6 +186,7 @@ function_definition = {
 statement = {
     compound_statement
     | labeled_statement
+    | static_assert_statement
     | if_statement
     | switch_statement
     | while_statement
@@ -197,6 +203,10 @@ statement = {
 }
 
 empty_statement = { ";" }
+static_assert_statement = {
+    ("_Static_assert" | "static_assert")
+    ~ "(" ~ assignment_expression ~ "," ~ string_literal ~ ")" ~ ";"
+}
 compound_statement = { "{" ~ statement* ~ "}" }
 
 labeled_statement = {
@@ -270,6 +280,7 @@ binary_op = @{
 
 unary_expression = {
     sizeof_expression
+    | alignof_expression
     | prefix_op ~ unary_expression
     | cast_expression
     | postfix_expression
@@ -278,6 +289,10 @@ prefix_op = @{ "++" | "--" | "+" | "-" | "!" | "~" | "*" | "&" }
 
 sizeof_expression = {
     "sizeof" ~ ("(" ~ type_name ~ ")" | unary_expression)
+}
+
+alignof_expression = {
+    ("_Alignof" | "alignof") ~ ("(" ~ type_name ~ ")" | unary_expression)
 }
 
 cast_expression = {
@@ -365,6 +380,8 @@ type_keyword_word = _{
 keyword = _{
     ("if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
     | "break" | "continue" | "return" | "goto" | "sizeof" | "typedef"
+    | "_Alignas" | "alignas" | "_Alignof" | "alignof"
+    | "_Static_assert" | "static_assert"
     | "struct" | "union" | "enum" | "const" | "volatile" | "register"
     | "static" | "extern" | "auto" | "inline" | "restrict" | "true" | "false")
     ~ !(ASCII_ALPHANUMERIC | "_")
