@@ -4365,19 +4365,28 @@ impl Compiler {
                     }
 
                     if self.profile.name == "c" {
-                        match canon_type.as_str() {
+                        let c_cast = canon_type.trim();
+                        match c_cast {
                             "double" | "float" => {
                                 self.compile_expr(inner)?;
                                 let num = self.import("ecma:number", "Number");
                                 self.emit_host_call(num, 1);
                                 return Ok(());
                             }
-                            "char" | "uint8" | "int16" | "int" | "long" | "uint32" => {
+                            "char"
+                            | "uint8"
+                            | "int16"
+                            | "int"
+                            | "long"
+                            | "uint32"
+                            | "unsigned"
+                            | "unsigned int"
+                            | "unsigned long" => {
                                 self.compile_expr(inner)?;
                                 let num = self.import("ecma:number", "Number");
                                 self.emit_host_call(num, 1);
                                 self.emit(Op::F64_TRUNC);
-                                match canon_type.as_str() {
+                                match c_cast {
                                     "uint8" | "char" => {
                                         self.emit_c_unsigned_wrap(256.0);
                                     }
@@ -4385,7 +4394,7 @@ impl Compiler {
                                         self.emit_c_unsigned_wrap(65_536.0);
                                         self.emit_c_signed_wrap_from_unsigned(32_768.0, 65_536.0);
                                     }
-                                    "uint32" => {
+                                    "uint32" | "unsigned" | "unsigned int" | "unsigned long" => {
                                         self.emit_c_unsigned_wrap(4_294_967_296.0);
                                     }
                                     "int" => {

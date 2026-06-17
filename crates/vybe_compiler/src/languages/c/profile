@@ -83,21 +83,59 @@ uses_normalize_class = false
 # ── math.h ───────────────────────────────────────────────────────────────────
 "sqrt"     = { emit = "opcode:f64_sqrt",   min_args = 1, max_args = 1 }
 "fabs"     = { emit = "opcode:f64_abs",    min_args = 1, max_args = 1 }
+"fabsf"    = { emit = "opcode:f64_abs",    min_args = 1, max_args = 1 }
 "floor"    = { emit = "opcode:f64_floor",  min_args = 1, max_args = 1 }
+"floorf"   = { emit = "opcode:f64_floor",  min_args = 1, max_args = 1 }
 "ceil"     = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
+"ceilf"    = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
+"trunc"    = { emit = "opcode:f64_trunc",  min_args = 1, max_args = 1 }
+"truncf"   = { emit = "opcode:f64_trunc",  min_args = 1, max_args = 1 }
 "round"    = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+"roundf"   = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
 "pow"      = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
-"fmod"     = { emit = "host:ecma:math:fmod",       min_args = 2, max_args = 2 }
+"powf"     = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+"fmod"     = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
+"fmodf"    = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
 "sin"      = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
+"sinf"     = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
 "cos"      = { emit = "host:ecma:math:cos",  min_args = 1, max_args = 1 }
+"cosf"     = { emit = "host:ecma:math:cos",  min_args = 1, max_args = 1 }
 "tan"      = { emit = "host:ecma:math:tan",  min_args = 1, max_args = 1 }
+"tanf"     = { emit = "host:ecma:math:tan",  min_args = 1, max_args = 1 }
 "asin"     = { emit = "host:ecma:math:asin", min_args = 1, max_args = 1 }
+"asinf"    = { emit = "host:ecma:math:asin", min_args = 1, max_args = 1 }
 "acos"     = { emit = "host:ecma:math:acos", min_args = 1, max_args = 1 }
+"acosf"    = { emit = "host:ecma:math:acos", min_args = 1, max_args = 1 }
 "atan"     = { emit = "host:ecma:math:atan", min_args = 1, max_args = 1 }
+"atanf"    = { emit = "host:ecma:math:atan", min_args = 1, max_args = 1 }
 "atan2"    = { emit = "host:ecma:math:atan2", min_args = 2, max_args = 2 }
+"atan2f"   = { emit = "host:ecma:math:atan2", min_args = 2, max_args = 2 }
 "log"      = { emit = "host:ecma:math:log",  min_args = 1, max_args = 1 }
+"logf"     = { emit = "host:ecma:math:log",  min_args = 1, max_args = 1 }
 "log10"    = { emit = "host:ecma:math:log10", min_args = 1, max_args = 1 }
+"log10f"   = { emit = "host:ecma:math:log10", min_args = 1, max_args = 1 }
+"log2"     = { emit = "host:ecma:math:log2", min_args = 1, max_args = 1 }
+"log2f"    = { emit = "host:ecma:math:log2", min_args = 1, max_args = 1 }
 "exp"      = { emit = "host:ecma:math:exp",  min_args = 1, max_args = 1 }
+"expf"     = { emit = "host:ecma:math:exp",  min_args = 1, max_args = 1 }
+"sinh"     = { emit = "host:ecma:math:sinh", min_args = 1, max_args = 1 }
+"sinhf"    = { emit = "host:ecma:math:sinh", min_args = 1, max_args = 1 }
+"cosh"     = { emit = "host:ecma:math:cosh", min_args = 1, max_args = 1 }
+"coshf"    = { emit = "host:ecma:math:cosh", min_args = 1, max_args = 1 }
+"tanh"     = { emit = "host:ecma:math:tanh", min_args = 1, max_args = 1 }
+"tanhf"    = { emit = "host:ecma:math:tanh", min_args = 1, max_args = 1 }
+"hypot"    = { emit = "host:ecma:math:hypot", min_args = 2, max_args = 2 }
+"hypotf"   = { emit = "host:ecma:math:hypot", min_args = 2, max_args = 2 }
+"cbrt"     = { emit = "host:ecma:math:cbrt", min_args = 1, max_args = 1 }
+"cbrtf"    = { emit = "host:ecma:math:cbrt", min_args = 1, max_args = 1 }
+"log1p"    = { emit = "host:ecma:math:log1p", min_args = 1, max_args = 1 }
+"log1pf"   = { emit = "host:ecma:math:log1p", min_args = 1, max_args = 1 }
+"expm1"    = { emit = "host:ecma:math:expm1", min_args = 1, max_args = 1 }
+"expm1f"   = { emit = "host:ecma:math:expm1", min_args = 1, max_args = 1 }
+"min"      = { emit = "opcode:f64_min",  min_args = 2, max_args = 2 }
+"max"      = { emit = "opcode:f64_max",  min_args = 2, max_args = 2 }
+
+# Special math functions
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods (rare in C; structs carry no methods)

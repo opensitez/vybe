@@ -42,7 +42,8 @@ preproc_body = _{
 define_directive = !{
     "define" ~ ident_name ~ define_params? ~ define_value?
 }
-define_params = { "(" ~ (ident_name ~ ("," ~ ident_name)*)? ~ ")" }
+define_params = { "(" ~ (define_param ~ ("," ~ define_param)*)? ~ ")" }
+define_param = { ident_name | "..." }
 define_value  = @{ (line_continuation | !("\n" | "\r") ~ ANY)* }
 
 include_directive = !{
@@ -50,13 +51,14 @@ include_directive = !{
 }
 include_target = @{ ("<" ~ (!(">" | "\n") ~ ANY)* ~ ">") | ("\"" ~ (!("\"" | "\n") ~ ANY)* ~ "\"") }
 
-other_directive = @{ ident_name ~ (line_continuation | !("\n" | "\r") ~ ANY)* }
+other_directive = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ (line_continuation | !("\n" | "\r") ~ ANY)* }
 
 // ── Type specifiers ───────────────────────────────────────────────────────
 
 type_keyword = @{
     ("void" | "char" | "short" | "int" | "long" | "float" | "double"
-    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t"
+    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t" | "wchar_t"
+    | "complex" | "_Complex"
     | "int8_t" | "int16_t" | "int32_t" | "int64_t"
     | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
     ~ !(ASCII_ALPHANUMERIC | "_")
@@ -64,7 +66,8 @@ type_keyword = @{
 
 type_qualifier = @{
     ("const" | "volatile" | "register" | "static" | "extern" | "auto"
-    | "inline" | "restrict" | "_Atomic")
+    | "inline" | "restrict" | "_Atomic" | "_Noreturn" | "noreturn"
+    | "_Thread_local" | "thread_local")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
@@ -80,10 +83,9 @@ struct_or_union_spec = {
     ("struct" | "union") ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
 }
 
-struct_member = {
-    declaration_specifiers ~ struct_declarator_list ~ ";"
-}
-struct_declarator_list = { declarator ~ ("," ~ declarator)* }
+struct_member = { declaration_specifiers ~ struct_declarator_list? ~ ";" }
+struct_declarator_list = { struct_declarator ~ ("," ~ struct_declarator)* }
+struct_declarator = { declarator ~ (":" ~ assignment_expression)? }
 
 enum_spec = {
     "enum" ~ ident_name? ~ ("{" ~ enumerator_list? ~ "}")?
@@ -285,13 +287,18 @@ binary_op = @{
 }
 
 unary_expression = {
-    sizeof_expression
+    va_arg_expression
+    | sizeof_expression
     | alignof_expression
     | offsetof_expression
     | generic_expression
     | prefix_op ~ unary_expression
+    | compound_literal
     | cast_expression
     | postfix_expression
+}
+va_arg_expression = {
+    "va_arg" ~ "(" ~ assignment_expression ~ "," ~ type_name ~ ")"
 }
 prefix_op = @{ "++" | "--" | "+" | "-" | "!" | "~" | "*" | "&" }
 
@@ -319,6 +326,9 @@ generic_assoc = {
 cast_expression = {
     "(" ~ type_name ~ ")" ~ unary_expression
 }
+    compound_literal = {
+        "(" ~ type_name ~ ")" ~ initializer_list
+    }
 type_name = { declaration_specifiers ~ abstract_declarator? }
 
 postfix_expression = {
@@ -349,6 +359,8 @@ primary_expression = {
 literal = {
     float_literal
     | int_literal
+    | wide_char_literal
+    | wide_string_literal
     | char_literal
     | string_literal
     | bool_literal
@@ -381,10 +393,12 @@ c_escape = @{
     | ANY)
 }
 char_literal = @{ "'" ~ (c_escape | (!"'" ~ ANY))+ ~ "'" }
+wide_char_literal = @{ "L" ~ char_literal }
 
 // Adjacent string literals concatenate in C; the walker joins them.
 c_str_char = @{ c_escape | (!("\"" | "\\") ~ ANY) }
 string_literal = @{ ("\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
+wide_string_literal = @{ ("L" ~ "\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
 
 // ── Identifiers & keywords ─────────────────────────────────────────────────
 
@@ -392,7 +406,8 @@ ident_name = @{ !keyword ~ !type_keyword_word ~ (ASCII_ALPHA | "_") ~ (ASCII_ALP
 
 type_keyword_word = _{
     ("void" | "char" | "short" | "int" | "long" | "float" | "double"
-    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t"
+    | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t" | "wchar_t"
+    | "complex" | "_Complex"
     | "int8_t" | "int16_t" | "int32_t" | "int64_t"
     | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
     ~ !(ASCII_ALPHANUMERIC | "_")
@@ -403,6 +418,7 @@ keyword = _{
     | "break" | "continue" | "return" | "goto" | "sizeof" | "typedef"
     | "_Alignas" | "alignas" | "_Alignof" | "alignof"
     | "_Generic"
+    | "_Noreturn" | "noreturn" | "_Thread_local" | "thread_local" | "_Complex" | "complex"
     | "__typeof__" | "typeof"
     | "_Static_assert" | "static_assert"
     | "struct" | "union" | "enum" | "const" | "volatile" | "register"

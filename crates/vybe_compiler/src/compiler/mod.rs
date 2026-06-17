@@ -5165,6 +5165,26 @@ impl Compiler {
                 )?;
             } else {
                 self.compile_expr_with_value_copy(init_expr)?;
+                let effective_type_hint = resolved_type_hint.or(decl.type_hint.as_deref());
+                let skip_c_coerce = if self.profile.name == "c" {
+                    let is_array_type = effective_type_hint
+                        .map(|hint| hint.contains('['))
+                        .unwrap_or(false)
+                        || decl.array_bounds.is_some();
+                    let is_char_string_init = matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
+                        && effective_type_hint
+                            .map(|hint| {
+                                let lower = hint.to_ascii_lowercase();
+                                lower.contains("char")
+                            })
+                            .unwrap_or(false);
+                    is_array_type || is_char_string_init
+                } else {
+                    false
+                };
+                if !skip_c_coerce {
+                    self.coerce_c_value_for_type_hint(effective_type_hint)?;
+                }
                 self.maybe_promote_pascal_array_literal_to_set(
                     decl.type_hint.as_deref(),
                     init_expr,
@@ -5250,6 +5270,83 @@ impl Compiler {
             .and_then(Self::vb_fixed_string_len)
         {
             self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
+        }
+        Ok(())
+    }
+
+    fn coerce_c_value_for_type_hint(&mut self, type_hint: Option<&str>) -> Result<(), String> {
+        let Some(type_hint) = type_hint else {
+            return Ok(());
+        };
+        let normalized = Self::normalize_type_hint(type_hint);
+        match normalized.as_str() {
+            "bool" | "_bool" => {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            }
+            "char" | "uint8" | "unsigned char" | "signed char" | "byte" => {
+                self.emit(Op::F64_TRUNC);
+                self.emit_const(Value::F64(256.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit_const(Value::F64(256.0));
+                self.emit(Op::F64_ADD);
+                self.emit_const(Value::F64(256.0));
+                self.compile_binop(&BinOp::Mod);
+            }
+            "int16" => {
+                self.emit(Op::F64_TRUNC);
+                self.emit_const(Value::F64(65_536.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit_const(Value::F64(65_536.0));
+                self.emit(Op::F64_ADD);
+                self.emit_const(Value::F64(65_536.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit(Op::DUP);
+                self.emit_const(Value::F64(32_768.0));
+                self.emit(Op::F64_GE);
+                let line = self.line;
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::F64(65_536.0));
+                self.emit(Op::F64_SUB);
+                self.chunk().emit_else(line);
+                self.chunk().emit_end(line);
+            }
+            "uint32" | "unsigned int" => {
+                self.emit(Op::F64_TRUNC);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.emit(Op::F64_ADD);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.compile_binop(&BinOp::Mod);
+            }
+            "int" => {
+                self.emit(Op::F64_TRUNC);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.emit(Op::F64_ADD);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit(Op::DUP);
+                self.emit_const(Value::F64(2_147_483_648.0));
+                self.emit(Op::F64_GE);
+                let line = self.line;
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::F64(4_294_967_296.0));
+                self.emit(Op::F64_SUB);
+                self.chunk().emit_else(line);
+                self.chunk().emit_end(line);
+            }
+            "float" | "single" => {
+                self.emit_const(Value::F64(10_000_000.0));
+                self.compile_binop(&BinOp::Mul);
+                let idx = self.import("ecma:math", "trunc");
+                self.emit_host_call(idx, 1);
+                self.emit_const(Value::F64(10_000_000.0));
+                self.compile_binop(&BinOp::Div);
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -10776,6 +10873,27 @@ impl Compiler {
 
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr_with_value_copy(init_expr)?;
+                    let effective_type_hint =
+                        resolved_type_hint.as_deref().or(decl.type_hint.as_deref());
+                    let skip_c_coerce = if self.profile.name == "c" {
+                        let is_array_type = effective_type_hint
+                            .map(|hint| hint.contains('['))
+                            .unwrap_or(false)
+                            || decl.array_bounds.is_some();
+                        let is_char_string_init = matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
+                            && effective_type_hint
+                                .map(|hint| {
+                                    let lower = hint.to_ascii_lowercase();
+                                    lower.contains("char")
+                                })
+                                .unwrap_or(false);
+                        is_array_type || is_char_string_init
+                    } else {
+                        false
+                    };
+                    if !skip_c_coerce {
+                        self.coerce_c_value_for_type_hint(effective_type_hint)?;
+                    }
                     self.maybe_promote_pascal_array_literal_to_set(
                         decl.type_hint.as_deref(),
                         init_expr,
@@ -11138,6 +11256,8 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
+                self.coerce_c_value_for_type_hint(stored_type_hint.as_deref())?;
                 self.emit_var_set(name);
             }
             ExprKind::StaticAccess { class, member } => {
