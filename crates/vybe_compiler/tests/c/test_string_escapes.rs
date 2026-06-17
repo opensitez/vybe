@@ -25,7 +25,7 @@ c_cases! {
     hex_escape_in_string_produces_character => { body: "puts(\"\\x41\");\nreturn 0;", expect: ["A"] },
     octal_escape_in_string_produces_character => { body: "puts(\"\\101\");\nreturn 0;", expect: ["A"] },
     escaped_null_character_terminates_visible_length => { body: "printf(\"%d\\n\", strlen(\"a\\0b\"));\nreturn 0;", expect: ["1"] },
-    escaped_backslash_and_quote_can_coexist => { body: "puts(\"\\\\\"\");\nreturn 0;", expect: ["\\\""] },
+    escaped_backslash_and_quote_can_coexist => { body: "puts(\"\\\\\\\"\");\nreturn 0;", expect: ["\\\""] },
     multiple_escaped_characters_keep_order => { body: "puts(\"A\\nB\\tC\");\nreturn 0;", expect: ["A", "B\tC"] },
     char_array_with_escape_sequence_prints_correctly => { body: "char text[] = \"line\\nnext\"; puts(text);\nreturn 0;", expect: ["line", "next"] },
     escaped_tab_counts_as_single_character_in_strlen => { body: "printf(\"%d\\n\", strlen(\"a\\tb\"));\nreturn 0;", expect: ["3"] },

@@ -2047,7 +2047,9 @@ impl Compiler {
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
-                    self.emit_autoderef_pointer_cell();
+                    if !Self::is_pointer_runtime_field(field) {
+                        self.emit_autoderef_pointer_cell();
+                    }
                 }
 
                 let dotnet_instance_property =
@@ -2914,15 +2916,90 @@ impl Compiler {
                         self.chunk().emit_end(lookup_line);
                         return Ok(());
                     }
-                    self.compile_expr(object)?;
-                    self.emit_autoderef_pointer_cell();
-                    self.compile_array_index_operand_for_owner(object, index)?;
-                    if self.profile.negative_index_wraps {
-                        self.emit_negative_index_wrap();
-                    }
-                    {
-                        let l = self.line;
-                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    let is_c_pointer_base_index = if self.profile.name == "c" {
+                        match (&object.kind, &index.kind) {
+                            (
+                                ExprKind::Member {
+                                    object: base_owner,
+                                    field: base_field,
+                                    ..
+                                },
+                                ExprKind::Member {
+                                    object: idx_owner,
+                                    field: idx_field,
+                                    ..
+                                },
+                            ) => {
+                                matches!(
+                                    (&base_owner.kind, &idx_owner.kind, base_field.as_str(), idx_field.as_str()),
+                                    (ExprKind::Ident(a), ExprKind::Ident(b), "__base", "__idx") if a == b
+                                )
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_c_pointer_base_index {
+                        self.compile_expr(object)?;
+                        let obj_tmp = self.define_local("__pointer_index_get_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_array_index_operand_for_owner(object, index)?;
+                        if self.profile.negative_index_wraps {
+                            self.emit_negative_index_wrap();
+                        }
+                        let key_tmp = self.define_local("__pointer_index_get_key");
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit(Op::REF_IS_OBJECT);
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        let kind_key = self.str_const("__ref_kind");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::STRUCT_GET, kind_key);
+                        self.emit_const(Value::String(Arc::from("cell")));
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        }
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+
+                        let line = self.line;
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.chunk().emit_end(line);
+
+                        let line = self.line;
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.chunk().emit_end(line);
+                    } else {
+                        self.compile_expr(object)?;
+                        self.emit_autoderef_pointer_cell();
+                        self.compile_array_index_operand_for_owner(object, index)?;
+                        if self.profile.negative_index_wraps {
+                            self.emit_negative_index_wrap();
+                        }
+                        {
+                            let l = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, l);
+                        }
                     }
                 }
             }

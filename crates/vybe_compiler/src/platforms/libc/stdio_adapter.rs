@@ -4,14 +4,104 @@
 //! emitter/sprintf.rs — not reimplemented here).
 //! puts → wasi:cli:log via the "print" profile emit.
 
-use crate::ast::{Argument, ExprKind, Expression, Literal};
+use crate::ast::{
+    Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, ObjectProperty,
+    Param, PassBy, Statement, StmtKind, UnaryOp, VarDeclKind, VarDeclarator,
+};
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
 }
 
+fn s(kind: StmtKind) -> Statement {
+    Statement::new(kind)
+}
+
 fn ident(name: &str) -> Expression {
     e(ExprKind::Ident(name.to_string()))
+}
+
+fn member(object: Expression, field: &str) -> Expression {
+    e(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn call_member(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
+    call(member(object, field), args)
+}
+
+fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
+    e(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
+    e(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then),
+        else_: Box::new(else_),
+    })
+}
+
+fn var_decl(name: &str, init: Expression) -> Statement {
+    s(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
+fn if_stmt(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+    s(StmtKind::If { cond, then_body, elifs: Vec::new(), else_body })
+}
+
+fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
+    s(StmtKind::While { cond, body, else_body: None })
+}
+
+fn ret(value: Expression) -> Statement {
+    s(StmtKind::Return(Some(value)))
+}
+
+fn expr_stmt(value: Expression) -> Statement {
+    s(StmtKind::Expr(value))
+}
+
+fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
+    s(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params: params
+            .into_iter()
+            .map(|param| Param {
+                name: param.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            })
+            .collect(),
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
@@ -320,4 +410,246 @@ pub fn sscanf_literal(
     } else {
         e(ExprKind::Sequence(stmts))
     }
+}
+
+// ── stdin token reader (libc surface, WASI-backed) ──────────────────────────
+// Any libc-targeting language gets real stdin by including these runtime helpers
+// in its prelude. The line-read primitive is the `__libc_readline` builtin, which
+// each profile binds to `intrinsic:readline` → `emitter::io::emit_input` →
+// `wasi:cli/stdin.get-stdin` + `wasi:io/streams.blocking-read`. So the C-visible
+// `scanf`/`getchar`/`fgets` surface is satisfied entirely by WASM/WASI under the
+// hood — no language-specific input host fn.
+
+fn stdin_state() -> Expression {
+    ident("__libc_stdin_state")
+}
+fn stdin_buf() -> Expression {
+    member(stdin_state(), "buf")
+}
+fn stdin_eof() -> Expression {
+    member(stdin_state(), "eof")
+}
+
+/// Runtime prelude statements implementing the WASI-backed stdin token reader.
+/// Prepend these to any libc-targeting module's body.
+pub fn stdin_runtime_helpers() -> Vec<Statement> {
+    let mut out = Vec::new();
+
+    // shared state: { buf: "", eof: 0, allow_blocking: 0 } — mutated via index assignment so the
+    // helpers share one buffer (a bare scalar global reassigned inside a function
+    // would shadow as a local).
+    out.push(s(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("__libc_stdin_state".to_string()),
+            type_hint: None,
+            init: Some(e(ExprKind::Object(vec![
+                ObjectProperty::KeyValue { key: lit_str("buf"), value: lit_str("") },
+                ObjectProperty::KeyValue { key: lit_str("eof"), value: lit_int(0) },
+                ObjectProperty::KeyValue { key: lit_str("allow_blocking"), value: lit_int(0) },
+            ]))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    }));
+
+    // __libc_stdin_set_blocking(flag): opt-in to real blocking stdin reads.
+    out.push(function(
+        "__libc_stdin_set_blocking",
+        vec!["flag"],
+        vec![
+            expr_stmt(assign_expr(member(stdin_state(), "allow_blocking"), ident("flag"))),
+            ret(lit_int(0)),
+        ],
+    ));
+
+    // __libc_stdin_read_line(): one line from WASI stdin via `intrinsic:readline`
+    // (emitter::io::emit_input → wasi:cli/stdin.get-stdin +
+    // wasi:io/streams.blocking-read).
+    //
+    // Default mode is non-blocking EOF for deterministic test/runtime behavior.
+    // Call `__libc_stdin_set_blocking(1)` to opt into real blocking stdin reads.
+    // Returns the line string, or "" when the read yields a non-string
+    // (EOF / stream-error record) so the tokenizer sees a clean EOF.
+    out.push(function(
+        "__libc_stdin_read_line",
+        vec![],
+        vec![
+            if_stmt(
+                bin(BinOp::Eq, member(stdin_state(), "allow_blocking"), lit_int(0)),
+                vec![ret(lit_str(""))],
+                None,
+            ),
+            var_decl("__l", call(ident("__libc_readline"), vec![])),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    e(ExprKind::Unary { op: UnaryOp::Typeof, expr: Box::new(ident("__l")) }),
+                    lit_str("string"),
+                ),
+                vec![ret(ident("__l"))],
+                Some(vec![ret(lit_str(""))]),
+            ),
+        ],
+    ));
+
+    // __libc_stdin_token(): next whitespace-delimited token, or "" at EOF.
+    out.push(function(
+        "__libc_stdin_token",
+        vec![],
+        vec![
+            var_decl("done", lit_int(0)),
+            while_stmt(
+                bin(BinOp::Eq, ident("done"), lit_int(0)),
+                vec![
+                    while_stmt(
+                        bin(
+                            BinOp::And,
+                            bin(BinOp::Gt, member(stdin_buf(), "length"), lit_int(0)),
+                            bin(BinOp::LtEq, call_member(stdin_buf(), "charCodeAt", vec![lit_int(0)]), lit_int(32)),
+                        ),
+                        vec![expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![lit_int(1)])))],
+                    ),
+                    if_stmt(
+                        bin(BinOp::Gt, member(stdin_buf(), "length"), lit_int(0)),
+                        vec![expr_stmt(assign_expr(ident("done"), lit_int(1)))],
+                        Some(vec![
+                            if_stmt(
+                                bin(BinOp::NotEq, stdin_eof(), lit_int(0)),
+                                vec![ret(lit_str(""))],
+                                None,
+                            ),
+                            var_decl("line", call(ident("__libc_stdin_read_line"), vec![])),
+                            if_stmt(
+                                bin(BinOp::Eq, member(ident("line"), "length"), lit_int(0)),
+                                vec![expr_stmt(assign_expr(stdin_eof(), lit_int(1)))],
+                                Some(vec![expr_stmt(assign_expr(
+                                    stdin_buf(),
+                                    bin(BinOp::Add, bin(BinOp::Add, stdin_buf(), ident("line")), lit_str(" ")),
+                                ))]),
+                            ),
+                        ]),
+                    ),
+                ],
+            ),
+            var_decl("i", lit_int(0)),
+            while_stmt(
+                bin(
+                    BinOp::And,
+                    bin(BinOp::Lt, ident("i"), member(stdin_buf(), "length")),
+                    bin(BinOp::Gt, call_member(stdin_buf(), "charCodeAt", vec![ident("i")]), lit_int(32)),
+                ),
+                vec![expr_stmt(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), lit_int(1))))],
+            ),
+            var_decl("tok", call_member(stdin_buf(), "substring", vec![lit_int(0), ident("i")])),
+            expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![ident("i")]))),
+            ret(ident("tok")),
+        ],
+    ));
+
+    // __libc_stdin_char(): next single character, or "" at EOF.
+    out.push(function(
+        "__libc_stdin_char",
+        vec![],
+        vec![
+            while_stmt(
+                bin(
+                    BinOp::And,
+                    bin(BinOp::Eq, member(stdin_buf(), "length"), lit_int(0)),
+                    bin(BinOp::Eq, stdin_eof(), lit_int(0)),
+                ),
+                vec![
+                    var_decl("line", call(ident("__libc_stdin_read_line"), vec![])),
+                    if_stmt(
+                        bin(BinOp::Eq, member(ident("line"), "length"), lit_int(0)),
+                        vec![expr_stmt(assign_expr(stdin_eof(), lit_int(1)))],
+                        Some(vec![expr_stmt(assign_expr(stdin_buf(), bin(BinOp::Add, ident("line"), lit_str("\n"))))]),
+                    ),
+                ],
+            ),
+            if_stmt(
+                bin(BinOp::Eq, member(stdin_buf(), "length"), lit_int(0)),
+                vec![ret(lit_str(""))],
+                None,
+            ),
+            var_decl("ch", call_member(stdin_buf(), "substring", vec![lit_int(0), lit_int(1)])),
+            expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![lit_int(1)]))),
+            ret(ident("ch")),
+        ],
+    ));
+
+    out
+}
+
+/// Lower `scanf(fmt, t1, ...)` (fmt a compile-time literal, targets already
+/// address-stripped) into a sequence that reads conversions from the WASI-backed
+/// stdin token reader, assigns each target, and evaluates to the match count.
+/// Stops at the first failed conversion, per C semantics. `tmp_id` must be unique
+/// per call site to avoid temp-name collisions.
+pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
+    let mut specs: Vec<char> = Vec::new();
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i < chars.len() && chars[i] == '%' {
+            i += 1;
+            continue;
+        }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        while i < chars.len() && matches!(chars[i], 'l' | 'h' | 'L' | 'z' | 'j' | 't') {
+            i += 1;
+        }
+        if i < chars.len() {
+            specs.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    let n_var = format!("__sc_n{tmp_id}");
+    let ok_var = format!("__sc_ok{tmp_id}");
+    let tok_var = format!("__sc_tok{tmp_id}");
+
+    let mut seq: Vec<Expression> = vec![
+        assign_expr(ident(&n_var), lit_int(0)),
+        assign_expr(ident(&ok_var), lit_int(1)),
+    ];
+
+    for (idx, spec) in specs.iter().enumerate() {
+        let Some(target) = targets.get(idx).cloned() else {
+            break;
+        };
+        let reader = if *spec == 'c' { "__libc_stdin_char" } else { "__libc_stdin_token" };
+        seq.push(assign_expr(
+            ident(&tok_var),
+            ternary(ident(&ok_var), call(ident(reader), vec![]), lit_str("")),
+        ));
+        let converted = match spec {
+            'd' | 'u' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]), lit_int(0)),
+            'i' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var)]), lit_int(0)),
+            'x' | 'X' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]), lit_int(0)),
+            'o' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]), lit_int(0)),
+            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => {
+                bin(BinOp::Or, call(ident("parseFloat"), vec![ident(&tok_var)]), lit_float(0.0))
+            }
+            _ => ident(&tok_var),
+        };
+        seq.push(ternary(
+            bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
+            e(ExprKind::Sequence(vec![
+                assign_expr(target, converted),
+                assign_expr(ident(&n_var), bin(BinOp::Add, ident(&n_var), lit_int(1))),
+            ])),
+            assign_expr(ident(&ok_var), lit_int(0)),
+        ));
+    }
+
+    seq.push(ident(&n_var));
+    e(ExprKind::Sequence(seq))
 }

@@ -36,6 +36,12 @@ uses_normalize_class = false
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }
 "putchar"  = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
 
+# Line-read primitive backing the libc stdin token reader (scanf/getchar/fgets).
+# intrinsic:readline → emitter::io::emit_input → wasi:cli/stdin.get-stdin +
+# wasi:io/streams.blocking-read. WASM/WASI under the hood; the libc surface is
+# shared across languages via platforms/libc/stdio_adapter.rs.
+"__libc_readline" = { emit = "intrinsic:readline", min_args = 0, max_args = 0 }
+
 # ── stdio.h extras ───────────────────────────────────────────────────────────
 # `fflush(stdout)` and stream flushes route through the walker's handle-based
 # stdio runtime substrate. `getchar()` still needs a true stdin-backed path.
@@ -163,6 +169,14 @@ uses_normalize_class = false
 "SEEK_SET" = 0
 "SEEK_CUR" = 1
 "SEEK_END" = 2
+"CLOCKS_PER_SEC" = 1000000
+"LC_ALL" = 0
+"SIG_DFL" = 0
+"SIG_IGN" = 1
+"SIGINT" = 2
+"SIGABRT" = 6
+"SIGTERM" = 15
+"SIGUSR1" = 10
 
 [namespaces]
 use_dotnet = false

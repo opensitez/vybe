@@ -19,6 +19,7 @@ mod expressions;
 
 use crate::ast::*;
 use crate::emitter as common;
+use crate::emitter::loops::LoopState;
 use crate::profile::*;
 use crate::scope::Scope;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -251,35 +252,19 @@ struct JsArgumentsBinding {
 
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
-// ════════════════════════════════════════════════════════════════════════════
-
 pub struct Compiler {
-    chunks: Vec<Chunk>,
+    pub(crate) chunks: Vec<Chunk>,
     scopes: Vec<Scope>,
-    current: usize,
+    pub(crate) current: usize,
     loops: Vec<LoopCtx>,
-    loop_states: Vec<common::loops::LoopState>,
-    /// Current label stack depth — incremented on every BLOCK/LOOP, decremented on END.
-    /// Used to compute WASM `br` depth for break/continue.
+    loop_states: Vec<LoopState>,
     label_depth: u32,
-    /// Label depth at the entry of the current function body. RETURN
-    /// must drain back to this — the VM's label_stack is global, and
-    /// leaving function-local BLOCKs on it pollutes the caller's
-    /// br_label depths (caller's `br 0` would land on a stale callee
-    /// BLOCK target). Saved/restored across nested function decls.
     function_label_base: u32,
     pub(crate) line: u32,
     pub(crate) defined_globals: HashSet<String>,
-    /// Canonical names of top-level `const` bindings (JS). Reassigning one
-    /// via `emit_var_set` is a runtime `TypeError`. Block/function-scoped
-    /// const bindings are tracked on the `Local` itself (`is_const`).
-    pub(crate) const_globals: HashSet<String>,
-    /// ECMA-262 strict mode (§11.2.2) of the function currently being
-    /// compiled. Set by a `"use strict"` directive prologue, inherited by
-    /// nested functions, and always on inside class bodies (§15.7). Drives
-    /// strict-only behaviors (undeclared-assignment ReferenceError, etc.).
-    /// Saved/restored around each function-body compilation.
-    pub(crate) in_strict: bool,
+    const_globals: HashSet<String>,
+    in_strict: bool,
+
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
     pub(crate) defined_functions: HashSet<String>,
@@ -3380,6 +3365,10 @@ impl Compiler {
         common::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
     }
 
+    pub(super) fn is_pointer_runtime_field(field: &str) -> bool {
+        matches!(field, "__ref_kind" | "__base" | "__idx" | "__value")
+    }
+
     pub(super) fn emit_autoderef_pointer_cell(&mut self) {
         let obj_slot = self.define_local("__ref_autoderef_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3387,32 +3376,87 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit(Op::REF_IS_OBJECT);
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
+        let obj_line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), obj_line);
+        self.chunk().emit_if(obj_line);
+
+        let kind_key = self.str_const("__ref_kind");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        let kind_key = self.str_const("__ref_kind");
         self.emit_u16(Op::STRUCT_GET, kind_key);
         self.emit_const(Value::String(Arc::from("cell")));
         {
             let line = self.line;
             crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        };
-        let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
+        }
+        let cell_line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), cell_line);
+        self.chunk().emit_if(cell_line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
-        let line = self.line;
-        self.chunk().emit_else(line);
+        self.chunk().emit_else(cell_line);
+
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_end(line);
-        let line = self.line;
-        self.chunk().emit_else(line);
+        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_const(Value::String(Arc::from("carray")));
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        }
+        let carray_line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), carray_line);
+        self.chunk().emit_if(carray_line);
+
+        let base_key = self.str_const("__base");
+        let idx_key = self.str_const("__idx");
+        let base_slot = self.define_local("__ref_carray_base");
+
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_end(line);
+        self.emit_u16(Op::STRUCT_GET, base_key);
+        self.emit_u16(Op::LOCAL_SET, base_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let base_obj_line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), base_obj_line);
+        self.chunk().emit_if(base_obj_line);
+
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_const(Value::String(Arc::from("cell")));
+        {
+            let line = self.line;
+            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        }
+        let base_cell_line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), base_cell_line);
+        self.chunk().emit_if(base_cell_line);
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+        self.chunk().emit_else(base_cell_line);
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::STRUCT_GET, idx_key);
+        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+        self.chunk().emit_end(base_cell_line);
+
+        self.chunk().emit_else(base_obj_line);
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::STRUCT_GET, idx_key);
+        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+        self.chunk().emit_end(base_obj_line);
+
+        self.chunk().emit_else(carray_line);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.chunk().emit_end(carray_line);
+
+        self.chunk().emit_end(cell_line);
+
+        self.chunk().emit_else(obj_line);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.chunk().emit_end(obj_line);
     }
 
     pub(super) fn compile_address_of_expr(&mut self, expr: &Expression) -> Result<(), String> {
@@ -3454,7 +3498,6 @@ impl Compiler {
         Ok(())
     }
 
-    /// Define a local in the current scope AND sync the current chunk's
     /// `local_count` to the new high-water mark.
     ///
     /// Why this exists: helpers in `emitter/` (`emit_invoke_method`,
@@ -4713,6 +4756,16 @@ impl Compiler {
         ) || lower.contains(" delegate")
     }
 
+    fn callable_return_type_hint(type_hint: &str) -> Option<String> {
+        let normalized = Self::normalize_type_hint(type_hint);
+        let return_type = normalized.rsplit_once("->")?.1.trim();
+        if return_type.is_empty() {
+            None
+        } else {
+            Some(return_type.to_string())
+        }
+    }
+
     fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
         if let Some(binding) = self.static_local_binding(name) {
             if let Some(type_hint) = binding.type_hint.as_deref() {
@@ -5463,6 +5516,13 @@ impl Compiler {
                     }
                     if name.eq_ignore_ascii_case("timer") {
                         return Some("Double".into());
+                    }
+                }
+                if let Some(type_hint) = self.lookup_var_type_hint(name) {
+                    if Self::is_callable_type_hint(type_hint) {
+                        if let Some(return_type) = Self::callable_return_type_hint(type_hint) {
+                            return Some(return_type);
+                        }
                     }
                 }
                 self.function_return_types.get(&self.canon(name)).cloned()
@@ -11413,7 +11473,9 @@ impl Compiler {
                 }
                 if matches!(self.profile.name.as_str(), "csharp" | "vb") {
                     self.compile_expr(object)?;
-                    self.emit_autoderef_pointer_cell();
+                    if !Self::is_pointer_runtime_field(field) {
+                        self.emit_autoderef_pointer_cell();
+                    }
                     let obj_tmp = self.define_local("__member_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
                     self.emit(Op::DROP);
@@ -11449,7 +11511,9 @@ impl Compiler {
                 }
 
                 self.compile_expr(object)?;
-                self.emit_autoderef_pointer_cell();
+                if !Self::is_pointer_runtime_field(field) {
+                    self.emit_autoderef_pointer_cell();
+                }
                 // JS `Object.keys` / `Object.entries` need insertion order
                 // (ECMA-262 §7.3.22). The HashMap backing properties is
                 // non-deterministic, so we mirror each direct write into
@@ -11516,6 +11580,30 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit(Op::DROP);
                 self.compile_expr(expr)?;
+                let ptr_slot = self.define_local("__ref_store_ptr");
+                self.emit_u16(Op::LOCAL_SET, ptr_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
+                self.emit(Op::REF_IS_OBJECT);
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+
+                let kind_key = self.str_const("__ref_kind");
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
+                self.emit_u16(Op::STRUCT_GET, kind_key);
+                self.emit_const(Value::String(Arc::from("cell")));
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                }
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
                 common::references::emit_cell_store(
                     &mut self.chunks,
                     self.current,
@@ -11523,6 +11611,90 @@ impl Compiler {
                     self.line,
                 );
                 self.emit(Op::DROP);
+
+                let line = self.line;
+                self.chunk().emit_else(line);
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
+                self.emit_u16(Op::STRUCT_GET, kind_key);
+                self.emit_const(Value::String(Arc::from("carray")));
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                }
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+
+                let base_key = self.str_const("__base");
+                let idx_key = self.str_const("__idx");
+                let base_slot = self.define_local("__ref_store_carray_base");
+                let idx_slot = self.define_local("__ref_store_carray_idx");
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
+                self.emit_u16(Op::STRUCT_GET, base_key);
+                self.emit_u16(Op::LOCAL_SET, base_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, ptr_slot);
+                self.emit_u16(Op::STRUCT_GET, idx_key);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, base_slot);
+                self.emit(Op::REF_IS_OBJECT);
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+
+                self.emit_u16(Op::LOCAL_GET, base_slot);
+                self.emit_u16(Op::STRUCT_GET, kind_key);
+                self.emit_const(Value::String(Arc::from("cell")));
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                }
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+
+                self.emit_u16(Op::LOCAL_GET, base_slot);
+                common::references::emit_cell_store(
+                    &mut self.chunks,
+                    self.current,
+                    value_slot,
+                    self.line,
+                );
+                self.emit(Op::DROP);
+
+                let line = self.line;
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, base_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                common::collections::emit_set(&mut self.chunks, self.current, self.line);
+                self.emit(Op::DROP);
+                self.chunk().emit_end(line);
+
+                let line = self.line;
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, base_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                common::collections::emit_set(&mut self.chunks, self.current, self.line);
+                self.emit(Op::DROP);
+                self.chunk().emit_end(line);
+
+                let line = self.line;
+                self.chunk().emit_else(line);
+                self.chunk().emit_end(line);
+
+                let line = self.line;
+                self.chunk().emit_end(line);
+
+                let line = self.line;
+                self.chunk().emit_else(line);
+                self.chunk().emit_end(line);
             }
             ExprKind::Index { object, index, .. } => {
                 if self.profile.name == "fortran" {
@@ -11968,6 +12140,89 @@ impl Compiler {
 
                     self.chunk().emit_end(line);
                 } else {
+                    let is_c_pointer_base_index = if self.profile.name == "c" {
+                        match (&object.kind, &index.kind) {
+                            (
+                                ExprKind::Member {
+                                    object: base_owner,
+                                    field: base_field,
+                                    ..
+                                },
+                                ExprKind::Member {
+                                    object: idx_owner,
+                                    field: idx_field,
+                                    ..
+                                },
+                            ) => {
+                                matches!(
+                                    (&base_owner.kind, &idx_owner.kind, base_field.as_str(), idx_field.as_str()),
+                                    (ExprKind::Ident(a), ExprKind::Ident(b), "__base", "__idx") if a == b
+                                )
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_c_pointer_base_index {
+                        self.compile_expr(object)?;
+                        let obj_tmp = self.define_local("__pointer_index_set_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_array_index_operand_for_owner(object, index)?;
+                        let key_tmp = self.define_local("__pointer_index_set_key");
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit(Op::REF_IS_OBJECT);
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        let kind_key = self.str_const("__ref_kind");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::STRUCT_GET, kind_key);
+                        self.emit_const(Value::String(Arc::from("cell")));
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        }
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        common::references::emit_cell_store(
+                            &mut self.chunks,
+                            self.current,
+                            tmp,
+                            self.line,
+                        );
+                        self.emit(Op::DROP);
+
+                        let line = self.line;
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+
+                        let line = self.line;
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     self.compile_array_index_operand_for_owner(object, index)?;

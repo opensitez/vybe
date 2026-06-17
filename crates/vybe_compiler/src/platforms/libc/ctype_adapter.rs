@@ -179,6 +179,44 @@ pub fn c_ispunct(c: Expression) -> Expression {
     })
 }
 
+/// `isgraph(c)`: printable, excluding space: `c >= 33 && c <= 126`
+pub fn c_isgraph(c: Expression) -> Expression {
+    let ge33 = e(ExprKind::Binary {
+        op: BinOp::GtEq,
+        left: Box::new(c.clone()),
+        right: Box::new(lit(33)),
+    });
+    let le126 = e(ExprKind::Binary {
+        op: BinOp::LtEq,
+        left: Box::new(c),
+        right: Box::new(lit(126)),
+    });
+    e(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(ge33),
+        right: Box::new(le126),
+    })
+}
+
+/// `isblank(c)`: space or horizontal tab: `c == 32 || c == 9`
+pub fn c_isblank(c: Expression) -> Expression {
+    let sp = e(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(c.clone()),
+        right: Box::new(lit(32)),
+    });
+    let tab = e(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(c),
+        right: Box::new(lit(9)),
+    });
+    e(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(sp),
+        right: Box::new(tab),
+    })
+}
+
 /// `toupper(c)`: if lowercase add 32 offset difference (65-97 = -32)
 pub fn c_toupper(c: Expression) -> Expression {
     // c - 32 when islower, else c

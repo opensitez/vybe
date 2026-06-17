@@ -702,7 +702,7 @@ pub fn build_sprintf(imports: &mut Chunk) -> Chunk {
     // conversions
     conv_s(&mut c, str_tostr, str_slice);
     conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat);
-    conv_u(&mut c, math_abs, num_radix);
+    conv_u(&mut c, num_radix);
     conv_f(&mut c, num_fixed, str_cat, math_pow);
     conv_e(&mut c, num_exp, str_upper, str_cat);
     conv_radix(
@@ -988,14 +988,26 @@ fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat
     c.patch_block(b);
 }
 
-fn conv_u(c: &mut Chunk, math_abs: u16, num_radix: u16) {
+fn conv_u(c: &mut Chunk, num_radix: u16) {
     let b = c.emit_block(0);
     lg(c, CONV);
     ci(c, 117);
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
+    // C `%u` expects a 32-bit unsigned view of the argument.
+    // Keep positive values as-is; for negatives, add 2^32 (e.g. -1 -> 4294967295).
     lg(c, N);
-    hc(c, math_abs, 1);
+    ls(c, SAVEI);
+    lg(c, SAVEI);
+    cf(c, 0.0);
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_if_value(0);
+    lg(c, SAVEI);
+    cf(c, 4294967296.0);
+    c.emit_op(Op::F64_ADD, 0);
+    c.emit_else(0);
+    lg(c, SAVEI);
+    c.emit_end(0);
     cf(c, 10.0);
     hc(c, num_radix, 2);
     ls(c, RAW);

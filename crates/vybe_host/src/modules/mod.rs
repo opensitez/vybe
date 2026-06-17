@@ -628,6 +628,14 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
         // Lives alongside the legacy Vybe-shim filesystem until the
         // shim is renamed to `vybe:fs`.
         crate::wasi::filesystem::register(vm);
+        // wasi:io/streams — unified file+socket+fd dispatch. Registered AFTER
+        // filesystem so its [method]input-stream/output-stream handlers take
+        // precedence: filesystem's blocking-read only handles registered stream
+        // resources and errors on fd streams, whereas wasi::io also serves the
+        // standard fd streams (stdin=0/stdout=1/stderr=2). Without this, libc
+        // stdin (scanf/getchar/fgets via emitter::io::emit_input) and any other
+        // fd-0 reader gets a stream-error record instead of real input.
+        crate::wasi::io::register(vm);
     }
     // node:os, node:path, node:process — read-only system info / pure
     // computation; available regardless of capability.
