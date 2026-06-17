@@ -1864,7 +1864,7 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                         left: Box::new(left),
                         right: Box::new(right),
                     });
-                    let callee = Expression::new(ExprKind::Ident("__vybe_floor".into()));
+                    let callee = Expression::new(ExprKind::Ident("floor".into()));
                     left = Expression::new(ExprKind::Call {
                         callee: Box::new(callee),
                         args: vec![Argument::positional(div)],

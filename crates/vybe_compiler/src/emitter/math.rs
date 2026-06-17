@@ -97,31 +97,11 @@ pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
 }
 
 // ── Host imports (standard math, same across all languages) ──
-
-use std::sync::Arc;
-use vybe_bytecode::Value;
-
-/// Legacy: pow via host import. Stack: [base, exponent] → [result].
-/// Prefer `emit_pow_push_func` + args + `emit_pow_invoke` for the canonical
-/// stdlib path (pure WASM bytecode, runtime-replaceable by Vybe with optimized
-/// native pow). The bundle aliases ecma:math.pow to __vybe_pow as a fallback,
-/// so this still works, but new code should use the explicit stdlib pattern.
+/// Pow via direct ECMA host import. Stack: [base, exponent] → [result].
 pub fn emit_pow(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "pow");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(2, line);
-}
-
-/// Push the __vybe_pow func ref. Use BEFORE compiling base/exponent.
-/// Pure WASM — bundle wires `__vybe_pow` to `build_pow` stdlib chunk.
-pub fn emit_pow_push_func(chunk: &mut Chunk, line: u32) {
-    let name = chunk.add_constant(Value::String(Arc::from("__vybe_pow")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
-}
-
-/// Invoke __vybe_pow after [func, base, exponent] are on the stack.
-pub fn emit_pow_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
 }
 
 /// Stack: [value] → [result]

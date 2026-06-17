@@ -27,12 +27,9 @@ use vybe_bytecode::{Chunk, Value};
 pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
     let chunk = &mut chunks[current];
-    // `__vybe_tostring` (runtime helper wired by `bundle::finalize_with_runtime_helpers`)
-    // dispatches to user-defined `ToString` / `tostring` methods first,
-    // falling back to ECMA `String(value)` for primitives. Without this,
-    // `Console.WriteLine(person)` would print `[object]` even when the
-    // class declares `public override string ToString() { ... }`.
-    let tostring_global = chunk.add_constant(Value::String(Arc::from("__vybe_tostring")));
+    // Direct ECMA String coercion. This still gives primitive/stringifiable
+    // behavior, but user-defined .NET-style ToString overrides need to be
+    // called explicitly by the frontend when desired.
     let v_local = alloc_local(chunk);
     let result_local = alloc_local(chunk);
 
@@ -81,8 +78,7 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(not_null);
 
-    // Default: __vybe_tostring(v) — handles primitive coercion and
-    // canonical runtime-shape stringification (Date, Map, Set, …).
+    // Default: direct ECMA String(v) coercion.
     // User-defined `ToString` overrides on .NET-shape classes are NOT
     // picked up here yet — that requires routing through
     // `ecma:value.invokeMethod` which is itself a method-dispatch
@@ -90,9 +86,8 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     // tests that need `Console.WriteLine(p)` to call `p.ToString()`
     // fail with "[object]" — call `Console.WriteLine(p.ToString())`
     // explicitly to get the override.
-    chunk.emit_op_u16(Op::GLOBAL_GET, tostring_global, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    crate::emitter::strings::emit_to_string(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunk.emit_op(Op::DROP, line);
 

@@ -72,6 +72,10 @@ alignment_specifier = {
     ("_Alignas" | "alignas") ~ "(" ~ (type_name | assignment_expression) ~ ")"
 }
 
+typeof_specifier = {
+    ("__typeof__" | "typeof") ~ "(" ~ assignment_expression ~ ")"
+}
+
 struct_or_union_spec = {
     ("struct" | "union") ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
 }
@@ -92,6 +96,7 @@ type_specifier_strict = {
     struct_or_union_spec
     | enum_spec
     | type_keyword
+    | typeof_specifier
 }
 
 // A typedef-name — only valid after at least one strict specifier.
@@ -102,6 +107,7 @@ type_specifier = {
     struct_or_union_spec
     | enum_spec
     | type_keyword
+    | typeof_specifier
     | typedef_name
 }
 
@@ -281,6 +287,8 @@ binary_op = @{
 unary_expression = {
     sizeof_expression
     | alignof_expression
+    | offsetof_expression
+    | generic_expression
     | prefix_op ~ unary_expression
     | cast_expression
     | postfix_expression
@@ -293,6 +301,19 @@ sizeof_expression = {
 
 alignof_expression = {
     ("_Alignof" | "alignof") ~ ("(" ~ type_name ~ ")" | unary_expression)
+}
+
+offsetof_expression = {
+    "offsetof" ~ "(" ~ type_name ~ "," ~ ident_name ~ ")"
+}
+
+generic_expression = {
+    "_Generic" ~ "(" ~ assignment_expression ~ "," ~ generic_assoc ~ ("," ~ generic_assoc)* ~ ")"
+}
+
+generic_assoc = {
+    "default" ~ ":" ~ assignment_expression
+    | type_name ~ ":" ~ assignment_expression
 }
 
 cast_expression = {
@@ -381,6 +402,8 @@ keyword = _{
     ("if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
     | "break" | "continue" | "return" | "goto" | "sizeof" | "typedef"
     | "_Alignas" | "alignas" | "_Alignof" | "alignof"
+    | "_Generic"
+    | "__typeof__" | "typeof"
     | "_Static_assert" | "static_assert"
     | "struct" | "union" | "enum" | "const" | "volatile" | "register"
     | "static" | "extern" | "auto" | "inline" | "restrict" | "true" | "false")

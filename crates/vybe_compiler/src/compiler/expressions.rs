@@ -791,10 +791,9 @@ impl Compiler {
                         self.emit_host_call(idx, 2);
                         return Ok(());
                     }
-                    common::math::emit_pow_push_func(self.chunk(), line);
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
-                    common::math::emit_pow_invoke(self.chunk(), line);
+                    common::math::emit_pow(self.chunk(), line);
                     return Ok(());
                 }
                 // InstanceOf → WASM GC `ref.test` opcode with the type name
@@ -2330,16 +2329,101 @@ impl Compiler {
                 // strings and arrays both work uniformly.
                 if let ExprKind::Range { start, end, .. } = &index.kind {
                     let line = self.line;
-                    common::collections::emit_slice_push_func(self.chunk(), line);
-                    self.compile_expr(object)?;
-                    self.compile_expr(start)?;
-                    self.compile_expr(end)?;
-                    common::collections::emit_slice_invoke(self.chunk(), line);
+                    if self.is_js_profile() {
+                        // Emit an inline polymorphic slice for JS: strings use
+                        // STR_SUBSTRING, arrays call ecma:array.slice. Save
+                        // operands to locals so we can test the receiver.
+                        let obj_slot = self.define_local("__js_range_slice_obj");
+                        let start_slot = self.define_local("__js_range_slice_start");
+                        let end_slot = self.define_local("__js_range_slice_end");
+
+                        self.compile_expr(object)?;
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+
+                        self.compile_expr(start)?;
+                        self.emit_u16(Op::LOCAL_SET, start_slot);
+                        self.emit(Op::DROP);
+
+                        self.compile_expr(end)?;
+                        self.emit_u16(Op::LOCAL_SET, end_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_STRING);
+                        self.chunk().emit_if_value(line);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.emit_u16(Op::LOCAL_GET, end_slot);
+                        self.emit(Op::STR_SUBSTRING);
+
+                        self.chunk().emit_else(line);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.emit_u16(Op::LOCAL_GET, end_slot);
+                        common::collections::emit_slice(&mut self.chunks, self.current, line);
+
+                        self.chunk().emit_end(line);
+                    } else {
+                        let line = self.line;
+                        common::collections::emit_slice_push_func(self.chunk(), line);
+                        self.compile_expr(object)?;
+                        self.compile_expr(start)?;
+                        self.compile_expr(end)?;
+                        common::collections::emit_slice_invoke(self.chunk(), line);
+                    }
                 } else if let ExprKind::Slice { lower, upper, step } = &index.kind {
                     self.compile_expr(object)?;
                     let line = self.line;
                     if step.is_none() {
-                        if self.profile.name == "fortran" {
+                        if self.is_js_profile() {
+                            // JS: compute start/end into locals, then dispatch
+                            // to STR_SUBSTRING for strings or ecma:array.slice
+                            // for arrays.
+                            let obj_slot = self.define_local("__js_index_slice_obj");
+                            let start_slot = self.define_local("__js_index_slice_start");
+                            let end_slot = self.define_local("__js_index_slice_end");
+
+                            self.emit_u16(Op::LOCAL_SET, obj_slot);
+                            self.emit(Op::DROP);
+
+                            if let Some(l) = lower {
+                                self.compile_expr(l)?;
+                            } else {
+                                self.emit(Op::I32_CONST_0);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, start_slot);
+                            self.emit(Op::DROP);
+
+                            if let Some(u) = upper {
+                                self.compile_expr(u)?;
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                                common::collections::emit_len(&mut self.chunks, self.current, line);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, end_slot);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_STRING);
+                            self.chunk().emit_if_value(line);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_u16(Op::LOCAL_GET, start_slot);
+                            self.emit_u16(Op::LOCAL_GET, end_slot);
+                            self.emit(Op::STR_SUBSTRING);
+
+                            self.chunk().emit_else(line);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_u16(Op::LOCAL_GET, start_slot);
+                            self.emit_u16(Op::LOCAL_GET, end_slot);
+                            common::collections::emit_slice(&mut self.chunks, self.current, line);
+
+                            self.chunk().emit_end(line);
+                        } else if self.profile.name == "fortran" {
                             let obj_slot = self.define_local("__fortran_index_slice_obj");
                             self.emit_u16(Op::LOCAL_SET, obj_slot);
                             self.emit(Op::DROP);
@@ -3904,7 +3988,6 @@ impl Compiler {
                 // (sets `__js_this` via the JS method-call protocol),
                 // then `"" + primitive` produces the final string.
                 let use_to_primitive = self.is_js_profile();
-                let tostring_global = self.str_const("__vybe_tostring");
                 self.emit_const(Value::String(Arc::from("")));
                 let acc_slot = self.define_local("__interp_acc");
                 self.emit_u16(Op::LOCAL_SET, acc_slot);
@@ -3931,9 +4014,9 @@ impl Compiler {
                                 let value_slot = self.define_local("__interp_value");
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
                                 self.emit(Op::DROP);
-                                self.emit_u16(Op::GLOBAL_GET, tostring_global);
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
+                                let line = self.line;
+                                common::strings::emit_to_string(self.chunk(), line);
                             }
                         }
                     }
@@ -4266,9 +4349,9 @@ impl Compiler {
                                             Self::normalize_type_hint(&hint) == "char"
                                         });
                                 if is_char_like {
-                                    self.compile_expr(inner)?;
                                     self.emit(Op::I32_CONST_0);
-                                    self.emit(Op::STR_CHAR_CODE_AT);
+                                    let line = self.line;
+                                    common::strings::emit_to_string(self.chunk(), line);
                                     return Ok(());
                                 }
                                 self.compile_expr(inner)?;

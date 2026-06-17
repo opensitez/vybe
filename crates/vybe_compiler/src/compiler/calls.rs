@@ -6801,10 +6801,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, primitive_slot);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
                     self.chunk().emit_else(line);
                     Some(line)
                 } else {
@@ -7288,10 +7287,9 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, primitive_slot);
                 let line = self.line;
                 self.chunk().emit_if_value(line);
-                let tostring_global = self.str_const("__vybe_tostring");
-                self.emit_u16(Op::GLOBAL_GET, tostring_global);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u8(Op::CALL_REF, 1);
+                let line = self.line;
+                common::strings::emit_to_string(self.chunk(), line);
                 self.chunk().emit_else(line);
                 Some(line)
             } else {
@@ -10208,13 +10206,11 @@ impl Compiler {
             self.chunk().emit_end(line);
         }
 
-        let tostring_global = self.str_const("__vybe_tostring");
         self.emit_u16(Op::LOCAL_GET, primitive_slot);
         let line = self.line;
         self.chunk().emit_if(line);
-        self.emit_u16(Op::GLOBAL_GET, tostring_global);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u8(Op::CALL_REF, 1);
+        common::strings::emit_to_string(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
         self.chunk().emit_else(line);
@@ -10258,9 +10254,8 @@ impl Compiler {
         let value_key = self.str_const("__value");
         self.emit_u16(Op::STRUCT_GET, value_key);
         self.chunk().emit_else(line);
-        self.emit_u16(Op::GLOBAL_GET, tostring_global);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u8(Op::CALL_REF, 1);
+        common::strings::emit_to_string(self.chunk(), line);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);

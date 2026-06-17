@@ -9999,14 +9999,13 @@ impl Compiler {
                     if exprs.is_empty() {
                         self.emit_const(Value::String(Arc::from("")));
                     } else {
-                        let tostring_global = self.str_const("__vybe_tostring");
-                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
                         self.compile_expr(&exprs[0])?;
-                        self.emit_u8(Op::CALL_REF, 1);
+                        let line = self.line;
+                        common::strings::emit_to_string(self.chunk(), line);
                         for expr in exprs.iter().skip(1) {
-                            self.emit_u16(Op::GLOBAL_GET, tostring_global);
                             self.compile_expr(expr)?;
-                            self.emit_u8(Op::CALL_REF, 1);
+                            let line = self.line;
+                            common::strings::emit_to_string(self.chunk(), line);
                             {
                                 let line = self.line;
                                 crate::emitter::ops::emit_dyn_add(self.chunk(), line);
@@ -13326,19 +13325,18 @@ impl Compiler {
                 if args.is_empty() {
                     self.emit_const(Value::String(Arc::from("")));
                 } else {
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[0])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
                     for arg in args.iter().skip(1) {
                         self.emit_const(Value::String(Arc::from(" ")));
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                         };
-                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
                         self.compile_expr(arg)?;
-                        self.emit_u8(Op::CALL_REF, 1);
+                        let line = self.line;
+                        common::strings::emit_to_string(self.chunk(), line);
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_add(self.chunk(), line);
@@ -13850,10 +13848,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
                     self.emit(Op::DROP);
 
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.emit_u16(Op::LOCAL_GET, arg_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
                     return Ok(true);
                 }
             } else {
@@ -16158,14 +16155,13 @@ impl Compiler {
             }
             "php_str_contains" => {
                 if args.len() >= 2 {
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[0])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[1])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
                     self.emit(Op::STR_CONTAINS);
                 } else {
@@ -16174,14 +16170,13 @@ impl Compiler {
             }
             "php_str_starts_with" => {
                 if args.len() >= 2 {
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[0])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[1])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
                     self.emit(Op::STR_STARTS_WITH);
                 } else {
@@ -16190,14 +16185,13 @@ impl Compiler {
             }
             "php_str_ends_with" => {
                 if args.len() >= 2 {
-                    let tostring_global = self.str_const("__vybe_tostring");
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[0])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
-                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.compile_expr(args[1])?;
-                    self.emit_u8(Op::CALL_REF, 1);
+                    let line = self.line;
+                    common::strings::emit_to_string(self.chunk(), line);
 
                     self.emit(Op::STR_ENDS_WITH);
                 } else {

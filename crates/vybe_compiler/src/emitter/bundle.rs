@@ -24,6 +24,8 @@ const MAPPINGS: &[(&str, &str)] = &[
         "__stdlib_sort_with_comparator",
         "__vybe_sort_with_comparator",
     ),
+    ("__stdlib_c_qsort", "__vybe_c_qsort"),
+    ("__stdlib_c_bsearch_index", "__vybe_c_bsearch_index"),
     ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
     ("__stdlib_reversed", "__vybe_reversed"),
     ("__stdlib_enumerate", "__vybe_enumerate"),
@@ -46,7 +48,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_rand_sample", "__vybe_rand_sample"),
     ("__stdlib_rotate", "__vybe_rotate"),
     ("__stdlib_array_copy", "__vybe_array_copy"),
-    ("__stdlib_pow", "__vybe_pow"),
     ("__stdlib_sin", "__vybe_sin"),
     ("__stdlib_cos", "__vybe_cos"),
     ("__stdlib_tan", "__vybe_tan"),
@@ -129,16 +130,15 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_isinf", "__vybe_isinf"),
     ("__stdlib_callable", "__vybe_callable"),
     ("__stdlib_splice", "__vybe_splice"),
-    ("__stdlib_floor", "__vybe_floor"),
     ("__stdlib_slice", "__vybe_slice"),
-    ("__stdlib_keys", "__vybe_keys"),
+    
     ("__stdlib_hasproperty", "__vybe_hasproperty"),
-    ("__stdlib_assign", "__vybe_assign"),
+    
     ("__stdlib_instanceof", "__vybe_instanceof"),
     ("__stdlib_js_get_method", "__vybe_js_get_method"),
     ("__stdlib_js_instanceof", "__vybe_js_instanceof"),
-    ("__stdlib_deleteproperty", "__vybe_deleteproperty"),
-    ("__stdlib_from", "__vybe_from"),
+    
+    
     ("__stdlib_redim", "__vybe_redim"),
     ("__stdlib_slicestep", "__vybe_slicestep"),
     ("__stdlib_dynmul", "__vybe_dynmul"),
@@ -153,7 +153,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_set_range", "__vybe_array_set_range"),
     ("__stdlib_array_binary_search", "__vybe_array_binary_search"),
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
-    ("__stdlib_array_last_index_of", "__vybe_array_last_index_of"),
+    
     ("__stdlib_sprintf", "__vybe_sprintf"),
     ("__stdlib_generator_next", "__vybe_generator_next"),
     ("__stdlib_generator_self", "__vybe_generator_self"),

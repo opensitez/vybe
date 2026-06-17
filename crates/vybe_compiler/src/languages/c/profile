@@ -37,22 +37,21 @@ uses_normalize_class = false
 "putchar"  = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
 
 # ── stdio.h extras ───────────────────────────────────────────────────────────
+# `fflush(stdout)` and stream flushes route through the walker's handle-based
+# stdio runtime substrate. `getchar()` still needs a true stdin-backed path.
 "getchar"  = { emit = "noop",                     min_args = 0, max_args = 0 }
-"fflush"   = { emit = "noop",                     min_args = 1, max_args = 1 }
 
 # ── string.h ─────────────────────────────────────────────────────────────────
 # strlen/strcmp work directly via opcode/emitter
 "strlen"   = { emit = "common:strings.length",    min_args = 1, max_args = 1 }
 "strcmp"   = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
 "strncmp"  = { emit = "opcode:str_compare",        min_args = 2, max_args = 3 }
-# strcpy/strncpy/strcat/strncat: walker rewrites to assignment/concat
-# strchr/strrchr/strstr: walker rewrites to ternary slice-or-null
+# strcpy/strncpy/strcat/strncat/memcpy/memmove/memset: walker rewrites to
+# assignment / concat / buffer-copy operations.
+# strchr/strrchr/strstr/memchr: walker rewrites to slice-or-null pointer forms.
 "strupr"   = { emit = "common:strings.to_upper",   min_args = 1, max_args = 1 }
 "strlwr"   = { emit = "common:strings.to_lower",   min_args = 1, max_args = 1 }
-"memcpy"   = { emit = "noop",                      min_args = 3, max_args = 3 }
-"memset"   = { emit = "noop",                      min_args = 3, max_args = 3 }
 "memcmp"   = { emit = "opcode:str_compare",        min_args = 3, max_args = 3 }
-"memmove"  = { emit = "noop",                      min_args = 3, max_args = 3 }
 
 # ── ctype.h — walker rewrites these to ecma:string calls ─────────────────────
 # isalpha/isdigit/isalnum/isspace/isupper/islower: walker wraps char-code arg
@@ -78,12 +77,8 @@ uses_normalize_class = false
 "abs"      = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
 "labs"     = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
 "llabs"    = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
-"rand"     = { emit = "host:ecma:math:random",       min_args = 0, max_args = 0 }
-"srand"    = { emit = "noop",                        min_args = 1, max_args = 1 }
-"exit"     = { emit = "noop",                        min_args = 0, max_args = 1 }
-# malloc/calloc/realloc/free: walker rewrites to array construction / noop
+# rand/srand and exit/malloc/calloc/realloc/free/qsort/bsearch: walker/compiler rewrites.
 "qsort"    = { emit = "common:collections.sort",     min_args = 4, max_args = 4 }
-"bsearch"  = { emit = "noop",                        min_args = 5, max_args = 5 }
 
 # ── math.h ───────────────────────────────────────────────────────────────────
 "sqrt"     = { emit = "opcode:f64_sqrt",   min_args = 1, max_args = 1 }
@@ -127,6 +122,9 @@ uses_normalize_class = false
 "NULL"   = 0
 "EXIT_SUCCESS" = 0
 "EXIT_FAILURE" = 1
+"SEEK_SET" = 0
+"SEEK_CUR" = 1
+"SEEK_END" = 2
 
 [namespaces]
 use_dotnet = false
