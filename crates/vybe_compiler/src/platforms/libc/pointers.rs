@@ -201,6 +201,17 @@ pub fn carray_chars_to_string(ptr: Expression) -> Expression {
     })
 }
 
+/// Render a `char[]` value (e.g. a struct field / flexible array member) as a C
+/// string for `%s`/`puts`. The backing storage is polymorphic at runtime — a JS
+/// string (`strcpy`), a carray pointer (a decayed flexible array), or a plain
+/// code-point array (element-by-element writes) — so the decode is a runtime
+/// helper (`__libc_char_to_str`, see `char_to_str_runtime_helper`) rather than
+/// an inline `fromCharCode(...spread)`: the `str_from_char_code` opcode is
+/// fixed-arity and cannot take a runtime-sized spread.
+pub fn code_array_to_string(arr: Expression) -> Expression {
+    call(ident("__libc_char_to_str"), vec![arr])
+}
+
 /// True if the raw initializer text indicates a scalar address-of (`&x`).
 /// Used by walkers to decide between scalar cell (RefOf) and carray pointer.
 pub fn init_is_addr_of(init_source_text: &str) -> bool {

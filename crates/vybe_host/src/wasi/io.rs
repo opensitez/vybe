@@ -343,6 +343,21 @@ fn register_input_stream(vm: &mut VM) {
             make_ready_pollable()
         }),
     );
+
+    // [resource-drop]input-stream(self) — release the registry entry for a
+    // resource-backed stream. fd streams (stdin) carry no registry entry, so the
+    // drop is a no-op; GC reclaims the handle object either way.
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[resource-drop]input-stream",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let stream = args.first().cloned().unwrap_or(Value::Null);
+            if let Some(id) = fs::resource_id(&stream, fs::KIND_INPUT_STREAM) {
+                fs::registry().lock().unwrap().input_streams.remove(&id);
+            }
+            Value::Null
+        }),
+    );
 }
 
 // ── wasi:io/streams — output-stream ──────────────────────────────────────────
@@ -636,6 +651,20 @@ fn register_output_stream(vm: &mut VM) {
             }
         }),
     );
+
+    // [resource-drop]output-stream(self) — release the registry entry for a
+    // resource-backed stream; fd streams (stdout/stderr) are a no-op.
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[resource-drop]output-stream",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let stream = args.first().cloned().unwrap_or(Value::Null);
+            if let Some(id) = fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM) {
+                fs::registry().lock().unwrap().output_streams.remove(&id);
+            }
+            Value::Null
+        }),
+    );
 }
 
 // ── wasi:io/poll ─────────────────────────────────────────────────────────────
@@ -691,6 +720,14 @@ fn register_pollable(vm: &mut VM) {
             skt::value_array(ready.into_iter().map(|i| Value::I32(i as i32)).collect())
         }),
     );
+
+    // [resource-drop]pollable(self) — pollables are transient handle objects with
+    // no registry backing, so the drop is a GC-safe no-op.
+    vm.register_host_fn(
+        "wasi:io/poll",
+        "[resource-drop]pollable",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+    );
 }
 
 // ── wasi:io/error ─────────────────────────────────────────────────────────────
@@ -718,5 +755,13 @@ fn register_error(vm: &mut VM) {
             }
             Value::String(Arc::from("io-error(unknown)"))
         }),
+    );
+
+    // [resource-drop]error(self) — error records are plain handle objects with no
+    // registry backing, so the drop is a GC-safe no-op.
+    vm.register_host_fn(
+        "wasi:io/error",
+        "[resource-drop]error",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
     );
 }

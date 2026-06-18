@@ -24,8 +24,8 @@ const MAPPINGS: &[(&str, &str)] = &[
         "__stdlib_sort_with_comparator",
         "__vybe_sort_with_comparator",
     ),
-    ("__stdlib_c_qsort", "__vybe_c_qsort"),
-    ("__stdlib_c_bsearch_index", "__vybe_c_bsearch_index"),
+    // C qsort/bsearch moved to platforms/libc/stdlib_runtime.rs (libc surface);
+    // no longer part of the cross-language helper bundle.
     ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
     ("__stdlib_reversed", "__vybe_reversed"),
     ("__stdlib_enumerate", "__vybe_enumerate"),

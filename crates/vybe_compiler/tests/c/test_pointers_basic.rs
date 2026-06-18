@@ -46,5 +46,13 @@ c_cases! {
     pointer_and_integer_zero_compare_equal => { declarations: "int *p = NULL;", body: "printf(\"%d\\n\", p == 0);\nreturn 0;", expect: ["1"] },
     pointer_and_null_macro_compare_equal => { declarations: "int *p = NULL;", body: "printf(\"%d\\n\", p == NULL);\nreturn 0;", expect: ["1"] },
     pointer_can_select_array_element_via_subscript => { declarations: "int arr[3] = {2, 4, 6}; int *p = arr;", body: "printf(\"%d\\n\", p[1]);\nreturn 0;", expect: ["4"] },
-    pointer_to_local_variable_keeps_latest_value => { declarations: "int x = 1; int *p = &x;", body: "x = 8;\nprintf(\"%d\\n\", *p);\nreturn 0;", expect: ["8"] }
+    pointer_to_local_variable_keeps_latest_value => { declarations: "int x = 1; int *p = &x;", body: "x = 8;\nprintf(\"%d\\n\", *p);\nreturn 0;", expect: ["8"] },
+    // Taking a local's address inside a loop must reuse one stable pointer cell,
+    // so mutations through the pointer accumulate across iterations rather than
+    // being orphaned by a per-iteration re-wrap of the cell.
+    address_of_local_passed_to_mutator_in_loop_accumulates => {
+        declarations: "void bump(int *p) { (*p)++; }",
+        body: "int n = 0;\nfor (int i = 0; i < 4; i++) bump(&n);\nprintf(\"%d\\n\", n);\nreturn 0;",
+        expect: ["4"]
+    }
 }

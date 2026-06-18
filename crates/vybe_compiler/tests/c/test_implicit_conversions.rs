@@ -37,8 +37,9 @@ c_cases! {
         expect: ["200"]
     },
     signed_unsigned_comparison => {
+        // (unsigned)(-1) = 4294967295, so 1 > that is false → 1 (verified vs cc).
         body: "unsigned int u = 1;\nint s = -1;\nprintf(\"%d\\n\", u > (unsigned)s ? 0 : 1);\nreturn 0;",
-        expect: ["0"]
+        expect: ["1"]
     },
     float_double_promotion => {
         body: "float f = 1.0f / 3.0f;\ndouble d = 1.0 / 3.0;\nprintf(\"%d\\n\", d > f ? 1 : 0);\nreturn 0;",

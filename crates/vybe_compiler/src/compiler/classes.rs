@@ -455,6 +455,15 @@ impl Compiler {
         self.function_label_base = self.label_depth;
         let saved_fn = self.current_func_name.take();
         self.current_func_name = Some(name.to_string());
+        // Pre-scan: collect locals/params whose address is taken (`&v`) so they
+        // can be promoted to a pointer cell once at declaration / entry, rather
+        // than lazily at the `&v` site (which re-wraps every loop iteration).
+        // Scoped to C — the only profile exercising this path — so the other
+        // AddrOf-using languages (Pascal/Go/C#) keep their current behavior.
+        let saved_addr_taken = std::mem::take(&mut self.current_addr_taken_locals);
+        if self.profile.name == "c" {
+            crate::compiler::collect_addr_taken_idents(body, &mut self.current_addr_taken_locals);
+        }
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
         let saved_strict = self.in_strict;
@@ -593,6 +602,18 @@ impl Compiler {
             self.maybe_initialize_fortran_out_param(p);
         }
 
+        // Promote address-taken params to a pointer cell once, at entry. A later
+        // `&param` (e.g. inside a loop) then reuses this cell instead of
+        // re-wrapping it each iteration. Reads/writes of the param are already
+        // cell-aware once the binding is marked.
+        if !self.current_addr_taken_locals.is_empty() {
+            for p in params {
+                if self.current_addr_taken_locals.contains(&p.name) {
+                    self.promote_local_binding_to_pointer_cell(&p.name);
+                }
+            }
+        }
+
         let generator_control_slot =
             is_generator.then(|| self.define_local("__generator_entry_control"));
 
@@ -704,6 +725,7 @@ impl Compiler {
         }
 
         self.current_func_name = saved_fn;
+        self.current_addr_taken_locals = saved_addr_taken;
         self.in_strict = saved_strict;
         self.current_result_slot = saved_rs;
         self.current_ref_out_params = saved_ref_out;

@@ -47,8 +47,11 @@ return 0;
         expect: ["Z"]
     },
     char_escape_sequences => {
+        // The middle `%c` emits a literal newline, which (per real C, where
+        // stdout is a byte stream) is indistinguishable from a format newline.
+        // The line-based capture therefore sees two lines: "\t" then "\\".
         body: "printf(\"%c%c%c\\n\", '\\t', '\\n', '\\\\');\nreturn 0;",
-        expect: ["\t\n\\"]
+        expect: ["\t", "\\"]
     },
     char_null_terminator => {
         body: "char s[4] = {'a', 'b', 'c', '\\0'};\nprintf(\"%s\\n\", s);\nreturn 0;",

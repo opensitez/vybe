@@ -581,6 +581,91 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
     out
 }
 
+/// Runtime helper that renders a `char[]` value as a C string for `%s`/`puts`.
+/// The storage is polymorphic — a JS string (`strcpy`), a carray pointer (a
+/// decayed flexible array `{__ref_kind:"carray",__base,__idx}`), or a plain
+/// code-point array (element writes). Strings pass through (up to NUL); the
+/// other shapes are decoded one code point at a time with the single-arg
+/// `String.fromCharCode` opcode — a runtime-sized spread can't drive the
+/// fixed-arity opcode, hence the loop. Stops at the NUL terminator.
+///
+/// ```text
+/// function __libc_char_to_str(v) {
+///   if (typeof v === "string") return v.split("\0")[0];
+///   var a = v;
+///   if (v != null && v.__ref_kind === "carray") a = v.__base.slice(v.__idx);
+///   var r = "";
+///   var i = 0;
+///   while (i < a.length) {
+///     var c = a[i];
+///     if (c == 0) return r;
+///     r = r + String.fromCharCode(c);
+///     i = i + 1;
+///   }
+///   return r;
+/// }
+/// ```
+pub fn char_to_str_runtime_helper() -> Statement {
+    let index_a_i = e(ExprKind::Index {
+        object: Box::new(ident("a")),
+        index: Box::new(ident("i")),
+        null_safe: false,
+    });
+    function(
+        "__libc_char_to_str",
+        vec!["v"],
+        vec![
+            // typeof v === "string" → string already; clip at NUL.
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    e(ExprKind::Unary { op: UnaryOp::Typeof, expr: Box::new(ident("v")) }),
+                    lit_str("string"),
+                ),
+                vec![ret(e(ExprKind::Index {
+                    object: Box::new(call_member(ident("v"), "split", vec![lit_str("\0")])),
+                    index: Box::new(lit_int(0)),
+                    null_safe: false,
+                }))],
+                None,
+            ),
+            var_decl("a", ident("v")),
+            // carray pointer → take the slice from __idx onward.
+            if_stmt(
+                bin(
+                    BinOp::And,
+                    bin(BinOp::NotEq, ident("v"), e(ExprKind::Lit(Literal::Null))),
+                    bin(BinOp::Eq, member(ident("v"), "__ref_kind"), lit_str("carray")),
+                ),
+                vec![expr_stmt(assign_expr(
+                    ident("a"),
+                    call_member(member(ident("v"), "__base"), "slice", vec![member(ident("v"), "__idx")]),
+                ))],
+                None,
+            ),
+            var_decl("r", lit_str("")),
+            var_decl("i", lit_int(0)),
+            while_stmt(
+                bin(BinOp::Lt, ident("i"), member(ident("a"), "length")),
+                vec![
+                    var_decl("c", index_a_i),
+                    if_stmt(bin(BinOp::Eq, ident("c"), lit_int(0)), vec![ret(ident("r"))], None),
+                    expr_stmt(assign_expr(
+                        ident("r"),
+                        bin(
+                            BinOp::Add,
+                            ident("r"),
+                            call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
+                        ),
+                    )),
+                    expr_stmt(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), lit_int(1)))),
+                ],
+            ),
+            ret(ident("r")),
+        ],
+    )
+}
+
 /// Lower `scanf(fmt, t1, ...)` (fmt a compile-time literal, targets already
 /// address-stripped) into a sequence that reads conversions from the WASI-backed
 /// stdin token reader, assigns each target, and evaluates to the match count.

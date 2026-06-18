@@ -5,10 +5,16 @@
 //! cases that need AST-level rewriting (e.g. `round` semantics differ from
 //! `f64.nearest`).
 
-use crate::ast::{Argument, BinOp, ExprKind, Expression, Literal};
+use crate::ast::{
+    Argument, BinOp, ExprKind, Expression, Literal, Modifiers, Param, PassBy, Statement, StmtKind,
+};
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
+}
+
+fn s(kind: StmtKind) -> Statement {
+    Statement::new(kind)
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
@@ -21,6 +27,74 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
 
 fn ident(name: &str) -> Expression {
     e(ExprKind::Ident(name.to_string()))
+}
+
+fn lit_int(n: i64) -> Expression {
+    e(ExprKind::Lit(Literal::Int(n)))
+}
+
+fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
+    e(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) })
+}
+
+fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
+    s(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params: params
+            .into_iter()
+            .map(|param| Param {
+                name: param.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            })
+            .collect(),
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })
+}
+
+/// math.h domain-error runtime helpers (libc surface, shared across libc-targeting
+/// languages). `__c_sqrt` adds the EDOM side effect (§7.12.1) over the raw
+/// `f64_sqrt` opcode (`__libc_sqrt_raw`, mapped in the profile); the walker
+/// rewrites source `sqrt(x)` → `__c_sqrt(x)`. The raw path keeps results
+/// bit-identical — only `errno` is touched.
+///
+/// ```text
+/// function __c_sqrt(x) {
+///   if (x < 0) errno = 33;          // EDOM
+///   return __libc_sqrt_raw(x);
+/// }
+/// ```
+pub fn domain_error_helpers() -> Vec<Statement> {
+    vec![function(
+        "__c_sqrt",
+        vec!["x"],
+        vec![
+            s(StmtKind::If {
+                cond: bin(BinOp::Lt, ident("x"), lit_int(0)),
+                then_body: vec![s(StmtKind::Expr(e(ExprKind::Assign {
+                    target: Box::new(ident("errno")),
+                    value: Box::new(lit_int(33)),
+                })))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            s(StmtKind::Return(Some(call(
+                ident("__libc_sqrt_raw"),
+                vec![ident("x")],
+            )))),
+        ],
+    )]
 }
 
 /// C `round(x)` uses half-away-from-zero, not banker's rounding.

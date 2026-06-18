@@ -10,9 +10,17 @@
 //! semantics are centralised here.
 
 pub mod arrays;
+pub mod build;
+pub mod c_runtime;
+pub mod complex_adapter;
 pub mod ctype_adapter;
 pub mod math_adapter;
+pub mod math_runtime;
 pub mod pointers;
 pub mod stdio_adapter;
 pub mod stdlib_adapter;
+pub mod stdlib_runtime;
 pub mod string_adapter;
+pub mod string_runtime;
+pub mod time_adapter;
+pub mod wchar_adapter;

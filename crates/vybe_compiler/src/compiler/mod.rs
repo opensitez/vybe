@@ -318,6 +318,14 @@ pub struct Compiler {
     capture_by_value_vars: Vec<String>,
     pointer_cell_bindings: HashMap<usize, HashSet<String>>,
 
+    /// Names of locals/params in the function currently being compiled whose
+    /// address is taken somewhere in the body (`&v`). Populated by a pre-scan
+    /// at function entry. Such bindings are promoted to a pointer cell *once*
+    /// at their declaration (and params at entry) rather than lazily at the
+    /// first `&v` use — taking the address inside a loop would otherwise
+    /// re-wrap the cell every iteration and orphan prior mutations.
+    current_addr_taken_locals: HashSet<String>,
+
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
     /// of the same arity. Populated by a pre-pass before any function is
     /// compiled so both callee (set `chunk.result_arity`, push N values
@@ -487,6 +495,195 @@ fn compound_op_to_binop(op: &CompoundOp) -> Option<BinOp> {
 /// it) constructs a `Proxy` (i.e. contains `new Proxy(...)`). Used to
 /// gate the Member / Index proxy dispatcher emit so non-Proxy code
 /// keeps the zero-overhead direct-opcode path.
+/// Collect the names of variables whose address is taken (`&name`) anywhere in
+/// `stmts`. Does NOT descend into nested function/lambda/class bodies — those
+/// open their own scopes and are pre-scanned when compiled. Used to promote
+/// address-taken bindings to a pointer cell at declaration time (once), instead
+/// of re-wrapping at every `&name` use (which corrupts the cell inside loops).
+fn collect_addr_taken_idents(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        collect_addr_taken_in_stmt(stmt, out);
+    }
+}
+
+fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(e) => collect_addr_taken_in_expr(e, out),
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_addr_taken_in_expr(e, out);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(e) = expr {
+                collect_addr_taken_in_expr(e, out);
+            }
+            if let Some(e) = cause {
+                collect_addr_taken_in_expr(e, out);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &d.init {
+                    collect_addr_taken_in_expr(e, out);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for t in targets {
+                collect_addr_taken_in_expr(t, out);
+            }
+            collect_addr_taken_in_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_addr_taken_in_expr(target, out);
+            collect_addr_taken_in_expr(value, out);
+        }
+        StmtKind::Block(stmts) => collect_addr_taken_idents(stmts, out),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            collect_addr_taken_in_expr(cond, out);
+            collect_addr_taken_idents(then_body, out);
+            for (c, b) in elifs {
+                collect_addr_taken_in_expr(c, out);
+                collect_addr_taken_idents(b, out);
+            }
+            if let Some(b) = else_body {
+                collect_addr_taken_idents(b, out);
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            collect_addr_taken_in_expr(cond, out);
+            collect_addr_taken_idents(body, out);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                collect_addr_taken_in_stmt(i, out);
+            }
+            if let Some(c) = cond {
+                collect_addr_taken_in_expr(c, out);
+            }
+            if let Some(u) = update {
+                collect_addr_taken_in_expr(u, out);
+            }
+            collect_addr_taken_idents(body, out);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            collect_addr_taken_in_expr(iter, out);
+            collect_addr_taken_idents(body, out);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            collect_addr_taken_idents(body, out);
+            for c in catches {
+                collect_addr_taken_idents(&c.body, out);
+            }
+            if let Some(b) = else_body {
+                collect_addr_taken_idents(b, out);
+            }
+            if let Some(b) = finally {
+                collect_addr_taken_idents(b, out);
+            }
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            collect_addr_taken_in_expr(expr, out);
+            for case in cases {
+                collect_addr_taken_idents(&case.body, out);
+            }
+            if let Some(b) = default {
+                collect_addr_taken_idents(b, out);
+            }
+        }
+        StmtKind::Labeled { body, .. } => collect_addr_taken_in_stmt(body, out),
+        // Nested function/class declarations open their own scope — skip.
+        _ => {}
+    }
+}
+
+fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: inner,
+        } => {
+            if let ExprKind::Ident(name) = &inner.kind {
+                out.insert(name.clone());
+            }
+            collect_addr_taken_in_expr(inner, out);
+        }
+        ExprKind::Unary { expr, .. } => collect_addr_taken_in_expr(expr, out),
+        ExprKind::Binary { left, right, .. } => {
+            collect_addr_taken_in_expr(left, out);
+            collect_addr_taken_in_expr(right, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_addr_taken_in_expr(callee, out);
+            for a in args {
+                collect_addr_taken_in_expr(&a.value, out);
+            }
+        }
+        ExprKind::Member { object, .. } => collect_addr_taken_in_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_addr_taken_in_expr(object, out);
+            collect_addr_taken_in_expr(index, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_addr_taken_in_expr(cond, out);
+            collect_addr_taken_in_expr(then, out);
+            collect_addr_taken_in_expr(else_, out);
+        }
+        ExprKind::Assign { target, value } => {
+            collect_addr_taken_in_expr(target, out);
+            collect_addr_taken_in_expr(value, out);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems {
+                collect_addr_taken_in_expr(&e.value, out);
+            }
+        }
+        ExprKind::Object(props) => {
+            for p in props {
+                match p {
+                    ObjectProperty::KeyValue { value, .. } => {
+                        collect_addr_taken_in_expr(value, out)
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        collect_addr_taken_in_expr(key, out);
+                        collect_addr_taken_in_expr(value, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Sequence(exprs) => {
+            for e in exprs {
+                collect_addr_taken_in_expr(e, out);
+            }
+        }
+        ExprKind::Cast { expr, .. } => collect_addr_taken_in_expr(expr, out),
+        ExprKind::RefLoad(inner) => collect_addr_taken_in_expr(inner, out),
+        _ => {}
+    }
+}
+
 fn stmt_uses_proxy(stmt: &Statement) -> bool {
     match &stmt.kind {
         StmtKind::Expr(e) => expr_uses_proxy(e),
@@ -875,6 +1072,7 @@ impl Compiler {
             with_targets: Vec::new(),
             capture_by_value_vars: Vec::new(),
             pointer_cell_bindings: HashMap::new(),
+            current_addr_taken_locals: HashSet::new(),
 
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
@@ -5337,7 +5535,7 @@ impl Compiler {
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             }
-            "char" | "uint8" | "unsigned char" | "signed char" | "byte" => {
+            "char" | "uint8" | "unsigned char" | "byte" => {
                 self.emit(Op::F64_TRUNC);
                 self.emit_const(Value::F64(256.0));
                 self.compile_binop(&BinOp::Mod);
@@ -5345,6 +5543,26 @@ impl Compiler {
                 self.emit(Op::F64_ADD);
                 self.emit_const(Value::F64(256.0));
                 self.compile_binop(&BinOp::Mod);
+            }
+            "signed char" | "int8" | "sbyte" => {
+                // Signed 8-bit: wrap to 0..255 then sign-extend (>= 128 → −256),
+                // mirroring the int16 path. (`i8` range is −128..127.)
+                self.emit(Op::F64_TRUNC);
+                self.emit_const(Value::F64(256.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit_const(Value::F64(256.0));
+                self.emit(Op::F64_ADD);
+                self.emit_const(Value::F64(256.0));
+                self.compile_binop(&BinOp::Mod);
+                self.emit(Op::DUP);
+                self.emit_const(Value::F64(128.0));
+                self.emit(Op::F64_GE);
+                let line = self.line;
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::F64(256.0));
+                self.emit(Op::F64_SUB);
+                self.chunk().emit_else(line);
+                self.chunk().emit_end(line);
             }
             "int16" => {
                 self.emit(Op::F64_TRUNC);
@@ -11025,6 +11243,13 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
+                    // If this local's address is taken anywhere in the function,
+                    // box it in a pointer cell now (once), so a `&name` inside a
+                    // loop reuses this cell rather than re-wrapping every
+                    // iteration. Reads/writes become cell-aware via the mark.
+                    if self.current_addr_taken_locals.contains(name) {
+                        self.promote_local_binding_to_pointer_cell(name);
+                    }
                 }
 
                 let binding_key = self.canon(name);

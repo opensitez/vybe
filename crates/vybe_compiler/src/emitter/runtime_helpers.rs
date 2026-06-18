@@ -277,10 +277,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_sort_in_place");
     chunks.push(build_sort_with_comparator(imports));
     exports.push("__stdlib_sort_with_comparator");
-    chunks.push(build_c_qsort(imports));
-    exports.push("__stdlib_c_qsort");
-    chunks.push(build_c_bsearch_index(imports));
-    exports.push("__stdlib_c_bsearch_index");
     chunks.push(build_sort_by_key(imports));
     exports.push("__stdlib_sort_by_key");
     chunks.push(build_reversed(imports));
@@ -552,8 +548,6 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_sorted" => build_sorted(imports),
         "__stdlib_sort_in_place" => build_sort_in_place(imports),
         "__stdlib_sort_with_comparator" => build_sort_with_comparator(imports),
-        "__stdlib_c_qsort" => build_c_qsort(imports),
-        "__stdlib_c_bsearch_index" => build_c_bsearch_index(imports),
         "__stdlib_sort_by_key" => build_sort_by_key(imports),
         "__stdlib_reversed" => build_reversed(imports),
         "__stdlib_enumerate" => build_enumerate(imports),
@@ -1148,173 +1142,6 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── c_qsort(array, count, cmp) → same array, sorted in-place over first count items ──
-fn build_c_qsort(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_c_qsort");
-    c.arity = 3;
-    c.local_count = 7; // arr(0) + count(1) + cmp(2) + i(3) + j(4) + key(5) + len(6)
-    let arr = 0u16;
-    let count = 1u16;
-    let cmp = 2u16;
-    let i = 3u16;
-    let j = 4u16;
-    let key = 5u16;
-    let len = 6u16;
-
-    c.emit_op_u16(Op::LOCAL_GET, count, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
-
-    let outer_block_p = c.emit_block(0);
-    let (outer_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
-
-    let inner_block_p = c.emit_block(0);
-    let (inner_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::I32_CONST_0, 0);
-    crate::emitter::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u8(Op::CALL_REF, 2, 0);
-    c.emit_op(Op::I32_CONST_0, 0);
-    crate::emitter::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    crate::emitter::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(inner_loop_p);
-    c.emit_end(0);
-    c.patch_block(inner_block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::emitter::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(outer_loop_p);
-    c.emit_end(0);
-    c.patch_block(outer_block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── c_bsearch_index(array, count, key, cmp) → matching index or -1 ──
-fn build_c_bsearch_index(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_c_bsearch_index");
-    c.arity = 4;
-    c.local_count = 6; // arr(0) + count(1) + key(2) + cmp(3) + i(4) + res(5)
-    let arr = 0u16;
-    let count = 1u16;
-    let key = 2u16;
-    let cmp = 3u16;
-    let i = 4u16;
-    let res = 5u16;
-
-    c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, count, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u8(Op::CALL_REF, 2, 0);
-    c.emit_op_u16(Op::LOCAL_SET, res, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, res, 0);
-    c.emit_op(Op::I32_CONST_0, 0);
-    crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    let line = 0;
-    c.emit_if(line);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(line);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_br(0, 0);
-
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    let const_neg_one = c.add_constant(Value::I32(-1));
-    c.emit_op_u16(Op::CONST, const_neg_one, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
 
 // ── reversed(array) → array ─────────────────────────────────
 fn build_reversed(imports: &mut Chunk) -> Chunk {

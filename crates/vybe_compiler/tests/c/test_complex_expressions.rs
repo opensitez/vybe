@@ -29,8 +29,9 @@ c_cases! {
         expect: ["27"]
     },
     bitwise_ops_combined => {
+        // (0xAB & 0x0F) | (0xAB >> 4) = 0xB | 0xA = 11 (verified vs native cc).
         body: "int x = 0xAB;\nint y = (x & 0x0F) | (x >> 4);\nprintf(\"%d\\n\", y);\nreturn 0;",
-        expect: ["27"]
+        expect: ["11"]
     },
     short_circuit_and_no_side_effect => {
         body: "int x = 0;\nint y = 0;\n(y = 1) && (x = 2);\nprintf(\"%d %d\\n\", x, y);\nreturn 0;",

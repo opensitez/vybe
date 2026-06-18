@@ -87,3 +87,21 @@ int main() {
         &["1"],
     );
 }
+
+// `(char*)&int` exposes the integer's object representation as a little-endian
+// byte view, so p[i] reads byte i (0x01020304 → 04 03 02 01).
+#[test]
+fn char_ptr_indexes_object_representation_bytes() {
+    assert_outputs(
+        r#"
+#include <stdio.h>
+int main() {
+    int x = 0x01020304;
+    char *p = (char*)&x;
+    printf("%d %d %d %d\n", p[0], p[1], p[2], p[3]);
+    return 0;
+}
+"#,
+        &["4 3 2 1"],
+    );
+}
