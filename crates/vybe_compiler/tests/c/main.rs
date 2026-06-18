@@ -87,6 +87,7 @@ mod test_preprocessor;
 mod test_preprocessor_advanced;
 mod test_preprocessor_conditional;
 mod test_printf_formats;
+mod test_regex;
 mod test_qsort;
 mod test_recursion;
 mod test_restrict;

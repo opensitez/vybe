@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use super::{CParser, Rule};
 use crate::ast::*;
 use crate::platforms::libc::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND};
-use crate::platforms::libc::{complex_adapter, time_adapter};
+use crate::platforms::libc::{complex_adapter, regex_adapter, time_adapter};
 use crate::platforms::libc::{
     ctype_adapter, math_adapter, stdio_adapter, string_adapter, wchar_adapter,
 };
@@ -605,6 +605,18 @@ impl Walker {
                 ("LLONG_MIN",  i64::MIN),
                 ("LLONG_MAX",  i64::MAX),
                 ("ULLONG_MAX", i64::MAX),
+            ],
+            // POSIX regex.h — regcomp cflags, regexec eflags, and error codes.
+            "regex.h" => &[
+                ("REG_EXTENDED", 1),
+                ("REG_ICASE", 2),
+                ("REG_NEWLINE", 4),
+                ("REG_NOSUB", 8),
+                ("REG_NOTBOL", 1),
+                ("REG_NOTEOL", 2),
+                ("REG_NOMATCH", 1),
+                ("REG_BADPAT", 2),
+                ("REG_ESPACE", 12),
             ],
             "math.h" | "cmath" => &[],
             _ => &[],
@@ -6447,6 +6459,47 @@ impl Walker {
                     let mut it = args.into_iter();
                     if let (Some(s), Some(reject)) = (it.next(), it.next()) {
                         return call_expr(ident("__c_strcspn_h"), vec![s.value, reject.value]);
+                    }
+                    return int_lit(0);
+                }
+                // ── regex.h (POSIX) ──────────────────────────────────────────
+                "regcomp" => {
+                    let mut it = args.into_iter();
+                    if let (Some(preg), Some(pat), Some(flags)) = (it.next(), it.next(), it.next()) {
+                        let preg_lval = self.value_from_c_address_arg(preg.value);
+                        return regex_adapter::regcomp(preg_lval, pat.value, flags.value);
+                    }
+                    return int_lit(0);
+                }
+                "regexec" => {
+                    let mut it = args.into_iter();
+                    if let (Some(preg), Some(s), Some(nmatch), Some(pmatch)) =
+                        (it.next(), it.next(), it.next(), it.next())
+                    {
+                        let eflags = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                        let preg_val = self.value_from_c_address_arg(preg.value);
+                        let pmatch_arr =
+                            carray_base_expr(&pmatch.value).unwrap_or(pmatch.value);
+                        return regex_adapter::regexec(
+                            preg_val,
+                            s.value,
+                            nmatch.value,
+                            pmatch_arr,
+                            eflags,
+                        );
+                    }
+                    return int_lit(1);
+                }
+                "regfree" => {
+                    return regex_adapter::regfree();
+                }
+                "regerror" => {
+                    // regerror(errcode, &preg, errbuf, errbuf_size)
+                    let mut it = args.into_iter();
+                    if let (Some(errcode), Some(_preg), Some(errbuf)) =
+                        (it.next(), it.next(), it.next())
+                    {
+                        return regex_adapter::regerror(errcode.value, errbuf.value);
                     }
                     return int_lit(0);
                 }

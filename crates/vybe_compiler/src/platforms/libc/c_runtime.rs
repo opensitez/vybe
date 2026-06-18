@@ -993,6 +993,9 @@ pub fn prelude() -> Vec<Statement> {
     // retired cross-language `__stdlib_*` bundle.
     out.extend(crate::platforms::libc::stdlib_runtime::runtime_helpers());
 
+    // regex.h runtime helpers (regcomp/regexec on the ECMA RegExp surface).
+    out.extend(crate::platforms::libc::regex_adapter::runtime_helpers());
+
     // string.h runtime helpers (strcoll/strxfrm/strpbrk/strspn/strcspn).
     out.extend(crate::platforms::libc::string_runtime::runtime_helpers());
 

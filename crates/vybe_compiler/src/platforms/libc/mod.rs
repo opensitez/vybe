@@ -17,6 +17,7 @@ pub mod ctype_adapter;
 pub mod math_adapter;
 pub mod math_runtime;
 pub mod pointers;
+pub mod regex_adapter;
 pub mod stdio_adapter;
 pub mod stdlib_adapter;
 pub mod stdlib_runtime;
