@@ -11169,7 +11169,11 @@ impl Compiler {
                     } else {
                         false
                     };
-                    if !skip_c_coerce {
+                    // C-style value coercion only fires for an *explicitly
+                    // declared* type. An inferred hint (e.g. JS `let t = true`
+                    // infers "bool") must not flatten the value — otherwise the
+                    // boolean becomes i32 0/1 (typeof "number", prints "1").
+                    if !skip_c_coerce && decl.type_hint.is_some() {
                         self.coerce_c_value_for_type_hint(effective_type_hint)?;
                     }
                     self.maybe_promote_pascal_array_literal_to_set(
