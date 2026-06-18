@@ -511,6 +511,101 @@ pub fn emit_dyn_ge(chunk: &mut Chunk, line: u32) {
     emit_dyn_cmp(chunk, line, CmpOp::Ge);
 }
 
+/// JS Abstract Relational Comparison (ECMA-262 §7.2.13). Operands are
+/// expected to already be primitives (the caller runs ToPrimitive first).
+/// Both strings → lexicographic compare; both bigints → i64 compare;
+/// otherwise ToNumber each operand and compare as f64.
+///
+/// The difference from [`emit_dyn_cmp`]: the mixed-type fallback uses
+/// ECMA-262 §7.1.4 `ecma:value.toNumber` (which parses numeric strings,
+/// yields NaN for non-numeric ones so `"foo" < 0` → NaN → false, and
+/// throws a TypeError for symbols) instead of the strict
+/// `wasm:js-number.toF64`, which traps ("not a number") on any
+/// non-Number value.
+///
+/// MUST be emitted into the active code chunk — it resolves
+/// `ecma:value.toNumber` via `chunk.add_import`, which targets *this*
+/// chunk's import table. Never route it through an `_into` shared-runtime
+/// chunk (that would add the import to the wrong table).
+fn emit_js_relational_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
+    let slots = alloc_locals(chunk, 2);
+    let b_slot = slots;
+    let a_slot = slots + 1;
+
+    let test_num = chunk.add_import("wasm:js-number", "test");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let str_compare = chunk.add_import("wasm:js-string", "compare");
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let to_number = chunk.add_import("ecma:value", "toNumber");
+
+    save(chunk, b_slot, line);
+    save(chunk, a_slot, line);
+
+    // both number?
+    load(chunk, a_slot, line);
+    call1(chunk, test_num, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_num, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_slot, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(f64_cmp_op(&op), line);
+    chunk.emit_else(line);
+
+    // both string?
+    load(chunk, a_slot, line);
+    call1(chunk, test_str, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_str, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    load(chunk, b_slot, line);
+    call2(chunk, str_compare, line); // i32 (-1/0/1)
+    i32_const(chunk, 0, line);
+    chunk.emit_op(i32_cmp_op(&op), line);
+    chunk.emit_else(line);
+
+    // both bigint?
+    load(chunk, a_slot, line);
+    call1(chunk, test_bigint, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_bigint, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    load(chunk, a_slot, line);
+    load(chunk, b_slot, line);
+    chunk.emit_op(i64_cmp_op(&op), line);
+    chunk.emit_else(line);
+    // fallback: ToNumber both (NaN-safe), compare as f64.
+    load(chunk, a_slot, line);
+    call1(chunk, to_number, line);
+    load(chunk, b_slot, line);
+    call1(chunk, to_number, line);
+    chunk.emit_op(f64_cmp_op(&op), line);
+    chunk.emit_end(line); // bigint
+    chunk.emit_end(line); // string
+    chunk.emit_end(line); // number
+    // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions.
+}
+
+pub fn emit_js_lt(chunk: &mut Chunk, line: u32) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Lt);
+}
+pub fn emit_js_gt(chunk: &mut Chunk, line: u32) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Gt);
+}
+pub fn emit_js_le(chunk: &mut Chunk, line: u32) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Le);
+}
+pub fn emit_js_ge(chunk: &mut Chunk, line: u32) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Ge);
+}
+
 // ── emit_dyn_add ──────────────────────────────────────────────────────
 
 pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {

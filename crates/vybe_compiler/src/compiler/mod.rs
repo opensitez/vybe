@@ -7501,13 +7501,29 @@ impl Compiler {
                     )
                 });
                 let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
-                if !all_decls && !hoisted_deconstruction {
+                // A JS block that declares a lexical binding (`let`/`const`/
+                // `class`) is its own scope even when it contains *only*
+                // declarations — otherwise `{ let x = 42; }` would leak `x` to
+                // the enclosing scope. (`var` is function-scoped and correctly
+                // skips this.)
+                let has_js_lexical = self.is_js_profile()
+                    && stmts.iter().any(|s| {
+                        matches!(
+                            &s.kind,
+                            StmtKind::VarDecl {
+                                kind: VarDeclKind::Let | VarDeclKind::Const,
+                                ..
+                            } | StmtKind::ClassDecl { .. }
+                        )
+                    });
+                let make_scope = (!all_decls && !hoisted_deconstruction) || has_js_lexical;
+                if make_scope {
                     self.scope_mut().begin_scope();
                 }
                 for s in stmts {
                     self.compile_stmt(s)?;
                 }
-                if !all_decls && !hoisted_deconstruction {
+                if make_scope {
                     self.scope_mut().end_scope();
                 }
             }
@@ -13202,14 +13218,14 @@ impl Compiler {
                 }
                 if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
-                } else if self.is_js_profile() || self.is_php_profile() {
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
-                        if self.is_js_profile() {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                        }
-                    };
+                } else if self.is_js_profile() {
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    let line = self.line;
+                    crate::emitter::ops::emit_js_lt(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else if self.is_php_profile() {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -13242,14 +13258,14 @@ impl Compiler {
                 }
                 if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
-                } else if self.is_js_profile() || self.is_php_profile() {
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
-                        if self.is_js_profile() {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                        }
-                    };
+                } else if self.is_js_profile() {
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    let line = self.line;
+                    crate::emitter::ops::emit_js_gt(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else if self.is_php_profile() {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -13282,14 +13298,14 @@ impl Compiler {
                 }
                 if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_le);
-                } else if self.is_js_profile() || self.is_php_profile() {
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_le(self.chunk(), line);
-                        if self.is_js_profile() {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                        }
-                    };
+                } else if self.is_js_profile() {
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    let line = self.line;
+                    crate::emitter::ops::emit_js_le(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else if self.is_php_profile() {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_le(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -13322,14 +13338,14 @@ impl Compiler {
                 }
                 if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_ge);
-                } else if self.is_js_profile() || self.is_php_profile() {
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
-                        if self.is_js_profile() {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
-                        }
-                    };
+                } else if self.is_js_profile() {
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    let line = self.line;
+                    crate::emitter::ops::emit_js_ge(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else if self.is_php_profile() {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
