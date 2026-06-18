@@ -5526,6 +5526,15 @@ impl Compiler {
     }
 
     fn coerce_c_value_for_type_hint(&mut self, type_hint: Option<&str>) -> Result<(), String> {
+        // JS is dynamically typed: a variable's type hint here is *inferred*
+        // from its initializer (e.g. `let t = true` infers "bool"), never a
+        // static declaration. C-style value coercion (int-width truncation,
+        // `_Bool` → i32 0/1) must not run for it — otherwise a boolean stored
+        // in a variable would be flattened to a number (`typeof` "number",
+        // prints "1") on both declaration and later assignment.
+        if self.is_js_profile() {
+            return Ok(());
+        }
         let Some(type_hint) = type_hint else {
             return Ok(());
         };
@@ -11169,11 +11178,7 @@ impl Compiler {
                     } else {
                         false
                     };
-                    // C-style value coercion only fires for an *explicitly
-                    // declared* type. An inferred hint (e.g. JS `let t = true`
-                    // infers "bool") must not flatten the value — otherwise the
-                    // boolean becomes i32 0/1 (typeof "number", prints "1").
-                    if !skip_c_coerce && decl.type_hint.is_some() {
+                    if !skip_c_coerce {
                         self.coerce_c_value_for_type_hint(effective_type_hint)?;
                     }
                     self.maybe_promote_pascal_array_literal_to_set(
