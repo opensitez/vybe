@@ -291,3 +291,58 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     };
     chunk.emit_end(line);
 }
+
+/// PHP `rand([$min, $max])` / `mt_rand([$min, $max])` / `random_int($min, $max)`.
+///
+/// `wasi:random` returns a raw u64; PHP returns an integer uniformly in
+/// `[$min, $max]`. Scale via `$min + floor((r / 2^64) * ($max - $min + 1))`.
+/// Because `r / 2^64` lies in `[0, 1)`, the floored product is always in
+/// `[0, range - 1]`, so the result never escapes `[$min, $max]` regardless
+/// of f64 rounding. With no args, PHP `rand()` spans `[0, getrandmax()]`
+/// (2147483647). Composes only `wasi:random` + arithmetic opcodes — no new
+/// host fns.
+pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let rand_idx = chunks[0].add_import(
+        "wasi:random/insecure".to_string(),
+        "get-insecure-random-u64".to_string(),
+    );
+    let chunk = &mut chunks[current];
+    let min_slot = alloc_local(chunk);
+    let max_slot = alloc_local(chunk);
+    let range_slot = alloc_local(chunk);
+
+    if argc >= 2 {
+        // Stack: [min, max] — max on top.
+        lset(chunk, max_slot, line);
+        lset(chunk, min_slot, line);
+    } else {
+        // No-arg form: drop any stray arg, default to [0, getrandmax()].
+        for _ in 0..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, min_slot, line);
+        push_const(chunk, Value::F64(2147483647.0), line);
+        lset(chunk, max_slot, line);
+    }
+
+    // range = (max - min) + 1
+    lget(chunk, max_slot, line);
+    lget(chunk, min_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(1.0), line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, range_slot, line);
+
+    // result = min + floor( (abs(r) / 2^64) * range )
+    lget(chunk, min_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, rand_idx, line);
+    chunk.emit(0, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    push_const(chunk, Value::F64(18446744073709551616.0), line); // 2^64
+    chunk.emit_op(Op::F64_DIV, line);
+    lget(chunk, range_slot, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+}

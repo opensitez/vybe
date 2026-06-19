@@ -224,6 +224,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.dec" => {
             crate::emitter::php::numeric_adapter::emit_php_dec(chunks, current, argc, line)
         }
+        "php.rand" => {
+            crate::emitter::php::numeric_adapter::emit_rand(chunks, current, argc, line)
+        }
 
         // ── PHP ctype_* predicates ─────────────────────────────────
         // Char-iteration loops over the input string; each predicate

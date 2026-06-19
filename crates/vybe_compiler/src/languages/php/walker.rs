@@ -8677,6 +8677,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             let div = mk_binary(BinOp::Div, a, b);
             mk_call(mk_member("Math", "trunc"), vec![div])
         }
+        // ── IEEE float division ──────────────────────────────────────────
+        // PHP `fdiv($a, $b)` is IEEE-754 division: never throws, yields
+        // ±INF / NAN on a zero divisor. That's exactly what the f64 `/`
+        // path already produces (`10 / 0` → Infinity), so lower to it.
+        "fdiv" if args.len() == 2 => mk_binary(BinOp::Div, arg(0)?, arg(1)?).kind,
         // ── Base conversions: string → integer ──────────────────────────
         // PHP `bindec`/`octdec`/`hexdec` → JS `Number.parseInt(str, base)`.
         // Qualified form (Number.parseInt) bypasses the common-import
@@ -9283,8 +9288,24 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             )
         }
         // ── Precision-aware rounding ────────────────────────────────────
-        // PHP `round($n)` ≡ `Math.round($n)`.
-        "round" if args.len() == 1 => mk_call(mk_member("Math", "round"), vec![arg(0)?]),
+        // PHP `round($n)` rounds half AWAY FROM ZERO (round(-4.5) == -5),
+        // unlike JS `Math.round` which rounds half toward +∞ (== -4).
+        // Express it as `Math.sign($n) * Math.round(Math.abs($n))`.
+        "round" if args.len() == 1 => {
+            let abs = Expression::with_span(
+                mk_call(mk_member("Math", "abs"), vec![arg(0)?]),
+                span.clone(),
+            );
+            let rounded = Expression::with_span(
+                mk_call(mk_member("Math", "round"), vec![abs]),
+                span.clone(),
+            );
+            let sign = Expression::with_span(
+                mk_call(mk_member("Math", "sign"), vec![arg(0)?]),
+                span.clone(),
+            );
+            mk_binary(BinOp::Mul, sign, rounded).kind
+        }
         // PHP `round($n, $p)` ≡ `Math.round($n * Math.pow(10, $p)) / Math.pow(10, $p)`.
         // Both args are evaluated twice — Math.pow on the precision is
         // cheap and side-effect-free, $n is typically a variable. The

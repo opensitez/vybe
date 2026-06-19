@@ -84,9 +84,42 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     push_str(chunk, "", line);
     chunk.emit_end(line);
     chunk.emit_else(line);
+    // Not boolean. PHP prints special float values as INF / -INF / NAN
+    // (uppercase), unlike the VM's "Infinity"/"NaN". These eq-probes are
+    // safe for non-numbers: a string/object compares equal to itself, so
+    // it skips straight to the default `"" + v` path.
+    // NaN?  (v !== v)
+    lget(chunk, v_slot, line);
+    lget(chunk, v_slot, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "NAN", line);
+    chunk.emit_else(line);
+    // +Infinity?
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::F64(f64::INFINITY), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "INF", line);
+    chunk.emit_else(line);
+    // -Infinity?
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::F64(f64::NEG_INFINITY), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "-INF", line);
+    chunk.emit_else(line);
+    // default: "" + v
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);

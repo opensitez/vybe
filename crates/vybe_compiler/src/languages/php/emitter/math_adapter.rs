@@ -45,7 +45,36 @@ pub fn emit_php_max(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_min_or_max(chunks, current, argc, /*want_lt=*/ false, line);
 }
 
+/// Coerce the value on top of the stack to a number for comparison.
+/// Already-numeric values pass through unchanged; strings (incl. numeric
+/// strings like `'10'`) go through `ecma:number.parseFloat`. `parseFloat`
+/// alone is wrong because the host fn expects a string and returns 0/NaN
+/// for an f64 operand, and `0 + v` is wrong because it concatenates a
+/// string operand. Stack: `[v]` → `[number]`.
+fn emit_to_number(chunk: &mut Chunk, pf_idx: u16, line: u32) {
+    let t = alloc_local(chunk);
+    lset(chunk, t, line);
+    lget(chunk, t, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    push_str(chunk, "number", line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, t, line);
+    chunk.emit_else(line);
+    lget(chunk, t, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_end(line);
+}
+
 fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool, line: u32) {
+    // Numeric coercion for comparison must turn numeric strings into real
+    // numbers (`'10'` → 10). `0 + v` would *concatenate* a string operand
+    // (→ "010") and then trap in the comparison's `toF64`, so coerce with
+    // `ecma:number.parseFloat` instead. Resolve the import up-front (it
+    // lives on chunk 0's import table).
+    let pf_idx = chunks[0].add_import("ecma:number".to_string(), "parseFloat".to_string());
     let chunk = &mut chunks[current];
     if argc == 0 {
         chunk.emit_op(Op::FALSE, line);
@@ -76,14 +105,12 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
     lget(chunk, base, line);
     lset(chunk, best_slot, line);
     for i in 1..argc {
-        // tmp = +arg[i]
+        // tmp = toNumber(arg[i])
         lget(chunk, base + i as u16, line);
-        push_const(chunk, Value::F64(0.0), line);
-        crate::emitter::ops::emit_dyn_add(chunk, line); // numeric coerce via "0 + v"
-        // best_n = +best
+        emit_to_number(chunk, pf_idx, line);
+        // best_n = toNumber(best)
         lget(chunk, best_slot, line);
-        push_const(chunk, Value::F64(0.0), line);
-        crate::emitter::ops::emit_dyn_add(chunk, line);
+        emit_to_number(chunk, pf_idx, line);
         if want_lt {
             crate::emitter::ops::emit_dyn_lt(chunk, line)
         } else {

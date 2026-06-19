@@ -235,8 +235,9 @@ preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, m
 log                 = { emit = "host:ecma:math:log",         min_args = 1, max_args = 2 }
 log2                = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }
 log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
-rand                = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
-mt_rand             = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
+rand                = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
+mt_rand             = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
+random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
 # `fmod` uses a pure-WASM emit (emit_c_fmod) that works with any numeric type.
 fmod                = { emit = "common:expressions.f64_mod", min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
