@@ -194,6 +194,7 @@ fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
         constructor_name: "constructor".into(),
         class_method_dispatch: "prototype".into(),
         dynamic_numeric_dispatch: true,
+        materialize_bool_results: false,
         enum_as_ordinals: false,
         case_sensitive: true,
         string_indexing: StringIndexing::ZeroBased,

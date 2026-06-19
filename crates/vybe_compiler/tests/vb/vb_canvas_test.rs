@@ -258,7 +258,7 @@ Dim f As New Form1()
     drop(g);
 
     // Also check Canvas widgets on the form.
-    let mut g = gui.lock().unwrap();
+    let g = gui.lock().unwrap();
     let widget_names: Vec<String> = g
         .form
         .controls()

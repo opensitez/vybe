@@ -13,7 +13,6 @@
 use super::helpers::{run_vb, run_vb_gui, run_vb_vm};
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value};
-use vybe_host::gui_state::GuiState;
 
 // ============================================================
 // A. CLASS METHOD RESOLUTION (10 tests)
