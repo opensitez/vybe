@@ -628,7 +628,7 @@ impl Compiler {
         let result_slot =
             if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
                 let slot_name = self.profile.result_slot_name.clone();
-                let rs = self.define_local(&slot_name);
+                let rs = self.define_local_typed(&slot_name, return_type.clone());
                 self.emit(Op::NULL);
                 self.emit_u16(Op::LOCAL_SET, rs);
                 self.emit(Op::DROP);

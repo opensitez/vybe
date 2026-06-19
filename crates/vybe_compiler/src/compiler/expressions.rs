@@ -738,6 +738,20 @@ impl Compiler {
                 // removed __keys/vybe$assoc_keys_csv side-band and left the
                 // stack unbalanced. emit_dyn_to_bool is correct: empty()/isset()
                 // already handle PHP array truthiness at the call site.
+                if self.profile.name == "pascal"
+                    && matches!(op, BinOp::And | BinOp::Or)
+                    && self.pascal_expr_is_integer_like(left)
+                    && self.pascal_expr_is_integer_like(right)
+                {
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    if *op == BinOp::And {
+                        self.compile_binop(&BinOp::BitAnd);
+                    } else {
+                        self.compile_binop(&BinOp::BitOr);
+                    }
+                    return Ok(());
+                }
                 if *op == BinOp::And {
                     self.compile_expr(left)?;
                     let line = self.line;
@@ -748,6 +762,11 @@ impl Compiler {
                         &mut self.chunks[self.current],
                         skip,
                     );
+                    if self.profile.name == "pascal" {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                     return Ok(());
                 }
                 if *op == BinOp::Or {
@@ -760,6 +779,11 @@ impl Compiler {
                         &mut self.chunks[self.current],
                         skip,
                     );
+                    if self.profile.name == "pascal" {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                     return Ok(());
                 }
                 // NullCoalesce as binary op
@@ -925,6 +949,20 @@ impl Compiler {
                     return Ok(());
                 }
 
+                if self.profile.name == "pascal" && *op == BinOp::BitXor {
+                    let integer_xor =
+                        self.pascal_expr_is_integer_like(left) && self.pascal_expr_is_integer_like(right);
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    self.compile_binop(&BinOp::BitXor);
+                    if !integer_xor {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
+                    return Ok(());
+                }
+
                 if self.is_php_profile() && *op == BinOp::Concat {
                     let line = self.line;
                     self.compile_expr(left)?;
@@ -1053,6 +1091,25 @@ impl Compiler {
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
+                if self.profile.materialize_bool_results
+                    && matches!(
+                        op,
+                        BinOp::Eq
+                            | BinOp::NotEq
+                            | BinOp::StrictEq
+                            | BinOp::StrictNotEq
+                            | BinOp::Lt
+                            | BinOp::LtEq
+                            | BinOp::Gt
+                            | BinOp::GtEq
+                            | BinOp::In
+                            | BinOp::NotIn
+                    )
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                }
             }
 
             // ── Unary ───────────────────────────────────────────────────
@@ -1180,8 +1237,17 @@ impl Compiler {
                             }
                             UnaryOp::Not => {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
-                                if self.is_js_profile() {
+                                if self.profile.name == "pascal"
+                                    && self.pascal_expr_is_integer_like(inner)
+                                {
+                                    common::expressions::emit_i32_not(self.chunk(), line);
+                                } else {
+                                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                }
+                                if (self.is_js_profile() || self.profile.materialize_bool_results)
+                                    && !(self.profile.name == "pascal"
+                                        && self.pascal_expr_is_integer_like(inner))
+                                {
                                     crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                                 }
                             }

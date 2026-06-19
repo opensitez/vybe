@@ -117,6 +117,12 @@ pub struct LanguageProfile {
     /// generic dynamic comparison is used.
     pub string_aware_relational: bool,
 
+    /// Some frontends want boolean-valued operators to materialize as actual
+    /// Bool values in expression position, not raw WASM i32 conditions. Go
+    /// needs this so `fmt.Println(5 == 5)` prints `true` while
+    /// `fmt.Println(1)` still prints `1`.
+    pub materialize_bool_results: bool,
+
     /// PHP: when a class constructor global is undefined at construction
     /// time, invoke the registered `spl_autoload_register` callback with
     /// the class name and retry. When false, a plain `GLOBAL_GET` is used.
@@ -525,6 +531,10 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let materialize_bool_results = compiler
+        .get("materialize_bool_results")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let supports_autoload = compiler
         .get("supports_autoload")
         .and_then(|v| v.as_bool())
@@ -881,6 +891,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         string_aware_relational,
+        materialize_bool_results,
         supports_autoload,
         buffered_iterator_methods,
         uses_normalize_class,

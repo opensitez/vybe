@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use vybe_bytecode::value::ObjectKind;
 use vybe_bytecode::{HostContext, VM, Value};
 use vybe_host::gui_state::GuiState;
 
@@ -14,6 +15,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stdout_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn(
@@ -25,8 +27,45 @@ pub fn run_pascal(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
+    let out = output.clone();
+    let stdout = stdout_buffer.clone();
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let text = match args.get(1).unwrap_or(&Value::Null) {
+                Value::String(s) => s.to_string(),
+                Value::Object(obj) => {
+                    let obj = obj.lock().unwrap();
+                    if let ObjectKind::Array(items) = &obj.kind {
+                        let bytes: Vec<u8> = items
+                            .iter()
+                            .map(|item| item.as_i32().clamp(0, 255) as u8)
+                            .collect();
+                        String::from_utf8_lossy(&bytes).to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            };
+
+            let mut pending = stdout.lock().unwrap();
+            pending.push_str(&text);
+            while let Some(pos) = pending.find('\n') {
+                let line: String = pending.drain(..pos).collect();
+                pending.drain(..1);
+                out.lock().unwrap().push(line);
+            }
+            Value::Null
+        }),
+    );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
+    let residual = stdout_buffer.lock().unwrap().clone();
+    if !residual.is_empty() {
+        output.lock().unwrap().push(residual);
+    }
     let result = output.lock().unwrap().clone();
     result
 }

@@ -18,6 +18,7 @@ string_indexing = "zero_based"
 entry_point = "main"
 dynamic_add = true
 uses_normalize_class = false
+materialize_bool_results = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -31,9 +32,9 @@ uses_normalize_class = false
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"fmt.Println"     = { emit = "print",                    min_args = 0, max_args = 255 }
-"fmt.Print"       = { emit = "print",                    min_args = 0, max_args = 255 }
-"fmt.Printf"      = { emit = "print",                    min_args = 0, max_args = 255 }
+"fmt.Println"     = { emit = "common:go.fmt_println",    min_args = 0, max_args = 255 }
+"fmt.Print"       = { emit = "common:go.fmt_print",      min_args = 0, max_args = 255 }
+"fmt.Printf"      = { emit = "common:go.fmt_printf",     min_args = 1, max_args = 255 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 

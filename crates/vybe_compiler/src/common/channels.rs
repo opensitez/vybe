@@ -1,13 +1,5 @@
 use crate::ast::{Argument, ExprKind, Expression, ObjectProperty, UnaryOp};
 
-fn channel_queue_expr(channel: Expression) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(channel),
-        field: "queue".to_string(),
-        null_safe: false,
-    })
-}
-
 fn channel_runtime_call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
@@ -17,26 +9,23 @@ fn channel_runtime_call(name: &str, args: Vec<Expression>) -> Expression {
 }
 
 pub fn channel_new_expr(capacity: Option<Expression>) -> Expression {
-    Expression::new(ExprKind::Unary {
-        op: UnaryOp::AddrOf,
-        expr: Box::new(Expression::new(ExprKind::Object(vec![
-            ObjectProperty::KeyValue {
-                key: Expression::string("queue"),
-                value: Expression::new(ExprKind::Unary {
-                    op: UnaryOp::AddrOf,
-                    expr: Box::new(Expression::new(ExprKind::Array(Vec::new()))),
-                }),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::string("closed"),
-                value: Expression::bool(false),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::string("capacity"),
-                value: capacity.unwrap_or_else(|| Expression::int(0)),
-            },
-        ]))),
-    })
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("queue"),
+            value: Expression::new(ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: Box::new(Expression::new(ExprKind::Array(Vec::new()))),
+            }),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("closed"),
+            value: Expression::bool(false),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("capacity"),
+            value: capacity.unwrap_or_else(|| Expression::int(0)),
+        },
+    ]))
 }
 
 pub fn channel_receive_expr(channel: Expression) -> Expression {
@@ -44,8 +33,7 @@ pub fn channel_receive_expr(channel: Expression) -> Expression {
 }
 
 pub fn channel_send_expr(channel: Expression, value: Expression) -> Expression {
-    let queue = channel_queue_expr(channel);
-    channel_runtime_call("__vybe_channel_send", vec![queue, value])
+    channel_runtime_call("__vybe_channel_send", vec![channel, value])
 }
 
 pub fn channel_len_expr(channel: Expression) -> Expression {

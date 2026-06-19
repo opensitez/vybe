@@ -2201,6 +2201,33 @@ impl Compiler {
                 crate::ast::ImportKind::Default { .. } | crate::ast::ImportKind::Simple { .. } => {}
             }
         }
+
+        if self.profile.name == "go" {
+            for stmt in &module.body {
+                let StmtKind::Expr(expr) = &stmt.kind else {
+                    continue;
+                };
+                let ExprKind::Call { callee, args, .. } = &expr.kind else {
+                    continue;
+                };
+                if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_named_type")
+                    || args.len() != 2
+                {
+                    continue;
+                }
+                let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
+                    continue;
+                };
+                let type_name = match &args[1].value.kind {
+                    ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
+                    ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+                    _ => None,
+                };
+                if let Some(type_name) = type_name {
+                    self.source_type_aliases.insert(self.canon(name), type_name);
+                }
+            }
+        }
     }
 
     pub(crate) fn resolve_source_type_alias(&self, name: &str) -> String {
@@ -4204,7 +4231,11 @@ impl Compiler {
             | Some("double") | Some("float") | Some("single") | Some("decimal") | Some("long")
             | Some("int64") | Some("short") | Some("int16") | Some("uint") | Some("uint32")
             | Some("ulong") | Some("uint64") | Some("ushort") | Some("uint16") | Some("byte")
-            | Some("sbyte") | Some("char") => self.emit(Op::F64_CONST_0),
+            | Some("sbyte") => self.emit(Op::F64_CONST_0),
+            Some("char") if self.profile.name == "pascal" => {
+                self.emit_const(Value::String(Arc::from("")))
+            }
+            Some("char") => self.emit(Op::F64_CONST_0),
             Some("boolean") | Some("bool") => self.emit(Op::FALSE),
             Some(type_hint) if Self::is_string_type_hint(type_hint) => {
                 self.emit_const(Value::String(Arc::from("")))
@@ -5125,7 +5156,27 @@ impl Compiler {
         target: &Expression,
         len_expr: &Expression,
     ) -> Result<(), String> {
-        self.compile_expr(target)?;
+        if let ExprKind::Ident(name) = &target.kind {
+            self.compile_expr(target)?;
+            let arr_slot = self.define_local("__setlength_array");
+            self.emit_u16(Op::LOCAL_SET, arr_slot);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, arr_slot);
+            self.emit(Op::REF_IS_NULL);
+            let line = self.line;
+            self.chunk().emit_if(line);
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            self.emit_u16(Op::LOCAL_SET, arr_slot);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, arr_slot);
+            self.emit_var_set(name);
+            self.chunk().emit_end(line);
+
+            self.emit_u16(Op::LOCAL_GET, arr_slot);
+        } else {
+            self.compile_expr(target)?;
+        }
         self.compile_expr(len_expr)?;
         let set_length_idx = self.import("ecma:array", "setLength");
         self.emit_host_call(set_length_idx, 2);
@@ -5540,10 +5591,17 @@ impl Compiler {
         };
         let normalized = Self::normalize_type_hint(type_hint);
         match normalized.as_str() {
-            "bool" | "_bool" => {
+            "bool" | "boolean" | "_bool" => {
+                if self.profile.materialize_bool_results || self.profile.name == "pascal" {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    return Ok(());
+                }
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             }
+            "char" if self.profile.name == "pascal" => {}
             "char" | "uint8" | "unsigned char" | "byte" => {
                 self.emit(Op::F64_TRUNC);
                 self.emit_const(Value::F64(256.0));
@@ -6088,6 +6146,51 @@ impl Compiler {
             }
         }
         None
+    }
+
+    fn pascal_expr_is_integer_like(&self, expr: &Expression) -> bool {
+        if self.profile.name != "pascal" {
+            return false;
+        }
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(_)) => return true,
+            ExprKind::Lit(Literal::Float(_) | Literal::Bool(_) | Literal::Str(_)) => return false,
+            ExprKind::Unary { op, expr } => {
+                return matches!(op, UnaryOp::Not | UnaryOp::BitNot)
+                    && self.pascal_expr_is_integer_like(expr);
+            }
+            ExprKind::Binary { op, left, right } => {
+                return matches!(
+                    op,
+                    BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                        | BinOp::Shl
+                        | BinOp::Shr
+                        | BinOp::And
+                        | BinOp::Or
+                ) && self.pascal_expr_is_integer_like(left)
+                    && self.pascal_expr_is_integer_like(right);
+            }
+            _ => {}
+        }
+        let Some(type_hint) = self.infer_expr_type_hint(expr) else {
+            return false;
+        };
+        matches!(
+            Self::normalize_type_hint(&self.resolve_source_type_alias(&type_hint)).as_str(),
+            "integer"
+                | "int"
+                | "longint"
+                | "shortint"
+                | "smallint"
+                | "byte"
+                | "word"
+                | "cardinal"
+                | "int64"
+                | "uint64"
+                | "longword"
+        )
     }
 
     fn expr_user_value_type_name(&self, expr: &Expression) -> Option<String> {
@@ -7382,6 +7485,26 @@ impl Compiler {
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
                 match &expr.kind {
+                    ExprKind::Call { callee, args, .. }
+                        if self.profile.name == "go"
+                            && matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_named_type")
+                            && args.len() == 2 =>
+                    {
+                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind
+                        {
+                            let type_name = match &args[1].value.kind {
+                                ExprKind::Lit(Literal::Str(type_name)) => {
+                                    Some(type_name.clone())
+                                }
+                                ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+                                _ => None,
+                            };
+                            if let Some(type_name) = type_name {
+                                self.source_type_aliases.insert(self.canon(name), type_name);
+                            }
+                        }
+                        return Ok(());
+                    }
                     ExprKind::Call { callee, args, .. }
                         if self.profile.name == "c"
                             && matches!(&callee.kind, ExprKind::Ident(name) if name == "exit") =>
@@ -13164,6 +13287,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        if self.profile.materialize_bool_results {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 }
             }
@@ -13175,6 +13301,9 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                        if self.profile.materialize_bool_results {
+                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
                     };
                 }
             }
@@ -13186,6 +13315,8 @@ impl Compiler {
                     crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
                 }
                 if self.is_js_profile() {
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else if self.profile.materialize_bool_results {
                     crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                 }
             }
@@ -13200,6 +13331,8 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
                     }
                     if self.is_js_profile() {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    } else if self.profile.materialize_bool_results {
                         crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
@@ -13242,6 +13375,9 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_lt,
                         line,
                     );
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 }
             }
             BinOp::Gt => {
@@ -13282,6 +13418,9 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_gt,
                         line,
                     );
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 }
             }
             BinOp::LtEq => {
@@ -13322,6 +13461,9 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_le,
                         line,
                     );
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 }
             }
             BinOp::GtEq => {
@@ -13362,6 +13504,9 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_ge,
                         line,
                     );
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 }
             }
             BinOp::Spaceship => {
@@ -13939,37 +14084,37 @@ impl Compiler {
         if self.profile.name == "pascal" {
             let builtin_name = self.canon(name);
             if builtin_name == "write" || builtin_name == "writeln" {
-                let helper = if builtin_name == "write" {
-                    "__vybe_pascal_write"
-                } else {
-                    "__vybe_pascal_writeln"
-                };
-                let helper_idx = self.str_const(helper);
-                self.emit_u16(Op::GLOBAL_GET, helper_idx);
-
-                if args.is_empty() {
-                    self.emit_const(Value::String(Arc::from("")));
-                } else {
-                    self.compile_expr(args[0])?;
+                let mut part_count = 0usize;
+                for (index, arg) in args.iter().enumerate() {
+                    if index > 0 {
+                        self.emit_const(Value::String(Arc::from(" ")));
+                        part_count += 1;
+                    }
+                    self.compile_expr(arg)?;
                     let line = self.line;
                     common::strings::emit_to_string(self.chunk(), line);
-                    for arg in args.iter().skip(1) {
-                        self.emit_const(Value::String(Arc::from(" ")));
-                        {
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
-                        };
-                        self.compile_expr(arg)?;
-                        let line = self.line;
-                        common::strings::emit_to_string(self.chunk(), line);
-                        {
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
-                        };
-                    }
+                    part_count += 1;
                 }
+                if builtin_name == "writeln" {
+                    self.emit_const(Value::String(Arc::from("\n")));
+                    part_count += 1;
+                }
+                let line = self.line;
+                common::strings::emit_concat(self.chunk(), part_count, line);
 
-                self.emit_u8(Op::CALL_REF, 1);
+                let text_slot = self.define_local("__pascal_stdout_text");
+                self.emit_u16(Op::LOCAL_SET, text_slot);
+                self.emit(Op::DROP);
+
+                let stdout_idx = self.import("wasi:cli/stdout", "get-stdout");
+                let write_idx = self.import(
+                    "wasi:io/streams",
+                    "[method]output-stream.blocking-write-and-flush",
+                );
+                self.emit_host_call(stdout_idx, 0);
+                self.emit_u16(Op::LOCAL_GET, text_slot);
+                self.emit_host_call(write_idx, 2);
+                self.emit(Op::DROP);
                 return Ok(true);
             }
 
@@ -13978,6 +14123,109 @@ impl Compiler {
             {
                 self.compile_expr(args[0])?;
                 common::math::emit_trunc(self.chunk(), line);
+                return Ok(true);
+            }
+
+            if builtin_name == "inttohex" && (1..=2).contains(&args.len()) {
+                self.compile_expr(args[0])?;
+                let number_idx = self.import("ecma:number", "Number");
+                self.emit_host_call(number_idx, 1);
+                self.emit_const(Value::F64(16.0));
+                let to_string_idx = self.import("ecma:number", "toString");
+                self.emit_host_call(to_string_idx, 2);
+                let upper_idx = self.import("ecma:string", "toUpperCase");
+                self.emit_host_call(upper_idx, 1);
+                if let Some(width) = args.get(1) {
+                    self.compile_expr(width)?;
+                    self.emit_const(Value::String(Arc::from("0")));
+                    let pad_start_idx = self.import("ecma:string", "padStart");
+                    self.emit_host_call(pad_start_idx, 3);
+                }
+                return Ok(true);
+            }
+
+            if builtin_name == "booltostr" && (1..=2).contains(&args.len()) {
+                self.compile_expr(args[0])?;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::String(Arc::from(if args.len() == 1 {
+                    "true"
+                } else {
+                    "True"
+                })));
+                self.chunk().emit_else(line);
+                self.emit_const(Value::String(Arc::from(if args.len() == 1 {
+                    "false"
+                } else {
+                    "False"
+                })));
+                self.chunk().emit_end(line);
+                return Ok(true);
+            }
+
+            if (builtin_name == "ansiuppercase" || builtin_name == "ansilowercase")
+                && args.len() == 1
+            {
+                self.compile_expr(args[0])?;
+                let method = if builtin_name == "ansiuppercase" {
+                    "toUpperCase"
+                } else {
+                    "toLowerCase"
+                };
+                let idx = self.import("ecma:string", method);
+                self.emit_host_call(idx, 1);
+                return Ok(true);
+            }
+
+            if builtin_name == "samestr" && args.len() == 2 {
+                self.compile_expr(args[0])?;
+                self.compile_expr(args[1])?;
+                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                return Ok(true);
+            }
+
+            if (builtin_name == "sametext" || builtin_name == "comparetext") && args.len() == 2 {
+                self.compile_expr(args[0])?;
+                let lower_idx = self.import("ecma:string", "toLowerCase");
+                self.emit_host_call(lower_idx, 1);
+                self.compile_expr(args[1])?;
+                self.emit_host_call(lower_idx, 1);
+                if builtin_name == "sametext" {
+                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                } else {
+                    let compare_idx = self.import("ecma:string", "localeCompare");
+                    self.emit_host_call(compare_idx, 2);
+                }
+                return Ok(true);
+            }
+
+            if builtin_name == "strtobool" && args.len() == 1 {
+                self.compile_expr(args[0])?;
+                let lower_idx = self.import("ecma:string", "toLowerCase");
+                self.emit_host_call(lower_idx, 1);
+                self.emit_const(Value::String(Arc::from("true")));
+                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                return Ok(true);
+            }
+
+            if builtin_name == "strtointdef" && args.len() == 2 {
+                self.compile_expr(args[0])?;
+                let parse_idx = self.import("ecma:number", "parseInt");
+                self.emit_host_call(parse_idx, 1);
+                let parsed_slot = self.define_local("__pascal_strtointdef_value");
+                self.emit_u16(Op::LOCAL_SET, parsed_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, parsed_slot);
+                let is_nan_idx = self.import("ecma:number", "isNaN");
+                self.emit_host_call(is_nan_idx, 1);
+                self.chunk().emit_if_value(line);
+                self.compile_expr(args[1])?;
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, parsed_slot);
+                self.chunk().emit_end(line);
                 return Ok(true);
             }
 

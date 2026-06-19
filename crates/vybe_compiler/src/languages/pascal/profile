@@ -23,6 +23,7 @@ hoist_var = false
 # DYN_ADD checks for string operands first; F64_ADD would coerce strings
 # to NaN. Object Pascal / Delphi / Free Pascal all expose this overload.
 dynamic_add = true
+materialize_bool_results = true
 commonjs_require = false
 byref_boxing = false
 # Route `class` declarations through common::classes::normalize_class

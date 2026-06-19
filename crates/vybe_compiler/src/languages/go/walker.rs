@@ -2520,7 +2520,7 @@ fn normalize_go_statement(
                 kind: kind.clone(),
             })]
         }
-        StmtKind::Expr(_) if go_extract_named_type_marker(stmt).is_some() => Vec::new(),
+        StmtKind::Expr(_) if go_extract_named_type_marker(stmt).is_some() => vec![stmt.clone()],
         StmtKind::Expr(expr) => {
             if let Some(panic_expr) = go_extract_panic_expr(expr) {
                 vec![Statement::new(StmtKind::Throw {
