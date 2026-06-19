@@ -259,6 +259,48 @@ pub(crate) fn construct_dispatch(
         return construct_dispatch(ctx, &target, args_list);
     }
 
+    // Built-in Error constructor used as a value (`const T = TypeError;
+    // new T(msg, { cause })`). The canonical `__ctor_<Name>` anchor is an inert
+    // object (not callable), so construct the Error here — same shape as the
+    // compiler's `emit_exception_new_finalize` (ECMA-262 §20.5.1 / §20.5.8.1).
+    if let Value::Object(target_obj) = constructor {
+        let err_name = {
+            let locked = target_obj.lock().unwrap();
+            match locked.properties.get("__error_ctor_name") {
+                Some(Value::String(n)) => Some(n.clone()),
+                _ => None,
+            }
+        };
+        if let Some(err_name) = err_name {
+            let args = array_values(args_list);
+            let mut err = Object::new();
+            let name_str = err_name.to_string();
+            err.properties
+                .insert("name".into(), Value::String(err_name.clone()));
+            err.properties
+                .insert("__type".into(), Value::String(err_name.clone()));
+            err.properties
+                .insert("__exception_type".into(), Value::String(err_name));
+            err.properties.insert(
+                "message".into(),
+                match args.first() {
+                    Some(Value::String(s)) => Value::String(s.clone()),
+                    Some(Value::Undefined) | None => Value::String(Arc::from("")),
+                    Some(other) => Value::String(Arc::from(format!("{other}").as_str())),
+                },
+            );
+            // AggregateError takes the iterable of errors as the first arg and
+            // the message as the second; everyone else is (message, options).
+            let options_index = if name_str == "AggregateError" { 2 } else { 1 };
+            if let Some(Value::Object(opts)) = args.get(options_index) {
+                if let Some(cause) = opts.lock().unwrap().properties.get("cause").cloned() {
+                    err.properties.insert("cause".into(), cause);
+                }
+            }
+            return Value::Object(Arc::new(Mutex::new(err)));
+        }
+    }
+
     let mut this_value = Object::new();
     if let Value::Object(target_obj) = constructor {
         if let Some(proto) = target_obj

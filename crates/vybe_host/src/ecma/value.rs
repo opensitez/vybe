@@ -33,7 +33,8 @@ use crate::ecma::typedarray::{
 use crate::ecma::weakmap::{
     WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find,
 };
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
@@ -395,6 +396,34 @@ fn abstract_loose_eq(ctx: &mut HostContext, a: &Value, b: &Value) -> bool {
     }
 }
 
+/// Canonical constructor objects for the built-in Error hierarchy, keyed by
+/// error name (`"TypeError"`, `"RangeError"`, …). Error instances built by the
+/// compiler (`emit_exception_new_finalize`) carry `name`/`__exception_type` but
+/// no prototype-linked `constructor`, so `e.constructor` would otherwise fall
+/// back to `Object`. ECMA-262 §20.5 puts `constructor` on `<Error>.prototype`;
+/// we return one stable object per name so both `e.constructor.name` and
+/// `e1.constructor === e2.constructor` (same type) hold.
+pub(crate) fn error_constructor_for(name: &str) -> Value {
+    static ERROR_CTORS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    let registry = ERROR_CTORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = registry.lock().unwrap();
+    if let Some(ctor) = map.get(name) {
+        return ctor.clone();
+    }
+    let mut ctor = Object::new();
+    ctor.properties
+        .insert("name".into(), Value::String(Arc::from(name)));
+    ctor.properties
+        .insert("__type".into(), Value::String(Arc::from("Function")));
+    // Marker so `new T(...)` (dynamic construction through this value, e.g.
+    // `const T = TypeError; new T(msg, {cause})`) builds a proper Error.
+    ctor.properties
+        .insert("__error_ctor_name".into(), Value::String(Arc::from(name)));
+    let value = Value::Object(Arc::new(Mutex::new(ctor)));
+    map.insert(name.to_string(), value.clone());
+    value
+}
+
 fn constructor_from_prototype(proto: Value) -> Value {
     let Value::Object(obj) = proto else {
         return Value::Undefined;
@@ -445,6 +474,21 @@ fn constructor_of(value: &Value) -> Value {
                     Some(Value::Object(parent)) => Some(parent),
                     _ => None,
                 };
+            }
+            // Built-in Error instances (`emit_exception_new_finalize` shape:
+            // `name` + `__exception_type`, no prototype-linked `constructor`)
+            // resolve to the canonical constructor for their error type, so
+            // `e.constructor.name` is the error name (ECMA-262 §20.5), not
+            // "Object".
+            {
+                let locked = obj.lock().unwrap();
+                if locked.properties.contains_key("__exception_type") {
+                    if let Some(Value::String(name)) = locked.properties.get("name") {
+                        let name = name.clone();
+                        drop(locked);
+                        return error_constructor_for(&name);
+                    }
+                }
             }
             // A plain ordinary object with no constructor in its chain is an
             // instance of `Object` (§20.1.3) — return the canonical global.

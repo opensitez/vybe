@@ -66,11 +66,27 @@ fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
 }
 
 fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    let buffered = output.lock().unwrap().concat();
-    let mut result: Vec<String> = buffered
-        .split('\n')
-        .map(|s| s.trim_end_matches('\r').to_string())
-        .collect();
+    let fragments = output.lock().unwrap().clone();
+    let mut result: Vec<String> = Vec::new();
+    for fragment in fragments {
+        let mut parts = fragment.split('\n').peekable();
+        while let Some(part) = parts.next() {
+            let part = part.trim_end_matches('\r');
+            let has_more = parts.peek().is_some();
+            if part.is_empty() {
+                continue;
+            }
+            if part.starts_with(char::is_whitespace) {
+                if let Some(prev) = result.last_mut() {
+                    prev.push_str(part);
+                } else {
+                    result.push(part.to_string());
+                }
+            } else if has_more || !part.is_empty() {
+                result.push(part.to_string());
+            }
+        }
+    }
     while result
         .last()
         .map(|s: &String| s.is_empty())

@@ -214,9 +214,13 @@ fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
         switch_fallthrough: true,
         uses_normalize_class: false,
         string_aware_relational: false,
-        lexical_block_scope: false,
-        unresolved_reference_throws: false,
-        coerces_value_to_type_hint: true,
+        // This is a JS profile (name = "js"), so the capabilities that replaced
+        // the old `is_js_profile()` checks must match the real JS profile.
+        lexical_block_scope: true,
+        unresolved_reference_throws: true,
+        coerces_value_to_type_hint: false,
+        ambient_this_binding: true,
+        missing_arg_is_undefined: true,
         supports_autoload: false,
         buffered_iterator_methods: false,
         builtins: {

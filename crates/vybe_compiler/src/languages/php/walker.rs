@@ -3191,26 +3191,51 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::list_expression => {
-            // list($a, $b, $c) — destructure target. Walk each element
-            // into a Destructure pattern.
-            let mut elems = Vec::new();
+            // list($a, $b, $c) / list('key' => $v) — destructure target.
+            // Keep explicit holes for positional lists, and map keyed
+            // entries onto the same object-pattern form used by `[...]`.
+            let mut positional = Vec::new();
+            let mut keyed = Vec::new();
+            let mut saw_keyed = false;
             for p in pair.into_inner() {
                 if matches!(p.as_rule(), Rule::list_element) {
-                    let inner = p.into_inner().next();
-                    if let Some(e) = inner {
-                        let expr = walk_expression(e)?;
-                        if let ExprKind::Ident(name) = expr.kind {
-                            elems
-                                .push(ArrayPatternElem::Pattern(BindingPattern::Ident(name), None));
-                        } else {
-                            elems.push(ArrayPatternElem::Hole);
+                    let mut inner = p.into_inner();
+                    let first = inner.next();
+                    let second = inner.next();
+                    match (first, second) {
+                        (Some(key_pair), Some(value_pair)) => {
+                            saw_keyed = true;
+                            let key_expr = walk_expression(key_pair)?;
+                            let value_expr = walk_expression(value_pair)?;
+                            if let (Some(key), Some(value)) = (
+                                literal_key_name(&key_expr),
+                                expression_to_binding_pattern(&value_expr),
+                            ) {
+                                keyed.push(ObjectPatternProp {
+                                    key,
+                                    value: Some(value),
+                                    default: None,
+                                    is_rest: false,
+                                });
+                            }
                         }
-                    } else {
-                        elems.push(ArrayPatternElem::Hole);
+                        (Some(e), None) => {
+                            let expr = walk_expression(e)?;
+                            if let Some(pattern) = expression_to_binding_pattern(&expr) {
+                                positional.push(ArrayPatternElem::Pattern(pattern, None));
+                            } else {
+                                positional.push(ArrayPatternElem::Hole);
+                            }
+                        }
+                        _ => positional.push(ArrayPatternElem::Hole),
                     }
                 }
             }
-            ExprKind::Destructure(DestructurePattern::Array(elems))
+            if saw_keyed {
+                ExprKind::Destructure(DestructurePattern::Object(keyed))
+            } else {
+                ExprKind::Destructure(DestructurePattern::Array(positional))
+            }
         }
         Rule::array_expression | Rule::short_array_expression => return walk_array(pair),
         Rule::closure_expression => return walk_closure(pair),
@@ -6393,11 +6418,32 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
+    let is_short_array = matches!(pair.as_rule(), Rule::short_array_expression);
+    let source_start = pair.as_span().start();
     let mut elems = Vec::new();
+    let mut previous_end = source_start + 1;
     for p in pair.into_inner() {
         if !matches!(p.as_rule(), Rule::array_element) {
             continue;
         }
+        if is_short_array {
+            let gap = &p.as_span().get_input()[previous_end..p.as_span().start()];
+            let comma_count = gap.chars().filter(|ch| *ch == ',').count();
+            let holes = if elems.is_empty() {
+                comma_count
+            } else {
+                comma_count.saturating_sub(1)
+            };
+            for _ in 0..holes {
+                elems.push(ArrayElement {
+                    key: None,
+                    value: Expression::null(),
+                    spread: false,
+                    by_ref: false,
+                });
+            }
+        }
+        previous_end = p.as_span().end();
         // The grammar's leading `"..."` literal produces no pair, so detect
         // a spread element (`[...$gen]`, `[...$arr]`) from the source text.
         let is_spread = p.as_str().trim_start().starts_with("...");
@@ -6500,8 +6546,17 @@ fn array_elements_to_destructure_pattern(elems: &[ArrayElement]) -> Option<Destr
     } else {
         let mut out = Vec::with_capacity(elems.len());
         for elem in elems {
-            let pat = expression_to_binding_pattern(&elem.value)?;
-            out.push(ArrayPatternElem::Pattern(pat, None));
+            if elem.spread {
+                if let ExprKind::Ident(name) = &elem.value.kind {
+                    out.push(ArrayPatternElem::Rest(name.clone()));
+                    continue;
+                }
+            }
+            if let Some(pat) = expression_to_binding_pattern(&elem.value) {
+                out.push(ArrayPatternElem::Pattern(pat, None));
+            } else {
+                out.push(ArrayPatternElem::Hole);
+            }
         }
         Some(DestructurePattern::Array(out))
     }

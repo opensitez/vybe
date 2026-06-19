@@ -604,6 +604,25 @@ pub fn register(vm: &mut VM) {
             vm.globals.insert(format!("__ctor_{name}"), ctor);
         }
     }
+
+    // Built-in Error hierarchy (ECMA-262 §20.5). These are the same canonical
+    // constructor objects `ecma:value.constructorOf` returns for error
+    // instances, so `e.constructor === TypeError` holds. The compiler resolves
+    // the bare `TypeError` / `Error` / … value through these `__ctor_<Name>`
+    // anchors.
+    for name in &[
+        "Error",
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "URIError",
+        "EvalError",
+        "AggregateError",
+    ] {
+        let ctor = crate::ecma::value::error_constructor_for(name);
+        vm.globals.insert(format!("__ctor_{name}"), ctor);
+    }
 }
 
 /// Build a Value that is callable as a host function AND can carry

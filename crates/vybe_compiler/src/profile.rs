@@ -160,6 +160,23 @@ pub struct LanguageProfile {
     /// behaviour for the static languages.
     pub coerces_value_to_type_hint: bool,
 
+    /// ECMA-262 §9.1.2 / §10.2.1.1: the receiver (`this`) is bound *ambiently*
+    /// from the call context (Vybe carries it in the `__js_this` global the
+    /// call site sets) rather than being passed as an explicit first positional
+    /// parameter. When true, a method/constructor's arity excludes `this` and
+    /// the body reads it from the context. Languages that thread the receiver
+    /// as an explicit first parameter (`self`/`Me`/`$this` in slot 0) leave
+    /// this `false`.
+    pub ambient_this_binding: bool,
+
+    /// ECMA-262 §10.2.1.1: a *missing* argument is the distinct value
+    /// `undefined`, separate from an explicitly-passed `null`. Argument-presence
+    /// tests (default-parameter application, constructor/overload arity
+    /// dispatch) therefore key off "is undefined", so `f(null)` is recognized as
+    /// one argument while `f()` is none. Languages with only a single
+    /// nullish value leave this `false` and test "is null" instead.
+    pub missing_arg_is_undefined: bool,
+
     /// When true, `StmtKind::ClassDecl` is routed through the new
     /// `common::classes::normalize_class` + `emit_class` path instead
     /// of the legacy `compile_class` orchestration. Enables the per-
@@ -564,6 +581,14 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("coerces_value_to_type_hint")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let ambient_this_binding = compiler
+        .get("ambient_this_binding")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let missing_arg_is_undefined = compiler
+        .get("missing_arg_is_undefined")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let materialize_bool_results = compiler
         .get("materialize_bool_results")
         .and_then(|v| v.as_bool())
@@ -927,6 +952,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         lexical_block_scope,
         unresolved_reference_throws,
         coerces_value_to_type_hint,
+        ambient_this_binding,
+        missing_arg_is_undefined,
         materialize_bool_results,
         supports_autoload,
         buffered_iterator_methods,

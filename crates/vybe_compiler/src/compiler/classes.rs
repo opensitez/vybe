@@ -446,6 +446,9 @@ impl Compiler {
         self.chunks.push(chunk);
         self.scopes.push(Scope::new_function());
         self.static_local_bindings.push(HashMap::new());
+        if self.profile.name == "php" {
+            self.php_function_globals.push(HashSet::new());
+        }
         let saved = self.current;
         self.current = func_idx;
         // Function body opens fresh wrt the runtime label_stack —
@@ -586,7 +589,7 @@ impl Compiler {
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
-                if self.is_js_profile() {
+                if self.profile.missing_arg_is_undefined {
                     self.emit(Op::REF_IS_UNDEFINED);
                 } else {
                     self.emit(Op::REF_IS_NULL);
@@ -739,6 +742,9 @@ impl Compiler {
         self.js_arguments_bindings.pop();
         self.scopes.pop();
         self.static_local_bindings.pop();
+        if self.profile.name == "php" {
+            self.php_function_globals.pop();
+        }
         self.current = saved;
         self.function_label_base = saved_label_base;
 
@@ -1180,7 +1186,10 @@ impl Compiler {
                     return_type.clone(),
                 );
             }
-            let uses_js_this = cc.is_js_profile();
+            // The receiver (`this`) is bound ambiently from the call context
+            // (`__js_this`) rather than passed as an explicit first positional
+            // parameter. Capability-driven — not gated on the language name.
+            let ambient_this = cc.profile.ambient_this_binding;
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
             let generator_control_arity = usize::from(m.is_generator && !has_rest);
             if has_rest {
@@ -1195,7 +1204,7 @@ impl Compiler {
                 } else {
                     (user_params.len() + generator_control_arity) as u8
                 }
-            } else if uses_js_this {
+            } else if ambient_this {
                 (user_params.len() + generator_control_arity) as u8
             } else {
                 (user_params.len() + 1 + generator_control_arity) as u8
@@ -1220,7 +1229,7 @@ impl Compiler {
             let saved_fn = cc.current_func_name.take();
             cc.current_func_name = Some(bound_name.clone());
 
-            if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+            if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
             }
             for p in &user_params {
@@ -1246,7 +1255,7 @@ impl Compiler {
                     );
                 }
             }
-            if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+            if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 if class.explicit_self_param {
                     if let Some(self_param) = m.params.first() {
                         if self_param.name != self_kw {
@@ -1288,7 +1297,7 @@ impl Compiler {
                 if let Some(ref default) = p.default {
                     let slot = cc.scope().resolve(&p.name).unwrap();
                     cc.emit_u16(Op::LOCAL_GET, slot);
-                    if uses_js_this {
+                    if cc.profile.missing_arg_is_undefined {
                         cc.emit(Op::REF_IS_UNDEFINED);
                     } else {
                         cc.emit(Op::REF_IS_NULL);
@@ -1698,7 +1707,7 @@ impl Compiler {
                 if let Some(Some(default)) = ctor_param_defaults.get(i) {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
-                    if self.is_js_profile() {
+                    if self.profile.missing_arg_is_undefined {
                         self.emit(Op::REF_IS_UNDEFINED);
                     } else {
                         self.emit(Op::REF_IS_NULL);
@@ -2346,7 +2355,15 @@ impl Compiler {
         };
         for count in (1..=ctor_arity as usize).rev() {
             self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
-            self.emit(Op::REF_IS_NULL);
+            // Argument-presence test: a *missing* trailing arg is `undefined`,
+            // so `new C(null)` must still dispatch to the 1-arg constructor
+            // (`null` is a value, not an absent argument). Languages without a
+            // distinct `undefined` fall back to the null test.
+            if self.profile.missing_arg_is_undefined {
+                self.emit(Op::REF_IS_UNDEFINED);
+            } else {
+                self.emit(Op::REF_IS_NULL);
+            }
             let branch_line = self.line;
             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
             self.emit(Op::I32_EQZ);

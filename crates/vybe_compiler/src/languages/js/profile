@@ -39,6 +39,12 @@ unresolved_reference_throws = true
 # JS is dynamically typed: an inferred type hint drives dispatch only and must
 # never coerce the stored value (a boolean stays a boolean, not i32 0/1).
 coerces_value_to_type_hint = false
+# ECMA-262 §9.1.2: `this` is bound ambiently from the call context (`__js_this`),
+# not passed as an explicit first positional parameter.
+ambient_this_binding = true
+# ECMA-262 §10.2.1.1: a missing argument is `undefined`, distinct from an
+# explicitly-passed `null`, so `f(null)` is one argument and `f()` is none.
+missing_arg_is_undefined = true
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class instead of the legacy compile_class orchestration.
 # Pilot for the classnormalization.md migration — other languages opt

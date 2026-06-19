@@ -710,7 +710,7 @@ unary_expression = {
     | postfix_expression
 }
 
-unary_op = { "!" | "~" | "-" | "+" | "++" | "--" | "@" | "&" }
+unary_op = { "++" | "--" | "!" | "~" | "-" | "+" | "@" | "&" }
 
 cast_expression = {
     "(" ~ cast_kw ~ ")" ~ unary_expression
@@ -756,7 +756,7 @@ member_name = {
 // start of a declaration.
 class_member_name = {
     kw_class
-    | identifier
+    | method_ident
     | variable
     | "{" ~ expression ~ "}"
 }
@@ -860,10 +860,13 @@ include_operand = { "(" ~ expression ~ ")" | expression }
 unset_expression = { kw_unset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
 
 list_expression = {
-    kw_list ~ "(" ~ list_element ~ ("," ~ list_element)* ~ ")"
+    kw_list ~ "(" ~ (list_element ~ ("," ~ list_element)* ~ ","?)? ~ ")"
 }
 
-list_element = { expression? }
+list_element = {
+    expression ~ "=>" ~ "&"? ~ expression
+    | "&"? ~ expression?
+}
 
 // `array(1, 2, 'key' => $val, ...$rest)` — PHP keyword, case-insensitive
 array_expression = {
@@ -872,7 +875,7 @@ array_expression = {
 
 // `[1, 2, 'key' => $val, ...$rest]`
 short_array_expression = {
-    "[" ~ (array_element ~ ("," ~ array_element)* ~ ","?)? ~ "]"
+    "[" ~ (array_element? ~ ("," ~ array_element?)* ~ ","?)? ~ "]"
 }
 
 array_element = {

@@ -599,9 +599,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.empty" => {
-            crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line)
-        }
+        "php.empty" => crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => {
             crate::emitter::php::misc_adapter::emit_php_session_start(chunks, current, argc, line)
         }

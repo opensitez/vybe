@@ -315,6 +315,7 @@ pub struct Compiler {
     pub(crate) current_class_implicit_self: bool,
     pub(crate) current_member_is_static: bool,
     static_local_bindings: Vec<HashMap<String, StaticLocalBinding>>,
+    php_function_globals: Vec<HashSet<String>>,
     array_bindings: HashMap<String, ArrayBindingMetadata>,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
@@ -1072,6 +1073,7 @@ impl Compiler {
             current_class_implicit_self: false,
             current_member_is_static: false,
             static_local_bindings: Vec::new(),
+            php_function_globals: Vec::new(),
             array_bindings: HashMap::new(),
             pending_label: None,
             with_targets: Vec::new(),
@@ -5053,6 +5055,18 @@ impl Compiler {
         self.static_local_binding(name).is_some()
     }
 
+    fn php_current_function_declares_global(&self, name: &str) -> bool {
+        self.profile.name == "php"
+            && self
+                .php_function_globals
+                .last()
+                .is_some_and(|globals| globals.contains(&self.canon(name)))
+    }
+
+    fn php_inside_function(&self) -> bool {
+        self.profile.name == "php" && !self.php_function_globals.is_empty()
+    }
+
     fn array_binding_key(&self, name: &str) -> String {
         let canon_name = self.canon(name);
         if self.scopes.len() > 1 {
@@ -6693,9 +6707,31 @@ impl Compiler {
         // `constructor`/`prototype` identity; `__ctor_<Name>` always points at
         // the ONE canonical constructor (the same object on the shared
         // prototype's `.constructor`). Skipped when the user shadows the name.
-        if self.is_js_profile() && !shadows_named_global && is_js_builtin_ctor_value(&cname) {
+        // Built-in Error constructors are recognised from the profile's
+        // `known_types` (their backing module is `ecma:error`) rather than a
+        // hardcoded name list, so `e.constructor === TypeError` and
+        // `typeof TypeError === "function"` resolve through the same canonical
+        // `__ctor_<Name>` anchor the host installs for them.
+        let is_error_ctor_value = self
+            .profile
+            .known_types
+            .get(name)
+            .is_some_and(|(module, _)| module == "ecma:error");
+        if self.is_js_profile()
+            && !shadows_named_global
+            && (is_js_builtin_ctor_value(&cname) || is_error_ctor_value)
+        {
             let idx = self.str_const(&format!("__ctor_{cname}"));
             self.emit_u16(Op::GLOBAL_GET, idx);
+            return;
+        }
+        if self.php_inside_function()
+            && !self.php_current_function_declares_global(name)
+            && !self.defined_functions.contains(&cname)
+            && !self.defined_classes.contains(&cname)
+            && !cname.starts_with("__")
+        {
+            self.emit(Op::NULL);
             return;
         }
         // Global — canonicalize name for case-insensitive languages
@@ -6983,6 +7019,17 @@ impl Compiler {
         if !shadows_named_global && self.emit_with_target_set(name) {
             return;
         }
+        if self.php_inside_function()
+            && !self.php_current_function_declares_global(name)
+            && !self.defined_functions.contains(&cname)
+            && !self.defined_classes.contains(&cname)
+            && !cname.starts_with("__")
+        {
+            let slot = self.define_local(name);
+            self.emit_u16(Op::LOCAL_SET, slot);
+            self.emit(Op::DROP);
+            return;
+        }
         // Global — canonicalize name for case-insensitive languages
         if self.scopes.len() == 1 {
             self.defined_globals.insert(cname.clone());
@@ -7249,7 +7296,7 @@ impl Compiler {
         // removed __keys/vybe$assoc_keys_csv side-band, causing stack corruption.
         // Array truthiness is now handled at the empty()/isset() call sites via
         // the Map-aware emitter. emit_dyn_to_bool is correct for all languages.
-        if !self.is_python_profile() {
+        if !self.is_python_profile() && !self.is_php_profile() {
             {
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7928,71 +7975,39 @@ impl Compiler {
                 else_body,
             } => {
                 let line = self.line;
-                let outer = self.chunk().emit_block(line);
-                self.label_depth += 1; // outer block
-
-                // Then branch
-                let then_block = self.chunk().emit_block(line);
-                self.label_depth += 1;
                 self.compile_expr(cond)?;
                 self.emit_condition_truthiness_from_stack();
-                {
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
-                };
-                let line = self.line;
-                self.chunk().emit_br_if(0, line); // skip then if false
+                self.chunk().emit_if(line);
+                self.label_depth += 1;
+
                 self.scope_mut().begin_scope();
                 for s in then_body {
                     self.compile_stmt(s)?;
                 }
                 self.scope_mut().end_scope();
+
                 if !elifs.is_empty() || else_body.is_some() {
                     let line = self.line;
-                    self.chunk().emit_br(1, line); // to outer end
-                }
-                let line = self.line;
-                self.chunk().emit_end(line);
-                self.chunk().patch_block(then_block);
-                self.label_depth -= 1;
-
-                // Elif branches
-                for (elif_cond, elif_body) in elifs {
-                    let line = self.line;
-                    let elif_block = self.chunk().emit_block(line);
-                    self.label_depth += 1;
-                    self.compile_expr(elif_cond)?;
-                    self.emit_condition_truthiness_from_stack();
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
-                    };
-                    let line = self.line;
-                    self.chunk().emit_br_if(0, line);
-                    self.scope_mut().begin_scope();
-                    for s in elif_body {
-                        self.compile_stmt(s)?;
+                    self.chunk().emit_else(line);
+                    if let Some((elif_cond, elif_body)) = elifs.first() {
+                        let nested = Statement::new(StmtKind::If {
+                            cond: elif_cond.clone(),
+                            then_body: elif_body.clone(),
+                            elifs: elifs.iter().skip(1).cloned().collect(),
+                            else_body: else_body.clone(),
+                        });
+                        self.compile_stmt(&nested)?;
+                    } else if let Some(else_stmts) = else_body {
+                        self.scope_mut().begin_scope();
+                        for s in else_stmts {
+                            self.compile_stmt(s)?;
+                        }
+                        self.scope_mut().end_scope();
                     }
-                    self.scope_mut().end_scope();
-                    let line = self.line;
-                    self.chunk().emit_br(1, line); // to outer end
-                    let line = self.line;
-                    self.chunk().emit_end(line);
-                    self.chunk().patch_block(elif_block);
-                    self.label_depth -= 1;
-                }
-
-                if let Some(else_stmts) = else_body {
-                    self.scope_mut().begin_scope();
-                    for s in else_stmts {
-                        self.compile_stmt(s)?;
-                    }
-                    self.scope_mut().end_scope();
                 }
 
                 let line = self.line;
                 self.chunk().emit_end(line);
-                self.chunk().patch_block(outer);
                 self.label_depth -= 1;
             }
 
@@ -10764,9 +10779,16 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
 
-            // ── Scope declarations (Python global/nonlocal) ─────────────
-            StmtKind::ScopeDecl { .. } => {
-                // Handled at parse time for variable resolution — no-op at compile time
+            // ── Scope declarations (Python global/nonlocal, PHP global) ─
+            StmtKind::ScopeDecl { kind, names } => {
+                if self.profile.name == "php" && matches!(kind, ScopeDeclKind::Global) {
+                    let globals: Vec<String> = names.iter().map(|name| self.canon(name)).collect();
+                    if let Some(frame) = self.php_function_globals.last_mut() {
+                        for name in globals {
+                            frame.insert(name);
+                        }
+                    }
+                }
             }
 
             // ── Match statement (Python) ────────────────────────────────
@@ -11653,6 +11675,17 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.compile_array_pattern_assignment_from_slot(nested_slot, items)?;
                 }
+                ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
+                    if let ArrayPatternElem::Pattern(pattern, _) = elem {
+                        self.compile_destructure_bind(pattern)?;
+                    }
+                }
                 ArrayPatternElem::Rest(name) => {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
@@ -11665,8 +11698,7 @@ impl Compiler {
                     common::collections::emit_slice(&mut self.chunks, self.current, line);
                     self.emit_var_set(name);
                 }
-                ArrayPatternElem::Hole
-                | ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
+                ArrayPatternElem::Hole => {}
             }
         }
         Ok(())
@@ -12869,12 +12901,11 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_get(&mut self.chunks, self.current, l);
                             }
-                            let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
-                                n.clone()
-                            } else {
-                                prop.key.clone()
+                            let target = match &prop.value {
+                                Some(p) => p.clone(),
+                                None => BindingPattern::Ident(prop.key.clone()),
                             };
-                            self.emit_var_set(&bind_name);
+                            self.compile_destructure_bind(&target)?;
                         }
                     }
                     DestructurePattern::Array(elems) => {
@@ -14105,6 +14136,28 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from("")));
             }
             return Ok(true);
+        }
+
+        if self.is_php_profile() {
+            let builtin_name = self.canon(name);
+            if builtin_name == "strval" && args.len() == 1 {
+                self.compile_expr(args[0])?;
+                self.emit_common("php.echo_stringify", 1, line);
+                return Ok(true);
+            }
+
+            if builtin_name == "intval" && (1..=2).contains(&args.len()) {
+                self.compile_expr(args[0])?;
+                if let Some(base) = args.get(1) {
+                    self.compile_expr(base)?;
+                    let parse_int = self.import("ecma:number", "parseInt");
+                    self.emit_host_call(parse_int, 2);
+                } else {
+                    let parse_int = self.import("ecma:number", "parseInt");
+                    self.emit_host_call(parse_int, 1);
+                }
+                return Ok(true);
+            }
         }
 
         if self.profile.name == "pascal" {

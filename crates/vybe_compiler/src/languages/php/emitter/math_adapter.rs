@@ -132,6 +132,7 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     push_const(chunk, Value::F64(1.0), line);
     lset(chunk, i_slot, line);
 
+    let loop_block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
@@ -169,6 +170,8 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(loop_block);
 
     lget(chunk, best_slot, line);
     lset(chunk, result_slot, line);

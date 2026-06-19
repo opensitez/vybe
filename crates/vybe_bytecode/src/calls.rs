@@ -86,6 +86,24 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
     }
 }
 
+/// Build a `RangeError: Maximum call stack size exceeded` value with the
+/// canonical exception shape (`name` / `__type` / `__exception_type` /
+/// `message`) so it is catchable by JS `try/catch` and matches
+/// `e instanceof RangeError` (ECMA-262 §6.2.3 — stack overflow is a
+/// `RangeError`, not an uncatchable host trap).
+fn make_stack_overflow_error() -> Value {
+    let mut obj = Object::new();
+    let name = Value::String(Arc::from("RangeError"));
+    obj.properties.insert("name".into(), name.clone());
+    obj.properties.insert("__type".into(), name.clone());
+    obj.properties.insert("__exception_type".into(), name);
+    obj.properties.insert(
+        "message".into(),
+        Value::String(Arc::from("Maximum call stack size exceeded")),
+    );
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
 impl VM {
     pub(crate) fn raise_exception_value(&mut self, val: Value) -> Result<(), VMError> {
         self.raise_exception_value_skipping(val, 0)
@@ -326,7 +344,9 @@ impl VM {
         bypass_generator: bool,
     ) -> Result<(), VMError> {
         if self.frames.len() >= MAX_FRAMES {
-            return Err(VMError::new("Stack overflow"));
+            // Catchable RangeError rather than an uncatchable host trap — JS
+            // recursion guards (`try { recurse() } catch { … }`) depend on it.
+            return self.raise_exception_value(make_stack_overflow_error());
         }
 
         let chunk_index = func.chunk_index;
