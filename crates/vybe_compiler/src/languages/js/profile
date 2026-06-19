@@ -30,6 +30,15 @@ dynamic_numeric_dispatch = true
 commonjs_require = true
 # JS switch statements fall through unless there's an explicit break
 switch_fallthrough = true
+# ECMA-262 §14.2: a block with a lexical declaration (`let`/`const`/`class`)
+# forms its own scope, so `{ let x = 42; }` does not leak `x`.
+lexical_block_scope = true
+# ECMA-262 §9.1.1.4.6: reading an unresolvable reference is a ReferenceError
+# (applied in strict mode), not a silent `undefined`.
+unresolved_reference_throws = true
+# JS is dynamically typed: an inferred type hint drives dispatch only and must
+# never coerce the stored value (a boolean stays a boolean, not i32 0/1).
+coerces_value_to_type_hint = false
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class instead of the legacy compile_class orchestration.
 # Pilot for the classnormalization.md migration — other languages opt

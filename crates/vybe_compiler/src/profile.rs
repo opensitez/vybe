@@ -139,6 +139,27 @@ pub struct LanguageProfile {
     /// VB: LINQ query syntax compiled to method chains.
     pub linq_queries: bool,
 
+    /// ECMA-262 §14.2 / §8.1: a block that declares a lexical binding
+    /// (`let`/`const`/`class`) forms its own scope even when it contains
+    /// *only* declarations — so `{ let x = 42; }` does not leak `x` to the
+    /// enclosing scope. Languages without block-scoped lexical bindings (or
+    /// whose blocks already scope unconditionally) leave this `false`.
+    pub lexical_block_scope: bool,
+
+    /// ECMA-262 §9.1.1.4.6 GetValue: reading an *unresolvable* reference (a
+    /// name bound nowhere in the scope chain or on the global object) is a
+    /// `ReferenceError` rather than yielding `undefined`. Statically-resolved
+    /// languages and those that auto-vivify globals leave this `false`.
+    pub unresolved_reference_throws: bool,
+
+    /// Statically-typed languages coerce a value to its binding's declared
+    /// type on assignment/initialization (C `_Bool b = 5` → `1`, int-width
+    /// truncation, etc.). Dynamically-typed languages (JS, Python, PHP, …)
+    /// infer a type *hint* for dispatch only and must never mutate the value,
+    /// so they leave this `false`. Default `true` preserves the historical
+    /// behaviour for the static languages.
+    pub coerces_value_to_type_hint: bool,
+
     /// When true, `StmtKind::ClassDecl` is routed through the new
     /// `common::classes::normalize_class` + `emit_class` path instead
     /// of the legacy `compile_class` orchestration. Enables the per-
@@ -531,6 +552,18 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let lexical_block_scope = compiler
+        .get("lexical_block_scope")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let unresolved_reference_throws = compiler
+        .get("unresolved_reference_throws")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let coerces_value_to_type_hint = compiler
+        .get("coerces_value_to_type_hint")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let materialize_bool_results = compiler
         .get("materialize_bool_results")
         .and_then(|v| v.as_bool())
@@ -891,6 +924,9 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         string_aware_relational,
+        lexical_block_scope,
+        unresolved_reference_throws,
+        coerces_value_to_type_hint,
         materialize_bool_results,
         supports_autoload,
         buffered_iterator_methods,

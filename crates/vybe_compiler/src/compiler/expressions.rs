@@ -4146,9 +4146,28 @@ impl Compiler {
                             if use_to_primitive {
                                 self.compile_expr(e)?;
                                 self.emit_to_primitive("string");
-                                // After ToPrimitive, the value is a
-                                // primitive (string / number / etc).
-                                // Concat with "" to coerce to string.
+                                // After ToPrimitive, the value is a primitive
+                                // (string / number / symbol / …). ECMA-262
+                                // §13.2.8.6 evaluates each substitution with
+                                // ToString (§7.1.17), which — unlike the
+                                // `String(sym)` constructor — throws a TypeError
+                                // for a Symbol. Guard for that before the concat.
+                                let v_slot = self.define_local("__interp_to_string");
+                                self.emit_u16(Op::LOCAL_SET, v_slot);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                let sym_test = self.import("wasm:js-symbol", "test");
+                                self.emit_host_call(sym_test, 1);
+                                let line = self.line;
+                                self.chunk().emit_if(line);
+                                self.emit_const(Value::String(Arc::from(
+                                    "Cannot convert a Symbol value to a string",
+                                )));
+                                self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                                common::errors::emit_throw(self.chunk(), line);
+                                self.chunk().emit_end(line);
+                                // Primitive → string: concat with "".
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
                                 self.emit_const(Value::String(Arc::from("")));
                                 let line = self.line;
                                 common::strings::emit_str_concat(self.chunk(), line);
@@ -4888,7 +4907,11 @@ impl Compiler {
                         }
                     }
                 }
-                self.compile_expr(inner)?;
+                let saved_typeof = self.in_typeof_operand;
+                self.in_typeof_operand = true;
+                let inner_res = self.compile_expr(inner);
+                self.in_typeof_operand = saved_typeof;
+                inner_res?;
                 if self.is_js_profile() {
                     // ECMA-262 §13.5.3 Table 41: arrays are "object",
                     // not "array". The VM's REF_TYPEOF emits "array"

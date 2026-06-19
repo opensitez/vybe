@@ -2479,6 +2479,17 @@ impl Compiler {
             }
         }
 
+        // Static field initializers run with the self-reference bound to the
+        // class constructor object (ECMA-262 §15.7.10 — `this` inside a static
+        // field initializer is the class itself), so `static y = this.x * 2`
+        // can read sibling static fields. Bind the self-keyword to `ctor_local`
+        // for the duration of the initializer emission.
+        let static_self_kw = self.profile.self_keyword.clone();
+        let static_self_slot = self.define_local(&static_self_kw);
+        self.emit_u16(Op::LOCAL_GET, ctor_local);
+        self.emit_u16(Op::LOCAL_SET, static_self_slot);
+        self.emit(Op::DROP);
+
         // Initialize static fields on the constructor object
         for (fname, type_hint, init, array_bounds) in &static_field_inits {
             self.emit_u16(Op::LOCAL_GET, ctor_local);

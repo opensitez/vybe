@@ -264,6 +264,10 @@ pub struct Compiler {
     pub(crate) defined_globals: HashSet<String>,
     const_globals: HashSet<String>,
     in_strict: bool,
+    /// True while compiling the operand of a `typeof`. `typeof undeclaredName`
+    /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
+    /// ReferenceError in `emit_var_get` is suppressed in this context.
+    in_typeof_operand: bool,
 
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
@@ -1035,6 +1039,7 @@ impl Compiler {
             defined_globals: HashSet::new(),
             const_globals: HashSet::new(),
             in_strict: false,
+            in_typeof_operand: false,
             shared_global_slots: HashMap::new(),
             shared_global_names: Vec::new(),
             defined_functions: HashSet::new(),
@@ -5577,13 +5582,13 @@ impl Compiler {
     }
 
     fn coerce_c_value_for_type_hint(&mut self, type_hint: Option<&str>) -> Result<(), String> {
-        // JS is dynamically typed: a variable's type hint here is *inferred*
-        // from its initializer (e.g. `let t = true` infers "bool"), never a
-        // static declaration. C-style value coercion (int-width truncation,
-        // `_Bool` → i32 0/1) must not run for it — otherwise a boolean stored
-        // in a variable would be flattened to a number (`typeof` "number",
-        // prints "1") on both declaration and later assignment.
-        if self.is_js_profile() {
+        // Dynamically-typed languages infer a type *hint* for dispatch only and
+        // must never mutate the value: e.g. JS `let t = true` infers "bool", and
+        // C-style value coercion (`_Bool` → i32 0/1, int-width truncation) would
+        // flatten the boolean to a number (`typeof` "number", prints "1") on
+        // both declaration and later assignment. Driven by the profile
+        // capability, not the language name.
+        if !self.profile.coerces_value_to_type_hint {
             return Ok(());
         }
         let Some(type_hint) = type_hint else {
@@ -6697,40 +6702,60 @@ impl Compiler {
         // But in strict mode, if this is genuinely undeclared, throw ReferenceError
         let idx = self.global_name_const_idx(&cname);
 
-        if self.is_js_profile() && self.in_strict {
-            // In strict mode, throw ReferenceError for undeclared variable access
+        // ECMA-262 §9.1.1.4.6 / §13.3.2.1 GetValue: reading an *unresolvable*
+        // reference (a name bound nowhere in the scope chain or on the global
+        // object) is a `ReferenceError`. Reaching this fallback means every
+        // compile-time resolution attempt failed — not a local/upvalue/static/
+        // class-field, not a declared global/function/class, not a builtin or
+        // host target (those returned earlier). So this is a genuine *missing
+        // binding*, decided at compile time — NOT a runtime "value is undefined"
+        // test (a declared `let x;` legitimately holds `undefined`).
+        //
+        // Driven by the `unresolved_reference_throws` profile capability, and
+        // additionally gated on strict mode: per spec the throw applies in
+        // sloppy mode too, but sloppy code leans on lenient access to
+        // host-provided globals the compiler does not track as bindings (so a
+        // blanket throw there mis-fires). `typeof x` on an undeclared name must
+        // yield "undefined", so it is suppressed via `in_typeof_operand`.
+        // Builtin global-object aliases are excluded defensively.
+        let resolvable = self.defined_globals.contains(&cname)
+            || self.defined_functions.contains(&cname)
+            || self.defined_classes.contains(&cname);
+        if self.profile.unresolved_reference_throws
+            && self.in_strict
+            && !self.in_typeof_operand
+            && !resolvable
+            && !cname.starts_with("__")
+            && !is_js_builtin_ctor_value(&cname)
+            && !matches!(
+                name,
+                "globalThis"
+                    | "window"
+                    | "self"
+                    | "global"
+                    | "globalObject"
+                    | "arguments"
+                    | "this"
+                    | "undefined"
+                    | "NaN"
+                    | "Infinity"
+            )
+        {
             let line = self.line;
-            // Stack sequence:
-            // global_get idx → [value]
-            // dup → [value, value]
-            // Check if value === undefined: emit UNDEFINED, emit_dyn_eq
-            self.emit_u16(Op::GLOBAL_GET, idx);
-            self.emit(Op::DUP);
-            common::expressions::emit_undefined(self.chunk(), line);
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-            let line_inner = self.line;
-            self.chunk().emit_if(line_inner);
-            // Stack: [value, true]
-            self.emit(Op::DROP); // Stack: [value]
-            self.emit(Op::DROP); // Stack: []
             self.emit_u16(Op::STRUCT_NEW, 0);
             self.emit(Op::DUP);
-            let msg = Arc::from(format!("{} is not defined", name));
-            self.emit_const(Value::String(msg));
+            self.emit_const(Value::String(Arc::from(
+                format!("{name} is not defined").as_str(),
+            )));
             crate::emitter::errors::emit_exception_new_finalize(
                 self.chunk(),
                 "ReferenceError",
-                line_inner,
+                line,
             );
-            crate::emitter::errors::emit_throw(self.chunk(), line_inner);
-            self.chunk().emit_else(line_inner);
-            // Stack: [value, false]
-            self.emit(Op::DROP); // Stack: [value]
-            self.chunk().emit_end(line_inner);
-            // After end: stack has [value]
-        } else {
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            crate::emitter::errors::emit_throw(self.chunk(), line);
+            return;
         }
+        self.emit_u16(Op::GLOBAL_GET, idx);
         if self.binding_uses_pointer_cell(name) {
             common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         }
@@ -7624,12 +7649,13 @@ impl Compiler {
                     )
                 });
                 let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
-                // A JS block that declares a lexical binding (`let`/`const`/
+                // A block that declares a lexical binding (`let`/`const`/
                 // `class`) is its own scope even when it contains *only*
                 // declarations — otherwise `{ let x = 42; }` would leak `x` to
                 // the enclosing scope. (`var` is function-scoped and correctly
-                // skips this.)
-                let has_js_lexical = self.is_js_profile()
+                // skips this.) Driven by the profile capability, not a language
+                // name.
+                let has_lexical = self.profile.lexical_block_scope
                     && stmts.iter().any(|s| {
                         matches!(
                             &s.kind,
@@ -7639,7 +7665,7 @@ impl Compiler {
                             } | StmtKind::ClassDecl { .. }
                         )
                     });
-                let make_scope = (!all_decls && !hoisted_deconstruction) || has_js_lexical;
+                let make_scope = (!all_decls && !hoisted_deconstruction) || has_lexical;
                 if make_scope {
                     self.scope_mut().begin_scope();
                 }
