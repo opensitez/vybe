@@ -146,6 +146,7 @@ class_body = { class_member* ~ ^"end" }
 
 class_member = _{
     class_visibility
+    | class_const_section
     | class_class_member
     | class_constructor
     | class_destructor
@@ -154,6 +155,9 @@ class_member = _{
     | class_property_decl
     | field_decl
 }
+
+class_const_section = { ^"const" ~ class_const_decl+ }
+class_const_decl = { identifier ~ (":" ~ type_ref)? ~ "=" ~ expression ~ ";" }
 
 class_visibility = _{ strict_visibility | public_kw | private_kw | protected_kw | published_kw }
 strict_visibility = { ^"strict" ~ (private_kw | protected_kw) }
@@ -658,7 +662,7 @@ keyword = _{
         | ^"procedure" | ^"function" | ^"forward"
         | ^"if" | ^"then" | ^"else"
         | ^"for" | ^"to" | ^"downto" | ^"do"
-        | ^"while" | ^"repeat" | ^"until"
+        | ^"while" | ^"until"
         | ^"case" | ^"of" | ^"otherwise"
         | ^"record" | ^"array" | ^"set" | ^"object" | ^"class"
         | ^"inherited" | ^"override" | ^"virtual" | ^"abstract"
