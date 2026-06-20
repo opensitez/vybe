@@ -31,6 +31,7 @@ pub mod database_adapter;
 pub mod dispatch;
 pub mod fiber_adapter;
 pub mod spl_adapter;
+pub mod reflection_adapter;
 pub mod filesystem_adapter;
 pub mod math_adapter;
 pub mod misc_adapter;

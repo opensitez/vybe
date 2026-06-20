@@ -5121,6 +5121,21 @@ fn apply_postfix(
                         span.clone(),
                     ));
                 }
+                // SplFixedArray is a plain array; `$x->getSize()` → `count($x)`
+                // (SPL-only name, no collision with user classes).
+                if name == "getSize" {
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident("count".to_string()),
+                                span.clone(),
+                            )),
+                            args: vec![Argument::positional(receiver.clone())],
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
             }
             // PHP DateTime / DateTimeImmutable instance methods →
             // bytecode adapter calls (see emitter/php/datetime_adapter.rs).
@@ -5449,6 +5464,16 @@ fn apply_postfix(
             } else {
                 raw.to_string()
             };
+            // PHP 5.5 `ClassName::class` resolves to the class-name string at
+            // compile time. Normalize to a string literal.
+            if name == "class" {
+                if let ExprKind::Ident(cn) = &receiver.kind {
+                    return Ok(Expression::with_span(
+                        ExprKind::Lit(Literal::Str(cn.trim_start_matches('\\').to_string())),
+                        span.clone(),
+                    ));
+                }
+            }
             Ok(Expression::with_span(
                 ExprKind::StaticAccess {
                     class: Box::new(receiver),
@@ -5553,22 +5578,15 @@ fn apply_postfix(
                             ));
                         }
                     }
-                    // SPL `SplFixedArray::fromArray($arr)` static factory →
-                    // the SPL adapter (same shape as the DateTime factories).
+                    // `SplFixedArray::fromArray($arr)` → `$arr` (SplFixedArray
+                    // is just a plain array in our model).
                     if class_name.trim_start_matches('\\') == "SplFixedArray"
                         && member_name == "fromArray"
                     {
-                        return Ok(Expression::with_span(
-                            ExprKind::Call {
-                                callee: Box::new(Expression::with_span(
-                                    ExprKind::Ident("__spl_fixedarray_from_array".to_string()),
-                                    span.clone(),
-                                )),
-                                args,
-                                optional: false,
-                            },
-                            span.clone(),
-                        ));
+                        if let Some(first) = args.into_iter().next() {
+                            return Ok(first.value);
+                        }
+                        return Ok(Expression::with_span(ExprKind::Array(vec![]), span.clone()));
                     }
                     // PHP `Closure::bind($closure, $obj, $scope?)` — bind a
                     // closure to an object by rewriting `$this` inside the
@@ -6495,6 +6513,39 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // `fiber_adapter` model) rather than a user-defined class. Rewrite
     // `new SplStack()` → `__spl_new_splstack()` so it routes there.
     if let ExprKind::Ident(cn) = &class_expr.kind {
+        // SplFixedArray IS a fixed-size array — represent it as a plain array
+        // (native `[]`, `foreach`, `count`). `new SplFixedArray($n)` →
+        // `array_fill(0, $n, null)`.
+        if cn.trim_start_matches('\\') == "SplFixedArray" {
+            let n = args
+                .into_iter()
+                .next()
+                .map(|a| a.value)
+                .unwrap_or_else(|| {
+                    Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone())
+                });
+            return Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident("array_fill".to_string()),
+                        span.clone(),
+                    )),
+                    args: vec![
+                        Argument::positional(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(0)),
+                            span.clone(),
+                        )),
+                        Argument::positional(n),
+                        Argument::positional(Expression::with_span(
+                            ExprKind::Lit(Literal::Null),
+                            span.clone(),
+                        )),
+                    ],
+                    optional: false,
+                },
+                span,
+            ));
+        }
         let spl_ctor = match cn.trim_start_matches('\\') {
             "SplStack" => Some("__spl_new_splstack"),
             "SplQueue" => Some("__spl_new_splqueue"),
@@ -6502,9 +6553,11 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             "SplMinHeap" => Some("__spl_new_splminheap"),
             "SplMaxHeap" => Some("__spl_new_splmaxheap"),
             "SplPriorityQueue" => Some("__spl_new_splpriorityqueue"),
-            "SplFixedArray" => Some("__spl_new_splfixedarray"),
             "SplObjectStorage" => Some("__spl_new_splobjectstorage"),
             "WeakMap" => Some("__spl_new_weakmap"),
+            "ReflectionClass" => Some("__refl_class"),
+            "ReflectionMethod" => Some("__refl_method"),
+            "ReflectionProperty" => Some("__refl_property"),
             _ => None,
         };
         if let Some(fname) = spl_ctor {

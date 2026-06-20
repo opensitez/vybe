@@ -202,9 +202,12 @@ pub fn emit_php_array_is_list(chunks: &mut [Chunk], current: usize, _argc: u8, l
     lget(chunk, keys_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    push_const(chunk, Value::F64(0.0), line);
-    crate::emitter::ops::emit_dyn_add(chunk, line); // +0 → numeric
+    // Compare the string key against the string form of the index: a list
+    // has keys "0","1",… == "" + 0, "" + 1, …. (Using `+ 0` here would
+    // CONCATENATE the string key — "0" + 0 → "00" — and never match.)
+    push_const(chunk, Value::String(std::sync::Arc::from("")), line);
     lget(chunk, i_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line); // "" + i → "0"
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);

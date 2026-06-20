@@ -547,12 +547,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_weakmap" => crate::emitter::php::spl_adapter::emit_spl_objectstorage_new(
             chunks, current, "WeakMap", argc, line,
         ),
-        "php.spl_splfixedarray" => {
-            crate::emitter::php::spl_adapter::emit_spl_fixedarray_new(chunks, current, argc, line)
-        }
-        "php.spl_fixedarray_fromarray" => {
-            crate::emitter::php::spl_adapter::emit_spl_fixedarray_from_array(chunks, current, argc, line)
-        }
+        // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
+        "php.refl_class" => crate::emitter::php::reflection_adapter::emit_refl_class(chunks, current, argc, line),
+        "php.refl_method" => crate::emitter::php::reflection_adapter::emit_refl_method(chunks, current, argc, line),
+        "php.refl_property" => crate::emitter::php::reflection_adapter::emit_refl_property(chunks, current, argc, line),
         "php.fiber_new" => {
             crate::emitter::php::fiber_adapter::emit_php_fiber_new(chunks, current, argc, line)
         }
