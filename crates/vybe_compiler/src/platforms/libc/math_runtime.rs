@@ -86,7 +86,11 @@ pub fn stirling_approx() -> Expression {
         if n == 1 {
             x.clone()
         } else {
-            ecma_math_call2("pow", x.clone(), expr(ExprKind::Lit(Literal::Float(n as f64))))
+            ecma_math_call2(
+                "pow",
+                x.clone(),
+                expr(ExprKind::Lit(Literal::Float(n as f64))),
+            )
         }
     };
     let term = |num: f64, den: f64, pow: i32| {
@@ -124,24 +128,84 @@ pub fn stirling_approx() -> Expression {
 /// Polynomial part of the erf approximation:
 /// `0.254829592*t - 0.284496736*t^2 + 1.421413741*t^3 - 1.453152027*t^4 + 1.061405429*t^5`
 pub fn poly_erf(t: Expression) -> Expression {
-    let t2 = || expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(t.clone()), right: Box::new(t.clone()) });
-    let t3 = || expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(t2()), right: Box::new(t.clone()) });
-    let t4 = || expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(t3()), right: Box::new(t.clone()) });
-    let t5 = || expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(t4()), right: Box::new(t.clone()) });
+    let t2 = || {
+        expr(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(t.clone()),
+            right: Box::new(t.clone()),
+        })
+    };
+    let t3 = || {
+        expr(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(t2()),
+            right: Box::new(t.clone()),
+        })
+    };
+    let t4 = || {
+        expr(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(t3()),
+            right: Box::new(t.clone()),
+        })
+    };
+    let t5 = || {
+        expr(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(t4()),
+            right: Box::new(t.clone()),
+        })
+    };
     let a1 = expr(ExprKind::Lit(Literal::Float(0.254829592)));
     let a2 = expr(ExprKind::Lit(Literal::Float(0.284496736)));
     let a3 = expr(ExprKind::Lit(Literal::Float(1.421413741)));
     let a4 = expr(ExprKind::Lit(Literal::Float(1.453152027)));
     let a5 = expr(ExprKind::Lit(Literal::Float(1.061405429)));
-    let term1 = expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(a1), right: Box::new(t.clone()) });
-    let term2 = expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(a2), right: Box::new(t2()) });
-    let term3 = expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(a3), right: Box::new(t3()) });
-    let term4 = expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(a4), right: Box::new(t4()) });
-    let term5 = expr(ExprKind::Binary { op: BinOp::Mul, left: Box::new(a5), right: Box::new(t5()) });
-    let sum12 = expr(ExprKind::Binary { op: BinOp::Sub, left: Box::new(term1), right: Box::new(term2) });
-    let sum123 = expr(ExprKind::Binary { op: BinOp::Add, left: Box::new(sum12), right: Box::new(term3) });
-    let sum1234 = expr(ExprKind::Binary { op: BinOp::Sub, left: Box::new(sum123), right: Box::new(term4) });
-    expr(ExprKind::Binary { op: BinOp::Add, left: Box::new(sum1234), right: Box::new(term5) })
+    let term1 = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(a1),
+        right: Box::new(t.clone()),
+    });
+    let term2 = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(a2),
+        right: Box::new(t2()),
+    });
+    let term3 = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(a3),
+        right: Box::new(t3()),
+    });
+    let term4 = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(a4),
+        right: Box::new(t4()),
+    });
+    let term5 = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(a5),
+        right: Box::new(t5()),
+    });
+    let sum12 = expr(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(term1),
+        right: Box::new(term2),
+    });
+    let sum123 = expr(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(sum12),
+        right: Box::new(term3),
+    });
+    let sum1234 = expr(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(sum123),
+        right: Box::new(term4),
+    });
+    expr(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(sum1234),
+        right: Box::new(term5),
+    })
 }
 
 /// Emit a bare math function call — the C profile routes these to WASM/ecma:math.

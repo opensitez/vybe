@@ -63,12 +63,30 @@ pub fn strftime_output(fmt: Expression) -> Expression {
 
 fn tm_struct(year: i64) -> Expression {
     expr(ExprKind::Object(vec![
-        ObjectProperty::KeyValue { key: str_lit("tm_year"), value: int_lit(year) },
-        ObjectProperty::KeyValue { key: str_lit("tm_mon"), value: int_lit(0) },
-        ObjectProperty::KeyValue { key: str_lit("tm_mday"), value: int_lit(1) },
-        ObjectProperty::KeyValue { key: str_lit("tm_hour"), value: int_lit(0) },
-        ObjectProperty::KeyValue { key: str_lit("tm_min"), value: int_lit(0) },
-        ObjectProperty::KeyValue { key: str_lit("tm_sec"), value: int_lit(0) },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_year"),
+            value: int_lit(year),
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_mon"),
+            value: int_lit(0),
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_mday"),
+            value: int_lit(1),
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_hour"),
+            value: int_lit(0),
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_min"),
+            value: int_lit(0),
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("tm_sec"),
+            value: int_lit(0),
+        },
     ]))
 }
 
@@ -109,8 +127,14 @@ pub fn runtime_helpers() -> Vec<Statement> {
                         left: Box::new(ident("fmt")),
                         right: Box::new(str_lit("%Y-%m-%d")),
                     }),
-                    vec![stmt(StmtKind::Expr(assign_expr(ident("buf"), str_lit("1970-01-01"))))],
-                    Some(vec![stmt(StmtKind::Expr(assign_expr(ident("buf"), str_lit(""))))]),
+                    vec![stmt(StmtKind::Expr(assign_expr(
+                        ident("buf"),
+                        str_lit("1970-01-01"),
+                    )))],
+                    Some(vec![stmt(StmtKind::Expr(assign_expr(
+                        ident("buf"),
+                        str_lit(""),
+                    )))]),
                 ),
                 stmt(StmtKind::Return(Some(member(ident("buf"), "length")))),
             ],

@@ -4,7 +4,7 @@
 //! here so any libc-targeting front-end can inject them. Injected once into the
 //! program prelude.
 
-use crate::ast::{BinOp, ExprKind, StmtKind, Statement};
+use crate::ast::{BinOp, ExprKind, Statement, StmtKind};
 use crate::platforms::libc::build::*;
 
 pub fn runtime_helpers() -> Vec<Statement> {
@@ -40,7 +40,11 @@ pub fn runtime_helpers() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "out",
-                call_member(ident("src"), "substring", vec![int_lit(0), ident("max_len")]),
+                call_member(
+                    ident("src"),
+                    "substring",
+                    vec![int_lit(0), ident("max_len")],
+                ),
             ),
             stmt(StmtKind::Expr(assign_expr(ident("dst"), ident("out")))),
             stmt(StmtKind::Return(Some(member(ident("src"), "length")))),

@@ -11,20 +11,33 @@ use crate::platforms::libc::build::{expr, str_lit};
 use crate::platforms::libc::math_runtime::{ecma_math_call, ecma_math_call2};
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
-    expr(ExprKind::Binary { op, left: Box::new(l), right: Box::new(r) })
+    expr(ExprKind::Binary {
+        op,
+        left: Box::new(l),
+        right: Box::new(r),
+    })
 }
 
 /// `{real, imag}` — the complex value representation.
 pub fn complex_object(real: Expression, imag: Expression) -> Expression {
     expr(ExprKind::Object(vec![
-        ObjectProperty::KeyValue { key: str_lit("real"), value: real },
-        ObjectProperty::KeyValue { key: str_lit("imag"), value: imag },
+        ObjectProperty::KeyValue {
+            key: str_lit("real"),
+            value: real,
+        },
+        ObjectProperty::KeyValue {
+            key: str_lit("imag"),
+            value: imag,
+        },
     ]))
 }
 
 /// `conj(z)` → `{real, -imag}` (§7.3.9.4).
 pub fn conj(real: Expression, imag: Expression) -> Expression {
-    let neg_imag = expr(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(imag) });
+    let neg_imag = expr(ExprKind::Unary {
+        op: UnaryOp::Neg,
+        expr: Box::new(imag),
+    });
     complex_object(real, neg_imag)
 }
 

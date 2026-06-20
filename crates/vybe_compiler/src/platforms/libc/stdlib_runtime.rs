@@ -14,7 +14,11 @@ use crate::ast::{Argument, BinOp, BreakTarget, ExprKind, Expression, Statement, 
 use crate::platforms::libc::build::*;
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
-    expr(ExprKind::Binary { op, left: Box::new(l), right: Box::new(r) })
+    expr(ExprKind::Binary {
+        op,
+        left: Box::new(l),
+        right: Box::new(r),
+    })
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
@@ -26,7 +30,11 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
-    stmt(StmtKind::While { cond, body, else_body: None })
+    stmt(StmtKind::While {
+        cond,
+        body,
+        else_body: None,
+    })
 }
 
 pub fn runtime_helpers() -> Vec<Statement> {
@@ -48,14 +56,20 @@ fn c_qsort() -> Statement {
             if_stmt(
                 bin(
                     BinOp::LtEq,
-                    call(ident("cmp"), vec![index_expr(ident("arr"), ident("j")), ident("key")]),
+                    call(
+                        ident("cmp"),
+                        vec![index_expr(ident("arr"), ident("j")), ident("key")],
+                    ),
                     int_lit(0),
                 ),
                 vec![stmt(StmtKind::Break(BreakTarget::Implicit))],
                 None,
             ),
             shift,
-            stmt(StmtKind::Expr(assign_expr(ident("j"), bin(BinOp::Sub, ident("j"), int_lit(1))))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("j"),
+                bin(BinOp::Sub, ident("j"), int_lit(1)),
+            ))),
         ],
     );
     // while (i < count) { key = arr[i]; j = i - 1; <inner>; arr[j+1] = key; i += 1; }
@@ -69,7 +83,10 @@ fn c_qsort() -> Statement {
                 index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
                 ident("key"),
             ))),
-            stmt(StmtKind::Expr(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), int_lit(1))))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                bin(BinOp::Add, ident("i"), int_lit(1)),
+            ))),
         ],
     );
     function_stmt(
@@ -92,13 +109,19 @@ fn c_bsearch_index() -> Statement {
             if_stmt(
                 bin(
                     BinOp::Eq,
-                    call(ident("cmp"), vec![ident("key"), index_expr(ident("arr"), ident("i"))]),
+                    call(
+                        ident("cmp"),
+                        vec![ident("key"), index_expr(ident("arr"), ident("i"))],
+                    ),
                     int_lit(0),
                 ),
                 vec![stmt(StmtKind::Return(Some(ident("i"))))],
                 None,
             ),
-            stmt(StmtKind::Expr(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), int_lit(1))))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                bin(BinOp::Add, ident("i"), int_lit(1)),
+            ))),
         ],
     );
     function_stmt(

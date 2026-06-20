@@ -62,12 +62,25 @@ fn var_decl(name: &str, init: Expression) -> Statement {
     })
 }
 
-fn if_stmt(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
-    s(StmtKind::If { cond, then_body, elifs: Vec::new(), else_body })
+fn if_stmt(
+    cond: Expression,
+    then_body: Vec<Statement>,
+    else_body: Option<Vec<Statement>>,
+) -> Statement {
+    s(StmtKind::If {
+        cond,
+        then_body,
+        elifs: Vec::new(),
+        else_body,
+    })
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
-    s(StmtKind::While { cond, body, else_body: None })
+    s(StmtKind::While {
+        cond,
+        body,
+        else_body: None,
+    })
 }
 
 fn ret(value: Expression) -> Statement {
@@ -223,7 +236,9 @@ pub fn sscanf_literal(
                 } else {
                     (1i64, trimmed)
                 };
-                let value = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+                let value = if let Some(hex) =
+                    rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X"))
+                {
                     i64::from_str_radix(hex, 16).ok()?
                 } else if rest.starts_with('0') && rest.len() > 1 {
                     i64::from_str_radix(&rest[1..], 8).ok()?
@@ -298,7 +313,9 @@ pub fn sscanf_literal(
                             {
                                 source_index += 1;
                             }
-                        } else if source_index < source_chars.len() && source_chars[source_index] == '0' {
+                        } else if source_index < source_chars.len()
+                            && source_chars[source_index] == '0'
+                        {
                             while source_index < source_chars.len()
                                 && matches!(source_chars[source_index], '0'..='7')
                             {
@@ -335,7 +352,10 @@ pub fn sscanf_literal(
                 skip_source_ws(&mut source_index);
                 let start = source_index;
                 while source_index < source_chars.len()
-                    && matches!(source_chars[source_index], '0'..='9' | '+' | '-' | '.' | 'e' | 'E')
+                    && matches!(
+                        source_chars[source_index],
+                        '0'..='9' | '+' | '-' | '.' | 'e' | 'E'
+                    )
                 {
                     source_index += 1;
                 }
@@ -364,7 +384,9 @@ pub fn sscanf_literal(
                 let start = source_index;
                 while source_index < source_chars.len()
                     && !source_chars[source_index].is_whitespace()
-                    && width.map(|limit| source_index - start < limit).unwrap_or(true)
+                    && width
+                        .map(|limit| source_index - start < limit)
+                        .unwrap_or(true)
                 {
                     source_index += 1;
                 }
@@ -391,7 +413,11 @@ pub fn sscanf_literal(
                     let ch = source_chars[source_index];
                     let in_set = stop_chars.contains(&ch);
                     let should_stop = if negate { in_set } else { !in_set };
-                    if should_stop || width.map(|limit| source_index - start >= limit).unwrap_or(false) {
+                    if should_stop
+                        || width
+                            .map(|limit| source_index - start >= limit)
+                            .unwrap_or(false)
+                    {
                         break;
                     }
                     source_index += 1;
@@ -443,9 +469,18 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
             pattern: BindingPattern::Ident("__libc_stdin_state".to_string()),
             type_hint: None,
             init: Some(e(ExprKind::Object(vec![
-                ObjectProperty::KeyValue { key: lit_str("buf"), value: lit_str("") },
-                ObjectProperty::KeyValue { key: lit_str("eof"), value: lit_int(0) },
-                ObjectProperty::KeyValue { key: lit_str("allow_blocking"), value: lit_int(0) },
+                ObjectProperty::KeyValue {
+                    key: lit_str("buf"),
+                    value: lit_str(""),
+                },
+                ObjectProperty::KeyValue {
+                    key: lit_str("eof"),
+                    value: lit_int(0),
+                },
+                ObjectProperty::KeyValue {
+                    key: lit_str("allow_blocking"),
+                    value: lit_int(0),
+                },
             ]))),
             array_bounds: None,
             with_events: false,
@@ -458,7 +493,10 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
         "__libc_stdin_set_blocking",
         vec!["flag"],
         vec![
-            expr_stmt(assign_expr(member(stdin_state(), "allow_blocking"), ident("flag"))),
+            expr_stmt(assign_expr(
+                member(stdin_state(), "allow_blocking"),
+                ident("flag"),
+            )),
             ret(lit_int(0)),
         ],
     ));
@@ -476,7 +514,11 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
         vec![],
         vec![
             if_stmt(
-                bin(BinOp::Eq, member(stdin_state(), "allow_blocking"), lit_int(0)),
+                bin(
+                    BinOp::Eq,
+                    member(stdin_state(), "allow_blocking"),
+                    lit_int(0),
+                ),
                 vec![ret(lit_str(""))],
                 None,
             ),
@@ -484,7 +526,10 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
             if_stmt(
                 bin(
                     BinOp::Eq,
-                    e(ExprKind::Unary { op: UnaryOp::Typeof, expr: Box::new(ident("__l")) }),
+                    e(ExprKind::Unary {
+                        op: UnaryOp::Typeof,
+                        expr: Box::new(ident("__l")),
+                    }),
                     lit_str("string"),
                 ),
                 vec![ret(ident("__l"))],
@@ -506,9 +551,16 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                         bin(
                             BinOp::And,
                             bin(BinOp::Gt, member(stdin_buf(), "length"), lit_int(0)),
-                            bin(BinOp::LtEq, call_member(stdin_buf(), "charCodeAt", vec![lit_int(0)]), lit_int(32)),
+                            bin(
+                                BinOp::LtEq,
+                                call_member(stdin_buf(), "charCodeAt", vec![lit_int(0)]),
+                                lit_int(32),
+                            ),
                         ),
-                        vec![expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![lit_int(1)])))],
+                        vec![expr_stmt(assign_expr(
+                            stdin_buf(),
+                            call_member(stdin_buf(), "substring", vec![lit_int(1)]),
+                        ))],
                     ),
                     if_stmt(
                         bin(BinOp::Gt, member(stdin_buf(), "length"), lit_int(0)),
@@ -525,7 +577,11 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                                 vec![expr_stmt(assign_expr(stdin_eof(), lit_int(1)))],
                                 Some(vec![expr_stmt(assign_expr(
                                     stdin_buf(),
-                                    bin(BinOp::Add, bin(BinOp::Add, stdin_buf(), ident("line")), lit_str(" ")),
+                                    bin(
+                                        BinOp::Add,
+                                        bin(BinOp::Add, stdin_buf(), ident("line")),
+                                        lit_str(" "),
+                                    ),
                                 ))]),
                             ),
                         ]),
@@ -537,12 +593,25 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                 bin(
                     BinOp::And,
                     bin(BinOp::Lt, ident("i"), member(stdin_buf(), "length")),
-                    bin(BinOp::Gt, call_member(stdin_buf(), "charCodeAt", vec![ident("i")]), lit_int(32)),
+                    bin(
+                        BinOp::Gt,
+                        call_member(stdin_buf(), "charCodeAt", vec![ident("i")]),
+                        lit_int(32),
+                    ),
                 ),
-                vec![expr_stmt(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), lit_int(1))))],
+                vec![expr_stmt(assign_expr(
+                    ident("i"),
+                    bin(BinOp::Add, ident("i"), lit_int(1)),
+                ))],
             ),
-            var_decl("tok", call_member(stdin_buf(), "substring", vec![lit_int(0), ident("i")])),
-            expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![ident("i")]))),
+            var_decl(
+                "tok",
+                call_member(stdin_buf(), "substring", vec![lit_int(0), ident("i")]),
+            ),
+            expr_stmt(assign_expr(
+                stdin_buf(),
+                call_member(stdin_buf(), "substring", vec![ident("i")]),
+            )),
             ret(ident("tok")),
         ],
     ));
@@ -563,7 +632,10 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                     if_stmt(
                         bin(BinOp::Eq, member(ident("line"), "length"), lit_int(0)),
                         vec![expr_stmt(assign_expr(stdin_eof(), lit_int(1)))],
-                        Some(vec![expr_stmt(assign_expr(stdin_buf(), bin(BinOp::Add, ident("line"), lit_str("\n"))))]),
+                        Some(vec![expr_stmt(assign_expr(
+                            stdin_buf(),
+                            bin(BinOp::Add, ident("line"), lit_str("\n")),
+                        ))]),
                     ),
                 ],
             ),
@@ -572,8 +644,14 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                 vec![ret(lit_str(""))],
                 None,
             ),
-            var_decl("ch", call_member(stdin_buf(), "substring", vec![lit_int(0), lit_int(1)])),
-            expr_stmt(assign_expr(stdin_buf(), call_member(stdin_buf(), "substring", vec![lit_int(1)]))),
+            var_decl(
+                "ch",
+                call_member(stdin_buf(), "substring", vec![lit_int(0), lit_int(1)]),
+            ),
+            expr_stmt(assign_expr(
+                stdin_buf(),
+                call_member(stdin_buf(), "substring", vec![lit_int(1)]),
+            )),
             ret(ident("ch")),
         ],
     ));
@@ -619,7 +697,10 @@ pub fn char_to_str_runtime_helper() -> Statement {
             if_stmt(
                 bin(
                     BinOp::Eq,
-                    e(ExprKind::Unary { op: UnaryOp::Typeof, expr: Box::new(ident("v")) }),
+                    e(ExprKind::Unary {
+                        op: UnaryOp::Typeof,
+                        expr: Box::new(ident("v")),
+                    }),
                     lit_str("string"),
                 ),
                 vec![ret(e(ExprKind::Index {
@@ -635,11 +716,19 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 bin(
                     BinOp::And,
                     bin(BinOp::NotEq, ident("v"), e(ExprKind::Lit(Literal::Null))),
-                    bin(BinOp::Eq, member(ident("v"), "__ref_kind"), lit_str("carray")),
+                    bin(
+                        BinOp::Eq,
+                        member(ident("v"), "__ref_kind"),
+                        lit_str("carray"),
+                    ),
                 ),
                 vec![expr_stmt(assign_expr(
                     ident("a"),
-                    call_member(member(ident("v"), "__base"), "slice", vec![member(ident("v"), "__idx")]),
+                    call_member(
+                        member(ident("v"), "__base"),
+                        "slice",
+                        vec![member(ident("v"), "__idx")],
+                    ),
                 ))],
                 None,
             ),
@@ -649,7 +738,11 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 bin(BinOp::Lt, ident("i"), member(ident("a"), "length")),
                 vec![
                     var_decl("c", index_a_i),
-                    if_stmt(bin(BinOp::Eq, ident("c"), lit_int(0)), vec![ret(ident("r"))], None),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("c"), lit_int(0)),
+                        vec![ret(ident("r"))],
+                        None,
+                    ),
                     expr_stmt(assign_expr(
                         ident("r"),
                         bin(
@@ -658,7 +751,10 @@ pub fn char_to_str_runtime_helper() -> Statement {
                             call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
                         ),
                     )),
-                    expr_stmt(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), lit_int(1)))),
+                    expr_stmt(assign_expr(
+                        ident("i"),
+                        bin(BinOp::Add, ident("i"), lit_int(1)),
+                    )),
                 ],
             ),
             ret(ident("r")),
@@ -710,19 +806,41 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
         let Some(target) = targets.get(idx).cloned() else {
             break;
         };
-        let reader = if *spec == 'c' { "__libc_stdin_char" } else { "__libc_stdin_token" };
+        let reader = if *spec == 'c' {
+            "__libc_stdin_char"
+        } else {
+            "__libc_stdin_token"
+        };
         seq.push(assign_expr(
             ident(&tok_var),
             ternary(ident(&ok_var), call(ident(reader), vec![]), lit_str("")),
         ));
         let converted = match spec {
-            'd' | 'u' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]), lit_int(0)),
-            'i' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var)]), lit_int(0)),
-            'x' | 'X' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]), lit_int(0)),
-            'o' => bin(BinOp::Or, call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]), lit_int(0)),
-            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => {
-                bin(BinOp::Or, call(ident("parseFloat"), vec![ident(&tok_var)]), lit_float(0.0))
-            }
+            'd' | 'u' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]),
+                lit_int(0),
+            ),
+            'i' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var)]),
+                lit_int(0),
+            ),
+            'x' | 'X' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]),
+                lit_int(0),
+            ),
+            'o' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]),
+                lit_int(0),
+            ),
+            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => bin(
+                BinOp::Or,
+                call(ident("parseFloat"), vec![ident(&tok_var)]),
+                lit_float(0.0),
+            ),
             _ => ident(&tok_var),
         };
         seq.push(ternary(

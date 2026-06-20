@@ -24,9 +24,7 @@
 //!   `p - q`      → `carray_diff(p, q)`
 //!   NULL         → `lit_int(0)` / null (unchanged)
 
-use crate::ast::{
-    Argument, BinOp, ExprKind, Expression, Literal, ObjectProperty,
-};
+use crate::ast::{Argument, BinOp, ExprKind, Expression, Literal, ObjectProperty};
 
 pub const REF_KIND_KEY: &str = "__ref_kind";
 pub const CARRAY_BASE_KEY: &str = "__base";

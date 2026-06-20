@@ -72,7 +72,11 @@ fn index_expr(object: Expression, index: Expression) -> Expression {
     })
 }
 
-fn if_stmt(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+fn if_stmt(
+    cond: Expression,
+    then_body: Vec<Statement>,
+    else_body: Option<Vec<Statement>>,
+) -> Statement {
     stmt(StmtKind::If {
         cond,
         then_body,
@@ -243,7 +247,10 @@ pub fn strtok_stateful(
                 if_stmt(
                     source_present,
                     vec![
-                        stmt(StmtKind::Expr(assign_expr(ident("__c_strtok_rem"), source_value))),
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("__c_strtok_rem"),
+                            source_value,
+                        ))),
                         stmt(StmtKind::Expr(assign_expr(
                             ident("__c_strtok_delim"),
                             delim_value,
@@ -297,7 +304,10 @@ pub fn strtok_stateful(
                         right: Box::new(lit_int(0)),
                     }),
                     vec![
-                        stmt(StmtKind::Expr(assign_expr(ident("__c_strtok_rem"), lit_null()))),
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("__c_strtok_rem"),
+                            lit_null(),
+                        ))),
                         stmt(StmtKind::Return(Some(lit_null()))),
                     ],
                     None,
@@ -349,7 +359,10 @@ pub fn strtok_stateful(
                         right: Box::new(lit_str("")),
                     }),
                     vec![
-                        stmt(StmtKind::Expr(assign_expr(ident("__c_strtok_rem"), lit_null()))),
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("__c_strtok_rem"),
+                            lit_null(),
+                        ))),
                         stmt(StmtKind::Return(Some(lit_null()))),
                     ],
                     None,

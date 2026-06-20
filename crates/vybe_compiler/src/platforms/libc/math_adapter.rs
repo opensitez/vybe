@@ -34,7 +34,11 @@ fn lit_int(n: i64) -> Expression {
 }
 
 fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
-    e(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) })
+    e(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
 }
 
 fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {

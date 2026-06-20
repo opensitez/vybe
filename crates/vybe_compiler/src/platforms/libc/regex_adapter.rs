@@ -30,20 +30,31 @@ const REG_BADPAT: i64 = 2;
 const REG_ESPACE: i64 = 12;
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
-    expr(ExprKind::Binary { op, left: Box::new(l), right: Box::new(r) })
+    expr(ExprKind::Binary {
+        op,
+        left: Box::new(l),
+        right: Box::new(r),
+    })
 }
 
 fn obj(pairs: Vec<(&str, Expression)>) -> Expression {
     expr(ExprKind::Object(
         pairs
             .into_iter()
-            .map(|(k, v)| ObjectProperty::KeyValue { key: str_lit(k), value: v })
+            .map(|(k, v)| ObjectProperty::KeyValue {
+                key: str_lit(k),
+                value: v,
+            })
             .collect(),
     ))
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
-    stmt(StmtKind::While { cond, body, else_body: None })
+    stmt(StmtKind::While {
+        cond,
+        body,
+        else_body: None,
+    })
 }
 
 fn ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
@@ -63,7 +74,11 @@ fn new_regexp(src: Expression, flags: Expression) -> Expression {
 
 /// `(flags & bit) != 0`
 fn flag_set(var: &str, bit: i64) -> Expression {
-    bin(BinOp::NotEq, bin(BinOp::BitAnd, ident(var), int_lit(bit)), int_lit(0))
+    bin(
+        BinOp::NotEq,
+        bin(BinOp::BitAnd, ident(var), int_lit(bit)),
+        int_lit(0),
+    )
 }
 
 // ── call-site lowerings ──────────────────────────────────────────────────────
@@ -87,7 +102,10 @@ pub fn regexec(
     pmatch: Expression,
     eflags: Expression,
 ) -> Expression {
-    call_expr(ident("__c_regexec"), vec![preg_val, input, nmatch, pmatch, eflags])
+    call_expr(
+        ident("__c_regexec"),
+        vec![preg_val, input, nmatch, pmatch, eflags],
+    )
 }
 
 /// `regfree(&preg)` → nothing to release in this model.
@@ -98,7 +116,10 @@ pub fn regfree() -> Expression {
 /// `regerror(errcode, &preg, errbuf, errbuf_size)` → write the standard message
 /// into `errbuf`, return its length + 1 (size including the NUL, per POSIX).
 pub fn regerror(errcode: Expression, errbuf_lval: Expression) -> Expression {
-    let store = assign_expr(errbuf_lval.clone(), call_expr(ident("__c_regerror_msg"), vec![errcode]));
+    let store = assign_expr(
+        errbuf_lval.clone(),
+        call_expr(ident("__c_regerror_msg"), vec![errcode]),
+    );
     expr(ExprKind::Sequence(vec![
         store,
         bin(BinOp::Add, member(errbuf_lval, "length"), int_lit(1)),
@@ -108,7 +129,11 @@ pub fn regerror(errcode: Expression, errbuf_lval: Expression) -> Expression {
 // ── runtime helpers (injected once into the program prelude) ─────────────────
 
 pub fn runtime_helpers() -> Vec<Statement> {
-    vec![regcomp_compile_helper(), regexec_helper(), regerror_msg_helper()]
+    vec![
+        regcomp_compile_helper(),
+        regexec_helper(),
+        regerror_msg_helper(),
+    ]
 }
 
 /// `__c_regcomp_compile(pat, cflags)` → the `regex_t` object. Maps POSIX compile
@@ -135,7 +160,10 @@ fn regcomp_compile_helper() -> Statement {
             ident("nsub"),
             bin(
                 BinOp::Sub,
-                member(call_expr(member(ident("g"), "exec"), vec![str_lit("")]), "length"),
+                member(
+                    call_expr(member(ident("g"), "exec"), vec![str_lit("")]),
+                    "length",
+                ),
                 int_lit(1),
             ),
         ))),
@@ -144,7 +172,10 @@ fn regcomp_compile_helper() -> Statement {
         types: Vec::new(),
         var_name: Some("e".to_string()),
         stack_var: None,
-        body: vec![stmt(StmtKind::Expr(assign_expr(ident("err"), int_lit(REG_BADPAT))))],
+        body: vec![stmt(StmtKind::Expr(assign_expr(
+            ident("err"),
+            int_lit(REG_BADPAT),
+        )))],
         when_clause: None,
     };
     function_stmt(
@@ -154,7 +185,10 @@ fn regcomp_compile_helper() -> Statement {
             var_decl_stmt("flags", str_lit("")),
             set_flag(2, "i"), // REG_ICASE
             set_flag(4, "m"), // REG_NEWLINE
-            var_decl_stmt("nosub", ternary(flag_set("cflags", 8), int_lit(1), int_lit(0))), // REG_NOSUB
+            var_decl_stmt(
+                "nosub",
+                ternary(flag_set("cflags", 8), int_lit(1), int_lit(0)),
+            ), // REG_NOSUB
             var_decl_stmt("nsub", int_lit(0)),
             var_decl_stmt("err", int_lit(0)),
             stmt(StmtKind::Try {
@@ -204,7 +238,10 @@ fn regexec_helper() -> Statement {
         vec![
             var_decl_stmt("sp", sp),
             fill,
-            stmt(StmtKind::Expr(assign_expr(ident("i"), bin(BinOp::Add, ident("i"), int_lit(1))))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                bin(BinOp::Add, ident("i"), int_lit(1)),
+            ))),
         ],
     );
     function_stmt(
@@ -212,7 +249,10 @@ fn regexec_helper() -> Statement {
         vec!["preg", "str", "nmatch", "pmatch", "eflags"],
         vec![
             var_decl_stmt("re", new_re),
-            var_decl_stmt("m", call_expr(member(ident("re"), "exec"), vec![ident("str")])),
+            var_decl_stmt(
+                "m",
+                call_expr(member(ident("re"), "exec"), vec![ident("str")]),
+            ),
             if_stmt(
                 bin(BinOp::Eq, ident("m"), null_lit()),
                 vec![stmt(StmtKind::Return(Some(int_lit(REG_NOMATCH))))],

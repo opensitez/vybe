@@ -33,7 +33,11 @@ fn lit_str(v: &str) -> Expression {
     e(ExprKind::Lit(Literal::Str(v.to_string())))
 }
 fn member(o: Expression, f: &str) -> Expression {
-    e(ExprKind::Member { object: Box::new(o), field: f.to_string(), null_safe: false })
+    e(ExprKind::Member {
+        object: Box::new(o),
+        field: f.to_string(),
+        null_safe: false,
+    })
 }
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     e(ExprKind::Call {
@@ -46,10 +50,17 @@ fn call_member(o: Expression, f: &str, args: Vec<Expression>) -> Expression {
     call(member(o, f), args)
 }
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
-    e(ExprKind::Binary { op, left: Box::new(l), right: Box::new(r) })
+    e(ExprKind::Binary {
+        op,
+        left: Box::new(l),
+        right: Box::new(r),
+    })
 }
 fn assign(target: Expression, value: Expression) -> Expression {
-    e(ExprKind::Assign { target: Box::new(target), value: Box::new(value) })
+    e(ExprKind::Assign {
+        target: Box::new(target),
+        value: Box::new(value),
+    })
 }
 fn var_decl(name: &str, init: Expression) -> Statement {
     s(StmtKind::VarDecl {
@@ -64,7 +75,11 @@ fn var_decl(name: &str, init: Expression) -> Statement {
     })
 }
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
-    s(StmtKind::While { cond, body, else_body: None })
+    s(StmtKind::While {
+        cond,
+        body,
+        else_body: None,
+    })
 }
 fn ret(v: Expression) -> Statement {
     s(StmtKind::Return(Some(v)))
@@ -155,7 +170,12 @@ pub fn wide_to_string(arr: Expression) -> Expression {
     let slice = call_member(arr.clone(), "slice", vec![lit_int(0), nul_index(arr)]);
     e(ExprKind::Call {
         callee: Box::new(member(ident("String"), "fromCharCode")),
-        args: vec![Argument { value: slice, name: None, by_ref: false, spread: true }],
+        args: vec![Argument {
+            value: slice,
+            name: None,
+            by_ref: false,
+            spread: true,
+        }],
         optional: false,
     })
 }
@@ -189,7 +209,10 @@ fn lt(l: Expression, r: Expression) -> Expression {
     bin(BinOp::Lt, l, r)
 }
 fn incr(name: &str) -> Statement {
-    expr_stmt(assign(ident(name), bin(BinOp::Add, ident(name), lit_int(1))))
+    expr_stmt(assign(
+        ident(name),
+        bin(BinOp::Add, ident(name), lit_int(1)),
+    ))
 }
 
 /// Runtime boundary helper: convert a runtime JS string into a NUL-terminated
