@@ -340,9 +340,7 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
             tdz_rewrite_expr(expr, name);
             // All switch arms share one block scope (§14.12).
             let shadowed = cases.iter().any(|c| tdz_list_declares(&c.body, name))
-                || default
-                    .as_ref()
-                    .is_some_and(|d| tdz_list_declares(d, name));
+                || default.as_ref().is_some_and(|d| tdz_list_declares(d, name));
             if !shadowed {
                 for c in cases {
                     for cond in &mut c.conditions {
@@ -398,7 +396,11 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
                 tdz_rewrite_list(body, name);
             }
         }
-        StmtKind::Using { var, resource, body } => {
+        StmtKind::Using {
+            var,
+            resource,
+            body,
+        } => {
             tdz_rewrite_expr(resource, name);
             if var != name {
                 tdz_rewrite_list(body, name);
@@ -2212,7 +2214,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             // grammar, so detect it from the header text (no var_kind pair).
             let is_using_form = header_inner.as_str().trim_start().starts_with("using");
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
-            let is_using_form = is_using_form && parts.iter().all(|p| p.as_rule() != Rule::var_kind);
+            let is_using_form =
+                is_using_form && parts.iter().all(|p| p.as_rule() != Rule::var_kind);
             let is_let_const = parts
                 .iter()
                 .find(|p| p.as_rule() == Rule::var_kind)
@@ -2791,7 +2794,10 @@ static OPTCHAIN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Split the spine at the optional link nearest the top. Returns
 /// `(head, rebuilt)` where `rebuilt` is the chain with that link made
 /// non-optional and rooted at `Ident(param)`.
-fn split_optional_spine(e: Expression, param: &str) -> Result<(Expression, Expression), Expression> {
+fn split_optional_spine(
+    e: Expression,
+    param: &str,
+) -> Result<(Expression, Expression), Expression> {
     let span = e.span;
     match e.kind {
         ExprKind::Member {
@@ -2867,8 +2873,10 @@ fn split_optional_spine(e: Expression, param: &str) -> Result<(Expression, Expre
             // binding — splitting between the receiver and the call would
             // rebind `this`. Leave those to the compiler's existing
             // single-link handling, optional or not.
-            let is_method_call =
-                matches!(&callee.kind, ExprKind::Member { .. } | ExprKind::Index { .. });
+            let is_method_call = matches!(
+                &callee.kind,
+                ExprKind::Member { .. } | ExprKind::Index { .. }
+            );
             if optional && !is_method_call {
                 let rebuilt = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(param)),
@@ -2936,7 +2944,12 @@ fn normalize_optional_chain(e: Expression) -> Expression {
     match split_optional_spine(e, &param) {
         Ok((head, rebuilt)) => {
             let head = normalize_optional_chain(head);
-            optional_guard_iife(&param, head, rebuilt, Expression::new(ExprKind::Lit(Literal::Undefined)))
+            optional_guard_iife(
+                &param,
+                head,
+                rebuilt,
+                Expression::new(ExprKind::Lit(Literal::Undefined)),
+            )
         }
         Err(unchanged) => unchanged,
     }
@@ -3648,9 +3661,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if let StmtKind::FunctionDecl { name, .. } = &mut stmt_kind {
                 if !name.is_empty() {
                     let fn_name = std::mem::take(name);
-                    let init = Expression::new(ExprKind::FunctionExpr(Box::new(
-                        Statement::new(stmt_kind),
-                    )));
+                    let init = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                        stmt_kind,
+                    ))));
                     let decl = Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(fn_name.clone()),
@@ -3661,8 +3674,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }],
                         kind: VarDeclKind::Const,
                     });
-                    let ret =
-                        Statement::new(StmtKind::Return(Some(Expression::ident(&fn_name))));
+                    let ret = Statement::new(StmtKind::Return(Some(Expression::ident(&fn_name))));
                     return Ok(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Lambda {
                             params: Vec::new(),

@@ -950,8 +950,8 @@ impl Compiler {
                 }
 
                 if self.profile.name == "pascal" && *op == BinOp::BitXor {
-                    let integer_xor =
-                        self.pascal_expr_is_integer_like(left) && self.pascal_expr_is_integer_like(right);
+                    let integer_xor = self.pascal_expr_is_integer_like(left)
+                        && self.pascal_expr_is_integer_like(right);
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
                     self.compile_binop(&BinOp::BitXor);
@@ -977,6 +977,48 @@ impl Compiler {
                 // These already exist and return Value::BigInt / Value::Bool.
                 // `infer_expr_type_hint` returns "bigint" for BigInt literals
                 // and for variables initialised with BigInt values.
+                if self.is_php_profile() {
+                    let left_hint = self.infer_expr_type_hint(left);
+                    let right_hint = self.infer_expr_type_hint(right);
+                    let left_is_bigint = left_hint.as_deref() == Some("bigint");
+                    let right_is_bigint = right_hint.as_deref() == Some("bigint");
+                    if left_is_bigint || right_is_bigint {
+                        if left_is_bigint ^ right_is_bigint
+                            && matches!(
+                                op,
+                                BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                            )
+                        {
+                            let number_idx = self.import("ecma:number", "Number");
+                            self.compile_expr(left)?;
+                            if left_is_bigint {
+                                self.emit_host_call(number_idx, 1);
+                            }
+                            self.compile_expr(right)?;
+                            if right_is_bigint {
+                                self.emit_host_call(number_idx, 1);
+                            }
+                            self.compile_binop(op);
+                            return Ok(());
+                        }
+                        let fn_name = match op {
+                            BinOp::Eq | BinOp::StrictEq => Some("eq"),
+                            BinOp::NotEq | BinOp::StrictNotEq => Some("ne"),
+                            BinOp::Lt => Some("lt"),
+                            BinOp::LtEq => Some("le"),
+                            BinOp::Gt => Some("gt"),
+                            BinOp::GtEq => Some("ge"),
+                            _ => None,
+                        };
+                        if let Some(name) = fn_name {
+                            let idx = self.import("ecma:bigint", name);
+                            self.compile_expr(left)?;
+                            self.compile_expr(right)?;
+                            self.emit_host_call(idx, 2);
+                            return Ok(());
+                        }
+                    }
+                }
                 if self.is_js_profile() {
                     let left_hint = self.infer_expr_type_hint(left);
                     let right_hint = self.infer_expr_type_hint(right);
@@ -1199,7 +1241,7 @@ impl Compiler {
                         match op {
                             UnaryOp::Neg => {
                                 let l = self.line;
-                                if self.is_js_profile()
+                                if (self.is_js_profile() || self.is_php_profile())
                                     && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
                                 {
                                     let idx = self.import("ecma:bigint", "neg");
@@ -3040,7 +3082,11 @@ impl Compiler {
                         self.chunk().emit_if(line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+                        common::references::emit_cell_load(
+                            &mut self.chunks,
+                            self.current,
+                            self.line,
+                        );
 
                         let line = self.line;
                         self.chunk().emit_else(line);
@@ -4535,15 +4581,8 @@ impl Compiler {
                                 self.emit_host_call(num, 1);
                                 return Ok(());
                             }
-                            "char"
-                            | "uint8"
-                            | "int16"
-                            | "int"
-                            | "long"
-                            | "uint32"
-                            | "unsigned"
-                            | "unsigned int"
-                            | "unsigned long" => {
+                            "char" | "uint8" | "int16" | "int" | "long" | "uint32" | "unsigned"
+                            | "unsigned int" | "unsigned long" => {
                                 self.compile_expr(inner)?;
                                 let num = self.import("ecma:number", "Number");
                                 self.emit_host_call(num, 1);

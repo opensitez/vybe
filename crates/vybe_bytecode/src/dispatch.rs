@@ -509,8 +509,7 @@ impl VM {
             let chunk = &self.chunks[f.chunk_index];
 
             if f.ip >= chunk.code.len() {
-                if self.frames.len() <= 1.max(min_depth + 1)
-                    && self.cur_fiber_id == entry_fiber_id
+                if self.frames.len() <= 1.max(min_depth + 1) && self.cur_fiber_id == entry_fiber_id
                 {
                     return Ok(self.stack.pop().unwrap_or(Value::Null));
                 }
@@ -1868,7 +1867,11 @@ impl VM {
                             // fiber on the event loop until the Promise settles.
                             // Takes one operand (the awaited value); drop extras
                             // defensively (emit_await always passes exactly one).
-                            let val = if argc == 0 { Value::Undefined } else { self.pop() };
+                            let val = if argc == 0 {
+                                Value::Undefined
+                            } else {
+                                self.pop()
+                            };
                             for _ in 1..argc {
                                 self.pop();
                             }
@@ -7506,7 +7509,8 @@ impl VM {
 
                         // Populate __nonenum with non-enumerable field names from TypeDef
                         if let Some(td) = self.type_registry.get(type_id) {
-                            let nonenum_fields: Vec<Value> = td.field_defs
+                            let nonenum_fields: Vec<Value> = td
+                                .field_defs
                                 .iter()
                                 .filter(|f| !f.descriptor.enumerable)
                                 .map(|f| Value::String(Arc::from(f.name.as_str())))

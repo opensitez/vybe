@@ -784,7 +784,8 @@ fn expr_uses_proxy(expr: &Expression) -> bool {
         ExprKind::Call { callee, args, .. } => {
             // Proxy.revocable(...) creates a proxy without `new Proxy`.
             if let ExprKind::Member { object, field, .. } = &callee.kind {
-                if field == "revocable" && matches!(&object.kind, ExprKind::Ident(n) if n == "Proxy")
+                if field == "revocable"
+                    && matches!(&object.kind, ExprKind::Ident(n) if n == "Proxy")
                 {
                     return true;
                 }
@@ -1012,6 +1013,55 @@ pub struct HostImportMetadata {
 pub struct CompileResult {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
+}
+
+fn is_php_builtin_constant_name(name: &str) -> bool {
+    matches!(
+        name,
+        "PHP_VERSION"
+            | "PHP_VERSION_ID"
+            | "PHP_MAJOR_VERSION"
+            | "PHP_MINOR_VERSION"
+            | "PHP_RELEASE_VERSION"
+            | "PHP_OS"
+            | "PHP_OS_FAMILY"
+            | "PHP_EOL"
+            | "PHP_MAXPATHLEN"
+            | "PHP_INT_MAX"
+            | "PHP_INT_MIN"
+            | "PHP_INT_SIZE"
+            | "PHP_FLOAT_MAX"
+            | "PHP_FLOAT_MIN"
+            | "PHP_FLOAT_EPSILON"
+            | "PHP_FLOAT_DIG"
+            | "M_PI"
+            | "M_E"
+            | "M_LN2"
+            | "M_LN10"
+            | "M_LOG2E"
+            | "M_LOG10E"
+            | "M_SQRT2"
+            | "M_SQRT1_2"
+            | "INF"
+            | "NAN"
+            | "STDIN"
+            | "STDOUT"
+            | "STDERR"
+            | "SORT_REGULAR"
+            | "SORT_NUMERIC"
+            | "SORT_STRING"
+            | "SORT_NATURAL"
+            | "SORT_ASC"
+            | "SORT_DESC"
+            | "SORT_FLAG_CASE"
+            | "ARRAY_FILTER_USE_KEY"
+            | "ARRAY_FILTER_USE_BOTH"
+            | "JSON_PRETTY_PRINT"
+            | "JSON_UNESCAPED_UNICODE"
+            | "JSON_THROW_ON_ERROR"
+            | "DIRECTORY_SEPARATOR"
+            | "PATH_SEPARATOR"
+    )
 }
 
 impl Compiler {
@@ -3921,7 +3971,10 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self.active_finally_blocks.len().saturating_sub(target_finally_depth);
+            let nested_finally_count = self
+                .active_finally_blocks
+                .len()
+                .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
@@ -3951,7 +4004,10 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self.active_finally_blocks.len().saturating_sub(target_finally_depth);
+            let nested_finally_count = self
+                .active_finally_blocks
+                .len()
+                .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
@@ -5492,13 +5548,14 @@ impl Compiler {
                         .map(|hint| hint.contains('['))
                         .unwrap_or(false)
                         || decl.array_bounds.is_some();
-                    let is_char_string_init = matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
-                        && effective_type_hint
-                            .map(|hint| {
-                                let lower = hint.to_ascii_lowercase();
-                                lower.contains("char")
-                            })
-                            .unwrap_or(false);
+                    let is_char_string_init =
+                        matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
+                            && effective_type_hint
+                                .map(|hint| {
+                                    let lower = hint.to_ascii_lowercase();
+                                    lower.contains("char")
+                                })
+                                .unwrap_or(false);
                     is_array_type || is_char_string_init
                 } else {
                     false
@@ -6090,10 +6147,8 @@ impl Compiler {
                 // known Number throws at runtime). Inferring through chains
                 // like `(a * b) % c` keeps every step on the bigint path even
                 // when intermediate results have no other type evidence.
-                let left_bigint =
-                    self.infer_expr_type_hint(left).as_deref() == Some("bigint");
-                let right_bigint =
-                    self.infer_expr_type_hint(right).as_deref() == Some("bigint");
+                let left_bigint = self.infer_expr_type_hint(left).as_deref() == Some("bigint");
+                let right_bigint = self.infer_expr_type_hint(right).as_deref() == Some("bigint");
                 if left_bigint || right_bigint {
                     Some("bigint".into())
                 } else {
@@ -7562,12 +7617,9 @@ impl Compiler {
                             && matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_named_type")
                             && args.len() == 2 =>
                     {
-                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind
-                        {
+                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
                             let type_name = match &args[1].value.kind {
-                                ExprKind::Lit(Literal::Str(type_name)) => {
-                                    Some(type_name.clone())
-                                }
+                                ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
                                 ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
                                 _ => None,
                             };
@@ -9102,18 +9154,14 @@ impl Compiler {
             }
 
             // ── Continue ────────────────────────────────────────────────
-            StmtKind::Continue(target) => {
-                match target {
-                    ContinueTarget::Implicit
-                    | ContinueTarget::Kind(_)
-                    | ContinueTarget::Level(_) => {
-                        self.emit_continue_through_finally(None)?;
-                    }
-                    ContinueTarget::Label(label) => {
-                        self.emit_continue_through_finally(Some(label))?;
-                    }
+            StmtKind::Continue(target) => match target {
+                ContinueTarget::Implicit | ContinueTarget::Kind(_) | ContinueTarget::Level(_) => {
+                    self.emit_continue_through_finally(None)?;
                 }
-            }
+                ContinueTarget::Label(label) => {
+                    self.emit_continue_through_finally(Some(label))?;
+                }
+            },
 
             // ── Throw ───────────────────────────────────────────────────
             StmtKind::Throw { expr, cause: _ } => {
@@ -11354,13 +11402,14 @@ impl Compiler {
                             .map(|hint| hint.contains('['))
                             .unwrap_or(false)
                             || decl.array_bounds.is_some();
-                        let is_char_string_init = matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
-                            && effective_type_hint
-                                .map(|hint| {
-                                    let lower = hint.to_ascii_lowercase();
-                                    lower.contains("char")
-                                })
-                                .unwrap_or(false);
+                        let is_char_string_init =
+                            matches!(init_expr.kind, ExprKind::Lit(Literal::Str(_)))
+                                && effective_type_hint
+                                    .map(|hint| {
+                                        let lower = hint.to_ascii_lowercase();
+                                        lower.contains("char")
+                                    })
+                                    .unwrap_or(false);
                         is_array_type || is_char_string_init
                     } else {
                         false
@@ -13334,9 +13383,6 @@ impl Compiler {
                 common::math::emit_pow(self.chunk(), l);
             }
             BinOp::Eq => {
-                // JS and PHP both use abstract (loose) equality: numeric strings
-                // coerce to numbers, null==undefined, etc. Other languages use
-                // strict value equality (emit_dyn_eq).
                 if self.is_js_profile() || self.is_php_profile() {
                     let idx = self.import("ecma:value", "abstractEq");
                     self.emit_host_call(idx, 2);
@@ -14877,6 +14923,15 @@ impl Compiler {
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
+                    if self.is_php_profile() && name.eq_ignore_ascii_case("var_dump") {
+                        let idx = self.import("wasi:logging/logging", "log");
+                        for a in args {
+                            self.compile_expr(a)?;
+                            self.emit_common("php.var_dump_stringify", 1, line);
+                            common::io::emit_print_with_import(self.chunk(), idx, 1, line);
+                        }
+                        return Ok(true);
+                    }
                     let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, a) in args.iter().enumerate() {
                         if let Some(enum_type) = self.console_enum_type_from_expr(a) {
@@ -16437,6 +16492,10 @@ impl Compiler {
                 }) = args.first()
                 {
                     let global_name = self.canon(name);
+                    if is_php_builtin_constant_name(&global_name) {
+                        self.emit_const(Value::Bool(true));
+                        return Ok(());
+                    }
                     let idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_GET, idx);
                     self.emit(Op::REF_TYPEOF);

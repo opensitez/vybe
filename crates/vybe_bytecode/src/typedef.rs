@@ -211,10 +211,7 @@ impl TypeDef {
 
     /// Get property descriptor for a field (WASM Annotations proposal @ecma262 namespace).
     /// Returns the descriptor or PropertyDescriptor::standard() if not specified.
-    pub fn get_field_descriptor(
-        &self,
-        field_name: &str,
-    ) -> crate::chunk::PropertyDescriptor {
+    pub fn get_field_descriptor(&self, field_name: &str) -> crate::chunk::PropertyDescriptor {
         self.field_descriptors
             .get(&field_name.to_lowercase())
             .cloned()

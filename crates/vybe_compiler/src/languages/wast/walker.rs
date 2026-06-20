@@ -790,11 +790,7 @@ fn walk_folded_core(
 
 // ── map_instr_to_ast — WAT instruction name → common AST expression ───────────
 
-fn map_instr_to_ast(
-    name: String,
-    args: Vec<Expression>,
-    span: Span,
-) -> Result<Expression, String> {
+fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
     match name.as_str() {
         // ── Constants ─────────────────────────────────────────────────────
         "i32.const" | "i64.const" => Ok(args.into_iter().next().unwrap_or(Expression::int(0))),

@@ -1142,7 +1142,6 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c
 }
 
-
 // ── reversed(array) → array ─────────────────────────────────
 fn build_reversed(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_reversed");

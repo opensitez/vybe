@@ -2284,12 +2284,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, ctor_key);
                     self.emit(Op::DROP);
                     let canon_name = self.canon(name);
-                    common::classes::emit_retype_object(
-                        self.chunk(),
-                        this_slot,
-                        &canon_name,
-                        line,
-                    );
+                    common::classes::emit_retype_object(self.chunk(), this_slot, &canon_name, line);
                 }
 
                 common::classes::emit_instanceof_chain(

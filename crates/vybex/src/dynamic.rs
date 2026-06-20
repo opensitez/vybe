@@ -676,7 +676,10 @@ impl JsDynamicRuntime {
                 let copy = match v {
                     Value::Object(obj) => {
                         let o = obj.lock().unwrap();
-                        !matches!(o.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+                        !matches!(
+                            o.kind,
+                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                        )
                     }
                     _ => true,
                 };
@@ -969,9 +972,7 @@ fn strict_mode_early_error(src: &str, module: &vybe_compiler::ast::Module) -> Op
             for d in declarations {
                 if let vybe_compiler::ast::BindingPattern::Ident(name) = &d.pattern {
                     if RESERVED.contains(&name.as_str()) {
-                        return Some(format!(
-                            "Unexpected strict mode reserved word: {name}"
-                        ));
+                        return Some(format!("Unexpected strict mode reserved word: {name}"));
                     }
                 }
             }

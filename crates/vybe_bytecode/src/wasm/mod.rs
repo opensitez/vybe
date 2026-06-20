@@ -275,9 +275,15 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
                 if let Some(descriptor) = type_entry.field_descriptors.get(field) {
                     // Flags byte: bit 0 = writable, bit 1 = enumerable, bit 2 = configurable
                     let mut flags: u8 = 0;
-                    if descriptor.writable { flags |= 0x01; }
-                    if descriptor.enumerable { flags |= 0x02; }
-                    if descriptor.configurable { flags |= 0x04; }
+                    if descriptor.writable {
+                        flags |= 0x01;
+                    }
+                    if descriptor.enumerable {
+                        flags |= 0x02;
+                    }
+                    if descriptor.configurable {
+                        flags |= 0x04;
+                    }
                     out.push(flags);
                 } else {
                     // Standard descriptor: all flags set

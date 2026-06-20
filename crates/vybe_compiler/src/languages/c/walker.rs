@@ -22,8 +22,8 @@ use crate::platforms::libc::{
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let (preprocessed, pp_macros) = preprocess_c_source(source);
-    let mut pairs = CParser::parse(Rule::program, &preprocessed)
-        .map_err(|e| format!("C parse error: {e}"))?;
+    let mut pairs =
+        CParser::parse(Rule::program, &preprocessed).map_err(|e| format!("C parse error: {e}"))?;
     let program = pairs.next().ok_or("empty parse")?;
     let mut w = Walker::default();
     // Object-like macros consumed by the preprocessor (e.g. `#define NDEBUG`)
@@ -438,7 +438,6 @@ use crate::platforms::libc::build::{
 // builders (tgamma/erf/…) are only referenced from the runtime prelude.
 use crate::platforms::libc::math_runtime::{ecma_math_call, ecma_math_call2};
 
-
 fn carray_indexed_access(object: Expression, index: Expression) -> Expression {
     let adjusted = expr(ExprKind::Binary {
         op: BinOp::Add,
@@ -493,73 +492,75 @@ impl Walker {
     fn walk_preproc(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
         for inner in pair.into_inner() {
             match inner.as_rule() {
-            Rule::define_directive => {
-                // #define NAME value  → const NAME = value  (object-like only)
-                let mut it = inner.into_inner();
-                let name = match it.next() {
-                    Some(p) if p.as_rule() == Rule::ident_name => p.as_str().to_string(),
-                    _ => continue,
-                };
-                // Skip function-like macros (define_params present).
-                let mut value_pair = None;
-                let mut params_pair = None;
-                for p in it {
-                    match p.as_rule() {
-                        Rule::define_params => params_pair = Some(p),
-                        Rule::define_value => value_pair = Some(p),
-                        _ => {}
+                Rule::define_directive => {
+                    // #define NAME value  → const NAME = value  (object-like only)
+                    let mut it = inner.into_inner();
+                    let name = match it.next() {
+                        Some(p) if p.as_rule() == Rule::ident_name => p.as_str().to_string(),
+                        _ => continue,
+                    };
+                    // Skip function-like macros (define_params present).
+                    let mut value_pair = None;
+                    let mut params_pair = None;
+                    for p in it {
+                        match p.as_rule() {
+                            Rule::define_params => params_pair = Some(p),
+                            Rule::define_value => value_pair = Some(p),
+                            _ => {}
+                        }
+                    }
+                    if let Some(pp) = params_pair {
+                        // Function-like macro: store for expansion at call sites
+                        let raw_params = pp.as_str().trim();
+                        let params_src = raw_params
+                            .strip_prefix('(')
+                            .and_then(|s| s.strip_suffix(')'))
+                            .unwrap_or(raw_params);
+                        let params: Vec<String> = params_src
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && *s != "...")
+                            .map(|s| s.to_string())
+                            .collect();
+                        let body_text = value_pair
+                            .map(|p| p.as_str().trim().to_string())
+                            .unwrap_or_default();
+                        self.macros.insert(name, (params, body_text));
+                        continue;
+                    }
+                    let init = value_pair
+                        .map(|p| {
+                            let raw = p.as_str().trim().to_string();
+                            self.object_macros.insert(name.clone(), raw.clone());
+                            self.parse_define_value(&raw)
+                        })
+                        .unwrap_or_else(|| {
+                            // Valueless `#define NDEBUG` still defines the macro (as
+                            // empty) — `assert` and other `#ifdef` checks rely on it.
+                            self.object_macros.entry(name.clone()).or_default();
+                            expr(ExprKind::Lit(Literal::Int(1)))
+                        });
+                    out.push(stmt(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(name),
+                            type_hint: None,
+                            init: Some(init),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Const,
+                    }));
+                }
+                Rule::include_directive => {
+                    // Inject standard header constants as object macros
+                    if let Some(target) = inner.into_inner().next() {
+                        let header = target
+                            .as_str()
+                            .trim_matches(|c| c == '<' || c == '>' || c == '"');
+                        self.inject_header_constants(header, out);
                     }
                 }
-                if let Some(pp) = params_pair {
-                    // Function-like macro: store for expansion at call sites
-                    let raw_params = pp.as_str().trim();
-                    let params_src = raw_params
-                        .strip_prefix('(')
-                        .and_then(|s| s.strip_suffix(')'))
-                        .unwrap_or(raw_params);
-                    let params: Vec<String> = params_src
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty() && *s != "...")
-                        .map(|s| s.to_string())
-                        .collect();
-                    let body_text = value_pair
-                        .map(|p| p.as_str().trim().to_string())
-                        .unwrap_or_default();
-                    self.macros.insert(name, (params, body_text));
-                    continue;
-                }
-                let init = value_pair
-                    .map(|p| {
-                        let raw = p.as_str().trim().to_string();
-                        self.object_macros.insert(name.clone(), raw.clone());
-                        self.parse_define_value(&raw)
-                    })
-                    .unwrap_or_else(|| {
-                        // Valueless `#define NDEBUG` still defines the macro (as
-                        // empty) — `assert` and other `#ifdef` checks rely on it.
-                        self.object_macros.entry(name.clone()).or_default();
-                        expr(ExprKind::Lit(Literal::Int(1)))
-                    });
-                out.push(stmt(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(name),
-                        type_hint: None,
-                        init: Some(init),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                }));
-            }
-            Rule::include_directive => {
-                // Inject standard header constants as object macros
-                if let Some(target) = inner.into_inner().next() {
-                    let header = target.as_str().trim_matches(|c| c == '<' || c == '>' || c == '"');
-                    self.inject_header_constants(header, out);
-                }
-            }
-            _ => {} // other_directive, conditionals: ignored
+                _ => {} // other_directive, conditionals: ignored
             }
         }
     }
@@ -567,43 +568,43 @@ impl Walker {
     fn inject_header_constants(&mut self, header: &str, out: &mut Vec<Statement>) {
         let defs: &[(&str, i64)] = match header {
             "stdint.h" => &[
-                ("INT8_MIN",   -128),
-                ("INT8_MAX",    127),
-                ("UINT8_MAX",   255),
-                ("INT16_MIN",  -32768),
-                ("INT16_MAX",   32767),
-                ("UINT16_MAX",  65535),
-                ("INT32_MIN",  -2147483648),
-                ("INT32_MAX",   2147483647),
-                ("UINT32_MAX",  4294967295_i64),
-                ("INT64_MIN",  i64::MIN),
-                ("INT64_MAX",  i64::MAX),
+                ("INT8_MIN", -128),
+                ("INT8_MAX", 127),
+                ("UINT8_MAX", 255),
+                ("INT16_MIN", -32768),
+                ("INT16_MAX", 32767),
+                ("UINT16_MAX", 65535),
+                ("INT32_MIN", -2147483648),
+                ("INT32_MAX", 2147483647),
+                ("UINT32_MAX", 4294967295_i64),
+                ("INT64_MIN", i64::MIN),
+                ("INT64_MAX", i64::MAX),
                 ("UINT64_MAX", i64::MAX),
                 ("INTPTR_MIN", i64::MIN),
                 ("INTPTR_MAX", i64::MAX),
                 ("UINTPTR_MAX", i64::MAX),
                 ("PTRDIFF_MIN", i64::MIN),
                 ("PTRDIFF_MAX", i64::MAX),
-                ("SIZE_MAX",   i64::MAX),
+                ("SIZE_MAX", i64::MAX),
             ],
             "limits.h" => &[
-                ("CHAR_BIT",    8),
-                ("CHAR_MIN",   -128),
-                ("CHAR_MAX",    127),
-                ("SCHAR_MIN",  -128),
-                ("SCHAR_MAX",   127),
-                ("UCHAR_MAX",   255),
-                ("SHRT_MIN",   -32768),
-                ("SHRT_MAX",    32767),
-                ("USHRT_MAX",   65535),
-                ("INT_MIN",    -2147483648),
-                ("INT_MAX",     2147483647),
-                ("UINT_MAX",    4294967295_i64),
-                ("LONG_MIN",   i64::MIN),
-                ("LONG_MAX",   i64::MAX),
-                ("ULONG_MAX",  i64::MAX),
-                ("LLONG_MIN",  i64::MIN),
-                ("LLONG_MAX",  i64::MAX),
+                ("CHAR_BIT", 8),
+                ("CHAR_MIN", -128),
+                ("CHAR_MAX", 127),
+                ("SCHAR_MIN", -128),
+                ("SCHAR_MAX", 127),
+                ("UCHAR_MAX", 255),
+                ("SHRT_MIN", -32768),
+                ("SHRT_MAX", 32767),
+                ("USHRT_MAX", 65535),
+                ("INT_MIN", -2147483648),
+                ("INT_MAX", 2147483647),
+                ("UINT_MAX", 4294967295_i64),
+                ("LONG_MIN", i64::MIN),
+                ("LONG_MAX", i64::MAX),
+                ("ULONG_MAX", i64::MAX),
+                ("LLONG_MIN", i64::MIN),
+                ("LLONG_MAX", i64::MAX),
                 ("ULLONG_MAX", i64::MAX),
             ],
             // POSIX regex.h — regcomp cflags, regexec eflags, and error codes.
@@ -650,36 +651,36 @@ impl Walker {
         // Float constants for float.h
         let float_defs: &[(&str, f64)] = match header {
             "float.h" => &[
-                    ("FLT_EPSILON",  1.1920929e-7_f64),
+                ("FLT_EPSILON", 1.1920929e-7_f64),
                 ("DBL_EPSILON", 2.220446049250313e-16_f64),
-                ("FLT_MAX",     3.4028235e38_f64),
-                ("DBL_MAX",     1.7976931348623157e308_f64),
-                ("FLT_MIN",     1.1754944e-38_f64),
-                ("DBL_MIN",     2.2250738585072014e-308_f64),
-                ("FLT_DIG",     6.0),
-                ("DBL_DIG",     15.0),
+                ("FLT_MAX", 3.4028235e38_f64),
+                ("DBL_MAX", 1.7976931348623157e308_f64),
+                ("FLT_MIN", 1.1754944e-38_f64),
+                ("DBL_MIN", 2.2250738585072014e-308_f64),
+                ("FLT_DIG", 6.0),
+                ("DBL_DIG", 15.0),
                 ("FLT_MANT_DIG", 24.0),
                 ("DBL_MANT_DIG", 53.0),
-                ("FLT_MAX_EXP",  128.0),
-                ("DBL_MAX_EXP",  1024.0),
+                ("FLT_MAX_EXP", 128.0),
+                ("DBL_MAX_EXP", 1024.0),
                 ("FLT_MIN_EXP", -125.0),
                 ("DBL_MIN_EXP", -1021.0),
-                ("FLT_RADIX",    2.0),
+                ("FLT_RADIX", 2.0),
             ],
-                "math.h" | "cmath" => &[
-                    ("HUGE_VAL",  f64::INFINITY),
-                    ("HUGE_VALF", f64::INFINITY),
-                    ("INFINITY",  f64::INFINITY),
-                    ("NAN",       f64::NAN),
-                    ("M_PI",      std::f64::consts::PI),
-                    ("M_E",       std::f64::consts::E),
-                    ("M_SQRT2",   std::f64::consts::SQRT_2),
-                    ("M_LN2",     std::f64::consts::LN_2),
-                    ("M_LN10",    std::f64::consts::LN_10),
-                    ("M_LOG2E",   std::f64::consts::LOG2_E),
-                    ("M_LOG10E",  std::f64::consts::LOG10_E),
-                ],
-                _ => &[],
+            "math.h" | "cmath" => &[
+                ("HUGE_VAL", f64::INFINITY),
+                ("HUGE_VALF", f64::INFINITY),
+                ("INFINITY", f64::INFINITY),
+                ("NAN", f64::NAN),
+                ("M_PI", std::f64::consts::PI),
+                ("M_E", std::f64::consts::E),
+                ("M_SQRT2", std::f64::consts::SQRT_2),
+                ("M_LN2", std::f64::consts::LN_2),
+                ("M_LN10", std::f64::consts::LN_10),
+                ("M_LOG2E", std::f64::consts::LOG2_E),
+                ("M_LOG10E", std::f64::consts::LOG10_E),
+            ],
+            _ => &[],
         };
         for (name, val) in float_defs {
             if !self.object_macros.contains_key(*name) {
@@ -756,8 +757,7 @@ impl Walker {
                                 scoped_char_params.push(param.name.clone());
                             } else if type_hint == "func" {
                                 self.function_pointer_vars.insert(param.name.clone());
-                                self.current_function_pointer_names
-                                    .push(param.name.clone());
+                                self.current_function_pointer_names.push(param.name.clone());
                             } else if self.is_carray_compatible_pointer_param(type_hint) {
                                 self.carray_ptr_vars.insert(param.name.clone());
                                 scoped_carray_params.push(param.name.clone());
@@ -931,7 +931,8 @@ impl Walker {
                         let mut pname = String::new();
                         let mut type_hint = None;
                         let mut is_pointer_decl = decl_text.contains('[');
-                        let is_function_pointer_decl = decl_text.contains("(*") && decl_text.contains(")(");
+                        let is_function_pointer_decl =
+                            decl_text.contains("(*") && decl_text.contains(")(");
                         for d in decl.into_inner() {
                             match d.as_rule() {
                                 Rule::declaration_specifiers => type_hint = Some(self.type_text(d)),
@@ -945,7 +946,8 @@ impl Walker {
                                             .as_deref()
                                             .map(normalized_c_type_name)
                                             .unwrap_or_else(|| normalized_c_type_name(&decl_text));
-                                        let pointer_star_count = decl_text.matches('*').count().saturating_sub(1);
+                                        let pointer_star_count =
+                                            decl_text.matches('*').count().saturating_sub(1);
                                         for _ in 0..pointer_star_count {
                                             return_type.push_str(" *");
                                         }
@@ -1047,7 +1049,8 @@ impl Walker {
                     self.struct_field_types
                         .insert(name.clone(), field_types.clone());
                     if !bitfields.is_empty() {
-                        self.struct_bitfields.insert(name.clone(), bitfields.clone());
+                        self.struct_bitfields
+                            .insert(name.clone(), bitfields.clone());
                     }
                     out.push(self.make_struct_decl(name, &fields));
                 }
@@ -1303,10 +1306,7 @@ impl Walker {
             // index bytes. Use `is_carray_object` (the carray Object literal),
             // NOT `is_carray_like_expr` — the latter also matches strstr/memchr
             // slice-or-null ternaries, which must stay string char-pointers.
-            let init_is_carray_obj = init
-                .as_ref()
-                .map(|i| is_carray_object(i))
-                .unwrap_or(false);
+            let init_is_carray_obj = init.as_ref().map(|i| is_carray_object(i)).unwrap_or(false);
             if (type_text.contains("char") || type_is_char_pointer_alias)
                 && !is_function_pointer_decl
                 && !is_multi_level_char_pointer
@@ -1337,7 +1337,8 @@ impl Walker {
                 }
                 if is_pointer_decl {
                     if let Some(target) = pointer_address_target_from_init(&init) {
-                        self.pointer_address_aliases.insert(name.clone(), target.clone());
+                        self.pointer_address_aliases
+                            .insert(name.clone(), target.clone());
                         if self
                             .var_types
                             .get(&target)
@@ -1352,59 +1353,62 @@ impl Walker {
                 if is_file_pointer_type {
                     // FILE* is modeled as an opaque integer handle, not as a carray/scalar-cell pointer.
                 } else {
-                // Non-char pointer variable — decide scalar-cell vs carray.
-                // If the walked init is already a carray object (e.g. from `&arr[n]`),
-                // track this var as carray; otherwise wrap a plain array as carray.
-                let init_is_carray = init
-                    .as_ref()
-                    .map(|i| is_carray_like_expr(i))
-                    .unwrap_or(false);
-                if let Some(target) = self.pointer_member_target_from_char_struct_base_init(&init) {
-                    self.pointer_member_aliases.insert(name.clone(), target.clone());
-                    init = Some(expr(ExprKind::Unary {
-                        op: UnaryOp::AddrOf,
-                        expr: Box::new(target),
-                    }));
-                }
-                if let Some(target) = pointer_address_target_from_init(&init) {
-                    self.pointer_address_aliases.insert(name.clone(), target);
-                } else if let Some(target) = pointer_member_target_from_init(&init) {
-                    self.pointer_member_aliases.insert(name.clone(), target);
-                } else if let Some(target) =
-                    propagated_pointer_address_alias(&init, &self.pointer_address_aliases)
-                {
-                    self.pointer_address_aliases.insert(name.clone(), target);
-                }
-                if init_is_carray {
-                    // int *p = &arr[n] → init already carray from apply_prefix
-                    self.carray_ptr_vars.insert(name.clone());
-                } else if !init_is_addr_of && !is_null_pointer_init(&init) {
-                    if init_is_carray_pointer_var(&init, &self.carray_ptr_vars) {
-                        self.carray_ptr_vars.insert(name.clone());
-                    } else if !was_array_decl
-                        && should_wrap_pointer_init_as_carray(&init, &self.array_ptr_vars)
+                    // Non-char pointer variable — decide scalar-cell vs carray.
+                    // If the walked init is already a carray object (e.g. from `&arr[n]`),
+                    // track this var as carray; otherwise wrap a plain array as carray.
+                    let init_is_carray = init
+                        .as_ref()
+                        .map(|i| is_carray_like_expr(i))
+                        .unwrap_or(false);
+                    if let Some(target) =
+                        self.pointer_member_target_from_char_struct_base_init(&init)
                     {
-                        // int *p = arr → wrap as carray
+                        self.pointer_member_aliases
+                            .insert(name.clone(), target.clone());
+                        init = Some(expr(ExprKind::Unary {
+                            op: UnaryOp::AddrOf,
+                            expr: Box::new(target),
+                        }));
+                    }
+                    if let Some(target) = pointer_address_target_from_init(&init) {
+                        self.pointer_address_aliases.insert(name.clone(), target);
+                    } else if let Some(target) = pointer_member_target_from_init(&init) {
+                        self.pointer_member_aliases.insert(name.clone(), target);
+                    } else if let Some(target) =
+                        propagated_pointer_address_alias(&init, &self.pointer_address_aliases)
+                    {
+                        self.pointer_address_aliases.insert(name.clone(), target);
+                    }
+                    if init_is_carray {
+                        // int *p = &arr[n] → init already carray from apply_prefix
                         self.carray_ptr_vars.insert(name.clone());
-                        if let Some(ref raw_init) = init {
-                            init = Some(self.wrap_as_carray_init(raw_init.clone()));
+                    } else if !init_is_addr_of && !is_null_pointer_init(&init) {
+                        if init_is_carray_pointer_var(&init, &self.carray_ptr_vars) {
+                            self.carray_ptr_vars.insert(name.clone());
+                        } else if !was_array_decl
+                            && should_wrap_pointer_init_as_carray(&init, &self.array_ptr_vars)
+                        {
+                            // int *p = arr → wrap as carray
+                            self.carray_ptr_vars.insert(name.clone());
+                            if let Some(ref raw_init) = init {
+                                init = Some(self.wrap_as_carray_init(raw_init.clone()));
+                            }
                         }
                     }
-                }
-                // Some array-backed pointer inits (notably `int *p = &arr[0]`,
-                // `int *p = arr + n`, and row decay `int *row = m[i]`) can miss
-                // the earlier fast-path checks; ensure they are still treated as carray pointers.
-                if !self.carray_ptr_vars.contains(&name)
-                    && self.pointer_init_looks_array_backed(init.as_ref())
-                {
-                    self.carray_ptr_vars.insert(name.clone());
-                    if let Some(raw_init) = init.clone() {
-                        if !is_carray_like_expr(&raw_init) {
-                            init = Some(self.wrap_as_carray_init(raw_init));
+                    // Some array-backed pointer inits (notably `int *p = &arr[0]`,
+                    // `int *p = arr + n`, and row decay `int *row = m[i]`) can miss
+                    // the earlier fast-path checks; ensure they are still treated as carray pointers.
+                    if !self.carray_ptr_vars.contains(&name)
+                        && self.pointer_init_looks_array_backed(init.as_ref())
+                    {
+                        self.carray_ptr_vars.insert(name.clone());
+                        if let Some(raw_init) = init.clone() {
+                            if !is_carray_like_expr(&raw_init) {
+                                init = Some(self.wrap_as_carray_init(raw_init));
+                            }
                         }
                     }
-                }
-                // else: int *p = &scalar → scalar cell (address_taken mechanism)
+                    // else: int *p = &scalar → scalar cell (address_taken mechanism)
                 }
             }
             // Zero-init struct/union instances when no explicit initializer.
@@ -1462,7 +1466,11 @@ impl Walker {
                     && matches!(init.as_ref().map(|i| &i.kind), Some(ExprKind::Object(_)))
                 {
                     let struct_name = normalized_c_type_name(&type_text);
-                    if let Some(Expression { kind: ExprKind::Object(provided), .. }) = init.take() {
+                    if let Some(Expression {
+                        kind: ExprKind::Object(provided),
+                        ..
+                    }) = init.take()
+                    {
                         let zero = self.zero_struct(Some(&struct_name), fields);
                         if let ExprKind::Object(mut props) = zero.kind {
                             for given in provided {
@@ -1515,8 +1523,10 @@ impl Walker {
                             let mut dense: Vec<Expression> =
                                 (0..size).map(|_| int_lit(0)).collect();
                             let mut pos = 0usize;
-                            if let Some(Expression { kind: ExprKind::Array(elems), .. }) =
-                                init.take()
+                            if let Some(Expression {
+                                kind: ExprKind::Array(elems),
+                                ..
+                            }) = init.take()
                             {
                                 for el in elems {
                                     let idx = match el.key.as_ref().map(|k| &k.kind) {
@@ -1568,7 +1578,10 @@ impl Walker {
             // string. Only for a 1-D array whose elements are int char codes; a
             // multidim char array (`char w[3][6] = {"a","b"}`) keeps its array of
             // string rows.
-            let is_1d_char_code_array = array_bounds.as_ref().map(|b| b.len() == 1).unwrap_or(false)
+            let is_1d_char_code_array = array_bounds
+                .as_ref()
+                .map(|b| b.len() == 1)
+                .unwrap_or(false)
                 && matches!(init.as_ref().map(|i| &i.kind), Some(ExprKind::Array(elems))
                     if elems.iter().all(|el| matches!(el.value.kind, ExprKind::Lit(Literal::Int(_)))));
             if is_1d_char_code_array && is_char_type && !is_pointer_decl {
@@ -1599,7 +1612,10 @@ impl Walker {
             if was_array_decl
                 && is_char_type
                 && !is_pointer_decl
-                && matches!(init.as_ref().map(|i| &i.kind), Some(ExprKind::Lit(Literal::Str(_))))
+                && matches!(
+                    init.as_ref().map(|i| &i.kind),
+                    Some(ExprKind::Lit(Literal::Str(_)))
+                )
             {
                 emitted_type_hint = "char*".to_string();
             }
@@ -1828,8 +1844,11 @@ impl Walker {
             .map(|f| {
                 // Look up field type in struct_field_types if we have a struct name
                 let value = if let Some(sname) = struct_name_hint {
-                    if let Some(field_type) =
-                        self.struct_field_types.get(sname).and_then(|m| m.get(f)).cloned()
+                    if let Some(field_type) = self
+                        .struct_field_types
+                        .get(sname)
+                        .and_then(|m| m.get(f))
+                        .cloned()
                     {
                         self.zero_value_for_field_type(&field_type)
                     } else {
@@ -1957,8 +1976,12 @@ impl Walker {
     fn struct_def_from_specifiers(
         &mut self,
         specs: &Pair<Rule>,
-    ) -> Option<(Option<String>, Vec<String>, HashMap<String, String>, HashMap<String, (i64, bool)>)>
-    {
+    ) -> Option<(
+        Option<String>,
+        Vec<String>,
+        HashMap<String, String>,
+        HashMap<String, (i64, bool)>,
+    )> {
         for p in specs.clone().into_inner() {
             if p.as_rule() == Rule::type_specifier || p.as_rule() == Rule::type_specifier_strict {
                 for ts in p.into_inner() {
@@ -2018,7 +2041,9 @@ impl Walker {
                     let (field_decl, bit_width) = if d.as_rule() == Rule::struct_declarator {
                         let mut inner = d.into_inner();
                         let Some(decl) = inner.next() else { continue };
-                        let width = inner.next().and_then(|w| w.as_str().trim().parse::<i64>().ok());
+                        let width = inner
+                            .next()
+                            .and_then(|w| w.as_str().trim().parse::<i64>().ok());
                         (decl, width)
                     } else {
                         (d, None) // fallback for old grammar (Rule::declarator)
@@ -2808,10 +2833,10 @@ impl Walker {
         let mut started = false;
 
         let flush = |conds: &mut Vec<CaseCondition>,
-                         body: &mut Vec<Statement>,
-                         is_default: bool,
-                         cases: &mut Vec<SwitchCase>,
-                         default: &mut Option<Vec<Statement>>| {
+                     body: &mut Vec<Statement>,
+                     is_default: bool,
+                     cases: &mut Vec<SwitchCase>,
+                     default: &mut Option<Vec<Statement>>| {
             if is_default {
                 *default = Some(std::mem::take(body));
             } else if !conds.is_empty() {
@@ -3121,7 +3146,8 @@ impl Walker {
 
         let value_opt = Some(value.clone());
         if let Some(member_target) = pointer_member_target_from_init(&value_opt) {
-            self.pointer_member_aliases.insert(name.clone(), member_target);
+            self.pointer_member_aliases
+                .insert(name.clone(), member_target);
             return;
         }
         if let Some(address_target) = pointer_address_target_from_init(&value_opt) {
@@ -3129,10 +3155,9 @@ impl Walker {
                 .insert(name.clone(), address_target);
             return;
         }
-        if let Some(address_target) = propagated_pointer_address_alias(
-            &value_opt,
-            &self.pointer_address_aliases,
-        ) {
+        if let Some(address_target) =
+            propagated_pointer_address_alias(&value_opt, &self.pointer_address_aliases)
+        {
             self.pointer_address_aliases
                 .insert(name.clone(), address_target);
         }
@@ -3313,13 +3338,21 @@ impl Walker {
                     field: "substring".to_string(),
                     null_safe: false,
                 })),
-                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(expr(ExprKind::Lit(Literal::Int(count as i64))))],
+                args: vec![
+                    Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
+                    Argument::positional(expr(ExprKind::Lit(Literal::Int(count as i64)))),
+                ],
                 optional: false,
             }),
         }
     }
 
-    fn rewrite_memcpy_like(&mut self, dst: Expression, src: Expression, bytes: Expression) -> Expression {
+    fn rewrite_memcpy_like(
+        &mut self,
+        dst: Expression,
+        src: Expression,
+        bytes: Expression,
+    ) -> Expression {
         if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) {
             self.char_pointers.insert(dst_name.clone());
             let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
@@ -3337,7 +3370,10 @@ impl Walker {
                     field: "substring".to_string(),
                     null_safe: false,
                 })),
-                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(dst_offset.clone())],
+                args: vec![
+                    Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
+                    Argument::positional(dst_offset.clone()),
+                ],
                 optional: false,
             });
             let suffix_start = expr(ExprKind::Binary {
@@ -3383,7 +3419,12 @@ impl Walker {
         })
     }
 
-    fn rewrite_memset(&mut self, dst: Expression, fill: Expression, bytes: Expression) -> Expression {
+    fn rewrite_memset(
+        &mut self,
+        dst: Expression,
+        fill: Expression,
+        bytes: Expression,
+    ) -> Expression {
         if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) {
             self.char_pointers.insert(dst_name.clone());
             let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
@@ -3412,7 +3453,10 @@ impl Walker {
                     field: "substring".to_string(),
                     null_safe: false,
                 })),
-                args: vec![Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))), Argument::positional(dst_offset.clone())],
+                args: vec![
+                    Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
+                    Argument::positional(dst_offset.clone()),
+                ],
                 optional: false,
             });
             let suffix_start = expr(ExprKind::Binary {
@@ -3513,11 +3557,24 @@ impl Walker {
     /// `unsigned >> n` is a *logical* shift in C; emit `UShr` (→ `i32.shr_u`) so
     /// the high bit isn't sign-extended (signed `>>` stays `Shr` → `i32.shr_s`).
     fn rewrite_unsigned_shift(&self, e: Expression) -> Expression {
-        if let ExprKind::Binary { op: BinOp::Shr, left, right } = e.kind {
+        if let ExprKind::Binary {
+            op: BinOp::Shr,
+            left,
+            right,
+        } = e.kind
+        {
             if self.is_unsigned_expr(&left) {
-                return expr(ExprKind::Binary { op: BinOp::UShr, left, right });
+                return expr(ExprKind::Binary {
+                    op: BinOp::UShr,
+                    left,
+                    right,
+                });
             }
-            return expr(ExprKind::Binary { op: BinOp::Shr, left, right });
+            return expr(ExprKind::Binary {
+                op: BinOp::Shr,
+                left,
+                right,
+            });
         }
         e
     }
@@ -3646,14 +3703,20 @@ impl Walker {
                 if left_i {
                     let (re, im) = self.complex_parts(right);
                     return self.complex_object(
-                        expr(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(im) }),
+                        expr(ExprKind::Unary {
+                            op: UnaryOp::Neg,
+                            expr: Box::new(im),
+                        }),
                         re,
                     );
                 }
                 if right_i {
                     let (re, im) = self.complex_parts(left);
                     return self.complex_object(
-                        expr(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(im) }),
+                        expr(ExprKind::Unary {
+                            op: UnaryOp::Neg,
+                            expr: Box::new(im),
+                        }),
                         re,
                     );
                 }
@@ -3736,7 +3799,12 @@ impl Walker {
         if self.is_imag_unit_expr(&expr) {
             return (int_lit(0), int_lit(1));
         }
-        if let ExprKind::Binary { op: BinOp::Mul, left, right } = &expr.kind {
+        if let ExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } = &expr.kind
+        {
             if self.is_imag_unit_expr(left) {
                 return (int_lit(0), (*right.clone()).clone());
             }
@@ -3827,15 +3895,16 @@ impl Walker {
 
     fn is_pointer_like_expr(&self, expr_in: &Expression) -> bool {
         match &expr_in.kind {
-            ExprKind::Ident(name) => self
-                .var_types
-                .get(name)
-                .map(|ty| ty.contains('*') || ty.contains("FILE"))
-                .unwrap_or(false)
-                || self.pointer_vars.contains(name)
-                || self.char_pointers.contains(name)
-                || self.array_ptr_vars.contains(name)
-                || self.carray_ptr_vars.contains(name),
+            ExprKind::Ident(name) => {
+                self.var_types
+                    .get(name)
+                    .map(|ty| ty.contains('*') || ty.contains("FILE"))
+                    .unwrap_or(false)
+                    || self.pointer_vars.contains(name)
+                    || self.char_pointers.contains(name)
+                    || self.array_ptr_vars.contains(name)
+                    || self.carray_ptr_vars.contains(name)
+            }
             ExprKind::Lit(Literal::Null) => true,
             ExprKind::Object(_) => is_carray_like_expr(expr_in),
             ExprKind::Call { .. } | ExprKind::Ternary { .. } => is_carray_like_expr(expr_in),
@@ -4218,7 +4287,8 @@ impl Walker {
                     if let Some(struct_var) = struct_var.as_ref() {
                         if let ExprKind::Lit(Literal::Int(offset)) = &right.kind {
                             if let Some(struct_type) = self.var_types.get(struct_var) {
-                                if let Some(field) = self.struct_field_at_offset(struct_type, *offset)
+                                if let Some(field) =
+                                    self.struct_field_at_offset(struct_type, *offset)
                                 {
                                     return expr(ExprKind::Unary {
                                         op: UnaryOp::AddrOf,
@@ -4714,7 +4784,11 @@ impl Walker {
             // snapshot at the cast site (write-back through the char* is not
             // modeled — Vybe scalars are values, not bytes in linear memory).
             if normalized_c_type_name(&tn.replace('*', "")) == "char" {
-                if let ExprKind::Unary { op: UnaryOp::AddrOf, expr: inner } = &operand.kind {
+                if let ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: inner,
+                } = &operand.kind
+                {
                     if let ExprKind::Ident(name) = &inner.kind {
                         if let Some(vt) = self.var_types.get(name).cloned() {
                             let base = normalized_c_type_name(&vt);
@@ -4766,9 +4840,7 @@ impl Walker {
         }
         let canon = if tn.contains("double") || tn.contains("float") {
             "double"
-        } else if tn.contains("uint64_t")
-            || (tn.contains("unsigned") && tn.contains("long long"))
-        {
+        } else if tn.contains("uint64_t") || (tn.contains("unsigned") && tn.contains("long long")) {
             "uint64"
         } else if tn.contains("int64_t") || tn.contains("long long") {
             "long"
@@ -4998,7 +5070,10 @@ impl Walker {
                 {
                     let substituted =
                         expand_macro_text(&params, &normalized_body, &args, &self.object_macros);
-                    return expr(ExprKind::Lit(Literal::Str(format!("__stmt_macro__{}", substituted))));
+                    return expr(ExprKind::Lit(Literal::Str(format!(
+                        "__stmt_macro__{}",
+                        substituted
+                    ))));
                 }
                 return self.expand_macro_call(&params, &body, args);
             }
@@ -5198,9 +5273,18 @@ impl Walker {
                 "rewind" => {
                     if let Some(file) = args.into_iter().next() {
                         return expr(ExprKind::Sequence(vec![
-                            assign_expr(index_expr(ident("__c_file_pos"), file.value.clone()), int_lit(0)),
-                            assign_expr(index_expr(ident("__c_file_eof"), file.value.clone()), int_lit(0)),
-                            assign_expr(index_expr(ident("__c_file_ungot"), file.value), null_lit()),
+                            assign_expr(
+                                index_expr(ident("__c_file_pos"), file.value.clone()),
+                                int_lit(0),
+                            ),
+                            assign_expr(
+                                index_expr(ident("__c_file_eof"), file.value.clone()),
+                                int_lit(0),
+                            ),
+                            assign_expr(
+                                index_expr(ident("__c_file_ungot"), file.value),
+                                null_lit(),
+                            ),
                             int_lit(0),
                         ]));
                     }
@@ -5237,8 +5321,16 @@ impl Walker {
                     }
                     let source = inner_args.remove(0).value;
                     let format = inner_args.remove(0).value;
-                    if let (ExprKind::Lit(Literal::Str(source_text)), ExprKind::Lit(Literal::Str(format_text))) = (&source.kind, &format.kind) {
-                        return self.rewrite_sscanf_literal_call(source_text, format_text, inner_args);
+                    if let (
+                        ExprKind::Lit(Literal::Str(source_text)),
+                        ExprKind::Lit(Literal::Str(format_text)),
+                    ) = (&source.kind, &format.kind)
+                    {
+                        return self.rewrite_sscanf_literal_call(
+                            source_text,
+                            format_text,
+                            inner_args,
+                        );
                     }
                     return int_lit(0);
                 }
@@ -5411,7 +5503,10 @@ impl Walker {
                             left: Box::new(member(ap.clone(), "__idx")),
                             right: Box::new(int_lit(slot)),
                         });
-                        sprintf_args.push(Argument::positional(index_expr(member(ap.clone(), "__values"), idx)));
+                        sprintf_args.push(Argument::positional(index_expr(
+                            member(ap.clone(), "__values"),
+                            idx,
+                        )));
                     }
                     let rendered = expr(ExprKind::Call {
                         callee: Box::new(ident("sprintf")),
@@ -5436,7 +5531,10 @@ impl Walker {
                             left: Box::new(member(ap.clone(), "__idx")),
                             right: Box::new(int_lit(slot)),
                         });
-                        sprintf_args.push(Argument::positional(index_expr(member(ap.clone(), "__values"), idx)));
+                        sprintf_args.push(Argument::positional(index_expr(
+                            member(ap.clone(), "__values"),
+                            idx,
+                        )));
                     }
                     let rendered = expr(ExprKind::Call {
                         callee: Box::new(ident("sprintf")),
@@ -5462,7 +5560,10 @@ impl Walker {
                             left: Box::new(member(ap.clone(), "__idx")),
                             right: Box::new(int_lit(slot)),
                         });
-                        sprintf_args.push(Argument::positional(index_expr(member(ap.clone(), "__values"), idx)));
+                        sprintf_args.push(Argument::positional(index_expr(
+                            member(ap.clone(), "__values"),
+                            idx,
+                        )));
                     }
                     let sprintf_call = expr(ExprKind::Call {
                         callee: Box::new(ident("sprintf")),
@@ -5740,14 +5841,22 @@ impl Walker {
                 }
                 "exp2" | "exp2f" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ecma_math_call2("pow", expr(ExprKind::Lit(Literal::Float(2.0))), a.value);
+                        return ecma_math_call2(
+                            "pow",
+                            expr(ExprKind::Lit(Literal::Float(2.0))),
+                            a.value,
+                        );
                     }
                     return expr(ExprKind::Lit(Literal::Float(1.0)));
                 }
                 "cbrt" | "cbrtf" => {
                     // cbrt(x) = pow(x, 1/3) — but sign-preserving for negatives
                     if let Some(a) = args.into_iter().next() {
-                        return ecma_math_call2("pow", a.value, expr(ExprKind::Lit(Literal::Float(1.0 / 3.0))));
+                        return ecma_math_call2(
+                            "pow",
+                            a.value,
+                            expr(ExprKind::Lit(Literal::Float(1.0 / 3.0))),
+                        );
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -5856,7 +5965,11 @@ impl Walker {
                     // ldexp(x, n) = x * 2^n = x * pow(2, n)
                     let mut it = args.into_iter();
                     if let (Some(a), Some(n)) = (it.next(), it.next()) {
-                        let pow2 = ecma_math_call2("pow", expr(ExprKind::Lit(Literal::Float(2.0))), n.value);
+                        let pow2 = ecma_math_call2(
+                            "pow",
+                            expr(ExprKind::Lit(Literal::Float(2.0))),
+                            n.value,
+                        );
                         return expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(a.value),
@@ -5887,7 +6000,11 @@ impl Walker {
                     // scalbn(x, n) = x * 2^n
                     let mut it = args.into_iter();
                     if let (Some(a), Some(n)) = (it.next(), it.next()) {
-                        let pow2 = ecma_math_call2("pow", expr(ExprKind::Lit(Literal::Float(2.0))), n.value);
+                        let pow2 = ecma_math_call2(
+                            "pow",
+                            expr(ExprKind::Lit(Literal::Float(2.0))),
+                            n.value,
+                        );
                         return expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(a.value),
@@ -5947,120 +6064,118 @@ impl Walker {
                         .unwrap_or_else(|| int_lit(0));
                     return expr(ExprKind::Binary {
                         op: BinOp::Add,
-                        left: Box::new(expr(ExprKind::Lit(Literal::Str(
-                            "Error ".to_string(),
-                        )))),
+                        left: Box::new(expr(ExprKind::Lit(Literal::Str("Error ".to_string())))),
                         right: Box::new(arg),
                     });
                 }
-                    "copysign" | "copysignf" => {
-                        // copysign(x, y) = |x| * sign(y)
-                        let mut it = args.into_iter();
-                        if let (Some(x), Some(y)) = (it.next(), it.next()) {
-                            let abs_x = ecma_math_call("abs", x.value);
-                            let sign_y = expr(ExprKind::Ternary {
-                                cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Lt,
-                                    left: Box::new(y.value),
-                                    right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))),
-                                })),
-                                then: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                                else_: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                            });
-                            return expr(ExprKind::Binary {
+                "copysign" | "copysignf" => {
+                    // copysign(x, y) = |x| * sign(y)
+                    let mut it = args.into_iter();
+                    if let (Some(x), Some(y)) = (it.next(), it.next()) {
+                        let abs_x = ecma_math_call("abs", x.value);
+                        let sign_y = expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Lt,
+                                left: Box::new(y.value),
+                                right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))),
+                            })),
+                            then: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
+                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
+                        });
+                        return expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(abs_x),
+                            right: Box::new(sign_y),
+                        });
+                    }
+                    return expr(ExprKind::Lit(Literal::Float(0.0)));
+                }
+                "nextafter" | "nextafterf" => {
+                    // nextafter(x, y): return x + tiny_step toward y
+                    let mut it = args.into_iter();
+                    if let (Some(x), Some(y)) = (it.next(), it.next()) {
+                        // Approximation: x + (y > x ? 1 : -1) * epsilon
+                        let eps = expr(ExprKind::Lit(Literal::Float(f64::EPSILON)));
+                        let sign = expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Gt,
+                                left: Box::new(y.value),
+                                right: Box::new(x.value.clone()),
+                            })),
+                            then: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
+                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
+                        });
+                        return expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(x.value),
+                            right: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Mul,
-                                left: Box::new(abs_x),
-                                right: Box::new(sign_y),
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(0.0)));
+                                left: Box::new(sign),
+                                right: Box::new(eps),
+                            })),
+                        });
                     }
-                    "nextafter" | "nextafterf" => {
-                        // nextafter(x, y): return x + tiny_step toward y
-                        let mut it = args.into_iter();
-                        if let (Some(x), Some(y)) = (it.next(), it.next()) {
-                            // Approximation: x + (y > x ? 1 : -1) * epsilon
-                            let eps = expr(ExprKind::Lit(Literal::Float(f64::EPSILON)));
-                            let sign = expr(ExprKind::Ternary {
-                                cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Gt,
-                                    left: Box::new(y.value),
-                                    right: Box::new(x.value.clone()),
-                                })),
-                                then: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                                else_: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                            });
-                            return expr(ExprKind::Binary {
-                                op: BinOp::Add,
-                                left: Box::new(x.value),
-                                right: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Mul,
-                                    left: Box::new(sign),
-                                    right: Box::new(eps),
-                                })),
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(0.0)));
+                    return expr(ExprKind::Lit(Literal::Float(0.0)));
+                }
+                "tgamma" => {
+                    // tgamma(n) = (n-1)! for positive integers. Use Stirling for general case.
+                    // Approximation via host: emit as __tgamma(x)
+                    if let Some(a) = args.into_iter().next() {
+                        return expr(ExprKind::Call {
+                            callee: Box::new(ident("__tgamma")),
+                            args: vec![Argument::positional(a.value)],
+                            optional: false,
+                        });
                     }
-                    "tgamma" => {
-                        // tgamma(n) = (n-1)! for positive integers. Use Stirling for general case.
-                        // Approximation via host: emit as __tgamma(x)
-                        if let Some(a) = args.into_iter().next() {
-                            return expr(ExprKind::Call {
-                                callee: Box::new(ident("__tgamma")),
-                                args: vec![Argument::positional(a.value)],
-                                optional: false,
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(1.0)));
+                    return expr(ExprKind::Lit(Literal::Float(1.0)));
+                }
+                "lgamma" => {
+                    if let Some(a) = args.into_iter().next() {
+                        return expr(ExprKind::Call {
+                            callee: Box::new(ident("__lgamma")),
+                            args: vec![Argument::positional(a.value)],
+                            optional: false,
+                        });
                     }
-                    "lgamma" => {
-                        if let Some(a) = args.into_iter().next() {
-                            return expr(ExprKind::Call {
-                                callee: Box::new(ident("__lgamma")),
-                                args: vec![Argument::positional(a.value)],
-                                optional: false,
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(0.0)));
+                    return expr(ExprKind::Lit(Literal::Float(0.0)));
+                }
+                "erf" => {
+                    if let Some(a) = args.into_iter().next() {
+                        return expr(ExprKind::Call {
+                            callee: Box::new(ident("__erf")),
+                            args: vec![Argument::positional(a.value)],
+                            optional: false,
+                        });
                     }
-                    "erf" => {
-                        if let Some(a) = args.into_iter().next() {
-                            return expr(ExprKind::Call {
-                                callee: Box::new(ident("__erf")),
-                                args: vec![Argument::positional(a.value)],
-                                optional: false,
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(0.0)));
+                    return expr(ExprKind::Lit(Literal::Float(0.0)));
+                }
+                "erfc" => {
+                    // erfc(x) = 1 - erf(x)
+                    if let Some(a) = args.into_iter().next() {
+                        let erf_x = expr(ExprKind::Call {
+                            callee: Box::new(ident("__erf")),
+                            args: vec![Argument::positional(a.value)],
+                            optional: false,
+                        });
+                        return expr(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
+                            right: Box::new(erf_x),
+                        });
                     }
-                    "erfc" => {
-                        // erfc(x) = 1 - erf(x)
-                        if let Some(a) = args.into_iter().next() {
-                            let erf_x = expr(ExprKind::Call {
-                                callee: Box::new(ident("__erf")),
-                                args: vec![Argument::positional(a.value)],
-                                optional: false,
-                            });
-                            return expr(ExprKind::Binary {
-                                op: BinOp::Sub,
-                                left: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                                right: Box::new(erf_x),
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(1.0)));
+                    return expr(ExprKind::Lit(Literal::Float(1.0)));
+                }
+                "j0" => {
+                    // Bessel J0: j0(0) = 1.0, approximation
+                    if let Some(a) = args.into_iter().next() {
+                        return expr(ExprKind::Call {
+                            callee: Box::new(ident("__j0")),
+                            args: vec![Argument::positional(a.value)],
+                            optional: false,
+                        });
                     }
-                    "j0" => {
-                        // Bessel J0: j0(0) = 1.0, approximation
-                        if let Some(a) = args.into_iter().next() {
-                            return expr(ExprKind::Call {
-                                callee: Box::new(ident("__j0")),
-                                args: vec![Argument::positional(a.value)],
-                                optional: false,
-                            });
-                        }
-                        return expr(ExprKind::Lit(Literal::Float(1.0)));
-                    }
+                    return expr(ExprKind::Lit(Literal::Float(1.0)));
+                }
                 "strlen" => {
                     if let Some(a) = args.into_iter().next() {
                         if let ExprKind::Lit(Literal::Str(s)) = &a.value.kind {
@@ -6357,7 +6472,10 @@ impl Walker {
                 "setlocale" => {
                     let mut it = args.into_iter();
                     if let (Some(category), Some(locale)) = (it.next(), it.next()) {
-                        return call_expr(ident("__c_setlocale_h"), vec![category.value, locale.value]);
+                        return call_expr(
+                            ident("__c_setlocale_h"),
+                            vec![category.value, locale.value],
+                        );
                     }
                     return ident("__c_locale");
                 }
@@ -6386,10 +6504,19 @@ impl Walker {
                             int_lit(0),
                         );
                         if let Some(end) = end_arg {
-                            if let Some(end_name) = pointer_address_target_from_init(&Some(end.value.clone())) {
-                                let consumed = member(call_expr(ident("String"), vec![parsed.clone()]), "length");
-                                let suffix = call_expr(member(s_arg.value, "substring"), vec![consumed]);
-                                return expr(ExprKind::Sequence(vec![assign_expr(ident(&end_name), suffix), parsed]));
+                            if let Some(end_name) =
+                                pointer_address_target_from_init(&Some(end.value.clone()))
+                            {
+                                let consumed = member(
+                                    call_expr(ident("String"), vec![parsed.clone()]),
+                                    "length",
+                                );
+                                let suffix =
+                                    call_expr(member(s_arg.value, "substring"), vec![consumed]);
+                                return expr(ExprKind::Sequence(vec![
+                                    assign_expr(ident(&end_name), suffix),
+                                    parsed,
+                                ]));
                             }
                         }
                         return parsed;
@@ -6406,10 +6533,19 @@ impl Walker {
                             int_lit(0),
                         );
                         if let Some(end) = end_arg {
-                            if let Some(end_name) = pointer_address_target_from_init(&Some(end.value.clone())) {
-                                let consumed = member(call_expr(ident("String"), vec![parsed.clone()]), "length");
-                                let suffix = call_expr(member(s_arg.value, "substring"), vec![consumed]);
-                                return expr(ExprKind::Sequence(vec![assign_expr(ident(&end_name), suffix), parsed]));
+                            if let Some(end_name) =
+                                pointer_address_target_from_init(&Some(end.value.clone()))
+                            {
+                                let consumed = member(
+                                    call_expr(ident("String"), vec![parsed.clone()]),
+                                    "length",
+                                );
+                                let suffix =
+                                    call_expr(member(s_arg.value, "substring"), vec![consumed]);
+                                return expr(ExprKind::Sequence(vec![
+                                    assign_expr(ident(&end_name), suffix),
+                                    parsed,
+                                ]));
                             }
                         }
                         return parsed;
@@ -6425,10 +6561,19 @@ impl Walker {
                             int_lit(0),
                         );
                         if let Some(end) = end_arg {
-                            if let Some(end_name) = pointer_address_target_from_init(&Some(end.value.clone())) {
-                                let consumed = member(call_expr(ident("String"), vec![parsed.clone()]), "length");
-                                let suffix = call_expr(member(s_arg.value, "substring"), vec![consumed]);
-                                return expr(ExprKind::Sequence(vec![assign_expr(ident(&end_name), suffix), parsed]));
+                            if let Some(end_name) =
+                                pointer_address_target_from_init(&Some(end.value.clone()))
+                            {
+                                let consumed = member(
+                                    call_expr(ident("String"), vec![parsed.clone()]),
+                                    "length",
+                                );
+                                let suffix =
+                                    call_expr(member(s_arg.value, "substring"), vec![consumed]);
+                                return expr(ExprKind::Sequence(vec![
+                                    assign_expr(ident(&end_name), suffix),
+                                    parsed,
+                                ]));
                             }
                         }
                         return parsed;
@@ -6465,7 +6610,8 @@ impl Walker {
                 // ── regex.h (POSIX) ──────────────────────────────────────────
                 "regcomp" => {
                     let mut it = args.into_iter();
-                    if let (Some(preg), Some(pat), Some(flags)) = (it.next(), it.next(), it.next()) {
+                    if let (Some(preg), Some(pat), Some(flags)) = (it.next(), it.next(), it.next())
+                    {
                         let preg_lval = self.value_from_c_address_arg(preg.value);
                         return regex_adapter::regcomp(preg_lval, pat.value, flags.value);
                     }
@@ -6478,8 +6624,7 @@ impl Walker {
                     {
                         let eflags = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
                         let preg_val = self.value_from_c_address_arg(preg.value);
-                        let pmatch_arr =
-                            carray_base_expr(&pmatch.value).unwrap_or(pmatch.value);
+                        let pmatch_arr = carray_base_expr(&pmatch.value).unwrap_or(pmatch.value);
                         return regex_adapter::regexec(
                             preg_val,
                             s.value,
@@ -6519,11 +6664,19 @@ impl Walker {
                     return int_lit(0);
                 }
                 "gmtime" => {
-                    let t = args.into_iter().next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let t = args
+                        .into_iter()
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| int_lit(0));
                     return time_adapter::gmtime(t);
                 }
                 "localtime" => {
-                    let t = args.into_iter().next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let t = args
+                        .into_iter()
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| int_lit(0));
                     return time_adapter::localtime(t);
                 }
                 "mktime" => {
@@ -6647,7 +6800,10 @@ impl Walker {
                                             right: Box::new(expected_target.clone()),
                                         }),
                                         vec![
-                                            stmt(StmtKind::Expr(assign_expr(target, desired.value))),
+                                            stmt(StmtKind::Expr(assign_expr(
+                                                target,
+                                                desired.value,
+                                            ))),
                                             stmt(StmtKind::Return(Some(int_lit(1)))),
                                         ],
                                         Some(vec![
@@ -6758,7 +6914,8 @@ impl Walker {
                 }
                 "memset" => {
                     let mut it = args.into_iter();
-                    if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                    if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next())
+                    {
                         return self.rewrite_memset(dst.value, fill.value, bytes.value);
                     }
                     return expr(ExprKind::Lit(Literal::Null));
@@ -6891,7 +7048,10 @@ impl Walker {
         let Some(var_type) = self.var_types.get(&base) else {
             return false;
         };
-        let tag = normalized_c_type_name(var_type).replace('*', "").trim().to_string();
+        let tag = normalized_c_type_name(var_type)
+            .replace('*', "")
+            .trim()
+            .to_string();
         let Some(field_type) = self
             .struct_field_types
             .get(&tag)
@@ -7227,23 +7387,23 @@ fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
 
     let mut lowered = prelude;
     lowered.push(stmt(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(pc_name.clone()),
-                type_hint: None,
-                init: Some(int_lit(0)),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }));
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(pc_name.clone()),
+            type_hint: None,
+            init: Some(int_lit(0)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
     lowered.push(stmt(StmtKind::Labeled {
-            label: dispatch_label,
-            body: Box::new(stmt(StmtKind::While {
-                cond: expr(ExprKind::Lit(Literal::Bool(true))),
-                body: while_body,
-                else_body: None,
-            })),
-        }));
+        label: dispatch_label,
+        body: Box::new(stmt(StmtKind::While {
+            cond: expr(ExprKind::Lit(Literal::Bool(true))),
+            body: while_body,
+            else_body: None,
+        })),
+    }));
     lowered
 }
 
@@ -7258,7 +7418,10 @@ fn rewrite_gotos_in_stmts(
         match stmt_in.kind {
             StmtKind::GoTo(target) => {
                 if let Some(idx) = label_to_block.get(&target) {
-                    out.push(stmt(StmtKind::Expr(assign_expr(ident(pc_name), int_lit(*idx)))));
+                    out.push(stmt(StmtKind::Expr(assign_expr(
+                        ident(pc_name),
+                        int_lit(*idx),
+                    ))));
                     out.push(stmt(StmtKind::Continue(ContinueTarget::Label(
                         dispatch_label.to_string(),
                     ))));
@@ -7311,8 +7474,9 @@ fn rewrite_gotos_in_stmts(
                 out.push(stmt(StmtKind::While {
                     cond,
                     body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-                    else_body: else_body
-                        .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label)),
+                    else_body: else_body.map(|b| {
+                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label)
+                    }),
                 }));
             }
             StmtKind::DoWhile { body, cond, until } => {
@@ -7368,8 +7532,8 @@ fn rewrite_gotos_in_stmts(
                     .collect();
                 let else_body = else_body
                     .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label));
-                let finally =
-                    finally.map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label));
+                let finally = finally
+                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label));
                 out.push(stmt(StmtKind::Try {
                     body,
                     catches,
@@ -7381,14 +7545,12 @@ fn rewrite_gotos_in_stmts(
                 out.push(stmt(StmtKind::Labeled {
                     label,
                     body: Box::new(stmt(match body.kind {
-                        StmtKind::Block(inner) => {
-                            StmtKind::Block(rewrite_gotos_in_stmts(
-                                inner,
-                                label_to_block,
-                                pc_name,
-                                dispatch_label,
-                            ))
-                        }
+                        StmtKind::Block(inner) => StmtKind::Block(rewrite_gotos_in_stmts(
+                            inner,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                        )),
                         other => other,
                     })),
                 }));
@@ -7588,8 +7750,22 @@ fn resolve_star_format(fmt: &str, args: &mut Vec<Argument>) -> String {
     let is_conv = |c: char| {
         matches!(
             c,
-            'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A'
-                | 'c' | 's' | 'p'
+            'd' | 'i'
+                | 'u'
+                | 'o'
+                | 'x'
+                | 'X'
+                | 'f'
+                | 'F'
+                | 'e'
+                | 'E'
+                | 'g'
+                | 'G'
+                | 'a'
+                | 'A'
+                | 'c'
+                | 's'
+                | 'p'
         )
     };
     while i < chars.len() {
@@ -7731,7 +7907,12 @@ impl Walker {
             if is_union {
                 return fields
                     .iter()
-                    .map(|f| field_types.get(f).map(|ty| sizeof_from_type_text(ty).max(1)).unwrap_or(4))
+                    .map(|f| {
+                        field_types
+                            .get(f)
+                            .map(|ty| sizeof_from_type_text(ty).max(1))
+                            .unwrap_or(4)
+                    })
                     .max()
                     .unwrap_or(4);
             }
@@ -8251,7 +8432,13 @@ impl Walker {
             } else {
                 alignof_from_type_text(ty)
             };
-            return Some(self.var_alignments.get(text).copied().unwrap_or(base).max(base));
+            return Some(
+                self.var_alignments
+                    .get(text)
+                    .copied()
+                    .unwrap_or(base)
+                    .max(base),
+            );
         }
         if let Some((_, rhs)) = text.rsplit_once(',') {
             return self.alignof_from_expr_text(rhs.trim());
@@ -8359,7 +8546,9 @@ impl Walker {
                 op: BinOp::Sub,
                 left,
                 ..
-            } => matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n) || self.carray_ptr_vars.contains(n)),
+            } => {
+                matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n) || self.carray_ptr_vars.contains(n))
+            }
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
                 expr,
@@ -8446,7 +8635,6 @@ fn normalized_c_type_name(text: &str) -> String {
         .to_string()
 }
 
-
 fn strip_alignment_specifiers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
@@ -8483,14 +8671,12 @@ fn strip_alignment_specifiers(text: &str) -> String {
 }
 
 fn explicit_alignment_value(text: &str) -> Option<i64> {
-    ["_Alignas(", "alignas("]
-        .into_iter()
-        .find_map(|marker| {
-            let start = text.find(marker)? + marker.len();
-            let rest = &text[start..];
-            let end = rest.find(')')?;
-            rest[..end].trim().parse::<i64>().ok()
-        })
+    ["_Alignas(", "alignas("].into_iter().find_map(|marker| {
+        let start = text.find(marker)? + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(')')?;
+        rest[..end].trim().parse::<i64>().ok()
+    })
 }
 /// `strchr(s, needle_str)` — find first occurrence, return suffix or null.
 
@@ -8578,11 +8764,7 @@ fn apply_token_paste(
     text
 }
 
-fn apply_stringize(
-    text: &str,
-    param_values: &HashMap<String, String>,
-    variadic: &str,
-) -> String {
+fn apply_stringize(text: &str, param_values: &HashMap<String, String>, variadic: &str) -> String {
     let bytes = text.as_bytes();
     let mut i = 0usize;
     let mut out = String::with_capacity(text.len());
@@ -8594,9 +8776,7 @@ fn apply_stringize(
             let next_is_hash = i + 1 < bytes.len() && bytes[i + 1] == b'#';
             if !prev_is_hash && !next_is_hash {
                 let mut j = i + 1;
-                while j < bytes.len()
-                    && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
-                {
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                     j += 1;
                 }
                 if j > i + 1 {
@@ -8895,7 +9075,11 @@ fn is_putchar_zero_call(e: &Expression) -> bool {
 
 fn strip_putchar_side_effect_value(value: Expression) -> Expression {
     match value.kind {
-        ExprKind::Call { callee, args, optional } => {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
             if let ExprKind::Ident(name) = &callee.kind {
                 if name == "__c_fputc_h" && !args.is_empty() {
                     return strip_putchar_side_effect_value(args[0].value.clone());
@@ -8923,7 +9107,10 @@ fn strip_putchar_side_effect_value(value: Expression) -> Expression {
             op,
             expr: Box::new(strip_putchar_side_effect_value(*inner)),
         }),
-        ExprKind::Cast { expr: inner, type_name } => expr(ExprKind::Cast {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => expr(ExprKind::Cast {
             expr: Box::new(strip_putchar_side_effect_value(*inner)),
             type_name,
         }),
@@ -8958,13 +9145,15 @@ fn find_setjmp_in_expr(e: &Expression) -> Option<String> {
         ExprKind::Call { callee, args, .. } => {
             if let ExprKind::Ident(n) = &callee.kind {
                 if n == "__c_setjmp" {
-                    if let Some(ExprKind::Lit(Literal::Str(t))) = args.first().map(|a| &a.value.kind)
+                    if let Some(ExprKind::Lit(Literal::Str(t))) =
+                        args.first().map(|a| &a.value.kind)
                     {
                         return Some(t.clone());
                     }
                 }
             }
-            find_setjmp_in_expr(callee).or_else(|| args.iter().find_map(|a| find_setjmp_in_expr(&a.value)))
+            find_setjmp_in_expr(callee)
+                .or_else(|| args.iter().find_map(|a| find_setjmp_in_expr(&a.value)))
         }
         ExprKind::Binary { left, right, .. } => {
             find_setjmp_in_expr(left).or_else(|| find_setjmp_in_expr(right))
@@ -9037,8 +9226,9 @@ fn find_setjmp_in_stmt(s: &Statement) -> Option<String> {
         StmtKind::VarDecl { declarations, .. } => declarations
             .iter()
             .find_map(|d| d.init.as_ref().and_then(find_setjmp_in_expr)),
-        StmtKind::Assign { targets, value } => find_setjmp_in_expr(value)
-            .or_else(|| targets.iter().find_map(find_setjmp_in_expr)),
+        StmtKind::Assign { targets, value } => {
+            find_setjmp_in_expr(value).or_else(|| targets.iter().find_map(find_setjmp_in_expr))
+        }
         StmtKind::Expr(e) => find_setjmp_in_expr(e),
         StmtKind::If { cond, .. } => find_setjmp_in_expr(cond),
         StmtKind::While { cond, .. } => find_setjmp_in_expr(cond),
@@ -9188,10 +9378,12 @@ fn base_ident_name(value: &Expression) -> Option<String> {
 /// (`s[w++] = c`, `s[f()] = c`).
 fn index_has_side_effects(e: &Expression) -> bool {
     match &e.kind {
-        ExprKind::Unary { op, expr } => matches!(
-            op,
-            UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
-        ) || index_has_side_effects(expr),
+        ExprKind::Unary { op, expr } => {
+            matches!(
+                op,
+                UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
+            ) || index_has_side_effects(expr)
+        }
         ExprKind::Assign { .. } | ExprKind::Call { .. } => true,
         ExprKind::Binary { left, right, .. } => {
             index_has_side_effects(left) || index_has_side_effects(right)
@@ -9368,7 +9560,14 @@ fn should_wrap_pointer_init_as_carray(
         Some(ExprKind::Call { callee, .. }) => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "malloc" || name == "calloc" || name == "realloc")
         }
-        Some(_) if init.as_ref().map(|e| is_carray_like_expr(e)).unwrap_or(false) => false,
+        Some(_)
+            if init
+                .as_ref()
+                .map(|e| is_carray_like_expr(e))
+                .unwrap_or(false) =>
+        {
+            false
+        }
         Some(_) => false,
         None => false,
     }
@@ -9630,7 +9829,6 @@ fn expr_to_c_source(expr: &Expression) -> String {
 fn is_complex_type_text(type_text: &str) -> bool {
     type_text.to_ascii_lowercase().contains("complex")
 }
-
 
 /// Replace all whole-word occurrences of `word` in `text` with `replacement`.
 fn replace_word(text: &str, word: &str, replacement: &str) -> String {

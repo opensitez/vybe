@@ -197,10 +197,7 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
 
     // __type and __exception_type use the canonical name (for cross-language
     // catch dispatch).
-    for (key, val) in [
-        ("__type", canon),
-        ("__exception_type", canon),
-    ] {
+    for (key, val) in [("__type", canon), ("__exception_type", canon)] {
         chunk.emit_op(Op::DUP, line);
         let v = chunk.add_constant(Value::String(Arc::from(val)));
         chunk.emit_op_u16(Op::CONST, v, line);

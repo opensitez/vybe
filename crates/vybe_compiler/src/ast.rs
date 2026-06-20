@@ -1736,7 +1736,12 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
                 collect_rest_in_member(member, out);
             }
         }
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args, .. } => {
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+            ..
+        } => {
             collect_rest_in_expr(callee, out);
             for arg in args {
                 collect_rest_in_expr(&arg.value, out);

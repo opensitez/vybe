@@ -131,14 +131,10 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_callable", "__vybe_callable"),
     ("__stdlib_splice", "__vybe_splice"),
     ("__stdlib_slice", "__vybe_slice"),
-    
     ("__stdlib_hasproperty", "__vybe_hasproperty"),
-    
     ("__stdlib_instanceof", "__vybe_instanceof"),
     ("__stdlib_js_get_method", "__vybe_js_get_method"),
     ("__stdlib_js_instanceof", "__vybe_js_instanceof"),
-    
-    
     ("__stdlib_redim", "__vybe_redim"),
     ("__stdlib_slicestep", "__vybe_slicestep"),
     ("__stdlib_dynmul", "__vybe_dynmul"),
@@ -153,7 +149,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_set_range", "__vybe_array_set_range"),
     ("__stdlib_array_binary_search", "__vybe_array_binary_search"),
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
-    
     ("__stdlib_sprintf", "__vybe_sprintf"),
     ("__stdlib_generator_next", "__vybe_generator_next"),
     ("__stdlib_generator_self", "__vybe_generator_self"),

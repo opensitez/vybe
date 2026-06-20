@@ -2467,9 +2467,8 @@ fn emitted_wasm_has_export_section() {
 #[test]
 fn every_proposal_module_exposes_uniform_surface() {
     use vybe_bytecode::wasm::{
-        bulk_memory, esm_integration, exception_handling,
-        gc, js_primitive_builtins, js_string_builtins, multi_value,
-        reference_types, simd, tail_call, threads,
+        bulk_memory, esm_integration, exception_handling, gc, js_primitive_builtins,
+        js_string_builtins, multi_value, reference_types, simd, tail_call, threads,
     };
 
     // Each of these must compile — the test is the shape check.

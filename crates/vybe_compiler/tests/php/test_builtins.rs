@@ -104,7 +104,10 @@ fn str_pad() {
 }
 #[test]
 fn chr_ord() {
-    assert_outputs("<?php echo chr(65), \"\\n\"; echo ord('A'), \"\\n\";", &["A", "65"]);
+    assert_outputs(
+        "<?php echo chr(65), \"\\n\"; echo ord('A'), \"\\n\";",
+        &["A", "65"],
+    );
 }
 #[test]
 fn ucfirst() {

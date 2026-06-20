@@ -91,9 +91,9 @@ pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::DROP, line);
     // stack: [x]
     chunk.emit_op_u16(Op::LOCAL_GET, min_slot, line); // [x, min]
-    chunk.emit_op(Op::F64_MAX, line);                 // [max(x, min)]
+    chunk.emit_op(Op::F64_MAX, line); // [max(x, min)]
     chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line); // [max(x,min), max]
-    chunk.emit_op(Op::F64_MIN, line);                 // [min(max(x,min), max)]
+    chunk.emit_op(Op::F64_MIN, line); // [min(max(x,min), max)]
 }
 
 // ── Host imports (standard math, same across all languages) ──
