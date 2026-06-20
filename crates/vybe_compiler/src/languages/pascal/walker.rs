@@ -4,6 +4,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
+const PASCAL_VARIANT_FIELD_MARKER: &str = "__pascal_variant_field__";
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
@@ -108,10 +109,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         })
         .collect();
+    let explicit_ctor_record_names = collect_records_without_default_constructor(&body);
+    let variant_record_names = collect_variant_record_names_and_clear_markers(&mut body);
     for stmt in body.iter_mut() {
-        default_init_struct_locals_stmt(stmt, &struct_names);
+        default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
     }
-
+    for stmt in body.iter_mut() {
+        default_init_struct_results_stmt(stmt, &struct_names);
+    }
+    for stmt in body.iter_mut() {
+        erase_variant_record_param_type_hints_stmt(stmt, &variant_record_names);
+    }
+    let struct_fields = collect_struct_fields(&body);
+    lower_struct_copy_assignments(&mut body, &struct_fields);
     // Pascal allows user functions to shadow builtin type names. When that
     // happens, `Double(x)` should stay a function call rather than getting
     // frozen into a builtin cast during expression walking.
@@ -143,18 +153,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
 fn default_init_struct_locals_stmt(
     stmt: &mut Statement,
     struct_names: &std::collections::HashSet<String>,
+    explicit_ctor_record_names: &std::collections::HashSet<String>,
 ) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations.iter_mut() {
                 if decl.init.is_none() {
                     if let Some(ref type_hint) = decl.type_hint {
-                        let bare = type_hint.split('<').next().unwrap_or(type_hint).trim();
-                        if struct_names.contains(&bare.to_lowercase()) {
+                        let bare = bare_type_name(type_hint);
+                        if struct_names.contains(&bare.to_lowercase())
+                            && !explicit_ctor_record_names.contains(&bare.to_lowercase())
+                        {
                             decl.init = Some(Expression::new(ExprKind::New {
                                 class: Box::new(Expression::ident(bare)),
                                 args: Vec::new(),
                             }));
+                        } else if explicit_ctor_record_names.contains(&bare.to_lowercase()) {
+                            decl.type_hint = None;
+                        } else if let Some((count, element_type)) =
+                            fixed_record_array(type_hint, struct_names, explicit_ctor_record_names)
+                        {
+                            decl.init = Some(record_array_initializer(count, &element_type));
                         }
                     }
                 }
@@ -162,7 +181,7 @@ fn default_init_struct_locals_stmt(
         }
         StmtKind::Block(inner) => {
             for s in inner {
-                default_init_struct_locals_stmt(s, struct_names);
+                default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
             }
         }
         StmtKind::If {
@@ -172,16 +191,16 @@ fn default_init_struct_locals_stmt(
             ..
         } => {
             for s in then_body {
-                default_init_struct_locals_stmt(s, struct_names);
+                default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
             }
             for (_, body) in elifs {
                 for s in body {
-                    default_init_struct_locals_stmt(s, struct_names);
+                    default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
                 }
             }
             if let Some(eb) = else_body {
                 for s in eb {
-                    default_init_struct_locals_stmt(s, struct_names);
+                    default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
                 }
             }
         }
@@ -190,7 +209,7 @@ fn default_init_struct_locals_stmt(
         | StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. } => {
             for s in body {
-                default_init_struct_locals_stmt(s, struct_names);
+                default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
             }
         }
         StmtKind::Try {
@@ -200,31 +219,35 @@ fn default_init_struct_locals_stmt(
             ..
         } => {
             for s in body {
-                default_init_struct_locals_stmt(s, struct_names);
+                default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
             }
             for c in catches.iter_mut() {
                 for s in c.body.iter_mut() {
-                    default_init_struct_locals_stmt(s, struct_names);
+                    default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
                 }
             }
             if let Some(f) = finally {
                 for s in f {
-                    default_init_struct_locals_stmt(s, struct_names);
+                    default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
                 }
             }
         }
         StmtKind::FunctionDecl { body, .. } => {
             for s in body {
-                default_init_struct_locals_stmt(s, struct_names);
+                default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
             }
         }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for m in members {
                 if let ClassMember::Method(box_stmt) = m {
-                    default_init_struct_locals_stmt(box_stmt, struct_names);
+                    default_init_struct_locals_stmt(
+                        box_stmt,
+                        struct_names,
+                        explicit_ctor_record_names,
+                    );
                 } else if let ClassMember::Constructor { body, .. } = m {
                     for s in body {
-                        default_init_struct_locals_stmt(s, struct_names);
+                        default_init_struct_locals_stmt(s, struct_names, explicit_ctor_record_names);
                     }
                 }
             }
@@ -232,6 +255,525 @@ fn default_init_struct_locals_stmt(
         _ => {}
     }
 }
+
+fn default_init_struct_results_stmt(
+    stmt: &mut Statement,
+    struct_names: &std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl {
+            return_type, body, ..
+        } => {
+            if let Some(return_type) = return_type {
+                let bare = bare_type_name(return_type);
+                if struct_names.contains(&bare.to_lowercase()) {
+                    body.insert(0, assign_result_new_record(&bare));
+                }
+            }
+            for s in body {
+                default_init_struct_results_stmt(s, struct_names);
+            }
+        }
+        StmtKind::Block(inner) => {
+            for s in inner {
+                default_init_struct_results_stmt(s, struct_names);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                default_init_struct_results_stmt(s, struct_names);
+            }
+            for (_, body) in elifs {
+                for s in body {
+                    default_init_struct_results_stmt(s, struct_names);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for s in else_body {
+                    default_init_struct_results_stmt(s, struct_names);
+                }
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. } => {
+            for s in body {
+                default_init_struct_results_stmt(s, struct_names);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            for s in body {
+                default_init_struct_results_stmt(s, struct_names);
+            }
+            for c in catches.iter_mut() {
+                for s in c.body.iter_mut() {
+                    default_init_struct_results_stmt(s, struct_names);
+                }
+            }
+            if let Some(finally) = finally {
+                for s in finally {
+                    default_init_struct_results_stmt(s, struct_names);
+                }
+            }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(method) => {
+                        default_init_struct_results_stmt(method, struct_names);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        for s in body {
+                            default_init_struct_results_stmt(s, struct_names);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bare_type_name(type_hint: &str) -> &str {
+    type_hint.split('<').next().unwrap_or(type_hint).trim()
+}
+
+fn collect_records_without_default_constructor(
+    body: &[Statement],
+) -> std::collections::HashSet<String> {
+    body.iter()
+        .filter_map(|stmt| {
+            let StmtKind::StructDecl { name, members, .. } = &stmt.kind else {
+                return None;
+            };
+            let mut has_constructor = false;
+            let mut has_default_constructor = false;
+            for member in members {
+                if let ClassMember::Constructor { params, .. } = member {
+                    has_constructor = true;
+                    has_default_constructor |= params.is_empty();
+                }
+            }
+            (has_constructor && !has_default_constructor).then(|| name.to_lowercase())
+        })
+        .collect()
+}
+
+fn assign_result_new_record(type_name: &str) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident("Result")],
+        value: Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(type_name)),
+            args: Vec::new(),
+        }),
+    })
+}
+
+fn fixed_record_array(
+    type_hint: &str,
+    struct_names: &std::collections::HashSet<String>,
+    explicit_ctor_record_names: &std::collections::HashSet<String>,
+) -> Option<(usize, String)> {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower.strip_prefix("array[")?;
+    let close = rest.find(']')?;
+    let bounds = &trimmed["array[".len().."array[".len() + close];
+    let after = trimmed["array[".len() + close + 1..].trim_start();
+    let element_type = after.strip_prefix("of ")?.trim();
+    let bare_element = bare_type_name(element_type);
+    if !struct_names.contains(&bare_element.to_lowercase())
+        || explicit_ctor_record_names.contains(&bare_element.to_lowercase())
+    {
+        return None;
+    }
+
+    let (lo, hi) = bounds.split_once("..")?;
+    let lo = lo.trim().parse::<isize>().ok()?;
+    let hi = hi.trim().parse::<isize>().ok()?;
+    if lo < 0 || hi < lo {
+        return None;
+    }
+
+    Some(((hi - lo + 1) as usize, bare_element.to_string()))
+}
+
+fn record_array_initializer(count: usize, element_type: &str) -> Expression {
+    let elements = (0..count)
+        .map(|_| ArrayElement {
+            key: None,
+            value: Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(element_type)),
+                args: Vec::new(),
+            }),
+            spread: false,
+            by_ref: false,
+        })
+        .collect();
+    Expression::new(ExprKind::Array(elements))
+}
+
+fn collect_struct_fields(
+    body: &[Statement],
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut fields = std::collections::HashMap::new();
+    for stmt in body {
+        if let StmtKind::StructDecl { name, members, .. } = &stmt.kind {
+            let names = members
+                .iter()
+                .filter_map(|member| match member {
+                    ClassMember::Field { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            fields.insert(name.to_lowercase(), names);
+        }
+    }
+    fields
+}
+
+fn lower_struct_copy_assignments(
+    body: &mut Vec<Statement>,
+    struct_fields: &std::collections::HashMap<String, Vec<String>>,
+) {
+    let mut env = std::collections::HashMap::new();
+    lower_struct_copy_assignments_in_block(body, struct_fields, &mut env);
+}
+
+fn lower_struct_copy_assignments_in_block(
+    body: &mut Vec<Statement>,
+    struct_fields: &std::collections::HashMap<String, Vec<String>>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    let mut lowered = Vec::with_capacity(body.len());
+    for mut stmt in std::mem::take(body) {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations.iter() {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if let Some(type_hint) = &decl.type_hint {
+                            let bare = bare_type_name(type_hint).to_string();
+                            if struct_fields.contains_key(&bare.to_lowercase()) {
+                                env.insert(name.to_lowercase(), bare);
+                            }
+                        }
+                    }
+                }
+                lowered.push(stmt);
+            }
+            StmtKind::Assign { targets, value } if targets.len() == 1 => {
+                let copy = match (&targets[0].kind, &value.kind) {
+                    (ExprKind::Ident(target), ExprKind::Ident(source)) => {
+                        let target_type = env.get(&target.to_lowercase());
+                        let source_type = env.get(&source.to_lowercase());
+                        target_type
+                            .zip(source_type)
+                            .filter(|(left, right)| left.eq_ignore_ascii_case(right))
+                            .and_then(|(type_name, _)| {
+                                struct_fields
+                                    .get(&type_name.to_lowercase())
+                                    .map(|fields| build_struct_copy_statements(target, source, type_name, fields))
+                            })
+                    }
+                    _ => None,
+                };
+                if let Some(stmts) = copy {
+                    lowered.extend(stmts);
+                } else {
+                    lowered.push(stmt);
+                }
+            }
+            _ => {
+                lower_struct_copy_assignments_stmt(&mut stmt, struct_fields, env);
+                lowered.push(stmt);
+            }
+        }
+    }
+    *body = lowered;
+}
+
+fn lower_struct_copy_assignments_stmt(
+    stmt: &mut Statement,
+    struct_fields: &std::collections::HashMap<String, Vec<String>>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Block(inner) => {
+            let mut scope = env.clone();
+            lower_struct_copy_assignments_in_block(inner, struct_fields, &mut scope);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scope = std::collections::HashMap::new();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    let bare = bare_type_name(type_hint).to_string();
+                    if struct_fields.contains_key(&bare.to_lowercase()) {
+                        scope.insert(param.name.to_lowercase(), bare);
+                    }
+                }
+            }
+            lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            let mut then_scope = env.clone();
+            lower_struct_copy_assignments_in_block(then_body, struct_fields, &mut then_scope);
+            for (_, body) in elifs {
+                let mut elif_scope = env.clone();
+                lower_struct_copy_assignments_in_block(body, struct_fields, &mut elif_scope);
+            }
+            if let Some(else_body) = else_body {
+                let mut else_scope = env.clone();
+                lower_struct_copy_assignments_in_block(else_body, struct_fields, &mut else_scope);
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. } => {
+            let mut scope = env.clone();
+            lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            let mut try_scope = env.clone();
+            lower_struct_copy_assignments_in_block(body, struct_fields, &mut try_scope);
+            for catch in catches {
+                let mut catch_scope = env.clone();
+                lower_struct_copy_assignments_in_block(&mut catch.body, struct_fields, &mut catch_scope);
+            }
+            if let Some(finally) = finally {
+                let mut finally_scope = env.clone();
+                lower_struct_copy_assignments_in_block(finally, struct_fields, &mut finally_scope);
+            }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(method) => {
+                        lower_struct_copy_assignments_stmt(method, struct_fields, env);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        let mut scope = env.clone();
+                        lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_struct_copy_statements(
+    target: &str,
+    source: &str,
+    type_name: &str,
+    fields: &[String],
+) -> Vec<Statement> {
+    let mut stmts = vec![Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(target)],
+        value: Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(type_name)),
+            args: Vec::new(),
+        }),
+    })];
+
+    for field in fields {
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(target)),
+                field: field.clone(),
+                null_safe: false,
+            })],
+            value: Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(source)),
+                field: field.clone(),
+                null_safe: false,
+            }),
+        }));
+    }
+
+    stmts
+}
+
+fn collect_variant_record_names_and_clear_markers(
+    body: &mut [Statement],
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for stmt in body {
+        collect_variant_record_names_stmt(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_variant_record_names_stmt(
+    stmt: &mut Statement,
+    names: &mut std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::StructDecl {
+            name, members, ..
+        } => {
+            let mut has_variant_field = false;
+            for member in members.iter_mut() {
+                match member {
+                    ClassMember::Field { modifiers, .. } => {
+                        let before = modifiers.decorators.len();
+                        modifiers.decorators.retain(|decorator| {
+                            !matches!(
+                                decorator.kind,
+                                ExprKind::Ident(ref ident) if ident == PASCAL_VARIANT_FIELD_MARKER
+                            )
+                        });
+                        has_variant_field |= modifiers.decorators.len() != before;
+                    }
+                    ClassMember::Method(method) => collect_variant_record_names_stmt(method, names),
+                    ClassMember::Constructor { body, .. } => {
+                        for s in body {
+                            collect_variant_record_names_stmt(s, names);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if has_variant_field {
+                names.insert(name.to_lowercase());
+            }
+        }
+        StmtKind::ClassDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(method) => collect_variant_record_names_stmt(method, names),
+                    ClassMember::Constructor { body, .. } => {
+                        for s in body {
+                            collect_variant_record_names_stmt(s, names);
+                        }
+                    }
+                    ClassMember::NestedType(nested) => {
+                        collect_variant_record_names_stmt(nested, names);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn erase_variant_record_param_type_hints_stmt(
+    stmt: &mut Statement,
+    variant_record_names: &std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    if variant_record_names.contains(&bare_type_name(type_hint).to_lowercase()) {
+                        param.pass_by = PassBy::Value;
+                        param.type_hint = None;
+                    }
+                }
+            }
+            for s in body {
+                erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+            }
+        }
+        StmtKind::Block(inner) => {
+            for s in inner {
+                erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+            }
+            for (_, body) in elifs {
+                for s in body {
+                    erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for s in else_body {
+                    erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+                }
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. } => {
+            for s in body {
+                erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            for s in body {
+                erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+            }
+            for c in catches.iter_mut() {
+                for s in c.body.iter_mut() {
+                    erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+                }
+            }
+            if let Some(finally) = finally {
+                for s in finally {
+                    erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+                }
+            }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(method) => {
+                        erase_variant_record_param_type_hints_stmt(method, variant_record_names);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        for s in body {
+                            erase_variant_record_param_type_hints_stmt(s, variant_record_names);
+                        }
+                    }
+                    ClassMember::NestedType(nested) => {
+                        erase_variant_record_param_type_hints_stmt(nested, variant_record_names);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 
 fn rewrite_shadowed_builtin_casts_stmt(
     stmt: &mut Statement,
@@ -1301,6 +1843,7 @@ fn walk_var_section(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
     let mut names = Vec::new();
     let mut type_hint: Option<String> = None;
+    let mut array_bounds: Option<Vec<Expression>> = None;
     let mut init: Option<Expression> = None;
 
     for p in pair.into_inner() {
@@ -1313,6 +1856,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
                 }
             }
             Rule::type_ref => {
+                array_bounds = extract_array_bounds(&p)?;
                 type_hint = Some(type_ref_to_string(&p));
             }
             Rule::inline_var_init => {
@@ -1326,13 +1870,14 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
         }
     }
 
-    Ok(build_var_declarators(names, type_hint, init))
+    Ok(build_var_declarators(names, type_hint, init, array_bounds))
 }
 
 fn build_var_declarators(
     names: Vec<String>,
     type_hint: Option<String>,
     init: Option<Expression>,
+    array_bounds: Option<Vec<Expression>>,
 ) -> Vec<VarDeclarator> {
     names
         .into_iter()
@@ -1340,7 +1885,7 @@ fn build_var_declarators(
             pattern: BindingPattern::Ident(n),
             type_hint: type_hint.clone(),
             init: init.clone(),
-            array_bounds: None,
+            array_bounds: array_bounds.clone(),
             with_events: false,
         })
         .collect()
@@ -1586,7 +2131,6 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
             members = walk_record_body_members(p)?;
         }
     }
-
     Ok(Statement::with_span(
         StmtKind::StructDecl {
             name: name.to_string(),
@@ -1628,6 +2172,7 @@ fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String
     for m in pair.into_inner() {
         match m.as_rule() {
             Rule::field_decl => members.extend(walk_field_decl_members(m)?),
+            Rule::variant_part => members.extend(walk_variant_part_members(m)?),
             Rule::record_method_sig => members.push(walk_record_method_sig(m)?),
             Rule::record_class_method => members.push(walk_record_class_method(m)?),
             Rule::record_operator_method => members.push(walk_record_operator_method(m)?),
@@ -1819,6 +2364,96 @@ fn walk_field_decl_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
             with_events: false,
             array_bounds: None,
         })
+        .collect())
+}
+
+fn variant_field_member(name: String, type_hint: Option<String>) -> ClassMember {
+    let mut modifiers = Modifiers::default();
+    modifiers
+        .decorators
+        .push(Expression::ident(PASCAL_VARIANT_FIELD_MARKER));
+    ClassMember::Field {
+        name,
+        type_hint,
+        init: None,
+        modifiers,
+        with_events: false,
+        array_bounds: None,
+    }
+}
+
+fn walk_variant_part_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    let mut members = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::variant_selector => {
+                if let Some((name, type_hint)) = walk_variant_selector(p) {
+                    members.push(variant_field_member(name, Some(type_hint)));
+                }
+            }
+            Rule::variant_arm => {
+                members.extend(walk_variant_arm_members(p)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(members)
+}
+
+fn walk_variant_selector(pair: Pair<Rule>) -> Option<(String, String)> {
+    let mut name: Option<String> = None;
+    let mut type_hint: Option<String> = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::identifier => name = Some(p.as_str().to_string()),
+            Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
+            _ => {}
+        }
+    }
+
+    name.zip(type_hint)
+}
+
+fn walk_variant_arm_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    let mut members = Vec::new();
+
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::variant_field_list {
+            for field in p.into_inner() {
+                if field.as_rule() == Rule::variant_field_decl {
+                    members.extend(walk_variant_field_decl_members(field)?);
+                }
+            }
+        }
+    }
+
+    Ok(members)
+}
+
+fn walk_variant_field_decl_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    let mut names = Vec::new();
+    let mut type_hint: Option<String> = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::identifier_list => {
+                for id in p.into_inner() {
+                    if id.as_rule() == Rule::identifier {
+                        names.push(id.as_str().to_string());
+                    }
+                }
+            }
+            Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
+            _ => {}
+        }
+    }
+
+    Ok(names
+        .into_iter()
+        .map(|name| variant_field_member(name, type_hint.clone()))
         .collect())
 }
 
@@ -2663,6 +3298,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut names = Vec::new();
     let mut type_hint: Option<String> = None;
+    let mut array_bounds: Option<Vec<Expression>> = None;
     let mut init: Option<Expression> = None;
 
     for p in pair.into_inner() {
@@ -2674,7 +3310,10 @@ fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
             }
-            Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
+            Rule::type_ref => {
+                array_bounds = extract_array_bounds(&p)?;
+                type_hint = Some(type_ref_to_string(&p));
+            }
             Rule::inline_var_init => {
                 for inner in p.into_inner() {
                     if inner.as_rule() == Rule::expression {
@@ -2687,7 +3326,7 @@ fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     Ok(StmtKind::VarDecl {
-        declarations: build_var_declarators(names, type_hint, init),
+        declarations: build_var_declarators(names, type_hint, init, array_bounds),
         kind: VarDeclKind::Dim,
     })
 }
@@ -3557,6 +4196,13 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                 args,
                 optional: false,
             }));
+        } else if matches!(&member.kind, ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Length"))
+        {
+            return Ok(Expression::new(ExprKind::Call {
+                callee: Box::new(member),
+                args: Vec::new(),
+                optional: false,
+            }));
         } else {
             return Ok(member);
         }
@@ -3621,6 +4267,16 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                     }));
                 }
             }
+            if name.eq_ignore_ascii_case("IntToStr") && args.len() == 1 {
+                let value = args[0].value.clone();
+                return Ok(Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(value),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                        String::new(),
+                    )))),
+                }));
+            }
         }
 
         // Canonicalize Pascal's function-style builtins to canonical names so the
@@ -3666,7 +4322,6 @@ fn canonicalize_pascal_builtin(name: &str, argc: usize) -> Option<&'static str> 
 /// Pascal property-style member access canonicalization (case-insensitive).
 fn canonicalize_pascal_member(name: &str) -> Option<&'static str> {
     match name.to_lowercase().as_str() {
-        "length" => Some("__len__"),
         _ => None,
     }
 }
@@ -3877,6 +4532,27 @@ fn to_span(pair: &Pair<Rule>) -> Span {
 
 fn type_ref_to_string(pair: &Pair<Rule>) -> String {
     pair.as_str().trim().to_string()
+}
+
+fn extract_array_bounds(pair: &Pair<Rule>) -> Result<Option<Vec<Expression>>, String> {
+    for child in pair.clone().into_inner() {
+        if matches!(child.as_rule(), Rule::array_type_ref | Rule::array_type) {
+            let mut bounds = Vec::new();
+            for inner in child.into_inner() {
+                if inner.as_rule() == Rule::array_dimension {
+                    for expr in inner.into_inner() {
+                        if expr.as_rule() == Rule::expression {
+                            bounds.push(walk_expression(expr)?);
+                        }
+                    }
+                }
+            }
+            if !bounds.is_empty() {
+                return Ok(Some(bounds));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Flatten a single statement into a Vec — if it's a Block, unwrap it.

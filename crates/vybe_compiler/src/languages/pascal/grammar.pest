@@ -94,6 +94,7 @@ record_body = { record_member* }
 
 record_member = _{
     record_visibility
+    | variant_part
     | record_class_method
     | record_operator_method
     | record_method_sig
@@ -112,6 +113,26 @@ record_class_method = {
 record_operator_method = { ^"operator" ~ method_sig_body }
 
 record_method_sig = { method_kind_keyword ~ method_sig_body }
+
+variant_part = {
+    ^"case" ~ variant_selector ~ ^"of" ~ variant_arm*
+}
+
+variant_selector = {
+    (identifier ~ ":")? ~ type_ref
+}
+
+variant_arm = {
+    case_value_list ~ ":" ~ "(" ~ variant_field_list? ~ ")" ~ ";"?
+}
+
+variant_field_list = {
+    variant_field_decl ~ (";" ~ variant_field_decl)* ~ ";"?
+}
+
+variant_field_decl = {
+    identifier_list ~ ":" ~ type_ref
+}
 
 // Class
 class_helper_type = { ^"class" ~ ^"helper" ~ ^"for" ~ type_ref ~ class_body }
