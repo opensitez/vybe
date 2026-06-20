@@ -79,6 +79,41 @@ thread_local! {
     // depth to decide whether to skip the wrap on the LAST chain op.
     static ASSIGN_LHS_DEPTH: RefCell<u32> = const { RefCell::new(0) };
     static LINE_STARTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static CLASS_REGISTRY: RefCell<std::collections::HashMap<String, ClassMeta>> =
+        RefCell::new(std::collections::HashMap::new());
+    static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+#[derive(Debug, Clone)]
+struct MethodMeta {
+    name: String,
+    visibility: Visibility,
+    param_count: usize,
+    required_params: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FieldMeta {
+    name: String,
+    visibility: Visibility,
+}
+
+#[derive(Debug, Clone)]
+struct ClassMeta {
+    name: String,
+    parent: Option<String>,
+    interfaces: Vec<String>,
+    is_abstract: bool,
+    methods: Vec<MethodMeta>,
+    fields: Vec<FieldMeta>,
+}
+
+#[derive(Debug, Clone)]
+struct FuncMeta {
+    name: String,
+    param_count: usize,
+    required_params: usize,
 }
 
 const PHP_LITERAL_OPEN_MASK: &str = "\u{E000}\u{E001}";
@@ -2128,6 +2163,13 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     body = lower_php_runtime_arg_helpers_in_block(&mut params, body);
 
     let is_generator = body_contains_yield(&body);
+    let required = params.iter().filter(|p| p.default.is_none()).count();
+    FUNC_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), FuncMeta {
+        name: name.clone(),
+        param_count: params.len(),
+        required_params: required,
+    }));
+
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -2281,6 +2323,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
+    // Register class metadata for ReflectionClass lookups.
+    let meta = extract_class_meta(&name, &parents, &interfaces, &modifiers, &members);
+    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
+
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -2289,6 +2335,56 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers,
         decorators: vec![],
     })
+}
+
+fn extract_class_meta(
+    name: &str,
+    parents: &[String],
+    interfaces: &[String],
+    modifiers: &ClassModifiers,
+    members: &[ClassMember],
+) -> ClassMeta {
+    let mut methods = Vec::new();
+    let mut fields = Vec::new();
+    for m in members {
+        match m {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name, params, modifiers, .. } = &stmt.kind {
+                    let required = params.iter().filter(|p| p.default.is_none()).count();
+                    methods.push(MethodMeta {
+                        name: name.clone(),
+                        visibility: modifiers.visibility,
+                        param_count: params.len(),
+                        required_params: required,
+                    });
+                }
+            }
+            ClassMember::Field { name, modifiers, .. } => {
+                fields.push(FieldMeta {
+                    name: name.clone(),
+                    visibility: modifiers.visibility,
+                });
+            }
+            ClassMember::Constructor { params, visibility, .. } => {
+                let required = params.iter().filter(|p| p.default.is_none()).count();
+                methods.push(MethodMeta {
+                    name: "__construct".to_string(),
+                    visibility: *visibility,
+                    param_count: params.len(),
+                    required_params: required,
+                });
+            }
+            _ => {}
+        }
+    }
+    ClassMeta {
+        name: name.to_string(),
+        parent: parents.first().cloned(),
+        interfaces: interfaces.to_vec(),
+        is_abstract: modifiers.is_abstract,
+        methods,
+        fields,
+    }
 }
 
 fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -5474,6 +5570,27 @@ fn apply_postfix(
                     ));
                 }
             }
+            // Reflection visibility constants
+            if let ExprKind::Ident(cn) = &receiver.kind {
+                let cn_bare = cn.trim_start_matches('\\');
+                if matches!(cn_bare, "ReflectionMethod" | "ReflectionProperty") {
+                    let val = match name.as_str() {
+                        "IS_PUBLIC" => Some(1),
+                        "IS_PROTECTED" => Some(2),
+                        "IS_PRIVATE" => Some(4),
+                        "IS_STATIC" => Some(16),
+                        "IS_ABSTRACT" => Some(64),
+                        "IS_FINAL" => Some(32),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(v)),
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
             Ok(Expression::with_span(
                 ExprKind::StaticAccess {
                     class: Box::new(receiver),
@@ -6555,9 +6672,16 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             "SplPriorityQueue" => Some("__spl_new_splpriorityqueue"),
             "SplObjectStorage" => Some("__spl_new_splobjectstorage"),
             "WeakMap" => Some("__spl_new_weakmap"),
-            "ReflectionClass" => Some("__refl_class"),
-            "ReflectionMethod" => Some("__refl_method"),
+            "ReflectionClass" => {
+                return build_reflection_class_call(args, span);
+            }
+            "ReflectionMethod" => {
+                return build_reflection_method_call(args, span);
+            }
             "ReflectionProperty" => Some("__refl_property"),
+            "ReflectionFunction" => {
+                return build_reflection_function_call(args, span);
+            }
             _ => None,
         };
         if let Some(fname) = spl_ctor {
@@ -6578,6 +6702,209 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         ExprKind::New {
             class: Box::new(class_expr),
             args,
+        },
+        span,
+    ))
+}
+
+fn mk_str(s: &str) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Str(s.to_string())))
+}
+fn mk_int(n: i64) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Int(n)))
+}
+fn mk_bool(b: bool) -> Expression {
+    Expression::new(ExprKind::Lit(if b { Literal::Bool(true) } else { Literal::Bool(false) }))
+}
+
+fn vis_str(v: &Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
+        Visibility::Protected => "protected",
+        Visibility::Internal => "internal",
+    }
+}
+
+/// Build `__refl_class(name, is_abstract, parent, [interfaces...], [methods...], [fields...])`.
+fn build_reflection_class_call(
+    args: Vec<Argument>,
+    span: Span,
+) -> Result<Expression, String> {
+    let name_expr = args.into_iter().next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+    let class_name = match &name_expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+
+    let meta = CLASS_REGISTRY.with(|r| r.borrow().get(&class_name).cloned());
+    let mut call_args = vec![Argument::positional(name_expr)];
+
+    if let Some(meta) = meta {
+        call_args.push(Argument::positional(mk_bool(meta.is_abstract)));
+        call_args.push(Argument::positional(match &meta.parent {
+            Some(p) => mk_str(p),
+            None => Expression::new(ExprKind::Lit(Literal::Null)),
+        }));
+        // interfaces as array literal
+        let ifaces: Vec<ArrayElement> = meta.interfaces.iter().map(|i| ArrayElement {
+            key: None, value: mk_str(i), spread: false, by_ref: false,
+        }).collect();
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(ifaces))));
+        // methods: array of [name, visibility, paramCount, requiredParams]
+        let method_arr: Vec<ArrayElement> = meta.methods.iter().map(|m| {
+            ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Array(vec![
+                    ArrayElement { key: None, value: mk_str(&m.name), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_str(vis_str(&m.visibility)), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_int(m.param_count as i64), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_int(m.required_params as i64), spread: false, by_ref: false },
+                ])),
+                spread: false,
+                by_ref: false,
+            }
+        }).collect();
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(method_arr))));
+        // fields: array of [name, visibility]
+        let field_arr: Vec<ArrayElement> = meta.fields.iter().map(|f| {
+            ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Array(vec![
+                    ArrayElement { key: None, value: mk_str(&f.name), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_str(vis_str(&f.visibility)), spread: false, by_ref: false },
+                ])),
+                spread: false,
+                by_ref: false,
+            }
+        }).collect();
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(field_arr))));
+        // Pre-filtered public methods
+        let pub_methods: Vec<ArrayElement> = meta.methods.iter()
+            .filter(|m| matches!(m.visibility, Visibility::Public))
+            .map(|m| ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Array(vec![
+                    ArrayElement { key: None, value: mk_str(&m.name), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_str("public"), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_int(m.param_count as i64), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_int(m.required_params as i64), spread: false, by_ref: false },
+                ])),
+                spread: false,
+                by_ref: false,
+            }).collect();
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(pub_methods))));
+        // Pre-filtered public fields
+        let pub_fields: Vec<ArrayElement> = meta.fields.iter()
+            .filter(|f| matches!(f.visibility, Visibility::Public))
+            .map(|f| ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Array(vec![
+                    ArrayElement { key: None, value: mk_str(&f.name), spread: false, by_ref: false },
+                    ArrayElement { key: None, value: mk_str("public"), spread: false, by_ref: false },
+                ])),
+                spread: false,
+                by_ref: false,
+            }).collect();
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(pub_fields))));
+    } else {
+        // Unknown class — pass minimal defaults
+        call_args.push(Argument::positional(mk_bool(false)));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Lit(Literal::Null))));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(vec![]))));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(vec![]))));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(vec![]))));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(vec![]))));
+        call_args.push(Argument::positional(Expression::new(ExprKind::Array(vec![]))));
+    }
+
+    Ok(Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("__refl_class".to_string()))),
+            args: call_args,
+            optional: false,
+        },
+        span,
+    ))
+}
+
+/// Build `__refl_method(class, method, visibility, paramCount, requiredParams)`.
+fn build_reflection_method_call(
+    args: Vec<Argument>,
+    span: Span,
+) -> Result<Expression, String> {
+    let mut it = args.into_iter();
+    let class_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+    let method_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+
+    let class_name = match &class_arg.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let method_name = match &method_arg.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+
+    let method_meta = CLASS_REGISTRY.with(|r| {
+        r.borrow().get(&class_name).and_then(|c| {
+            c.methods.iter().find(|m| m.name == method_name).cloned()
+        })
+    });
+
+    let mut call_args = vec![
+        Argument::positional(class_arg),
+        Argument::positional(method_arg),
+    ];
+
+    if let Some(mm) = method_meta {
+        call_args.push(Argument::positional(mk_str(vis_str(&mm.visibility))));
+        call_args.push(Argument::positional(mk_int(mm.param_count as i64)));
+        call_args.push(Argument::positional(mk_int(mm.required_params as i64)));
+    } else {
+        call_args.push(Argument::positional(mk_str("public")));
+        call_args.push(Argument::positional(mk_int(0)));
+        call_args.push(Argument::positional(mk_int(0)));
+    }
+
+    Ok(Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("__refl_method".to_string()))),
+            args: call_args,
+            optional: false,
+        },
+        span,
+    ))
+}
+
+/// Build `__refl_function(name, paramCount, requiredParams)`.
+fn build_reflection_function_call(
+    args: Vec<Argument>,
+    span: Span,
+) -> Result<Expression, String> {
+    let name_expr = args.into_iter().next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+    let func_name = match &name_expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+
+    let func_meta = FUNC_REGISTRY.with(|r| r.borrow().get(&func_name).cloned());
+
+    let mut call_args = vec![Argument::positional(name_expr)];
+
+    if let Some(fm) = func_meta {
+        call_args.push(Argument::positional(mk_int(fm.param_count as i64)));
+        call_args.push(Argument::positional(mk_int(fm.required_params as i64)));
+    } else {
+        call_args.push(Argument::positional(mk_int(0)));
+        call_args.push(Argument::positional(mk_int(0)));
+    }
+
+    Ok(Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("__refl_function".to_string()))),
+            args: call_args,
+            optional: false,
         },
         span,
     ))
