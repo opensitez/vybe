@@ -138,7 +138,7 @@ variant_field_decl = {
 class_helper_type = { ^"class" ~ ^"helper" ~ ^"for" ~ type_ref ~ class_body }
 class_type = { (^"class" | ^"object") ~ class_heritage? ~ class_body? }
 
-class_heritage = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
+class_heritage = { "(" ~ type_ref ~ ("," ~ type_ref)* ~ ")" }
 
 // If ";" follows immediately after class_heritage or ^"class" with no heritage,
 // it's a forward declaration. class_body is optional to handle that.
@@ -155,7 +155,8 @@ class_member = _{
     | field_decl
 }
 
-class_visibility = _{ public_kw | private_kw | protected_kw | published_kw }
+class_visibility = _{ strict_visibility | public_kw | private_kw | protected_kw | published_kw }
+strict_visibility = { ^"strict" ~ (private_kw | protected_kw) }
 public_kw = @{ ^"public" ~ !(ASCII_ALPHANUMERIC | "_") }
 private_kw = @{ ^"private" ~ !(ASCII_ALPHANUMERIC | "_") }
 protected_kw = @{ ^"protected" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -174,7 +175,7 @@ class_class_member = {
     )
 }
 
-class_property_decl = { ^"property" ~ property_def }
+class_property_decl = { (^"class" ~ ^"property" | ^"property") ~ property_def ~ (^"default" ~ ";")? }
 
 // Interface type
 interface_type = { ^"interface" ~ interface_heritage? ~ interface_body? }
@@ -253,6 +254,7 @@ method_directive = {
     | ^"reintroduce"
     | ^"overload"
     | ^"inline"
+    | ^"static"
     | ^"cdecl"
     | ^"stdcall"
     | ^"register"
@@ -573,7 +575,8 @@ array_index_list = { expression ~ ("," ~ expression)* }
 // Captured-and-discarded by the walker — type erasure.
 generic_args = _{ "<" ~ type_ref ~ ("," ~ type_ref)* ~ ">" }
 
-arg_list = { "(" ~ (expression ~ ("," ~ expression)*)? ~ ")" }
+arg_list = { "(" ~ (format_arg ~ ("," ~ format_arg)*)? ~ ")" }
+format_arg = { expression ~ (":" ~ expression ~ (":" ~ expression)?)? }
 
 // ── Primary Expressions ────────────────────────────────────────────────────────
 
@@ -657,13 +660,13 @@ keyword = _{
         | ^"for" | ^"to" | ^"downto" | ^"do"
         | ^"while" | ^"repeat" | ^"until"
         | ^"case" | ^"of" | ^"otherwise"
-        | ^"record" | ^"array" | ^"set" | ^"file" | ^"object" | ^"class"
+        | ^"record" | ^"array" | ^"set" | ^"object" | ^"class"
         | ^"inherited" | ^"override" | ^"virtual" | ^"abstract"
         | ^"with" | ^"in" | ^"is" | ^"as"
         | ^"try" | ^"except" | ^"finally" | ^"raise" | ^"on"
         | ^"and" | ^"or" | ^"not" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"
         | ^"nil" | ^"true" | ^"false"
-        | ^"string" | ^"integer" | ^"real" | ^"boolean" | ^"char"
+        | ^"string" | ^"integer" | ^"boolean" | ^"char"
         | ^"byte" | ^"word" | ^"longint" | ^"shortint" | ^"cardinal" | ^"int64"
         | ^"single" | ^"double" | ^"extended"
         | ^"pointer"

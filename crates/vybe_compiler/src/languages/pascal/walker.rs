@@ -1344,9 +1344,10 @@ fn rewrite_constructor_calls_expr(
     if let ExprKind::Call { callee, args, .. } = &expr.kind {
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let ExprKind::Ident(class_name) = &object.kind {
-                if classes.contains(&class_name.to_lowercase())
-                    && field.eq_ignore_ascii_case("Create")
-                {
+                let is_ctor_name = field
+                    .get(..6)
+                    .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"));
+                if classes.contains(&class_name.to_lowercase()) && is_ctor_name {
                     let new_class = Box::new(Expression::ident(class_name));
                     let mut new_args = args.clone();
                     for a in new_args.iter_mut() {
@@ -1510,9 +1511,11 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
             _ => continue,
         };
 
-        // Try constructor first: any ClassMember::Constructor whose params arity matches,
-        // when the method name is "Create" (Pascal convention) — fall back to first ctor.
-        let is_create = method_name.eq_ignore_ascii_case("Create");
+        // Try constructor first: Pascal constructors are commonly named Create,
+        // but named constructors such as CreateWithCode are valid too.
+        let is_create = method_name
+            .get(..6)
+            .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"));
         let mut attached = false;
         if is_create {
             for m in members.iter_mut() {
@@ -2054,9 +2057,9 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::class_heritage => {
-                for id in p.into_inner() {
-                    if id.as_rule() == Rule::identifier {
-                        parents.push(id.as_str().to_string());
+                for ty in p.into_inner() {
+                    if ty.as_rule() == Rule::type_ref {
+                        parents.push(type_ref_to_string(&ty));
                     }
                 }
             }
@@ -2867,6 +2870,7 @@ fn walk_method_directives(pair: Pair<Rule>, modifiers: &mut Modifiers) {
                 "override" => modifiers.is_override = true,
                 "abstract" => modifiers.is_abstract = true,
                 "overload" => modifiers.is_overloads = true,
+                "static" => modifiers.is_static = true,
                 _ => {} // reintroduce, inline, cdecl, stdcall, register, dynamic
             }
         }
@@ -3482,7 +3486,7 @@ fn walk_for_binding(pair: Pair<Rule>) -> Result<(String, Option<String>, Express
 fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut parts: Vec<Pair<Rule>> = pair.into_inner().collect();
     let var_name = parts.remove(0).as_str().to_string();
-    let iter_expr = walk_expression(parts.remove(0))?;
+    let iter_expr = pascal_for_in_iter(walk_expression(parts.remove(0))?);
     let body_stmt = walk_statement(parts.remove(0))?;
 
     Ok(StmtKind::ForIn {
@@ -3494,6 +3498,23 @@ fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         else_body: None,
         is_async: false,
     })
+}
+
+fn pascal_for_in_iter(expr: Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Str(value)) = &expr.kind {
+        return Expression::new(ExprKind::Array(
+            value
+                .chars()
+                .map(|ch| ArrayElement {
+                    key: None,
+                    value: Expression::new(ExprKind::Lit(Literal::Str(ch.to_string()))),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ));
+    }
+    expr
 }
 
 // ── While ──────────────────────────────────────────────────────────────────
@@ -3745,6 +3766,10 @@ fn walk_on_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
         }
     }
 
+    if let Some(name) = &var_name {
+        rewrite_bare_raise_in_catch(&mut body, name);
+    }
+
     Ok(CatchClause {
         types: vec![type_name],
         var_name,
@@ -3752,6 +3777,52 @@ fn walk_on_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
         body,
         when_clause: None,
     })
+}
+
+fn rewrite_bare_raise_in_catch(body: &mut [Statement], var_name: &str) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::Throw { expr, .. } if expr.is_none() => {
+                *expr = Some(Expression::ident(var_name));
+            }
+            StmtKind::Block(stmts) => rewrite_bare_raise_in_catch(stmts, var_name),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                rewrite_bare_raise_in_catch(then_body, var_name);
+                for (_, body) in elifs {
+                    rewrite_bare_raise_in_catch(body, var_name);
+                }
+                if let Some(body) = else_body {
+                    rewrite_bare_raise_in_catch(body, var_name);
+                }
+            }
+            StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. } => rewrite_bare_raise_in_catch(body, var_name),
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                rewrite_bare_raise_in_catch(body, var_name);
+                for catch in catches {
+                    if catch.var_name.is_none() {
+                        rewrite_bare_raise_in_catch(&mut catch.body, var_name);
+                    }
+                }
+                if let Some(finally) = finally {
+                    rewrite_bare_raise_in_catch(finally, var_name);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── Raise ──────────────────────────────────────────────────────────────────
@@ -3837,6 +3908,38 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         value: Expression::null(),
                     });
                 }
+                if name.eq_ignore_ascii_case("Str") && args.len() == 2 {
+                    return Ok(StmtKind::Assign {
+                        targets: vec![args[1].value.clone()],
+                        value: pascal_str_value(args[0].value.clone()),
+                    });
+                }
+                if name.eq_ignore_ascii_case("Val") && args.len() == 3 {
+                    let target = args[1].value.clone();
+                    let invalid = pascal_val_invalid_expr(args[0].value.clone());
+                    return Ok(StmtKind::Block(vec![
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![target.clone()],
+                            value: Expression::new(ExprKind::Ternary {
+                                cond: Box::new(invalid.clone()),
+                                then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                else_: Box::new(Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("parseInt")),
+                                    args: vec![Argument::positional(args[0].value.clone())],
+                                    optional: false,
+                                })),
+                            }),
+                        }),
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![args[2].value.clone()],
+                            value: Expression::new(ExprKind::Ternary {
+                                cond: Box::new(invalid),
+                                then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+                                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                            }),
+                        }),
+                    ]));
+                }
             }
         }
 
@@ -3875,6 +3978,34 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let value = walk_expression(value_pair)?;
 
         if src.contains(":=") {
+            if let Some(source) = pascal_str_to_int_arg(&value) {
+                return Ok(StmtKind::If {
+                    cond: pascal_val_invalid_expr(source.clone()),
+                    then_body: vec![Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident("Exception")),
+                                field: "Create".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                                Literal::Str("invalid integer".to_string()),
+                            )))],
+                            optional: false,
+                        })),
+                        cause: None,
+                    })],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![Statement::new(StmtKind::Assign {
+                        targets: vec![target],
+                        value: Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("parseInt")),
+                            args: vec![Argument::positional(source)],
+                            optional: false,
+                        }),
+                    })]),
+                });
+            }
             return Ok(StmtKind::Assign {
                 targets: vec![target],
                 value,
@@ -4267,6 +4398,12 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                     }));
                 }
             }
+            if name.eq_ignore_ascii_case("Odd") && args.len() == 1 {
+                return Ok(pascal_odd_expr(args[0].value.clone()));
+            }
+            if name.eq_ignore_ascii_case("Frac") && args.len() == 1 {
+                return Ok(pascal_frac_expr(args[0].value.clone()));
+            }
             if name.eq_ignore_ascii_case("IntToStr") && args.len() == 1 {
                 let value = args[0].value.clone();
                 return Ok(Expression::new(ExprKind::Binary {
@@ -4329,13 +4466,120 @@ fn canonicalize_pascal_member(name: &str) -> Option<&'static str> {
 // ── Argument list ──────────────────────────────────────────────────────────
 
 fn walk_arg_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
-    pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::expression)
-        .map(|p| {
-            let value = walk_expression(p)?;
-            Ok(Argument::positional(value))
+    let mut args = Vec::new();
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::format_arg => args.push(walk_format_arg(p)?),
+            Rule::expression => args.push(Argument::positional(walk_expression(p)?)),
+            _ => {}
+        }
+    }
+    Ok(args)
+}
+
+fn walk_format_arg(pair: Pair<Rule>) -> Result<Argument, String> {
+    let mut inner = pair.into_inner().filter(|p| p.as_rule() == Rule::expression);
+    let value = inner
+        .next()
+        .map(walk_expression)
+        .transpose()?
+        .ok_or_else(|| "format_arg: missing value".to_string())?;
+    let width = inner.next().map(walk_expression).transpose()?;
+    let precision = inner.next().map(walk_expression).transpose()?;
+
+    if let Some(width) = width {
+        let value = format_value_expr(value, width, precision);
+        Ok(Argument::positional(value))
+    } else {
+        Ok(Argument::positional(value))
+    }
+}
+
+fn format_value_expr(value: Expression, width: Expression, precision: Option<Expression>) -> Expression {
+    let width = const_int_expr(&width).unwrap_or(0);
+    let fmt = if let Some(precision) = precision {
+        let precision = const_int_expr(&precision).unwrap_or(0);
+        format!("%{}.{}f", width, precision)
+    } else {
+        format!("%{}s", width)
+    };
+
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Format")),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(fmt)))),
+            Argument::positional(value),
+        ],
+        optional: false,
+    })
+}
+
+fn pascal_str_value(value: Expression) -> Expression {
+    if matches!(&value.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Format")))
+    {
+        value
+    } else {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(value),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
         })
-        .collect()
+    }
+}
+
+fn pascal_odd_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Mod,
+            left: Box::new(value),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(2)))),
+        })),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+    })
+}
+
+fn pascal_frac_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(value.clone()),
+        right: Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Trunc")),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        })),
+    })
+}
+
+fn pascal_val_invalid_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("isNaN")),
+        args: vec![Argument::positional(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Number")),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        }))],
+        optional: false,
+    })
+}
+
+fn pascal_str_to_int_arg(expr: &Expression) -> Option<Expression> {
+    if let ExprKind::Call { callee, args, .. } = &expr.kind {
+        if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("StrToInt"))
+            && args.len() == 1
+        {
+            return Some(args[0].value.clone());
+        }
+    }
+    None
+}
+
+fn const_int_expr(expr: &Expression) -> Option<i64> {
+    match expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(value),
+        ExprKind::Lit(Literal::Float(value)) => Some(value as i64),
+        _ => None,
+    }
 }
 
 // ── Set literal ────────────────────────────────────────────────────────────
