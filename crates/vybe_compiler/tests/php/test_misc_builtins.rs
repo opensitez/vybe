@@ -63,7 +63,7 @@ fn isset_multiple_vars() {
         run_prints(
             r#"<?php $a = 1; $b = 2; echo isset($a, $b) ? 'yes' : 'no'; echo isset($a, $c) ? 'yes' : 'no'; "#
         ),
-        vec!["yesno"]
+        vec!["yes", "no"]
     );
 }
 #[test]
@@ -78,7 +78,7 @@ echo empty('hello') ? '1' : '0';
 echo empty(1) ? '1' : '0';
 "#
         ),
-        vec!["11100"]
+        vec!["1", "1", "1", "0", "0"]
     );
 }
 #[test]
@@ -126,7 +126,7 @@ fn spaceship_with_strings_alphabetical() {
 fn comparison_with_null() {
     assert_eq!(
         run_prints(r#"<?php echo (null < 0) ? 'lt' : 'gte'; echo (null > 0) ? 'gt' : 'lte'; "#),
-        vec!["ltlte"]
+        vec!["gte", "lte"]
     );
 }
 

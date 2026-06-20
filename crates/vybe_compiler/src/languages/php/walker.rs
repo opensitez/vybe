@@ -10633,6 +10633,81 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 vec![lambda, mk_lit_f64(1.0)],
             )
         }
+        // ── range ─────────────────────────────────────────────────
+        // PHP `range('a','e')` → char array literal; `range(5,1)` → reversed.
+        "range" if args.len() >= 2 => 'range_blk: {
+            let start = &args[0].value;
+            let end = &args[1].value;
+            // Char range: range('a','e') → ['a','b','c','d','e']
+            if let (ExprKind::Lit(Literal::Str(s)), ExprKind::Lit(Literal::Str(e))) =
+                (&start.kind, &end.kind)
+            {
+                if s.len() == 1 && e.len() == 1 {
+                    let sc = s.chars().next().unwrap();
+                    let ec = e.chars().next().unwrap();
+                    let mut elems = Vec::new();
+                    if sc <= ec {
+                        for c in sc..=ec {
+                            elems.push(ArrayElement {
+                                key: None,
+                                value: Expression::with_span(
+                                    ExprKind::Lit(Literal::Str(c.to_string())),
+                                    span.clone(),
+                                ),
+                                spread: false,
+                                by_ref: false,
+                            });
+                        }
+                    } else {
+                        let mut c = sc;
+                        while c >= ec {
+                            elems.push(ArrayElement {
+                                key: None,
+                                value: Expression::with_span(
+                                    ExprKind::Lit(Literal::Str(c.to_string())),
+                                    span.clone(),
+                                ),
+                                spread: false,
+                                by_ref: false,
+                            });
+                            if c == '\0' { break; }
+                            c = match std::char::from_u32(c as u32 - 1) {
+                                Some(nc) if nc >= ec => nc,
+                                _ => break,
+                            };
+                        }
+                    }
+                    break 'range_blk ExprKind::Array(elems);
+                }
+            }
+            // Descending numeric: range(5,1) → array_reverse(range(1,5))
+            if let (ExprKind::Lit(Literal::Int(s)), ExprKind::Lit(Literal::Int(e))) =
+                (&start.kind, &end.kind)
+            {
+                if s > e && args.len() == 2 {
+                    break 'range_blk mk_call(
+                        Expression::ident("array_reverse"),
+                        vec![Expression::with_span(
+                            mk_call(
+                                Expression::ident("range"),
+                                vec![
+                                    Expression::with_span(
+                                        ExprKind::Lit(Literal::Int(*e)),
+                                        span.clone(),
+                                    ),
+                                    Expression::with_span(
+                                        ExprKind::Lit(Literal::Int(*s)),
+                                        span.clone(),
+                                    ),
+                                ],
+                            ),
+                            span.clone(),
+                        )],
+                    );
+                }
+            }
+            return None;
+        }
         // PHP `substr($s, $start, $length?)` →
         //   2-arg: `__php_substr($s, $start)`
         //   3-arg: `__php_substr($s, $start, $length)`

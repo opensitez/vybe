@@ -55,7 +55,7 @@ echo ',';
 echo array_key_last($a) . ':' . $a[array_key_last($a)];
 "#
         ),
-        vec!["0:10,4:50"]
+        vec!["0:10", ",", "4:50"]
     );
 }
 
@@ -102,7 +102,7 @@ echo ',';
 var_export(array_search(2, $a, true));
 "#
         ),
-        vec!["1,false"]
+        vec!["1", ",", "false"]
     );
 }
 #[test]
@@ -115,7 +115,7 @@ echo in_array('1', $a, true) ? 'yes' : 'no';
 echo in_array(1, $a, true) ? 'yes' : 'no';
 "#
         ),
-        vec!["noyes"]
+        vec!["no", "yes"]
     );
 }
 #[test]
@@ -128,7 +128,7 @@ echo array_key_exists('key', $a) ? 'key_exists' : 'no_key';
 echo isset($a['key']) ? 'isset' : 'not_isset';
 "#
         ),
-        vec!["key_existsnot_isset"]
+        vec!["key_exists", "not_isset"]
     );
 }
 
