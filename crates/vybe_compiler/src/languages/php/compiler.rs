@@ -295,7 +295,8 @@ impl Compiler {
             || (field_name == "next" && arg_exprs.is_empty())
             || (field_name == "throw" && arg_exprs.len() == 1)
             || (field_name == "valid" && arg_exprs.is_empty())
-            || (field_name == "getReturn" && arg_exprs.is_empty());
+            || (field_name == "getReturn" && arg_exprs.is_empty())
+            || (field_name == "rewind" && arg_exprs.is_empty());
 
         if !is_buffered_generator_method {
             return Ok(None);
@@ -450,6 +451,12 @@ impl Compiler {
                     return_key,
                 );
                 self.chunk().emit_end(line);
+                // Mark as moved for rewind() check
+                let moved_key = self.str_const("__php_gen_moved");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_const(Value::Bool(true));
+                self.emit_u16(Op::STRUCT_SET, moved_key);
+                self.emit(Op::DROP);
             }
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -546,6 +553,27 @@ impl Compiler {
 
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
+            }
+            "rewind" => {
+                // PHP Generator::rewind() throws if the generator has
+                // been advanced past the initial yield (via next/send).
+                let moved_key = self.str_const("__php_gen_moved");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u16(Op::STRUCT_GET, moved_key);
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
+                let line = self.line;
+                self.chunk().emit_if(line);
+                self.emit_const(Value::String(Arc::from(
+                    "Cannot rewind a generator that was already run",
+                )));
+                common::errors::emit_throw(&mut self.chunks[self.current], line);
+                self.chunk().emit_end(line);
+                self.emit(Op::NULL);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+                self.emit(Op::DROP);
             }
             _ => unreachable!(),
         }

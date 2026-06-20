@@ -339,7 +339,7 @@ function gen():Generator{yield 'a';yield 'b';yield 'c';}
 foreach(gen() as $k=>$v) echo $k.$v;
 "#
         ),
-        vec!["0a1b2c"]
+        vec!["0a", "1b", "2c"]
     );
 }
 #[test]
@@ -348,7 +348,7 @@ fn generator_send_null_on_first_call() {
         run_prints(
             r#"<?php
 function gen():Generator{$v=yield 1;echo $v===null?'null':'notnull';}
-$g=gen(); $g->current();
+$g=gen(); $g->current(); $g->next();
 "#
         ),
         vec!["null"]

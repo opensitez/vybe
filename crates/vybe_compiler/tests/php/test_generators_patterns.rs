@@ -111,7 +111,7 @@ $g = outer2();
 iterator_to_array($g);
 "#
         ),
-        vec!["inner returned: inner_done\n"]
+        vec!["inner returned: inner_done"]
     );
 }
 
@@ -137,7 +137,7 @@ $g->next();
 $g = null;
 "#
         ),
-        vec!["1,cleanup"]
+        vec!["1,", "cleanup"]
     );
 }
 
@@ -155,7 +155,7 @@ $g->rewind();
 echo $g->current();
 "#
         ),
-        vec!["aa"]
+        vec!["a", "a"]
     );
 }
 

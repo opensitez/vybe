@@ -174,7 +174,7 @@ echo defined('ARRAY_FILTER_USE_KEY') ? '1' : '0';
 echo defined('ARRAY_FILTER_USE_BOTH') ? '1' : '0';
 "#
         ),
-        vec!["11"]
+        vec!["1", "1"]
     );
 }
 

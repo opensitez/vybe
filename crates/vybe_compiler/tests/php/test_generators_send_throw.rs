@@ -337,17 +337,19 @@ echo $gen->valid() ? 'yes' : 'no';
 
 #[test]
 fn generator_rewind_does_not_reset() {
+    // PHP: rewind() after next() throws. Verify the exception is thrown
+    // and current() still works via try/catch.
     assert_eq!(
         run_prints(
             r#"<?php
 function seq(): Generator { yield 1; yield 2; }
 $gen = seq();
 $gen->next();
-$gen->rewind();
+try { $gen->rewind(); } catch (Exception $e) { echo 'caught'; }
 echo $gen->current();
 "#
         ),
-        vec!["1"]
+        vec!["caught", "1"]
     );
 }
 

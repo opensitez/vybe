@@ -2451,6 +2451,16 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         lset(chunk, index_slot, line);
     }
     crate::emitter::loops::emit_loop_end(chunks, current, gen_loop_state, line);
+    // After the generator is exhausted, store the return value for getReturn().
+    // The last emit_next returned (false, return_value); value_slot has it.
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, iter_slot, line);
+        lget(chunk, value_slot, line);
+        let ret_k = chunk.add_constant(Value::String(std::sync::Arc::from("__php_gen_return")));
+        chunk.emit_op_u16(Op::STRUCT_SET, ret_k, line);
+        chunk.emit_op(Op::DROP, line);
+    }
     lget(&mut chunks[current], out_slot, line);
 
     chunks[current].emit_else(line);

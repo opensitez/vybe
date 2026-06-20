@@ -4953,12 +4953,39 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         "float" | "double" | "real" => Some("floatval"),
         "bool" | "boolean" => Some("boolval"),
         "string" | "binary" => Some("strval"),
-        // `(array)`, `(object)`, `(unset)` fall through to a Cast node;
-        // the compiler currently keeps those as identity — if one of
-        // those ever needs real semantics, handle it here too.
+        // `(array)` cast: wraps scalar in array `[$x]`, identity for arrays.
+        "array" => {
+            return Ok(Expression::with_span(
+                ExprKind::Array(vec![ArrayElement {
+                    key: None,
+                    value: expr,
+                    spread: false,
+                    by_ref: false,
+                }]),
+                span,
+            ));
+        }
         _ => None,
     };
     if let Some(name) = helper {
+        // PHP `(bool)$x` — arrays are falsy when empty, unlike JS.
+        // Rewrite to `!empty($x)` which handles PHP truthiness.
+        if name == "boolval" {
+            return Ok(Expression::with_span(
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::ident("empty")),
+                            args: vec![Argument::positional(expr)],
+                            optional: false,
+                        },
+                        span.clone(),
+                    )),
+                },
+                span,
+            ));
+        }
         // PHP `(string) $x` invokes `__toString` if `$x` is an object
         // implementing Stringable. Wrap the operand for the string
         // cast so the host fn receives the coerced value.
@@ -6599,6 +6626,19 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // `getCode()` working: a PHP-thrown exception's cause/code are then
     // visible to a JS/Python catcher, and vice-versa. `message` stays
     // positional; `code`/`previous` move into the options object.
+    // PHP SPL exception aliases — normalize to the base recognized name
+    let class_expr = if let ExprKind::Ident(class_name) = &class_expr.kind {
+        let bare = class_name.trim_start_matches('\\');
+        match bare {
+            "InvalidArgumentException" | "BadMethodCallException"
+            | "BadFunctionCallException" => {
+                Expression::with_span(ExprKind::Ident("LogicException".to_string()), span.clone())
+            }
+            _ => class_expr,
+        }
+    } else {
+        class_expr
+    };
     if let ExprKind::Ident(class_name) = &class_expr.kind {
         let bare = class_name.trim_start_matches('\\');
         if crate::emitter::errors::is_exception_type(bare)
@@ -6914,6 +6954,68 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner = inner_nokw(pair);
     let subject = walk_expression(inner.next().unwrap())?;
+
+    // PHP `match(true) { cond => val, ... }` — rewrite to ternary chain.
+    // match(true) checks each condition for truthiness; the compiler's
+    // Match node does `subject === condition` which fails when conditions
+    // produce i32 results (from ===) instead of Value::Bool. Ternary
+    // chain sidesteps this by evaluating conditions directly as booleans.
+    let is_match_true = matches!(&subject.kind, ExprKind::Lit(Literal::Bool(true)));
+    if is_match_true {
+        let mut cond_arms: Vec<(Vec<Expression>, Expression)> = Vec::new();
+        let mut default_body: Option<Expression> = None;
+        for p in inner {
+            if !matches!(p.as_rule(), Rule::match_arm) {
+                continue;
+            }
+            let arm_src = p.as_str().trim_start();
+            let is_default = arm_src.to_lowercase().starts_with("default");
+            let mut conditions: Option<Vec<Expression>> = None;
+            let mut body: Option<Expression> = None;
+            for sub in inner_nokw(p) {
+                match sub.as_rule() {
+                    Rule::match_conditions => {
+                        let exprs: Result<Vec<_>, _> =
+                            sub.into_inner().map(walk_expression).collect();
+                        conditions = Some(exprs?);
+                    }
+                    Rule::expression => body = Some(walk_expression(sub)?),
+                    _ => {}
+                }
+            }
+            let body = body.unwrap_or_else(Expression::null);
+            if is_default {
+                default_body = Some(body);
+            } else if let Some(conds) = conditions {
+                cond_arms.push((conds, body));
+            }
+        }
+        let fallback = default_body.unwrap_or_else(Expression::null);
+        let mut result = fallback;
+        for (conds, body) in cond_arms.into_iter().rev() {
+            // OR multiple conditions: cond1 || cond2 || ...
+            let mut combined = conds.into_iter().reduce(|a, b| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    },
+                    span.clone(),
+                )
+            }).unwrap();
+            result = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(combined),
+                    then: Box::new(body),
+                    else_: Box::new(result),
+                },
+                span.clone(),
+            );
+        }
+        return Ok(result);
+    }
+
     let mut arms: Vec<MatchArm> = Vec::new();
     for p in inner {
         if !matches!(p.as_rule(), Rule::match_arm) {
@@ -9903,14 +10005,116 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                         ternary(
                             strict_eq(typeof_v.clone(), mk_str("number")),
                             number_arm,
-                            ternary(
-                                strict_eq(typeof_v.clone(), mk_str("array")),
-                                mk_str("array"),
+                            {
+                                let is_arr = Expression::with_span(
+                                    mk_call(Expression::ident("is_array"), vec![v.clone()]),
+                                    span.clone(),
+                                );
                                 ternary(
-                                    strict_eq(typeof_v, mk_str("object")),
-                                    mk_str("object"),
-                                    mk_str("unknown type"),
-                                ),
+                                    is_arr,
+                                    mk_str("array"),
+                                    ternary(
+                                        strict_eq(typeof_v, mk_str("object")),
+                                        mk_str("object"),
+                                        mk_str("unknown type"),
+                                    ),
+                                )
+                            },
+                        ),
+                    ),
+                ),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "v".to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(chain)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(lambda, vec![arg(0)?])
+        }
+        // PHP `defined('CONSTANT_NAME')` — return true at compile time
+        // for known constants; fall through to runtime for unknown ones.
+        "defined" if args.len() == 1 => {
+            if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                if php_constant_expr(name, span).is_some() {
+                    ExprKind::Lit(Literal::Bool(true))
+                } else {
+                    return None; // fall through to runtime defined()
+                }
+            } else {
+                return None;
+            }
+        }
+        // PHP `get_debug_type($v)` — like gettype but PHP 8 names.
+        // Uses Array.isArray to distinguish arrays from objects.
+        "get_debug_type" if args.len() == 1 => {
+            let mk_str_l = |s: &str| {
+                Expression::with_span(ExprKind::Lit(Literal::Str(s.to_string())), span.clone())
+            };
+            let v = Expression::with_span(ExprKind::Ident("v".to_string()), span.clone());
+            let typeof_v =
+                Expression::with_span(ExprKind::TypeOf(Box::new(v.clone())), span.clone());
+            let strict_eq = |left: Expression, right: Expression| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    span.clone(),
+                )
+            };
+            let ternary = |cond: Expression, then: Expression, else_: Expression| {
+                Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(cond),
+                        then: Box::new(then),
+                        else_: Box::new(else_),
+                    },
+                    span.clone(),
+                )
+            };
+            let is_array_call = Expression::with_span(
+                mk_call(Expression::ident("is_array"), vec![v.clone()]),
+                span.clone(),
+            );
+            let is_int_call = Expression::with_span(
+                mk_call(mk_member("Number", "isInteger"), vec![v.clone()]),
+                span.clone(),
+            );
+            let null_check = strict_eq(
+                v.clone(),
+                Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()),
+            );
+            let number_arm = ternary(is_int_call, mk_str_l("int"), mk_str_l("float"));
+            let chain = ternary(
+                null_check,
+                mk_str_l("null"),
+                ternary(
+                    strict_eq(typeof_v.clone(), mk_str_l("string")),
+                    mk_str_l("string"),
+                    ternary(
+                        strict_eq(typeof_v.clone(), mk_str_l("boolean")),
+                        mk_str_l("bool"),
+                        ternary(
+                            strict_eq(typeof_v.clone(), mk_str_l("number")),
+                            number_arm,
+                            ternary(
+                                is_array_call,
+                                mk_str_l("array"),
+                                mk_str_l("object"),
                             ),
                         ),
                     ),
