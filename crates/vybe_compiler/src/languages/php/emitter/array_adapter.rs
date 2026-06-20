@@ -442,10 +442,28 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let base_len_slot = alloc_local(chunk);
     let extra_len_slot = alloc_local(chunk);
 
+    let method_slot = alloc_local(chunk);
+
     if let Some(slot) = mode_slot {
         lset(chunk, slot, line);
     }
     lset(chunk, value_slot, line);
+
+    // PHP `count()` on a `Countable` object calls its `->count()` method.
+    // Probe for a callable `count` method on the value; if present, call it.
+    lget(chunk, value_slot, line);
+    let count_key = chunk.add_constant(Value::String(std::sync::Arc::from("count")));
+    chunk.emit_op_u16(Op::STRUCT_GET, count_key, line);
+    lset(chunk, method_slot, line);
+    lget(chunk, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    // Countable: method(value)
+    lget(chunk, method_slot, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
 
     emit_is_array(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
@@ -461,7 +479,8 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // no `vybe$assoc_keys_csv` side-band.
     lget(chunk, value_slot, line);
     crate::emitter::collections::emit_len(chunks, current, line);
-    chunks[current].emit_end(line);
+    chunks[current].emit_end(line); // close is_array if
+    chunks[current].emit_end(line); // close Countable if
     let _ = (base_len_slot, extra_len_slot);
 }
 
@@ -2686,10 +2705,18 @@ fn emit_assoc_sort_impl(
     let outer_slot = alloc_local(chunk);
     let inner_slot = alloc_local(chunk);
     let best_slot = alloc_local(chunk);
+    let is_list_slot = alloc_local(chunk);
 
     // obj = pop()
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op(Op::DROP, line);
+
+    // is_list = isArray(obj) — a sequential (list) array reorders by
+    // POSITION, not by Map insertion order; the delete-then-reinsert dance
+    // below only reorders a Map, so lists must be written back positionally.
+    emit_is_array(chunks, current, obj_slot, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, is_list_slot, line);
 
     // keys = Object.keys(obj)
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -2945,9 +2972,16 @@ fn emit_assoc_sort_impl(
     crate::emitter::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, obj_slot, line);
+    // key = is_list ? i : sorted_keys[i]
+    lget(chunk, is_list_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, i_slot, line);
+    chunk.emit_else(line);
     lget(chunk, sorted_keys_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_end(line);
     lget(chunk, sorted_vals_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);

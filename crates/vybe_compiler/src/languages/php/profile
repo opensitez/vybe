@@ -59,6 +59,12 @@ uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_a
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
+__php_int_max       = { emit = "common:php.int_max",         min_args = 0, max_args = 0 }
+__php_int_min       = { emit = "common:php.int_min",         min_args = 0, max_args = 0 }
+__php_is_int        = { emit = "common:php.is_int",          min_args = 1, max_args = 1 }
+__php_is_float      = { emit = "common:php.is_float",        min_args = 1, max_args = 1 }
+__php_abs           = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
+__php_intdiv        = { emit = "common:php.intdiv",          min_args = 2, max_args = 2 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -75,6 +81,7 @@ str_contains        = { emit = "intrinsic:php_str_contains",        min_args = 2
 str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2, max_args = 2 }
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
 str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
+base64_decode       = { emit = "common:php.base64_decode",   min_args = 1, max_args = 2 }
 chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 # PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
@@ -111,6 +118,8 @@ strripos            = { emit = "common:php.strripos",         min_args = 2, max_
 strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
 md5                 = { emit = "common:php.md5",             min_args = 1, max_args = 1 }
 sha1                = { emit = "common:php.sha1",            min_args = 1, max_args = 1 }
+hash                = { emit = "common:php.hash",            min_args = 2, max_args = 3 }
+hash_hmac           = { emit = "common:php.hash_hmac",       min_args = 3, max_args = 4 }
 crc32               = { emit = "common:php.crc32",           min_args = 1, max_args = 1 }
 # `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
 # composition. Both the `host:ecma:string:*` methods and the value-method
@@ -168,7 +177,7 @@ mb_substr_count     = { emit = "common:php.substr_count",       min_args = 2, ma
 mb_convert_case     = { emit = "common:php.mb_convert_case",    min_args = 2, max_args = 3 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
 version_compare     = { emit = "intrinsic:php_version_compare", min_args = 2, max_args = 3 }
-abs                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
+abs                 = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
 round               = { emit = "host:ecma:math:round",      min_args = 1, max_args = 1 }
 
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
@@ -629,6 +638,17 @@ __preg_match_groups     = { emit = "common:php.preg_match_groups",     min_args 
 #   `$f->start(args...)` → __php_fiber_start($f, args...)
 #   `$f->resume(v)`      → __php_fiber_resume($f, v)
 #   `$f->getReturn()`    → __php_fiber_get_return($f)
+# SPL data-structure constructors (walker rewrites `new SplX()` → these).
+__spl_new_splstack             = { emit = "common:php.spl_splstack",             min_args = 0, max_args = 0 }
+__spl_new_splqueue             = { emit = "common:php.spl_splqueue",             min_args = 0, max_args = 0 }
+__spl_new_spldoublylinkedlist  = { emit = "common:php.spl_spldoublylinkedlist",  min_args = 0, max_args = 0 }
+__spl_new_splminheap           = { emit = "common:php.spl_splminheap",           min_args = 0, max_args = 0 }
+__spl_new_splmaxheap           = { emit = "common:php.spl_splmaxheap",           min_args = 0, max_args = 0 }
+__spl_new_splpriorityqueue     = { emit = "common:php.spl_splpriorityqueue",     min_args = 0, max_args = 0 }
+__spl_new_splfixedarray        = { emit = "common:php.spl_splfixedarray",        min_args = 0, max_args = 1 }
+__spl_fixedarray_from_array     = { emit = "common:php.spl_fixedarray_fromarray",  min_args = 1, max_args = 1 }
+__spl_new_splobjectstorage     = { emit = "common:php.spl_splobjectstorage",     min_args = 0, max_args = 0 }
+__spl_new_weakmap              = { emit = "common:php.spl_weakmap",              min_args = 0, max_args = 0 }
 __php_fiber_new           = { emit = "common:php.fiber_new",           min_args = 1, max_args = 1 }
 __php_fiber_suspend       = { emit = "common:php.fiber_suspend",       min_args = 0, max_args = 1 }
 __php_fiber_start         = { emit = "common:php.fiber_start",         min_args = 1, max_args = 16 }

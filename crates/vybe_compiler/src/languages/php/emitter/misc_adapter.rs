@@ -42,7 +42,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(argc, line);

@@ -39,6 +39,149 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
+pub fn emit_php_int_max(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    push_const(&mut chunks[current], Value::BigInt(i64::MAX), line);
+}
+
+pub fn emit_php_int_min(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    push_const(&mut chunks[current], Value::BigInt(i64::MIN), line);
+}
+
+pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let number_is_integer = chunk.add_import("ecma:number", "isInteger");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+
+    lset(chunk, v_slot, line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, number_is_integer, line);
+    chunk.emit(1, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, to_f64, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    push_const(chunk, Value::F64(9_223_372_036_854_774_784.0), line);
+    chunk.emit_op(Op::F64_LE, line);
+    crate::emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    let number_is_integer = chunk.add_import("ecma:number", "isInteger");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+
+    lset(chunk, v_slot, line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_number, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, number_is_integer, line);
+    chunk.emit(1, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, to_f64, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    push_const(chunk, Value::F64(9_223_372_036_854_774_784.0), line);
+    chunk.emit_op(Op::F64_GT, line);
+    crate::emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let bigint_lt = chunk.add_import("ecma:bigint", "lt");
+    let bigint_neg = chunk.add_import("ecma:bigint", "neg");
+
+    lset(chunk, v_slot, line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::BigInt(0), line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, bigint_lt, line);
+    chunk.emit(2, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, bigint_neg, line);
+    chunk.emit(1, line);
+    chunk.emit_else(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = alloc_local(chunk);
+    let a_slot = alloc_local(chunk);
+
+    lset(chunk, b_slot, line);
+    lset(chunk, a_slot, line);
+
+    lget(chunk, b_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op(Op::DUP, line);
+    push_str(chunk, "Division by zero", line);
+    crate::emitter::errors::emit_exception_new_finalize(chunk, "DivisionByZeroError", line);
+    crate::emitter::errors::emit_throw(chunk, line);
+    chunk.emit_else(line);
+    lget(chunk, a_slot, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::emitter::math::emit_trunc(chunk, line);
+    chunk.emit_end(line);
+}
+
 fn coerce_to_str(chunk: &mut Chunk, slot: u16, line: u32) {
     push_str(chunk, "", line);
     lget(chunk, slot, line);

@@ -454,9 +454,13 @@ asymmetric_set_modifier = {
 }
 
 property_hook_block = { "{" ~ property_hook* ~ "}" }
-property_hook = { property_get_hook | property_set_hook }
-property_get_hook = { kw_get ~ block_statement }
-property_set_hook = { kw_set ~ "(" ~ param_list? ~ ")" ~ block_statement }
+property_hook = _{ property_get_hook | property_set_hook }
+// PHP 8.4 hooks come in arrow (`get => expr;`) and block (`get { ... }`)
+// forms; `set` may omit its parameter list (implicit `$value`).
+// `;` form is the abstract hook used in interface declarations (`get;`).
+property_get_hook = { kw_get ~ (hook_arrow_body | block_statement | ";") }
+property_set_hook = { kw_set ~ ("(" ~ param_list? ~ ")")? ~ (hook_arrow_body | block_statement | ";") }
+hook_arrow_body = { "=>" ~ expression ~ ";" }
 
 method_declaration = {
     // PHP allows reserved words as method names (`list`, `match`, etc.).
@@ -699,10 +703,16 @@ additive_expression = {
 additive_op = { "+" | "-" | "." }
 
 multiplicative_expression = {
-    unary_expression ~ (mul_op ~ unary_expression)*
+    power_expression ~ (mul_op ~ power_expression)*
 }
 
-mul_op = { "**" | "*" | "/" | "%" }
+mul_op = { "*" | "/" | "%" }
+
+// PHP `**` binds TIGHTER than `* / %` and is RIGHT-associative
+// (`2 * 3 ** 2` == 18, `2 ** 3 ** 2` == 512).
+power_expression = {
+    unary_expression ~ ("**" ~ power_expression)?
+}
 
 unary_expression = {
     unary_op ~ unary_expression

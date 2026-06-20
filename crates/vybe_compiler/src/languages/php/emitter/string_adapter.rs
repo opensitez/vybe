@@ -40,6 +40,7 @@ fn coerce_to_str(chunk: &mut Chunk, line: u32) {
     lget(chunk, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
 }
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,
@@ -48,13 +49,20 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(argc, line);
 }
 
 pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // CALL_IMPORT indices resolve against the CURRENT chunk's import table,
+    // so these must be added to `chunks[current]` — adding to `chunks[0]`
+    // yields an index valid only at top level and silently calls garbage
+    // inside a function chunk (see project_chunk_import_tables).
+    let test_bigint = chunks[current].add_import("wasm:js-bigint", "test");
+    let bigint_to_string = chunks[current].add_import("ecma:bigint", "toString");
+    let from_i64 = chunks[current].add_import("wasm:js-string", "fromI64");
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let ty_slot = alloc_local(chunk);
@@ -84,7 +92,17 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     push_str(chunk, "", line);
     chunk.emit_end(line);
     chunk.emit_else(line);
-    // Not boolean. PHP prints special float values as INF / -INF / NAN
+    // Not boolean. PHP integer boundary constants use BigInt internally so
+    // they retain all 64-bit digits; stringify them through ECMA BigInt.
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, bigint_to_string, line);
+    chunk.emit(1, line);
+    chunk.emit_else(line);
+    // Not bigint. PHP prints special float values as INF / -INF / NAN
     // (uppercase), unlike the VM's "Infinity"/"NaN". These eq-probes are
     // safe for non-numbers: a string/object compares equal to itself, so
     // it skips straight to the default `"" + v` path.
@@ -113,15 +131,189 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.emit_if_value(line);
     push_str(chunk, "-INF", line);
     chunk.emit_else(line);
+    // Exact i64 values (PHP ints) must not go through f64 stringification,
+    // otherwise PHP_INT_MAX/PHP_INT_MIN lose their final digits.
+    lget(chunk, ty_slot, line);
+    push_str(chunk, "i64", line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, from_i64, line);
+    chunk.emit(1, line);
+    chunk.emit_else(line);
     // default: "" + v
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
+    // Close: i64, -INF, INF, NaN, bigint, boolean, null — seven if_value blocks.
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_var_dump_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // Imports resolve against the current chunk — add to `chunks[current]`,
+    // never `chunks[0]` (see project_chunk_import_tables).
+    let test_bigint = chunks[current].add_import("wasm:js-bigint", "test");
+    let bigint_to_string = chunks[current].add_import("ecma:bigint", "toString");
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    let ty_slot = alloc_local(chunk);
+
+    lset(chunk, v_slot, line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "NULL", line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    lset(chunk, ty_slot, line);
+
+    lget(chunk, ty_slot, line);
+    push_str(chunk, "boolean", line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "bool(true)", line);
+    chunk.emit_else(line);
+    push_str(chunk, "bool(false)", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "int(", line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, bigint_to_string, line);
+    chunk.emit(1, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    push_str(chunk, ")", line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_else(line);
+
+    push_str(chunk, "", line);
+    lget(chunk, v_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let atob = chunks[0].add_import("ecma:string", "atob");
+    let chunk = &mut chunks[current];
+    let strict_slot = alloc_local(chunk);
+    let s_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let valid_slot = alloc_local(chunk);
+
+    if argc >= 2 {
+        lset(chunk, strict_slot, line);
+    } else {
+        chunk.emit_op(Op::FALSE, line);
+        lset(chunk, strict_slot, line);
+    }
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+
+    lget(chunk, strict_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+
+    push_const(chunk, Value::I32(1), line);
+    lset(chunk, valid_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    lset(chunk, len_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    lset(chunk, code_slot, line);
+
+    let ok_slot = alloc_local(chunk);
+    push_const(chunk, Value::I32(0), line);
+    lset(chunk, ok_slot, line);
+
+    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(lo), line);
+        chunk.emit_op(Op::I32_GE_S, line);
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(hi), line);
+        chunk.emit_op(Op::I32_LE_S, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::I32(1), line);
+        lset(chunk, ok_slot, line);
+        chunk.emit_end(line);
+    }
+    for code in [43, 47, 61] {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(code), line);
+        chunk.emit_op(Op::I32_EQ, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::I32(1), line);
+        lset(chunk, ok_slot, line);
+        chunk.emit_end(line);
+    }
+
+    lget(chunk, ok_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    push_const(chunk, Value::I32(0), line);
+    lset(chunk, valid_slot, line);
     chunk.emit_end(line);
 
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, valid_slot, line);
+    chunk.emit_if_value(line);
+    lget(chunk, s_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, atob, line);
+    chunk.emit(1, line);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    lget(chunk, s_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, atob, line);
+    chunk.emit(1, line);
     chunk.emit_end(line);
 }
 
@@ -3979,6 +4171,63 @@ pub fn emit_sha1(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_str(chunk, "hex", line);
     let _ = chunk;
     call_import(chunks, current, "node:crypto", "_hashDigest", 2, line);
+}
+
+pub fn emit_hash(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc >= 3 {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let data_slot = alloc_local(chunk);
+    let algo_slot = alloc_local(chunk);
+    let hash_slot = alloc_local(chunk);
+    lset(chunk, data_slot, line);
+    lset(chunk, algo_slot, line);
+    lget(chunk, algo_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "createHash", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, hash_slot, line);
+    lget(chunk, hash_slot, line);
+    lget(chunk, data_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hashUpdate", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, hash_slot, line);
+    push_str(chunk, "hex", line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hashDigest", 2, line);
+}
+
+pub fn emit_hash_hmac(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc >= 4 {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let key_slot = alloc_local(chunk);
+    let data_slot = alloc_local(chunk);
+    let algo_slot = alloc_local(chunk);
+    let hmac_slot = alloc_local(chunk);
+    lset(chunk, key_slot, line);
+    lset(chunk, data_slot, line);
+    lset(chunk, algo_slot, line);
+    lget(chunk, algo_slot, line);
+    lget(chunk, key_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "createHmac", 2, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, hmac_slot, line);
+    lget(chunk, hmac_slot, line);
+    lget(chunk, data_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hmacUpdate", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, hmac_slot, line);
+    push_str(chunk, "hex", line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hmacDigest", 2, line);
 }
 
 // djb2-variant hash (deterministic, differs for different inputs).
