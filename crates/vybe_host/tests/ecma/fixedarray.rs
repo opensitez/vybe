@@ -4,7 +4,6 @@
 //! length sequences (Python tuple, C# T[], COBOL OCCURS n TIMES). The
 //! underlying storage is ObjectKind::Array with a `__vybe_frozen` marker.
 
-
 use vybe_bytecode::value::Value;
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_host::{Capabilities, register_with_capabilities};

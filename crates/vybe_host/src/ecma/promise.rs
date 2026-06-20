@@ -197,8 +197,7 @@ pub fn register(vm: &mut VM) {
             if let Value::Object(ref obj) = aggregate {
                 let mut o = obj.lock().unwrap();
                 o.properties.insert("__id".into(), Value::F64(id as f64));
-                o.properties
-                    .insert("__all_results".into(), results.clone());
+                o.properties.insert("__all_results".into(), results.clone());
                 o.properties
                     .insert("__all_remaining".into(), Value::F64(n as f64));
             }
@@ -219,11 +218,8 @@ pub fn register(vm: &mut VM) {
                     settle_and_drain(ctx, &[aggregate.clone(), reason], "rejected");
                     return aggregate;
                 } else {
-                    let on_f = bound_settler2(
-                        all_element_idx,
-                        aggregate.clone(),
-                        Value::F64(i as f64),
-                    );
+                    let on_f =
+                        bound_settler2(all_element_idx, aggregate.clone(), Value::F64(i as f64));
                     let on_r = bound_settler(aggregate_reject_idx, aggregate.clone());
                     add_reaction(p, on_f, on_r, make_promise("pending", Value::Undefined));
                 }

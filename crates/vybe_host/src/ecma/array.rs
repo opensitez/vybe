@@ -676,9 +676,8 @@ fn register_constructors(vm: &mut VM) {
                                 }
                                 _ => awaited,
                             };
-                            mapped.push(crate::ecma::iterator::try_maybe_await_value(
-                                mapped_value,
-                            )?);
+                            mapped
+                                .push(crate::ecma::iterator::try_maybe_await_value(mapped_value)?);
                         }
                         Ok(make_array(mapped))
                     });

@@ -9,15 +9,15 @@
 //! - Compiled-in (no host fns): threading — WASM threads proposal opcodes
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
 
-pub mod console;
-pub mod clock;
-pub mod env;
-pub mod fs;
-pub mod random;
 pub mod canvas;
+pub mod clock;
+pub mod console;
 pub mod data;
 pub mod drawing;
+pub mod env;
+pub mod fs;
 pub mod gui;
+pub mod random;
 pub mod sockets;
 pub mod types;
 

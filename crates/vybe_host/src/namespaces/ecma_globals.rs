@@ -586,7 +586,10 @@ pub fn register(vm: &mut VM) {
     let core_protos: [(&str, Value); 6] = [
         ("Object", crate::ecma::object::shared_object_prototype()),
         ("Array", crate::ecma::array::shared_array_prototype()),
-        ("Function", crate::ecma::function::shared_function_prototype()),
+        (
+            "Function",
+            crate::ecma::function::shared_function_prototype(),
+        ),
         ("Number", crate::ecma::number::shared_number_prototype()),
         ("String", crate::ecma::string::shared_string_prototype()),
         ("Boolean", crate::ecma::boolean::shared_boolean_prototype()),

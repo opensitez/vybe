@@ -439,8 +439,7 @@ pub fn register(vm: &mut VM) {
                                 ObjectKind::Array(v) => v.len(),
                                 _ => 0,
                             };
-                            g.properties
-                                .insert("length".into(), Value::F64(len as f64));
+                            g.properties.insert("length".into(), Value::F64(len as f64));
                         }
                     }
                     sync_map_size(&mut mo);

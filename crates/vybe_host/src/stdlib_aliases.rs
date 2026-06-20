@@ -44,7 +44,7 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     // arg order upstream and emits `ecma:object.hasOwn(obj, key)` directly.
     // `__vybe_instanceof` retired — `a instanceof TypeName` compiles to
     // `Op::REF_TEST` (WASM GC ref.test) with the type name as a const.
-    
+
     // arrayInsert / arrayRemoveAt / arrayRemoveValue: dead alias entries
     // (host fns never registered). The bundled stdlib polyfills under
     // those names just keep running; no override possible until proper

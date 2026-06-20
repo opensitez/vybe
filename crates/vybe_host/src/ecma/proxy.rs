@@ -220,7 +220,12 @@ pub(crate) fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<
     let target = get_target(&proxy_obj);
     if let Some(trap) = get_trap(&handler, "ownKeys") {
         if is_callable(&trap) {
-            return Some(call_trap(ctx, &handler, &trap, std::slice::from_ref(&target)));
+            return Some(call_trap(
+                ctx,
+                &handler,
+                &trap,
+                std::slice::from_ref(&target),
+            ));
         }
     }
     Some(target_own_keys(&target))
@@ -251,7 +256,9 @@ pub(crate) fn construct_dispatch(
                 if matches!(result, Value::Object(_)) {
                     return result;
                 }
-                ctx.throw_value(make_type_error("Proxy construct trap must return an object"));
+                ctx.throw_value(make_type_error(
+                    "Proxy construct trap must return an object",
+                ));
                 return Value::Undefined;
             }
         }
@@ -423,7 +430,9 @@ pub fn register(vm: &mut VM) {
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "has") {
                 if is_callable(&trap) {
-                    return Value::Bool(call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool());
+                    return Value::Bool(
+                        call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool(),
+                    );
                 }
             }
             Value::Bool(target_has(&target, &key))
@@ -451,7 +460,9 @@ pub fn register(vm: &mut VM) {
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "deleteProperty") {
                 if is_callable(&trap) {
-                    return Value::Bool(call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool());
+                    return Value::Bool(
+                        call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool(),
+                    );
                 }
             }
             Value::Bool(target_delete(&target, &key))
@@ -463,8 +474,7 @@ pub fn register(vm: &mut VM) {
         "ownKeys",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
-            own_keys_dispatch(ctx, &value)
-                .unwrap_or_else(|| target_own_keys(&value))
+            own_keys_dispatch(ctx, &value).unwrap_or_else(|| target_own_keys(&value))
         }),
     );
 
@@ -539,7 +549,12 @@ pub fn register(vm: &mut VM) {
                     // Proxy.revocable's revoke function (§28.2.2.1) is
                     // modelled as an object carrying __revoke_target.
                     if let Value::Object(obj) = &target {
-                        let revoke_target = obj.lock().unwrap().properties.get("__revoke_target").cloned();
+                        let revoke_target = obj
+                            .lock()
+                            .unwrap()
+                            .properties
+                            .get("__revoke_target")
+                            .cloned();
                         if let Some(Value::Object(proxy_obj)) = revoke_target {
                             proxy_obj
                                 .lock()
