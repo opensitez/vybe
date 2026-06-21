@@ -700,14 +700,10 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let chunk = &mut chunks[current];
     lset(chunk, is_array_slot, line);
 
-    lget(chunk, is_array_slot, line);
-    chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    chunk.emit_else(line);
+    // PHP array_filter always preserves keys → output is always a Map
     let _ = chunk;
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
-    chunk.emit_end(line);
     lset(chunk, out_slot, line);
 
     lget(chunk, arr_slot, line);
@@ -775,21 +771,12 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_end(line);
 
     chunk.emit_if(line);
-    lget(chunk, is_array_slot, line);
-    chunk.emit_if(line);
-    lget(chunk, out_slot, line);
-    lget(chunk, value_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_else(line);
+    // Always use Map set to preserve keys
     lget(chunk, out_slot, line);
     lget(chunk, key_slot, line);
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_end(line);
     chunk.emit_end(line);
 
     lget(chunk, i_slot, line);
@@ -3043,4 +3030,760 @@ pub fn emit_php_uksort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         s
     };
     emit_assoc_sort_impl(chunks, current, 5, Some(cmp_slot), line);
+}
+
+/// PHP `array_merge($a, $b, ...)`. Numeric keys → reindexed (appended).
+/// String keys → preserved (later wins). Uses ecma:object.entries to
+/// distinguish key types. Output is always a Map to preserve string keys.
+pub fn emit_php_array_merge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    // Save all args into an array (they arrive in reverse on stack)
+    let (args_arr_slot, out_slot, vals_slot, i_slot, n_slot, j_slot, m_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+    };
+    {
+        let c = &mut chunks[current];
+        // Collect args into array (reversed on stack, so reverse after)
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        lset(c, args_arr_slot, line);
+    }
+    for _ in 0..argc {
+        {
+            let c = &mut chunks[current];
+            let tmp = alloc_local(c);
+            lset(c, tmp, line);
+            lget(c, args_arr_slot, line);
+            lget(c, tmp, line);
+        }
+        call_import(chunks, current, "ecma:array", "push", 2, line);
+        { let c = &mut chunks[current]; c.emit_op(Op::DROP, line); }
+    }
+    // Reverse so first arg is at index 0
+    { let c = &mut chunks[current]; lget(c, args_arr_slot, line); }
+    call_import(chunks, current, "ecma:array", "reverse", 1, line);
+    { let c = &mut chunks[current]; c.emit_op(Op::DROP, line); }
+    // Output: Map (to support both string and numeric keys).
+    // Numeric keys get auto-incremented, string keys are set directly.
+    let (idx_slot, entry_slot, key_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c))
+    };
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, out_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, idx_slot, line); // auto-increment index for numeric keys
+        push_const(c, Value::F64(0.0), line);
+        lset(c, i_slot, line);
+        lget(c, args_arr_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+    }
+    // Outer loop: each arg
+    let lp1 = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line); lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    // entries = ecma:object.entries(args[i])
+    {
+        let c = &mut chunks[current];
+        lget(c, args_arr_slot, line); lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+    }
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, vals_slot, line); // reuse as entries
+        push_const(c, Value::F64(0.0), line); lset(c, j_slot, line);
+        lget(c, vals_slot, line); c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, m_slot, line);
+    }
+    // Inner loop: for each entry, check if key is numeric string
+    let lp2 = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, j_slot, line); lget(c, m_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, vals_slot, line); lget(c, j_slot, line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, entry_slot, line);
+        // key = entry[0]
+        lget(c, entry_slot, line); push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, key_slot, line);
+        // Check if key is numeric (I32 type) — numeric keys reindex
+        lget(c, key_slot, line);
+    }
+    call_import(chunks, current, "wasm:js-number", "test", 1, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_if(line);
+        // Numeric key → append with auto-increment index
+        lget(c, out_slot, line);
+        lget(c, idx_slot, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
+        // idx++
+        lget(c, idx_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, idx_slot, line);
+        c.emit_else(line);
+        // String key → set with original key (later wins)
+        lget(c, out_slot, line);
+        lget(c, key_slot, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, j_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, j_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp2, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp1, line);
+    // If no string keys were used, convert Map → Array (values only)
+    // Check: idx_slot == total count of entries in out → all numeric
+    {
+        let c = &mut chunks[current];
+        lget(c, out_slot, line);
+    }
+    call_import(chunks, current, "ecma:map", "size", 1, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, idx_slot, line);
+        crate::emitter::ops::emit_dyn_eq(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if_value(line);
+        // All numeric → return values as Array
+        lget(c, out_slot, line);
+    }
+    call_import(chunks, current, "ecma:object", "values", 1, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_else(line);
+        lget(c, out_slot, line);
+        c.emit_end(line);
+    }
+}
+
+/// PHP `array_unique($arr)` — remove duplicate values, preserve keys.
+/// Uses ecma:object.entries + a seen-set to deduplicate.
+pub fn emit_php_array_unique(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let (arr_slot, entries_slot, out_slot, seen_slot, i_slot, n_slot, entry_slot, val_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+    };
+    { let c = &mut chunks[current]; lset(c, arr_slot, line); }
+    // entries = ecma:object.entries(arr)
+    { let c = &mut chunks[current]; lget(c, arr_slot, line); }
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    { let c = &mut chunks[current]; lset(c, entries_slot, line); }
+    // out = new Map, seen = new Set (use Map as set — key=value, val=true)
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    { let c = &mut chunks[current]; lset(c, out_slot, line); }
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, seen_slot, line);
+        push_const(c, Value::F64(0.0), line); lset(c, i_slot, line);
+        lget(c, entries_slot, line); c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+    }
+    let lp = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line); lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line); lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, entry_slot, line);
+        // val = entry[1] converted to string for comparison
+        lget(c, entry_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, val_slot, line);
+        // Check if seen has this value
+        lget(c, seen_slot, line); lget(c, val_slot, line);
+    }
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    {
+        let c = &mut chunks[current];
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_op(Op::I32_EQZ, line); // NOT seen
+        c.emit_if(line);
+        // Not seen → add to output and mark seen
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line); // key
+        lget(c, val_slot, line); // value
+        c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
+        lget(c, seen_slot, line); lget(c, val_slot, line);
+        c.emit_op(Op::TRUE, line);
+    }
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, i_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp, line);
+    { let c = &mut chunks[current]; lget(c, out_slot, line); }
+}
+
+/// PHP `$a + $b` array union — first-wins merge via ecma:object.entries.
+pub fn emit_php_array_union(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let (a_slot, b_slot, out_slot, entries_slot, i_slot, n_slot, entry_slot, key_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+    };
+    {
+        let c = &mut chunks[current];
+        lset(c, b_slot, line);
+        lset(c, a_slot, line);
+    }
+    // out = new Map from a's entries (copy)
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    { let c = &mut chunks[current]; lset(c, out_slot, line); }
+    // Copy a's entries into out
+    { let c = &mut chunks[current]; lget(c, a_slot, line); }
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, entries_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, i_slot, line);
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+    }
+    let lp1 = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line); lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line); lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, entry_slot, line);
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
+        lget(c, i_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp1, line);
+    // Now add b's entries only if key doesn't already exist
+    { let c = &mut chunks[current]; lget(c, b_slot, line); }
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, entries_slot, line);
+        push_const(c, Value::F64(0.0), line); lset(c, i_slot, line);
+        lget(c, entries_slot, line); c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+    }
+    let lp2 = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line); lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line); lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, entry_slot, line);
+        // key = entry[0]
+        lget(c, entry_slot, line); push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line); lset(c, key_slot, line);
+        // check if out already has key via ARRAY_GET + REF_IS_NULL
+        lget(c, out_slot, line); lget(c, key_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_if(line);
+        // key doesn't exist → set it
+        lget(c, out_slot, line); lget(c, key_slot, line);
+        lget(c, entry_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, i_slot, line); push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line); lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp2, line);
+    { let c = &mut chunks[current]; lget(c, out_slot, line); }
+}
+
+/// PHP `array_reverse($arr, $preserve_keys?)`.
+/// Uses `ecma:object.entries` → reverse → rebuild.
+pub fn emit_php_array_reverse(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (preserve_slot, arr_slot, entries_slot, out_slot, i_slot, entry_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c))
+    };
+    {
+        let c = &mut chunks[current];
+        if argc >= 2 { lset(c, preserve_slot, line); }
+        else { c.emit_op(Op::FALSE, line); lset(c, preserve_slot, line); }
+        lset(c, arr_slot, line);
+        lget(c, arr_slot, line);
+    }
+    // entries = ecma:object.entries(arr)
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, entries_slot, line);
+        // reverse entries in place
+        lget(c, entries_slot, line);
+    }
+    call_import(chunks, current, "ecma:array", "reverse", 1, line);
+    { let c = &mut chunks[current]; c.emit_op(Op::DROP, line); }
+    // Decide output: preserve_keys → Map, else → Array
+    {
+        let c = &mut chunks[current];
+        lget(c, preserve_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if_value(line);
+    }
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_else(line);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_end(line);
+        lset(c, out_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, i_slot, line);
+    }
+    let lp = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line);
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line);
+        lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, entry_slot, line);
+        lget(c, preserve_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        // Map set: out[entry[0]] = entry[1]
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line);
+        c.emit_op(Op::DROP, line);
+        c.emit_else(line);
+        // Array push: out.push(entry[1])
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+    }
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, i_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp, line);
+    { let c = &mut chunks[current]; lget(c, out_slot, line); }
+}
+
+/// PHP `array_slice($arr, $offset, $length?, $preserve_keys?)`.
+/// Uses `ecma:object.entries` to handle both Array and Map inputs.
+/// Returns a Map (preserving keys) when preserve_keys=true or input is Map,
+/// otherwise returns an Array (reindexed).
+pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (preserve_slot, len_slot, offset_slot, arr_slot, entries_slot,
+         out_slot, i_slot, n_slot, entry_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c))
+    };
+    // Pop args
+    {
+        let c = &mut chunks[current];
+        if argc >= 4 { lset(c, preserve_slot, line); }
+        else { c.emit_op(Op::FALSE, line); lset(c, preserve_slot, line); }
+        if argc >= 3 {
+            lset(c, len_slot, line);
+        } else {
+            push_const(c, Value::I32(i32::MAX), line);
+            lset(c, len_slot, line);
+        }
+        lset(c, offset_slot, line);
+        lset(c, arr_slot, line);
+    }
+    // entries = ecma:object.entries(arr) — works for both Array and Map
+    {
+        let c = &mut chunks[current];
+        lget(c, arr_slot, line);
+    }
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, entries_slot, line);
+        // n = entries.length
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+        // Normalize negative offset
+        lget(c, offset_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        lget(c, n_slot, line);
+        lget(c, offset_slot, line);
+        c.emit_op(Op::F64_ADD, line);
+        push_const(c, Value::F64(0.0), line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, offset_slot, line);
+        c.emit_else(line);
+        lget(c, n_slot, line);
+        lget(c, offset_slot, line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, offset_slot, line);
+        c.emit_end(line);
+        c.emit_end(line);
+        // Decide output type: preserve_keys → Map, else → Array
+        lget(c, preserve_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if_value(line);
+    }
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_else(line);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_end(line);
+        lset(c, out_slot, line);
+        // i = offset
+        lget(c, offset_slot, line);
+        lset(c, i_slot, line);
+    }
+    // Loop: copy entries[offset..offset+length]
+    let lp = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        // cond: i < n && i < offset + length
+        lget(c, i_slot, line);
+        lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        lget(c, i_slot, line);
+        lget(c, offset_slot, line);
+        lget(c, len_slot, line);
+        c.emit_op(Op::F64_ADD, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+        c.emit_op(Op::I32_AND, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        // entry = entries[i]
+        lget(c, entries_slot, line);
+        lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, entry_slot, line);
+        // if preserve_keys: out[entry[0]] = entry[1]
+        // else: out.push(entry[1])
+        lget(c, preserve_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_SET, line);
+        c.emit_op(Op::DROP, line);
+        c.emit_else(line);
+        lget(c, out_slot, line);
+        lget(c, entry_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::ARRAY_GET, line);
+    }
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        // i++
+        lget(c, i_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp, line);
+    { let c = &mut chunks[current]; lget(c, out_slot, line); }
+}
+
+// ── in_array (loose by default) ───────────────────────────────────
+/// PHP `in_array($needle, $haystack, $strict=false)`.
+/// After arg reorder: stack [haystack, needle, strict?] → [bool].
+pub fn emit_php_in_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let strict_slot = alloc_local(chunk);
+    let needle_slot = alloc_local(chunk);
+    let arr_slot = alloc_local(chunk);
+    let keys_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let found_slot = alloc_local(chunk);
+
+    if argc >= 3 {
+        lset(chunk, strict_slot, line);
+    } else {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, strict_slot, line);
+    }
+    lset(chunk, needle_slot, line);
+    lset(chunk, arr_slot, line);
+
+    push_const(chunk, Value::Bool(false), line);
+    lset(chunk, found_slot, line);
+
+    lget(chunk, arr_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, keys_slot, line);
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, n_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    let lp = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line);
+        lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        // val = arr[keys[i]]
+        lget(c, arr_slot, line);
+        lget(c, keys_slot, line);
+        lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_op(Op::ARRAY_GET, line);
+
+        // Compare with needle
+        let val_tmp = alloc_local(c);
+        lset(c, val_tmp, line);
+
+        lget(c, strict_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        // strict: val === needle
+        lget(c, val_tmp, line);
+        lget(c, needle_slot, line);
+        crate::emitter::ops::emit_js_strict_eq(c, line);
+        c.emit_else(line);
+        // loose: dyn_eq first, then numeric coercion
+        lget(c, val_tmp, line);
+        lget(c, needle_slot, line);
+        crate::emitter::ops::emit_dyn_eq(c, line);
+        // dyn_eq returns i32. If 1, found. If 0, try numeric coercion.
+        c.emit_if(line);
+        push_const(c, Value::I32(1), line);
+        c.emit_else(line);
+        // parseFloat(toString(val)) == parseFloat(toString(needle))
+        lget(c, val_tmp, line);
+        crate::emitter::strings::emit_to_string(c, line);
+    }
+    call_import(chunks, current, "ecma:number", "parseFloat", 1, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, needle_slot, line);
+        crate::emitter::strings::emit_to_string(c, line);
+    }
+    call_import(chunks, current, "ecma:number", "parseFloat", 1, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::F64_EQ, line); // i32: 0 if NaN or different
+        c.emit_end(line); // end dyn_eq if/else
+        c.emit_end(line); // end strict if/else
+
+        // result is i32 (0 or 1) on stack
+        c.emit_if(line);
+        push_const(c, Value::Bool(true), line);
+        lset(c, found_slot, line);
+        c.emit_end(line);
+
+        // i++
+        lget(c, i_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp, line);
+    let c = &mut chunks[current];
+    lget(c, found_slot, line);
+}
+
+// ── (object)$arr — array to object ───────────────────────────────
+/// Stack: [arr] → [object].
+/// Uses `ecma:object.entries` → `ecma:object.fromEntries`.
+pub fn emit_php_array_to_object(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // entries(arr) → [[k,v],...] → fromEntries → object
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    call_import(chunks, current, "ecma:object", "fromEntries", 1, line);
+}
+
+// ── (array)$obj — object to array ────────────────────────────────
+/// Stack: [obj] → [map].
+/// Uses `ecma:object.entries` → `ecma:map.fromEntries`.
+pub fn emit_php_obj_to_array(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // entries(obj) → [[k,v],...] → map.fromEntries → Map
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    call_import(chunks, current, "ecma:map", "fromEntries", 1, line);
+}
+
+// ── var_export ────────────────────────────────────────────────────
+/// PHP `var_export($val [, $return])`.
+/// Stack: [val, return?] → [string|null].
+pub fn emit_php_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let return_slot = alloc_local(chunk);
+    let val_slot = alloc_local(chunk);
+
+    if argc >= 2 {
+        lset(chunk, return_slot, line);
+    } else {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, return_slot, line);
+    }
+    lset(chunk, val_slot, line);
+
+    lget(chunk, val_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "stringify", 1, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, return_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // return mode — string stays on stack
+    chunk.emit_else(line);
+    // echo mode — use wasi:cli/stdout write (no newline)
+    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+    let out_slot = alloc_local(chunk);
+    lset(chunk, out_slot, line);
+    let rd_slot = alloc_local(chunk);
+    let wr_slot = alloc_local(chunk);
+    crate::emitter::io::emit_write_stdout_with_imports(
+        chunk, write_idx, rd_slot, wr_slot, line,
+        |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
+    );
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_end(line);
+}
+
+// ── print_r ──────────────────────────────────────────────────────
+/// PHP `print_r($val [, $return])`.
+/// Stack: [val, return?] → [string|true|null].
+pub fn emit_php_print_r(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let return_slot = alloc_local(chunk);
+    let val_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+
+    if argc >= 2 {
+        lset(chunk, return_slot, line);
+    } else {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, return_slot, line);
+    }
+    lset(chunk, val_slot, line);
+
+    // Check if val is array-like (typeof === "object")
+    lget(chunk, val_slot, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    push_str(chunk, "object", line);
+    crate::emitter::ops::emit_js_strict_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "Array\n(\n)", line);
+    lset(chunk, result_slot, line);
+    chunk.emit_else(line);
+    lget(chunk, val_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "stringify", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+    chunk.emit_end(line);
+
+    lget(chunk, return_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // return mode
+    lget(chunk, result_slot, line);
+    chunk.emit_else(line);
+    // echo mode — use wasi:cli/stdout write (no newline)
+    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+    lget(chunk, result_slot, line);
+    let out_slot = alloc_local(chunk);
+    lset(chunk, out_slot, line);
+    let rd_slot = alloc_local(chunk);
+    let wr_slot = alloc_local(chunk);
+    crate::emitter::io::emit_write_stdout_with_imports(
+        chunk, write_idx, rd_slot, wr_slot, line,
+        |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
+    );
+    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_end(line);
 }

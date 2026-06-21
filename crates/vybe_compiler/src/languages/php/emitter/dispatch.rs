@@ -107,6 +107,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.krsort" => super::array_adapter::emit_php_krsort(chunks, current, argc, line),
         "php.uasort" => super::array_adapter::emit_php_uasort(chunks, current, argc, line),
         "php.uksort" => super::array_adapter::emit_php_uksort(chunks, current, argc, line),
+        "php.in_array" => super::array_adapter::emit_php_in_array(chunks, current, argc, line),
+        "php.obj_to_array" => super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line),
+        "php.array_to_object" => super::array_adapter::emit_php_array_to_object(chunks, current, argc, line),
+        "php.var_export" => {
+            crate::emitter::php::string_adapter::emit_var_export(chunks, current, argc, line)
+        }
+        "php.print_r" => super::array_adapter::emit_php_print_r(chunks, current, argc, line),
 
         "php.datetime_new" => {
             crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, line)
@@ -428,9 +435,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.similar_text" => {
             crate::emitter::php::string_adapter::emit_similar_text(chunks, current, argc, line)
         }
-        "php.var_export" => {
-            crate::emitter::php::string_adapter::emit_var_export(chunks, current, argc, line)
-        }
         "php.strripos" => {
             crate::emitter::php::string_adapter::emit_strripos(chunks, current, argc, line)
         }
@@ -548,6 +552,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks, current, "WeakMap", argc, line,
         ),
         // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
+        "php.array_merge" => crate::emitter::php::array_adapter::emit_php_array_merge(chunks, current, argc, line),
+        "php.uniq" => crate::emitter::php::array_adapter::emit_php_array_unique(chunks, current, argc, line),
+        "php.array_union" => crate::emitter::php::array_adapter::emit_php_array_union(chunks, current, argc, line),
+        "php.array_slice" => crate::emitter::php::array_adapter::emit_php_array_slice(chunks, current, argc, line),
+        "php.array_reverse" => crate::emitter::php::array_adapter::emit_php_array_reverse(chunks, current, argc, line),
         "php.refl_class" => crate::emitter::php::reflection_adapter::emit_refl_class(chunks, current, argc, line),
         "php.refl_method" => crate::emitter::php::reflection_adapter::emit_refl_method(chunks, current, argc, line),
         "php.refl_property" => crate::emitter::php::reflection_adapter::emit_refl_property(chunks, current, argc, line),

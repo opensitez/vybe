@@ -3739,9 +3739,6 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
         }
         ExprKind::Index { .. } => {
-            // `unset($arr[$k])` → ExprKind::Delete (compiler routes
-            // to `ecma:object.delete($arr, $k)`, polymorphic over
-            // Array / Map / Ordinary backings).
             Expression::with_span(ExprKind::Delete(Box::new(target)), span.clone())
         }
         _ => {
@@ -4953,15 +4950,64 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         "float" | "double" | "real" => Some("floatval"),
         "bool" | "boolean" => Some("boolval"),
         "string" | "binary" => Some("strval"),
-        // `(array)` cast: wraps scalar in array `[$x]`, identity for arrays.
+        // `(array)` cast: null→[], object→Object.entries, scalar→[$x], array→identity.
         "array" => {
-            return Ok(Expression::with_span(
+            if matches!(&expr.kind, ExprKind::Lit(Literal::Null)) {
+                return Ok(Expression::with_span(ExprKind::Array(vec![]), span));
+            }
+            // For objects: (array)$obj → entries-based map.
+            // Use a ternary: typeof $x === "object" ? __php_obj_to_array($x) : [$x]
+            let tmp = next_tmp_name("cast_arr");
+            let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+            let save = Expression::with_span(
+                ExprKind::Assign { target: Box::new(tmp_ident()), value: Box::new(expr) },
+                span.clone(),
+            );
+            let is_obj = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(ExprKind::TypeOf(Box::new(tmp_ident())), span.clone())),
+                    right: Box::new(Expression::string("object")),
+                },
+                span.clone(),
+            );
+            // Object.entries($tmp) → create a map from property names to values
+            let entries_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__php_obj_to_array")),
+                    args: vec![Argument::positional(tmp_ident())],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let scalar_wrap = Expression::with_span(
                 ExprKind::Array(vec![ArrayElement {
-                    key: None,
-                    value: expr,
-                    spread: false,
-                    by_ref: false,
+                    key: None, value: tmp_ident(), spread: false, by_ref: false,
                 }]),
+                span.clone(),
+            );
+            let ternary = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(is_obj),
+                    then: Box::new(entries_call),
+                    else_: Box::new(scalar_wrap),
+                },
+                span.clone(),
+            );
+            return Ok(Expression::with_span(
+                ExprKind::Sequence(vec![save, ternary]),
+                span,
+            ));
+        }
+        "object" => {
+            // `(object)$arr` — always convert via entries→fromEntries
+            // PHP arrays (Maps) need conversion to plain objects for ->prop access
+            return Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__php_array_to_object")),
+                    args: vec![Argument::positional(expr)],
+                    optional: false,
+                },
                 span,
             ));
         }
@@ -7167,6 +7213,50 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             _ => {}
         }
+    }
+    // PHP 8.1 spread with string keys: `[...$a, ...$b, 'c' => 3]`
+    // → `array_merge($a, $b, ['c' => 3])`. Only when ALL elements are
+    // either spreads or key=>value pairs (not positional non-spread like
+    // [$first, ...$rest] which is destructuring).
+    let has_spread = elems.iter().any(|e| e.spread);
+    let all_spread = elems.iter().all(|e| e.spread);
+    let all_spread_or_keyed = elems.iter().all(|e| e.spread || e.key.is_some());
+    let has_non_spread_positional = elems.iter().any(|e| !e.spread && e.key.is_none());
+    if has_spread && !has_non_spread_positional && all_spread_or_keyed {
+        let mut merge_args: Vec<Expression> = Vec::new();
+        let mut current_group: Vec<ArrayElement> = Vec::new();
+        for elem in elems {
+            if elem.spread {
+                // Flush current group as a literal array
+                if !current_group.is_empty() {
+                    merge_args.push(Expression::with_span(
+                        ExprKind::Array(std::mem::take(&mut current_group)),
+                        span.clone(),
+                    ));
+                }
+                // Spread element → direct arg to array_merge
+                merge_args.push(elem.value);
+            } else {
+                current_group.push(elem);
+            }
+        }
+        if !current_group.is_empty() {
+            merge_args.push(Expression::with_span(
+                ExprKind::Array(current_group),
+                span.clone(),
+            ));
+        }
+        if merge_args.len() == 1 {
+            return Ok(merge_args.into_iter().next().unwrap());
+        }
+        return Ok(Expression::with_span(
+            ExprKind::Call {
+                callee: Box::new(Expression::ident("array_merge")),
+                args: merge_args.into_iter().map(Argument::positional).collect(),
+                optional: false,
+            },
+            span,
+        ));
     }
     Ok(Expression::with_span(ExprKind::Array(elems), span))
 }
@@ -9447,7 +9537,160 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 args.iter().skip(1).map(|arg| arg.value.clone()).collect(),
             )
         }
-        "array_map" if args.len() >= 2 => {
+        // PHP `array_map(null, $arr)` → wraps each element: $arr.map(fn($x) => [$x])
+        "array_map"
+            if args.len() == 2
+                && matches!(
+                    args.first().map(|a| &a.value.kind),
+                    Some(ExprKind::Lit(Literal::Null))
+                ) =>
+        {
+            let arr = arg(1)?;
+            let param = "____map_wrap_v".to_string();
+            let wrap_body = Expression::with_span(
+                ExprKind::Array(vec![ArrayElement {
+                    key: None,
+                    value: Expression::with_span(ExprKind::Ident(param.clone()), span.clone()),
+                    spread: false,
+                    by_ref: false,
+                }]),
+                span.clone(),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![Param {
+                        name: param,
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(wrap_body)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr),
+                        field: "map".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![lambda],
+            )
+        }
+        // array_map($fn, $a, $b, ...) with 3+ args → for-loop over indices
+        "array_map" if args.len() >= 3
+            && !matches!(args.first().map(|a| &a.value.kind), Some(ExprKind::Lit(Literal::Null))) =>
+        {
+            let callback = arg(0)?;
+            let arrays: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
+            let n = arrays.len();
+            // IIFE: build result array by iterating indices
+            let i_name = format!("__map_i_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let i_ident = || Expression::with_span(ExprKind::Ident(i_name.clone()), span.clone());
+            let out_name = format!("__map_out_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let out_ident = || Expression::with_span(ExprKind::Ident(out_name.clone()), span.clone());
+            let len_name = format!("__map_len_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let len_ident = || Expression::with_span(ExprKind::Ident(len_name.clone()), span.clone());
+            // Store arrays in temp vars
+            let mut arr_names = Vec::new();
+            let mut init_stmts = Vec::new();
+            for (idx, arr) in arrays.into_iter().enumerate() {
+                let name = format!("__map_arr{}_{}", idx, TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+                init_stmts.push(Statement::with_span(StmtKind::Assign {
+                    targets: vec![Expression::with_span(ExprKind::Ident(name.clone()), span.clone())],
+                    value: arr,
+                }, span.clone()));
+                arr_names.push(name);
+            }
+            // len = arr0.length
+            init_stmts.push(Statement::with_span(StmtKind::Assign {
+                targets: vec![len_ident()],
+                value: Expression::with_span(
+                    ExprKind::Member { object: Box::new(Expression::with_span(ExprKind::Ident(arr_names[0].clone()), span.clone())), field: "length".to_string(), null_safe: false },
+                    span.clone(),
+                ),
+            }, span.clone()));
+            // out = []
+            init_stmts.push(Statement::with_span(StmtKind::Assign {
+                targets: vec![out_ident()],
+                value: Expression::with_span(ExprKind::Array(vec![]), span.clone()),
+            }, span.clone()));
+            // i = 0
+            init_stmts.push(Statement::with_span(StmtKind::Assign {
+                targets: vec![i_ident()],
+                value: Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
+            }, span.clone()));
+            // for body: out.push(callback(arr0[i], arr1[i], ...))
+            let cb_args: Vec<Expression> = (0..n).map(|idx| {
+                Expression::with_span(
+                    ExprKind::Index {
+                        object: Box::new(Expression::with_span(ExprKind::Ident(arr_names[idx].clone()), span.clone())),
+                        index: Box::new(i_ident()),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                )
+            }).collect();
+            let cb_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(php_callable_target_expr(callback, span)),
+                    args: cb_args.into_iter().map(Argument::positional).collect(),
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let push_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Member { object: Box::new(out_ident()), field: "push".to_string(), null_safe: false },
+                        span.clone(),
+                    )),
+                    args: vec![Argument::positional(cb_call)],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let cond = Expression::with_span(
+                ExprKind::Binary { op: BinOp::Lt, left: Box::new(i_ident()), right: Box::new(len_ident()) },
+                span.clone(),
+            );
+            let inc = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(i_ident()),
+                    value: Box::new(Expression::with_span(
+                        ExprKind::Binary { op: BinOp::Add, left: Box::new(i_ident()), right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(1)), span.clone())) },
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            let for_stmt = Statement::with_span(StmtKind::For {
+                init: Some(Box::new(Statement::with_span(StmtKind::Block(init_stmts), span.clone()))),
+                cond: Some(cond),
+                update: Some(inc),
+                body: vec![Statement::with_span(StmtKind::Expr(push_call), span.clone())],
+            }, span.clone());
+            let iife_body = vec![
+                for_stmt,
+                Statement::with_span(StmtKind::Return(Some(out_ident())), span.clone()),
+            ];
+            let iife = Expression::with_span(
+                ExprKind::Lambda { params: vec![], body: LambdaBody::Block(iife_body), is_async: false, captures: vec![] },
+                span.clone(),
+            );
+            mk_call(iife, vec![])
+        }
+        // array_map($fn, $arr) — single array
+        "array_map" if args.len() == 2 => {
             let mut mapped_args = Vec::with_capacity(args.len());
             let callback = arg(0)?;
             let callback = if let ExprKind::Lit(Literal::Str(name)) = &callback.kind {
@@ -10075,6 +10318,150 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             } else {
                 return None;
             }
+        }
+        // PHP `array_walk($arr, fn(&$v, $k) { $v = expr; })` →
+        // Transform callback: strip &, append `return $v`, then for-loop with arr[k] = cb(arr[k], k)
+        "array_walk" if args.len() >= 2 => {
+            let arr = arg(0)?;
+            let cb = arg(1)?;
+            let extra = arg(2);
+
+            // Transform the callback: if it's a closure/lambda, strip & from first param,
+            // and append `return $v_name` at end of body so the mutation becomes functional
+            let transformed_cb = match &cb.kind {
+                ExprKind::Lambda { params, body, is_async, captures } => {
+                    let v_param_name = params.first().map(|p| p.name.clone()).unwrap_or_else(|| "v".to_string());
+                    let mut new_params = params.clone();
+                    if let Some(p) = new_params.first_mut() {
+                        p.pass_by = PassBy::Value;
+                    }
+                    let new_body = match body {
+                        LambdaBody::Block(stmts) => {
+                            let mut new_stmts = stmts.clone();
+                            new_stmts.push(Statement::with_span(
+                                StmtKind::Return(Some(Expression::with_span(
+                                    ExprKind::Ident(v_param_name),
+                                    span.clone(),
+                                ))),
+                                span.clone(),
+                            ));
+                            LambdaBody::Block(new_stmts)
+                        }
+                        other => other.clone(),
+                    };
+                    Expression::with_span(
+                        ExprKind::Lambda {
+                            params: new_params,
+                            body: new_body,
+                            is_async: *is_async,
+                            captures: captures.clone(),
+                        },
+                        span.clone(),
+                    )
+                }
+                _ => cb.clone(),
+            };
+
+            let i_name = format!("__walk_i_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let i_ident = Expression::with_span(ExprKind::Ident(i_name.clone()), span.clone());
+            let keys_name = format!("__walk_keys_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let keys_ident = Expression::with_span(ExprKind::Ident(keys_name.clone()), span.clone());
+            let k_name = format!("__walk_k_{}", TMP_COUNTER.with(|c| { let v = *c.borrow(); *c.borrow_mut() += 1; v }));
+            let k_ident = Expression::with_span(ExprKind::Ident(k_name.clone()), span.clone());
+
+            let keys_call = Expression::with_span(
+                mk_call(Expression::ident("array_keys"), vec![arr.clone()]),
+                span.clone(),
+            );
+            // cb args: (arr[k], k) or (arr[k], k, extra)
+            let arr_at_k = Expression::with_span(
+                ExprKind::Index { object: Box::new(arr.clone()), index: Box::new(k_ident.clone()), null_safe: false },
+                span.clone(),
+            );
+            let mut cb_args = vec![arr_at_k.clone(), k_ident.clone()];
+            if let Some(ex) = extra {
+                cb_args.push(ex);
+            }
+            let cb_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(transformed_cb),
+                    args: cb_args.into_iter().map(Argument::positional).collect(),
+                    optional: false,
+                },
+                span.clone(),
+            );
+            // arr[k] = transformed_cb(arr[k], k)
+            let assign_back = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(arr_at_k),
+                    value: Box::new(cb_call),
+                },
+                span.clone(),
+            );
+            let init = Statement::with_span(StmtKind::Assign {
+                targets: vec![
+                    Expression::with_span(ExprKind::Ident(keys_name.clone()), span.clone()),
+                ],
+                value: keys_call,
+            }, span.clone());
+            let init2 = Statement::with_span(StmtKind::Assign {
+                targets: vec![i_ident.clone()],
+                value: Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
+            }, span.clone());
+            let cond = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(i_ident.clone()),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Member { object: Box::new(keys_ident.clone()), field: "length".to_string(), null_safe: false },
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            let inc = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(i_ident.clone()),
+                    value: Box::new(Expression::with_span(
+                        ExprKind::Binary { op: BinOp::Add, left: Box::new(i_ident.clone()), right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(1)), span.clone())) },
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            let body_stmts = vec![
+                Statement::with_span(StmtKind::Assign {
+                    targets: vec![k_ident.clone()],
+                    value: Expression::with_span(
+                        ExprKind::Index { object: Box::new(keys_ident.clone()), index: Box::new(i_ident.clone()), null_safe: false },
+                        span.clone(),
+                    ),
+                }, span.clone()),
+                Statement::with_span(StmtKind::Expr(assign_back), span.clone()),
+            ];
+            let init_block = Statement::with_span(
+                StmtKind::Block(vec![init, init2]), span.clone(),
+            );
+            let for_stmt = Statement::with_span(StmtKind::For {
+                init: Some(Box::new(init_block)),
+                cond: Some(cond),
+                update: Some(inc),
+                body: body_stmts,
+            }, span.clone());
+            let iife_body = vec![
+                for_stmt,
+                Statement::with_span(StmtKind::Return(Some(Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()))), span.clone()),
+            ];
+            let iife = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![],
+                    body: LambdaBody::Block(iife_body),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(iife, vec![])
         }
         // PHP `spl_object_id($obj)` / `spl_object_hash($obj)` — object identity.
         // Returns a consistent value for the same object reference.

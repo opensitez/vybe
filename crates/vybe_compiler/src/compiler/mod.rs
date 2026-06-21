@@ -12616,6 +12616,46 @@ impl Compiler {
                         }
                     }
                 }
+                // PHP auto-vivification: $x[$k][] = $v → ensure $x[$k]
+                // is an array before pushing. If undefined, create [].
+                if is_append && self.is_php_profile() {
+                    if let ExprKind::Index { object: parent, index: key, .. } = &object.kind {
+                        let parent_tmp = self.define_local("__vivify_parent");
+                        let key_tmp = self.define_local("__vivify_key");
+                        let sub_tmp = self.define_local("__vivify_sub");
+                        self.compile_expr(parent)?;
+                        self.emit_u16(Op::LOCAL_SET, parent_tmp);
+                        self.emit(Op::DROP);
+                        self.compile_expr(key)?;
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+                        // sub = parent[key]
+                        self.emit_u16(Op::LOCAL_GET, parent_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit(Op::ARRAY_GET);
+                        self.emit_u16(Op::LOCAL_SET, sub_tmp);
+                        self.emit(Op::DROP);
+                        // if sub is null/undefined → create [] and set
+                        self.emit_u16(Op::LOCAL_GET, sub_tmp);
+                        self.emit(Op::REF_IS_NULL);
+                        let line = self.line;
+                        self.chunk().emit_if(line);
+                        self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
+                        self.emit_u16(Op::LOCAL_SET, sub_tmp);
+                        self.emit_u16(Op::LOCAL_GET, parent_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, sub_tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+                        // push value
+                        self.emit_u16(Op::LOCAL_GET, sub_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        return Ok(());
+                    }
+                }
                 if is_append {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
@@ -13363,6 +13403,32 @@ impl Compiler {
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                     };
+                } else if self.is_php_profile() {
+                    // PHP `+` on arrays = union (first-wins merge).
+                    // Check at runtime if both are objects → union.
+                    let a_slot = self.define_local("__php_add_a");
+                    let b_slot = self.define_local("__php_add_b");
+                    self.emit_u16(Op::LOCAL_SET, b_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, a_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, a_slot);
+                    self.emit(Op::REF_IS_OBJECT);
+                    self.emit_u16(Op::LOCAL_GET, b_slot);
+                    self.emit(Op::REF_IS_OBJECT);
+                    self.emit(Op::I32_AND);
+                    let line = self.line;
+                    self.chunk().emit_if_value(line);
+                    // Both objects → array union: iterate b's entries,
+                    // set on a copy of a only if key doesn't exist
+                    self.emit_u16(Op::LOCAL_GET, a_slot);
+                    self.emit_u16(Op::LOCAL_GET, b_slot);
+                    self.emit_common("php.array_union", 2, line);
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, a_slot);
+                    self.emit_u16(Op::LOCAL_GET, b_slot);
+                    self.emit(Op::F64_ADD);
+                    self.chunk().emit_end(line);
                 } else {
                     self.emit(Op::F64_ADD);
                 }

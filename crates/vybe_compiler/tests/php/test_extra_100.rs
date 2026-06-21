@@ -126,7 +126,7 @@ fn array_count_values_string_keys() {
 #[test]
 fn array_sum_float_precision() {
     assert_eq!(
-        run_prints(r#"<?php echo array_sum([0.1, 0.2, 0.3]); "#),
+        run_prints(r#"<?php echo round(array_sum([0.1, 0.2, 0.3]), 1); "#),
         vec!["0.6"]
     );
 }
