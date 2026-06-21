@@ -20,17 +20,19 @@ program = { SOI ~ program_inner ~ EOI }
 
 program_inner = _{
     program_heading? ~ uses_clause? ~
-    interface_section? ~ implementation_section? ~
-    decl_section ~
-    program_body? ~ "."?
+    interface_section? ~ uses_clause? ~ decl_section ~
+    implementation_section? ~ uses_clause? ~ decl_section ~
+    program_body? ~ unit_end? ~ "."?
 }
 
 program_heading = { (^"program" | ^"unit") ~ identifier ~ ";" }
 
-uses_clause = { ^"uses" ~ identifier ~ ("," ~ identifier)* ~ ";" }
+uses_clause = { ^"uses" ~ uses_item ~ ("," ~ uses_item)* ~ ";" }
+uses_item = { identifier ~ (^"in" ~ string_literal)? }
 
 interface_section = { ^"interface" }
 implementation_section = { ^"implementation" }
+unit_end = { ^"end" ~ "." }
 
 program_body = { compound_statement }
 
@@ -236,8 +238,9 @@ property_specifiers = {
     | property_nodefault
 }
 
-property_read = { ^"read" ~ identifier }
-property_write = { ^"write" ~ identifier }
+property_accessor = { identifier ~ ("." ~ identifier)* }
+property_read = { ^"read" ~ property_accessor }
+property_write = { ^"write" ~ property_accessor }
 property_default = { ^"default" ~ (&";" | expression) }
 property_stored = { ^"stored" ~ expression? }
 property_nodefault = { ^"nodefault" ~ expression? }
@@ -638,7 +641,7 @@ set_literal = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
 string_literal = @{ "'" ~ ("''" | (!"'" ~ ANY))* ~ "'" }
 
 // Character literal: #65, #13#10, etc.
-char_literal = @{ "#" ~ ASCII_DIGIT+ }
+char_literal = @{ ("#" ~ ASCII_DIGIT+)+ }
 
 // Hex literal: $FF
 hex_literal = @{ "$" ~ ASCII_HEX_DIGIT+ }

@@ -13,6 +13,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut name = "main".to_string();
+    let mut is_unit = false;
 
     for pair in pairs {
         if pair.as_rule() != Rule::program {
@@ -22,6 +23,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
             match inner.as_rule() {
                 Rule::program_heading => {
                     // program Foo; or unit Foo;
+                    is_unit = inner.as_str().trim_start().get(..4).is_some_and(|prefix| {
+                        prefix.eq_ignore_ascii_case("unit")
+                    });
                     for p in inner.into_inner() {
                         if p.as_rule() == Rule::identifier {
                             name = p.as_str().to_string();
@@ -39,6 +43,37 @@ pub fn parse(source: &str) -> Result<Module, String> {
                                 },
                                 span,
                             });
+                        } else if p.as_rule() == Rule::uses_item {
+                            let mut unit_name: Option<String> = None;
+                            let mut source_path: Option<String> = None;
+                            for part in p.into_inner() {
+                                match part.as_rule() {
+                                    Rule::identifier => {
+                                        if unit_name.is_none() {
+                                            unit_name = Some(part.as_str().to_string());
+                                        }
+                                    }
+                                    Rule::string_literal => {
+                                        let raw = part.as_str();
+                                        let path = raw
+                                            .strip_prefix('\'')
+                                            .and_then(|s| s.strip_suffix('\''))
+                                            .unwrap_or(raw)
+                                            .replace("''", "'");
+                                        source_path = Some(path);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if let Some(path) = source_path.or(unit_name) {
+                                imports.push(Import {
+                                    kind: ImportKind::Simple {
+                                        path,
+                                        alias: None,
+                                    },
+                                    span,
+                                });
+                            }
                         }
                     }
                 }
@@ -74,8 +109,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Synthesize minimal RTL classes at the top of every Pascal program
     // before constructor-call rewriting so known runtime base types exist
     // during later passes.
-    body.insert(0, synthesize_tinterfacedobject_class());
-    body.insert(0, synthesize_exception_class());
+    if !is_unit {
+        body.insert(0, synthesize_tinterfacedobject_class());
+        body.insert(0, synthesize_exception_class());
+    }
 
     let uses_gcl = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
@@ -85,6 +122,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     });
     if uses_gcl {
         normalize_pascal_gcl_form_classes(&mut body);
+        normalize_pascal_gcl_exprs(&mut body);
     }
 
     // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
@@ -193,6 +231,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .collect();
     for stmt in body.iter_mut() {
         rewrite_shadowed_builtin_casts_stmt(stmt, &free_function_names);
+    }
+    if uses_gcl {
+        normalize_pascal_gcl_exprs(&mut body);
     }
 
     Ok(Module {
@@ -4269,7 +4310,50 @@ fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
     }
 }
 
+fn normalize_pascal_gcl_exprs(body: &mut [Statement]) {
+    for stmt in body {
+        normalize_gcl_form_property_stmt(stmt);
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    normalize_pascal_gcl_exprs_member(member);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_pascal_gcl_exprs_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) => normalize_gcl_form_property_stmt(stmt),
+        ClassMember::Constructor { body, .. } => normalize_gcl_form_property_stmts(body),
+        ClassMember::Property {
+            getter,
+            setter: Some(setter),
+            ..
+        } => {
+            if let Some(getter) = getter {
+                normalize_gcl_form_property_stmts(getter);
+            }
+            normalize_gcl_form_property_stmts(&mut setter.body);
+        }
+        ClassMember::Property {
+            getter: Some(getter),
+            setter: None,
+            ..
+        } => normalize_gcl_form_property_stmts(getter),
+        _ => {}
+    }
+}
+
 fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
+    if let Some(rewritten) = normalize_gcl_create_form_stmt(stmt) {
+        *stmt = rewritten;
+        return;
+    }
     match &mut stmt.kind {
         StmtKind::Expr(expr) => normalize_gcl_form_property_expr(expr),
         StmtKind::Assign { targets, value } => {
@@ -4314,6 +4398,45 @@ fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
     }
 }
 
+fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("CreateForm") {
+        return None;
+    }
+    let ExprKind::Ident(app_name) = &object.kind else {
+        return None;
+    };
+    if !app_name.eq_ignore_ascii_case("Application") {
+        return None;
+    }
+    let ExprKind::Ident(target_name) = &args[1].value.kind else {
+        return None;
+    };
+    Some(Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::ident(target_name)],
+            value: Expression::new(ExprKind::New {
+                class: Box::new(args[0].value.clone()),
+                args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                    Literal::Null,
+                )))],
+            }),
+        },
+        stmt.span.clone(),
+    ))
+}
+
 fn normalize_gcl_form_property_target(target: &mut Expression) {
     if let ExprKind::Ident(name) = &target.kind {
         if is_gcl_form_property(name) {
@@ -4340,6 +4463,7 @@ fn normalize_gcl_form_property_expr(expr: &mut Expression) {
             *expr = args[0].value.clone();
             return;
         }
+        normalize_gcl_dotted_menu_add_call(callee);
     }
 
     match &mut expr.kind {
@@ -4388,14 +4512,11 @@ fn normalize_gcl_menu_add_call(callee: &mut Box<Expression>) {
     ) {
         return;
     }
-    let is_menu_like = matches!(
-        &object.kind,
-        ExprKind::Ident(name)
-            if {
-                let lower = name.to_ascii_lowercase();
-                lower.contains("menu") || lower.ends_with("item")
-            }
-    );
+    let is_menu_like = match &object.kind {
+        ExprKind::Ident(name) => is_menu_like_name(name),
+        ExprKind::Member { field, .. } => is_menu_like_name(field),
+        _ => false,
+    };
     if is_menu_like {
         let original = (**object).clone();
         *object = Box::new(Expression::new(ExprKind::Member {
@@ -4404,6 +4525,32 @@ fn normalize_gcl_menu_add_call(callee: &mut Box<Expression>) {
             null_safe: false,
         }));
     }
+}
+
+fn normalize_gcl_dotted_menu_add_call(callee: &mut Box<Expression>) {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return;
+    };
+    let Some((receiver, method)) = name.rsplit_once('.') else {
+        return;
+    };
+    if !method.eq_ignore_ascii_case("Add") || !is_menu_like_name(receiver) {
+        return;
+    }
+    *callee = Box::new(Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(receiver)),
+            field: "Items".to_string(),
+            null_safe: false,
+        })),
+        field: "Add".to_string(),
+        null_safe: false,
+    }));
+}
+
+fn is_menu_like_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("menu") || lower.ends_with("item")
 }
 
 fn is_gcl_form_property(name: &str) -> bool {
@@ -5831,22 +5978,13 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                         for spec in sp.into_inner() {
                             match spec.as_rule() {
                                 Rule::property_read => {
-                                    // read GetFoo → getter delegates to method
-                                    let getter_name = spec
-                                        .into_inner()
-                                        .find(|p| p.as_rule() == Rule::identifier)
-                                        .map(|p| p.as_str().to_string())
-                                        .unwrap_or_default();
+                                    let getter_name = property_accessor_name(spec);
                                     getter = Some(vec![Statement::new(StmtKind::Return(Some(
-                                        property_accessor_call(getter_name, is_static, Vec::new()),
+                                        property_read_accessor(getter_name, is_static),
                                     )))]);
                                 }
                                 Rule::property_write => {
-                                    let setter_name = spec
-                                        .into_inner()
-                                        .find(|p| p.as_rule() == Rule::identifier)
-                                        .map(|p| p.as_str().to_string())
-                                        .unwrap_or_default();
+                                    let setter_name = property_accessor_name(spec);
                                     let param = Param {
                                         name: "value".to_string(),
                                         type_hint: type_hint.clone(),
@@ -5859,15 +5997,11 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                     };
                                     setter = Some(PropertySetter {
                                         param,
-                                        body: vec![Statement::new(StmtKind::Expr(
-                                            property_accessor_call(
-                                                setter_name,
-                                                is_static,
-                                                vec![Argument::positional(Expression::ident(
-                                                    "value",
-                                                ))],
-                                            ),
-                                        ))],
+                                        body: vec![property_write_accessor(
+                                            setter_name,
+                                            is_static,
+                                            Expression::ident("value"),
+                                        )],
                                     });
                                 }
                                 _ => {} // default, stored, nodefault
@@ -5889,6 +6023,59 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
         is_auto,
         modifiers,
     })
+}
+
+fn property_accessor_name(spec: Pair<Rule>) -> String {
+    spec.into_inner()
+        .next()
+        .map(|p| p.as_str().trim().to_string())
+        .unwrap_or_default()
+}
+
+fn property_read_accessor(name: String, is_static: bool) -> Expression {
+    if !name.contains('.') && name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("Get")) {
+        return property_accessor_call(name, is_static, Vec::new());
+    }
+    if !name.contains('.') {
+        return property_accessor_call(name, is_static, Vec::new());
+    }
+    property_accessor_member(name, is_static)
+}
+
+fn property_write_accessor(name: String, is_static: bool, value: Expression) -> Statement {
+    if !name.contains('.') && name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("Set")) {
+        return Statement::new(StmtKind::Expr(property_accessor_call(
+            name,
+            is_static,
+            vec![Argument::positional(value)],
+        )));
+    }
+    if !name.contains('.') {
+        return Statement::new(StmtKind::Expr(property_accessor_call(
+            name,
+            is_static,
+            vec![Argument::positional(value)],
+        )));
+    }
+    Statement::new(StmtKind::Assign {
+        targets: vec![property_accessor_member(name, is_static)],
+        value,
+    })
+}
+
+fn property_accessor_member(name: String, is_static: bool) -> Expression {
+    let mut parts = name.split('.');
+    let first = parts.next().unwrap_or_default();
+    let _ = is_static;
+    let mut expr = Expression::ident(first);
+    for part in parts {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: part.to_string(),
+            null_safe: false,
+        });
+    }
+    expr
 }
 
 fn property_accessor_call(name: String, is_static: bool, args: Vec<Argument>) -> Expression {
@@ -7459,12 +7646,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             )))
         }
         Rule::char_literal => {
-            // #65 → 'A'
+            // #65 → 'A', #13#10 → "\r\n"
             let s = pair.as_str();
-            let code: u32 = s[1..].parse().unwrap_or(0);
-            Ok(ExprKind::Lit(Literal::Char(
-                char::from_u32(code).unwrap_or('\0'),
-            )))
+            let decoded: String = s
+                .split('#')
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| part.parse::<u32>().ok())
+                .filter_map(char::from_u32)
+                .collect();
+            let mut chars = decoded.chars();
+            if let (Some(ch), None) = (chars.next(), chars.next()) {
+                Ok(ExprKind::Lit(Literal::Char(ch)))
+            } else {
+                Ok(ExprKind::Lit(Literal::Str(decoded)))
+            }
         }
         Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
 
