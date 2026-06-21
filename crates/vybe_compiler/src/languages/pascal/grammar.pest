@@ -42,11 +42,14 @@ declaration = _{
     var_section
     | const_section
     | type_section
+    | label_section
     | constructor_method_impl
     | destructor_method_impl
     | procedure_decl_or_method
     | function_decl_or_method
 }
+
+label_section = { ^"label" ~ identifier ~ ("," ~ identifier)* ~ ";" }
 
 // ── Var Section ────────────────────────────────────────────────────────────────
 
@@ -363,10 +366,11 @@ builtin_type = {
 
 compound_statement = { ^"begin" ~ statement_list ~ ^"end" }
 
-statement_list = { (statement ~ ";")* ~ statement? }
+statement_list = { (statement ~ ";"?)* }
 
 statement = {
     compound_statement
+    | label_statement
     | inline_var_statement
     | if_statement
     | for_statement
@@ -382,11 +386,15 @@ statement = {
     | halt_statement
     | break_statement
     | continue_statement
+    | goto_statement
     | inherited_statement
     | assign_or_call_statement
 }
 
 empty_statement = { "" }
+
+label_statement = { identifier ~ ":" ~ !("=") }
+goto_statement = { ^"goto" ~ identifier }
 
 inline_var_statement = { ^"var" ~ identifier_list ~ ":" ~ type_ref ~ inline_var_init? }
 

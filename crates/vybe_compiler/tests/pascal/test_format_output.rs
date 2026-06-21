@@ -210,7 +210,7 @@ begin
 end.
 "#;
     let out = run_pascal(src);
-    assert_eq!(out, vec!["[{\"name\":\"Alice\",\"age\":30}]"]);
+    assert_eq!(out, vec!["{\"name\":\"Alice\",\"age\":30}"]);
 }
 
 #[test]

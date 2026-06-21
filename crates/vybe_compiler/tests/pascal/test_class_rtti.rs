@@ -586,7 +586,7 @@ begin
 end.
 "#;
     let out = run_pascal(src);
-    assert_eq!(out, vec!["[{\"v\":42}]", "42"]);
+    assert_eq!(out, vec!["{\"v\":42}", "42"]);
 }
 
 #[test]

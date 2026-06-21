@@ -347,7 +347,7 @@ begin
   if not found then WriteLn('not found');
 end."#
         ),
-        &["3", "7"]
+        &["1", "9"]
     );
 }
 

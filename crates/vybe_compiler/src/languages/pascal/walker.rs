@@ -69,6 +69,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // ordinary class members.
     merge_separated_methods(&mut body);
     lower_pascal_helpers(&mut body);
+    lower_pascal_gotos_in_body(&mut body);
 
     // Synthesize minimal RTL classes at the top of every Pascal program
     // before constructor-call rewriting so known runtime base types exist
@@ -76,10 +77,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
     body.insert(0, synthesize_tinterfacedobject_class());
     body.insert(0, synthesize_exception_class());
 
+    let uses_gcl = imports.iter().any(|import| match &import.kind {
+        ImportKind::Simple { path, .. }
+        | ImportKind::Named { path, .. }
+        | ImportKind::Wildcard { path, .. }
+        | ImportKind::Default { path, .. } => crate::platforms::plib::gcl::is_gcl_unit(path),
+    });
+    if uses_gcl {
+        normalize_pascal_gcl_form_classes(&mut body);
+    }
+
     // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
     // constructor invocation syntax) into the canonical `New { class: TFoo, args }`
     // AST so every language ends up with the same instantiation node.
-    let class_names: std::collections::HashSet<String> = body
+    let mut class_names: std::collections::HashSet<String> = body
         .iter()
         .filter_map(|s| match &s.kind {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
@@ -88,7 +99,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
             _ => None,
         })
         .collect();
-    let class_display_names: Vec<(String, String)> = body
+    if uses_gcl {
+        for class in crate::platforms::plib::gcl::gcl_classes() {
+            class_names.insert(class.name.to_lowercase());
+        }
+    }
+    let mut class_display_names: Vec<(String, String)> = body
         .iter()
         .filter_map(|s| match &s.kind {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
@@ -97,6 +113,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
             _ => None,
         })
         .collect();
+    if uses_gcl {
+        for class in crate::platforms::plib::gcl::gcl_classes() {
+            class_display_names.push((class.name.to_lowercase(), class.name.to_string()));
+        }
+    }
     let (static_methods, static_values) = collect_static_members(&body);
     let static_var_params = collect_static_var_param_indices(&body);
     for stmt in body.iter_mut() {
@@ -1285,7 +1306,9 @@ fn rewrite_zero_based_string_indexes_stmt(
             if let Some(update) = update {
                 rewrite_zero_based_string_indexes_expr(update, string_vars, zero_based_loop_vars);
             }
-            let zero_var = init.as_ref().and_then(|init| zero_based_for_var(init));
+            let zero_var = init
+                .as_ref()
+                .and_then(|init| zero_based_for_var(init, cond.as_ref()));
             if let Some(var) = &zero_var {
                 zero_based_loop_vars.insert(var.clone());
             }
@@ -1412,7 +1435,7 @@ fn rewrite_zero_based_string_indexes_member(member: &mut ClassMember) {
     }
 }
 
-fn zero_based_for_var(stmt: &Statement) -> Option<String> {
+fn zero_based_for_var(stmt: &Statement, cond: Option<&Expression>) -> Option<String> {
     match &stmt.kind {
         StmtKind::Assign { targets, value } if targets.len() == 1 && expr_is_int(value, 0) => {
             if let ExprKind::Ident(name) = &targets[0].kind {
@@ -1429,7 +1452,42 @@ fn zero_based_for_var(stmt: &Statement) -> Option<String> {
         }
         _ => {}
     }
+    let var_name = match &stmt.kind {
+        StmtKind::Assign { targets, .. } if targets.len() == 1 => {
+            if let ExprKind::Ident(name) = &targets[0].kind {
+                Some(name.to_lowercase())
+            } else {
+                None
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
+            if let BindingPattern::Ident(name) = &declarations[0].pattern {
+                Some(name.to_lowercase())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    if let (Some(name), Some(cond)) = (var_name, cond) {
+        if for_condition_ends_at_zero(cond, &name) {
+            return Some(name);
+        }
+    }
     None
+}
+
+fn for_condition_ends_at_zero(cond: &Expression, var_name: &str) -> bool {
+    match &cond.kind {
+        ExprKind::Binary {
+            op: BinOp::GtEq,
+            left,
+            right,
+        } if expr_is_int(right, 0) => {
+            matches!(&left.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(var_name))
+        }
+        _ => false,
+    }
 }
 
 fn rewrite_zero_based_string_indexes_expr(
@@ -4156,6 +4214,252 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
     }
 }
 
+fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
+    for stmt in body {
+        let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        if !parents.iter().any(|parent| parent.eq_ignore_ascii_case("TForm")) {
+            continue;
+        }
+
+        let default_name = default_form_instance_name(name);
+        let name_stmt = gcl_form_name_assignment(&default_name);
+        let mut has_constructor = false;
+        for member in members.iter_mut() {
+            let ClassMember::Constructor {
+                params,
+                body,
+                base_args,
+                ..
+            } = member
+            else {
+                continue;
+            };
+            has_constructor = true;
+            if params.is_empty() {
+                params.push(gcl_owner_param());
+            }
+            if base_args.is_none() {
+                *base_args = Some(vec![Expression::ident("AOwner")]);
+            }
+            if !body.iter().any(is_gcl_form_name_assignment) {
+                body.insert(0, name_stmt.clone());
+            }
+            for stmt in body.iter_mut() {
+                normalize_gcl_form_property_stmt(stmt);
+            }
+        }
+
+        if !has_constructor {
+            members.push(ClassMember::Constructor {
+                params: vec![gcl_owner_param()],
+                body: vec![name_stmt],
+                base_args: Some(vec![Expression::ident("AOwner")]),
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            });
+        }
+    }
+}
+
+fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => normalize_gcl_form_property_expr(expr),
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                normalize_gcl_form_property_target(target);
+            }
+            normalize_gcl_form_property_expr(value);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            normalize_gcl_form_property_target(target);
+            normalize_gcl_form_property_expr(value);
+        }
+        StmtKind::Block(stmts) => {
+            for stmt in stmts {
+                normalize_gcl_form_property_stmt(stmt);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            normalize_gcl_form_property_stmts(then_body);
+            for (_, body) in elifs {
+                normalize_gcl_form_property_stmts(body);
+            }
+            if let Some(body) = else_body {
+                normalize_gcl_form_property_stmts(body);
+            }
+        }
+        StmtKind::While { body, else_body, .. } => {
+            normalize_gcl_form_property_stmts(body);
+            if let Some(body) = else_body {
+                normalize_gcl_form_property_stmts(body);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. } => normalize_gcl_form_property_stmts(body),
+        _ => {}
+    }
+}
+
+fn normalize_gcl_form_property_target(target: &mut Expression) {
+    if let ExprKind::Ident(name) = &target.kind {
+        if is_gcl_form_property(name) {
+            *target = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: name.clone(),
+                null_safe: false,
+            });
+        }
+    }
+}
+
+fn normalize_gcl_form_property_stmts(stmts: &mut [Statement]) {
+    for stmt in stmts {
+        normalize_gcl_form_property_stmt(stmt);
+    }
+}
+
+fn normalize_gcl_form_property_expr(expr: &mut Expression) {
+    if let ExprKind::Call { callee, args, .. } = &mut expr.kind {
+        if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("TextToShortCut"))
+            && args.len() == 1
+        {
+            *expr = args[0].value.clone();
+            return;
+        }
+    }
+
+    match &mut expr.kind {
+        ExprKind::Assign { target, value } => {
+            if let ExprKind::Ident(name) = &target.kind {
+                if is_gcl_form_property(name) {
+                    *target = Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: name.clone(),
+                        null_safe: false,
+                    }));
+                }
+            }
+            normalize_gcl_form_property_expr(value);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_gcl_menu_add_call(callee);
+            normalize_gcl_form_property_expr(callee);
+            for arg in args {
+                normalize_gcl_form_property_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_gcl_form_property_expr(object),
+        ExprKind::Binary { left, right, .. } => {
+            normalize_gcl_form_property_expr(left);
+            normalize_gcl_form_property_expr(right);
+        }
+        ExprKind::Unary { expr, .. } => normalize_gcl_form_property_expr(expr),
+        _ => {}
+    }
+}
+
+fn normalize_gcl_menu_add_call(callee: &mut Box<Expression>) {
+    let ExprKind::Member { object, field, .. } = &mut callee.kind else {
+        return;
+    };
+    if !field.eq_ignore_ascii_case("Add") {
+        return;
+    }
+    if matches!(
+        &object.kind,
+        ExprKind::Member { field, .. }
+            if field.eq_ignore_ascii_case("Items")
+                || field.eq_ignore_ascii_case("Controls")
+                || field.eq_ignore_ascii_case("Components")
+    ) {
+        return;
+    }
+    let is_menu_like = matches!(
+        &object.kind,
+        ExprKind::Ident(name)
+            if {
+                let lower = name.to_ascii_lowercase();
+                lower.contains("menu") || lower.ends_with("item")
+            }
+    );
+    if is_menu_like {
+        let original = (**object).clone();
+        *object = Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(original),
+            field: "Items".to_string(),
+            null_safe: false,
+        }));
+    }
+}
+
+fn is_gcl_form_property(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "caption" | "clientwidth" | "clientheight" | "oncreate" | "onclose"
+    )
+}
+
+fn default_form_instance_name(class_name: &str) -> String {
+    let stripped = class_name
+        .strip_prefix('T')
+        .filter(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+        .unwrap_or(class_name);
+    stripped.to_lowercase()
+}
+
+fn gcl_owner_param() -> Param {
+    Param {
+        name: "AOwner".to_string(),
+        type_hint: Some("TObject".to_string()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: true,
+    }
+}
+
+fn gcl_form_name_assignment(default_name: &str) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: "Name".to_string(),
+            null_safe: false,
+        })),
+        value: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            default_name.to_string(),
+        )))),
+    })))
+}
+
+fn is_gcl_form_name_assignment(stmt: &Statement) -> bool {
+    matches!(
+        &stmt.kind,
+        StmtKind::Expr(Expression {
+            kind: ExprKind::Assign { target, .. },
+            ..
+        }) if matches!(
+            &target.kind,
+            ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Name")
+        )
+    )
+}
+
 fn lower_pascal_helpers(body: &mut Vec<Statement>) {
     use std::collections::HashMap;
 
@@ -4331,6 +4635,311 @@ fn pascal_helper_function_name(target_name: &str, method_name: &str) -> String {
     )
 }
 
+fn lower_pascal_gotos_in_body(body: &mut Vec<Statement>) {
+    for stmt in body.iter_mut() {
+        lower_pascal_gotos_in_stmt(stmt);
+    }
+    *body = lower_pascal_goto_block(std::mem::take(body));
+}
+
+fn lower_pascal_gotos_in_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Block(stmts) => lower_pascal_gotos_in_body(stmts),
+        StmtKind::FunctionDecl { body, .. } => lower_pascal_gotos_in_body(body),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_pascal_gotos_in_member(member);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            lower_pascal_gotos_in_body(then_body);
+            for (_, body) in elifs {
+                lower_pascal_gotos_in_body(body);
+            }
+            if let Some(body) = else_body {
+                lower_pascal_gotos_in_body(body);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(init) = init {
+                lower_pascal_gotos_in_stmt(init);
+            }
+            lower_pascal_gotos_in_body(body);
+        }
+        StmtKind::ForIn {
+            body, else_body, ..
+        }
+        | StmtKind::While {
+            body, else_body, ..
+        } => {
+            lower_pascal_gotos_in_body(body);
+            if let Some(body) = else_body {
+                lower_pascal_gotos_in_body(body);
+            }
+        }
+        StmtKind::DoWhile { body, .. } => lower_pascal_gotos_in_body(body),
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                lower_pascal_gotos_in_body(&mut case.body);
+            }
+            if let Some(body) = default {
+                lower_pascal_gotos_in_body(body);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            lower_pascal_gotos_in_body(body);
+            for catch in catches {
+                lower_pascal_gotos_in_body(&mut catch.body);
+            }
+            if let Some(body) = else_body {
+                lower_pascal_gotos_in_body(body);
+            }
+            if let Some(body) = finally {
+                lower_pascal_gotos_in_body(body);
+            }
+        }
+        StmtKind::With { body, .. } => lower_pascal_gotos_in_body(body),
+        _ => {}
+    }
+}
+
+fn lower_pascal_gotos_in_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            lower_pascal_gotos_in_stmt(stmt)
+        }
+        ClassMember::Constructor { body, .. } => lower_pascal_gotos_in_body(body),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                lower_pascal_gotos_in_body(getter);
+            }
+            if let Some(setter) = setter {
+                lower_pascal_gotos_in_body(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_goto_block(body: Vec<Statement>) -> Vec<Statement> {
+    let mut label_to_block = std::collections::HashMap::new();
+    let mut blocks: Vec<Vec<Statement>> = vec![Vec::new()];
+
+    for stmt in body {
+        if let StmtKind::Label(name) = stmt.kind {
+            let idx = blocks.len() as i64;
+            label_to_block.insert(name.to_lowercase(), idx);
+            blocks.push(Vec::new());
+        } else if let Some(block) = blocks.last_mut() {
+            block.push(stmt);
+        }
+    }
+
+    if label_to_block.is_empty() {
+        return blocks.into_iter().next().unwrap_or_default();
+    }
+
+    let mut prelude = Vec::new();
+    if let Some(first) = blocks.first_mut() {
+        while first
+            .first()
+            .map(is_pascal_goto_prelude_stmt)
+            .unwrap_or(false)
+        {
+            prelude.push(first.remove(0));
+        }
+    }
+
+    let dispatch_label = "__pascal_goto_dispatch".to_string();
+    let pc_name = "__pascal_goto_pc".to_string();
+    let total_blocks = blocks.len();
+    let mut cases = Vec::new();
+
+    for (idx, block) in blocks.into_iter().enumerate() {
+        let next_pc = if idx + 1 < total_blocks {
+            pascal_int((idx + 1) as i64)
+        } else {
+            pascal_int(-1)
+        };
+        let mut case_body = vec![pascal_assign_stmt(&pc_name, next_pc)];
+        case_body.extend(rewrite_pascal_gotos_in_stmts(
+            block,
+            &label_to_block,
+            &pc_name,
+            &dispatch_label,
+        ));
+        case_body.push(Statement::new(StmtKind::Break(BreakTarget::Implicit)));
+        cases.push(SwitchCase {
+            conditions: vec![CaseCondition::Value(pascal_int(idx as i64))],
+            body: case_body,
+        });
+    }
+
+    let while_body = vec![
+        Statement::new(StmtKind::Switch {
+            expr: Expression::ident(&pc_name),
+            cases,
+            default: Some(vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))]),
+        }),
+        Statement::new(StmtKind::If {
+            cond: Expression::new(ExprKind::Binary {
+                op: BinOp::Lt,
+                left: Box::new(Expression::ident(&pc_name)),
+                right: Box::new(pascal_int(0)),
+            }),
+            then_body: vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+    ];
+
+    prelude.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(pc_name.clone()),
+            type_hint: Some("Integer".to_string()),
+            init: Some(pascal_int(0)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Dim,
+    }));
+    prelude.push(Statement::new(StmtKind::Labeled {
+        label: dispatch_label,
+        body: Box::new(Statement::new(StmtKind::While {
+            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+            body: while_body,
+            else_body: None,
+        })),
+    }));
+    prelude
+}
+
+fn is_pascal_goto_prelude_stmt(stmt: &Statement) -> bool {
+    matches!(
+        stmt.kind,
+        StmtKind::VarDecl { .. }
+            | StmtKind::FunctionDecl { .. }
+            | StmtKind::ClassDecl { .. }
+            | StmtKind::StructDecl { .. }
+            | StmtKind::ModuleDecl { .. }
+    )
+}
+
+fn rewrite_pascal_gotos_in_stmts(
+    stmts: Vec<Statement>,
+    label_to_block: &std::collections::HashMap<String, i64>,
+    pc_name: &str,
+    dispatch_label: &str,
+) -> Vec<Statement> {
+    stmts
+        .into_iter()
+        .flat_map(|stmt| {
+            rewrite_pascal_gotos_in_stmt(stmt, label_to_block, pc_name, dispatch_label)
+        })
+        .collect()
+}
+
+fn rewrite_pascal_gotos_in_stmt(
+    stmt: Statement,
+    label_to_block: &std::collections::HashMap<String, i64>,
+    pc_name: &str,
+    dispatch_label: &str,
+) -> Vec<Statement> {
+    match stmt.kind {
+        StmtKind::GoTo(target) => label_to_block
+            .get(&target.to_lowercase())
+            .map(|idx| {
+                vec![
+                    pascal_assign_stmt(pc_name, pascal_int(*idx)),
+                    Statement::new(StmtKind::Continue(ContinueTarget::Label(
+                        dispatch_label.to_string(),
+                    ))),
+                ]
+            })
+            .unwrap_or_default(),
+        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(
+            rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
+        ))],
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => vec![Statement::new(StmtKind::If {
+            cond,
+            then_body: rewrite_pascal_gotos_in_stmts(
+                then_body,
+                label_to_block,
+                pc_name,
+                dispatch_label,
+            ),
+            elifs: elifs
+                .into_iter()
+                .map(|(cond, body)| {
+                    (
+                        cond,
+                        rewrite_pascal_gotos_in_stmts(
+                            body,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                        ),
+                    )
+                })
+                .collect(),
+            else_body: else_body.map(|body| {
+                rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
+            }),
+        })],
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => vec![Statement::new(StmtKind::While {
+            cond,
+            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
+            else_body: else_body.map(|body| {
+                rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
+            }),
+        })],
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => vec![Statement::new(StmtKind::For {
+            init,
+            cond,
+            update,
+            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
+        })],
+        other => vec![Statement::new(other)],
+    }
+}
+
+fn pascal_int(value: i64) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Int(value)))
+}
+
+fn pascal_assign_stmt(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value,
+    })
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Declaration section
 // ════════════════════════════════════════════════════════════════════════════
@@ -4347,6 +4956,7 @@ fn walk_decl_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             Rule::type_section => {
                 body.extend(walk_type_section(decl)?);
             }
+            Rule::label_section => {}
             Rule::procedure_decl_or_method => {
                 body.push(walk_procedure_decl_or_method(decl)?);
             }
@@ -4403,7 +5013,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
                 let _ = extract_array_bounds(&p)?;
                 type_hint = Some(type_ref_to_string(&p));
             }
-            Rule::inline_var_init => {
+            Rule::var_init | Rule::inline_var_init => {
                 for inner in p.into_inner() {
                     if inner.as_rule() == Rule::expression {
                         init = Some(walk_expression(inner)?);
@@ -5861,6 +6471,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::for_in_statement => walk_for_in_statement(inner)?,
         Rule::while_statement => walk_while_statement(inner)?,
         Rule::repeat_statement => walk_repeat_statement(inner)?,
+        Rule::label_statement => walk_label_statement(inner)?,
         Rule::case_statement => walk_case_statement(inner)?,
         Rule::with_statement => walk_with_statement(inner)?,
         Rule::try_statement => walk_try_statement(inner)?,
@@ -5878,6 +6489,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::halt_statement => walk_halt_statement(inner)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
         Rule::continue_statement => StmtKind::Continue(ContinueTarget::Implicit),
+        Rule::goto_statement => walk_goto_statement(inner)?,
         Rule::inherited_statement => walk_inherited_statement(inner)?,
         Rule::assign_or_call_statement => walk_assign_or_call(inner)?,
         Rule::empty_statement => StmtKind::Empty,
@@ -5885,6 +6497,24 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     };
 
     Ok(Statement::with_span(kind, span))
+}
+
+fn walk_label_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let name = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::identifier)
+        .map(|p| p.as_str().to_string())
+        .ok_or_else(|| "label_statement: missing label".to_string())?;
+    Ok(StmtKind::Label(name))
+}
+
+fn walk_goto_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let target = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::identifier)
+        .map(|p| p.as_str().to_string())
+        .ok_or_else(|| "goto_statement: missing target".to_string())?;
+    Ok(StmtKind::GoTo(target))
 }
 
 fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6042,12 +6672,22 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             optional: false,
         })
     }
-    Ok(StmtKind::For {
+    let for_stmt = Statement::new(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
         update: Some(update_assign),
         body: flatten_stmt(body_stmt),
-    })
+    });
+    let final_value = if use_char_ordinal_loop {
+        end_expr
+    } else {
+        end_expr
+    };
+    let restore_stmt = Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(&var_name)],
+        value: final_value,
+    });
+    Ok(StmtKind::Block(vec![for_stmt, restore_stmt]))
 }
 
 fn walk_for_binding(pair: Pair<Rule>) -> Result<(String, Option<String>, Expression), String> {
