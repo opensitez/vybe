@@ -22,8 +22,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
@@ -60,7 +67,7 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
     chunk.emit(1, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, v_slot, line);
@@ -76,7 +83,7 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op(Op::F64_LE, line);
     crate::emitter::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
@@ -96,7 +103,7 @@ pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
     chunk.emit(1, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
 
     lget(chunk, v_slot, line);
@@ -116,10 +123,10 @@ pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunk.emit_op(Op::F64_GT, line);
     crate::emitter::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
@@ -170,7 +177,7 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "Division by zero", line);
     crate::emitter::errors::emit_exception_new_finalize(chunk, "DivisionByZeroError", line);
     crate::emitter::errors::emit_throw(chunk, line);
@@ -214,14 +221,14 @@ fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u1
     let pad_block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, out_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
     push_str(chunk, "0", line);
     lget(chunk, out_slot, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, out_slot, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -258,10 +265,9 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     // typeof(v) === "string"?  if not, BR over the string-coerce arm.
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    let str_const = chunk.add_constant(Value::String(Arc::from("string")));
-    chunk.emit_op_u16(Op::CONST, str_const, line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    let test_str_v = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_v, line);
+    chunk.emit(1, line);
     chunk.emit_if(line);
 
     // String case:
@@ -282,7 +288,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     lset(chunk, s_slot, line);
 
     lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     lset(chunk, len_slot, line);
 
     push_const(chunk, Value::F64(-1.0), line);
@@ -301,7 +307,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -319,7 +325,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -342,7 +348,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -397,13 +403,13 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     lget(chunk, s_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, suffix_start_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, prefix_slot, line);
 
     lget(chunk, s_slot, line);
     lget(chunk, suffix_start_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, suffix_slot, line);
 
     lget(chunk, suffix_slot, line);
@@ -420,7 +426,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, prefix_slot, line);
     lget(chunk, out_slot, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     chunk.emit_end(line);
     chunk.emit_else(line);
 

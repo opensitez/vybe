@@ -296,7 +296,7 @@ fn collect_label_names(chunk: &Chunk) -> Vec<String> {
     while ip + 1 < code.len() {
         let prefix = code[ip];
         let sub = code[ip + 1];
-        let op = match Op::decode(prefix, sub) {
+        let op = match Op::decode(prefix, sub as u16) {
             Some(op) => op,
             None => {
                 ip += 2;

@@ -66,7 +66,7 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
     let mut regions = std::collections::HashMap::new();
     let mut ip = 0;
     while ip + 1 < chunk.code.len() {
-        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
+        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) else {
             ip += 2;
             continue;
         };
@@ -86,7 +86,7 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
             let mut try_end_pos: Option<usize> = None;
             let mut scan = ip;
             while scan + 1 < chunk.code.len() {
-                let Some(inner) = Op::decode(chunk.code[scan], chunk.code[scan + 1]) else {
+                let Some(inner) = Op::decode(chunk.code[scan], chunk.code[scan + 1] as u16) else {
                     scan += 2;
                     continue;
                 };
@@ -112,7 +112,7 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                 if catch_ip >= 4 && catch_ip <= chunk.code.len() {
                     let br_pos = catch_ip - 4;
                     let is_br = chunk.code[br_pos] == Op::BR.prefix()
-                        && chunk.code[br_pos + 1] == Op::BR.sub();
+                        && chunk.code[br_pos + 1] == Op::BR.sub_u8();
                     if is_br {
                         let br_off = ((chunk.code[br_pos + 2] as i16) << 8)
                             | (chunk.code[br_pos + 3] as i16 & 0xFF);
@@ -181,7 +181,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
         if ip + 1 >= chunk.code.len() {
             break;
         }
-        if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+        if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
             if op == Op::CALL_REF {
                 // call_ref needs argc+1 temps (save args + table idx)
                 let call_argc = chunk.code.get(ip + 2).copied().unwrap_or(0) as u32;
@@ -231,7 +231,7 @@ fn is_binary_typed_op(op: Op) -> bool {
 }
 
 fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
-    ip + 1 < chunk.code.len() && Op::decode(chunk.code[ip], chunk.code[ip + 1]).is_some()
+    ip + 1 < chunk.code.len() && Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16).is_some()
 }
 
 fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
@@ -447,7 +447,7 @@ pub fn encode_code_section(
             if ip + 1 >= chunk.code.len() {
                 break;
             }
-            let op = match Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+            let op = match Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
                 Some(op) => op,
                 None => {
                     ip += 2;
@@ -577,14 +577,6 @@ pub fn encode_code_section(
                 emit_simd_prefixed_op(&mut body, op, chunk, &mut ip);
             } else if op.prefix() == 0xFE {
                 emit_thread_prefixed_op(&mut body, op, chunk, &mut ip);
-            } else if op.prefix() == 0xDD {
-                // Relaxed-SIMD proposal — internal prefix 0xDD with
-                // sub-values 0x00..=0x13 maps to WASM `0xFD` prefix and
-                // LEB128 sub-opcode `0x100 + sub` (relaxed-simd assigns
-                // the two-byte spec values starting at 0x100).
-                body.push(0xFD);
-                write_leb128_u32(&mut body, crate::opcode::relaxed_simd::spec_sub(op.sub()));
-                ip += op.operand_format().size_in(&chunk.code, ip);
             } else {
                 emit_vm_internal_op(
                     &mut body,
@@ -624,7 +616,7 @@ fn emit_core_op(
 ) {
     match op {
         _ if op == Op::LOCAL_GET => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         }
         _ if op == Op::LOCAL_SET => {
@@ -632,7 +624,7 @@ fn emit_core_op(
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         } // local.tee
         _ if op == Op::CALL => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let argc = chunk.code[*ip];
             *ip += 1;
             write_leb128_u32(body, argc as u32);
@@ -725,7 +717,7 @@ fn emit_core_op(
         _ if op == Op::BLOCK || op == Op::LOOP || op == Op::IF => {
             let result_count = chunk.code[*ip];
             *ip += 1;
-            body.push(op.sub()); // 0x02 / 0x03 / 0x04
+            body.push(op.sub_u8()); // 0x02 / 0x03 / 0x04
             match result_count {
                 0 => body.push(TYPE_VOID),
                 1 => body.push(TYPE_EXTERNREF),
@@ -743,18 +735,18 @@ fn emit_core_op(
             body.push(0x05); // else
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
         // Memory load/store with alignment + offset
         _ if op == Op::I32_LOAD || op == Op::F32_LOAD => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD || op == Op::F64_LOAD => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -763,7 +755,7 @@ fn emit_core_op(
             || op == Op::I64_LOAD8_S
             || op == Op::I64_LOAD8_U =>
         {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -772,37 +764,37 @@ fn emit_core_op(
             || op == Op::I64_LOAD16_S
             || op == Op::I64_LOAD16_U =>
         {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD32_S || op == Op::I64_LOAD32_U => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE || op == Op::F32_STORE => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE || op == Op::F64_STORE => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE8 || op == Op::I64_STORE8 => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE16 || op == Op::I64_STORE16 => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE32 => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -949,12 +941,12 @@ fn emit_core_op(
             || op == Op::F64_MAX
             || op == Op::F64_COPYSIGN =>
         {
-            emit_binary_f64_op(body, op.sub(), rt_idx, temp_idx);
+            emit_binary_f64_op(body, op.sub_u8(), rt_idx, temp_idx);
         }
 
         // ── f64 comparisons: unbox both → compare → rebox i32 result ──
         _ if op == Op::F64_LT || op == Op::F64_GT || op == Op::F64_LE || op == Op::F64_GE => {
-            emit_binary_f64_cmp(body, op.sub(), rt_idx, temp_idx);
+            emit_binary_f64_cmp(body, op.sub_u8(), rt_idx, temp_idx);
         }
 
         // ── i32 binary arithmetic: unbox both → i32 op → rebox ──
@@ -974,12 +966,12 @@ fn emit_core_op(
             || op == Op::I32_ROTL
             || op == Op::I32_ROTR =>
         {
-            emit_binary_i32_op(body, op.sub(), rt_idx, temp_idx);
+            emit_binary_i32_op(body, op.sub_u8(), rt_idx, temp_idx);
         }
 
         // ── i32 comparisons (eq, ne): unbox both → compare → rebox ──
         _ if op == Op::EQ || op == Op::NE => {
-            emit_binary_i32_cmp(body, op.sub(), rt_idx, temp_idx);
+            emit_binary_i32_cmp(body, op.sub_u8(), rt_idx, temp_idx);
         }
 
         // ── f64 unary ops: unbox → op → rebox ──
@@ -992,19 +984,19 @@ fn emit_core_op(
             || op == Op::F64_SQRT =>
         {
             emit_unbox_f64(body, rt_idx);
-            body.push(op.sub());
+            body.push(op.sub_u8());
             emit_box_f64(body, rt_idx);
         }
 
         // ── i32 unary ops ──
         _ if op == Op::I32_EQZ => {
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub());
+            body.push(op.sub_u8());
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::I32_CLZ || op == Op::I32_CTZ || op == Op::I32_POPCNT => {
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub());
+            body.push(op.sub_u8());
             emit_box_i32(body, rt_idx);
         }
 
@@ -1012,13 +1004,13 @@ fn emit_core_op(
         _ if op == Op::I32_FROM_F64 => {
             // externref → f64 → i32.trunc_f64_s → externref
             emit_unbox_f64(body, rt_idx);
-            body.push(op.sub());
+            body.push(op.sub_u8());
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::F64_FROM_I32 => {
             // externref → i32 → f64.convert_i32_s → externref
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub());
+            body.push(op.sub_u8());
             emit_box_f64(body, rt_idx);
         }
 
@@ -1035,7 +1027,7 @@ fn emit_core_op(
             emit_box_i32(body, rt_idx); // i32 → externref
         }
         _ if op == Op::RETHROW || op == Op::DELEGATE => {
-            body.push(op.sub());
+            body.push(op.sub_u8());
             let depth = read_leb_u32(&chunk.code, ip);
             write_leb128_u32(body, depth);
         }
@@ -1083,7 +1075,7 @@ fn emit_core_op(
 
         _ => {
             // Other core ops: emit WASM byte directly
-            body.push(op.sub());
+            body.push(op.sub_u8());
             *ip += op.operand_format().size_in(&chunk.code, *ip);
         }
     }
@@ -2377,12 +2369,12 @@ fn emit_vm_internal_op(
         // Memory64 reuses the standard memory instruction bytes. The i64
         // address shape is carried by the memory type in the binary format.
         _ if op == Op::I64_MEMORY_SIZE => {
-            body.push(Op::MEMORY_SIZE.sub());
+            body.push(Op::MEMORY_SIZE.sub_u8());
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
         _ if op == Op::I64_MEMORY_GROW => {
-            body.push(Op::MEMORY_GROW.sub());
+            body.push(Op::MEMORY_GROW.sub_u8());
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
@@ -2400,71 +2392,71 @@ fn emit_vm_internal_op(
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
-        _ if op == Op::I32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub(), 2),
-        _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub(), 3),
-        _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub(), 2),
-        _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub(), 3),
+        _ if op == Op::I32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub_u8(), 2),
+        _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub_u8(), 3),
+        _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub_u8(), 2),
+        _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub_u8(), 3),
         _ if op == Op::I32_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub_u8(), 0)
         }
         _ if op == Op::I32_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub_u8(), 0)
         }
         _ if op == Op::I32_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub_u8(), 1)
         }
         _ if op == Op::I32_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub_u8(), 1)
         }
         _ if op == Op::I64_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub_u8(), 0)
         }
         _ if op == Op::I64_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub_u8(), 0)
         }
         _ if op == Op::I64_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub_u8(), 1)
         }
         _ if op == Op::I64_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub_u8(), 1)
         }
         _ if op == Op::I64_LOAD32_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub_u8(), 2)
         }
         _ if op == Op::I64_LOAD32_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub_u8(), 2)
         }
-        _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub(), 2),
-        _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub(), 3),
-        _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub(), 2),
-        _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub(), 3),
-        _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub(), 0),
+        _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub_u8(), 2),
+        _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub_u8(), 3),
+        _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub_u8(), 2),
+        _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub_u8(), 3),
+        _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub_u8(), 0),
         _ if op == Op::I32_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub_u8(), 1)
         }
-        _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub(), 0),
+        _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub_u8(), 0),
         _ if op == Op::I64_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub_u8(), 1)
         }
         _ if op == Op::I64_STORE32_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub_u8(), 2)
         }
-        _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub()),
-        _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub()),
+        _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub_u8()),
+        _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub_u8()),
         _ if op == Op::TABLE_INIT_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub(), true)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub_u8(), true)
         }
         _ if op == Op::TABLE_COPY_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub(), true)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub_u8(), true)
         }
         _ if op == Op::TABLE_GROW_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub_u8(), false)
         }
         _ if op == Op::TABLE_SIZE_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub_u8(), false)
         }
         _ if op == Op::TABLE_FILL_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub_u8(), false)
         }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => {

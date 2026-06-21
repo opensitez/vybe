@@ -147,6 +147,8 @@ pub struct Chunk {
     pub name: String,
     pub arity: u8,
     pub local_count: u16,
+    /// Scratch local for `emit_dup` (WASM `local.tee` + `local.get`).
+    pub dup_slot: Option<u16>,
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
@@ -224,6 +226,7 @@ impl Chunk {
             name: name.into(),
             arity: 0,
             local_count: 0,
+            dup_slot: None,
             imports: Vec::new(),
             types: Vec::new(),
             exception_tags: Vec::new(),
@@ -339,6 +342,75 @@ impl Chunk {
                 break;
             }
         }
+    }
+
+    pub fn emit_leb_i32(&mut self, value: i32, line: u32) {
+        let mut v = value;
+        loop {
+            let mut byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if (v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0) {
+                self.emit(byte, line);
+                break;
+            }
+            byte |= 0x80;
+            self.emit(byte, line);
+        }
+    }
+
+    pub fn emit_leb_i64(&mut self, value: i64, line: u32) {
+        let mut v = value;
+        loop {
+            let mut byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if (v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0) {
+                self.emit(byte, line);
+                break;
+            }
+            byte |= 0x80;
+            self.emit(byte, line);
+        }
+    }
+
+    /// Emit WASM `i32.const` (0x41) with signed LEB128 immediate.
+    pub fn emit_i32_const(&mut self, value: i32, line: u32) {
+        self.emit_op(Op::I32_CONST, line);
+        self.emit_leb_i32(value, line);
+    }
+
+    /// Emit WASM `i64.const` (0x42) with signed LEB128 immediate.
+    pub fn emit_i64_const(&mut self, value: i64, line: u32) {
+        self.emit_op(Op::I64_CONST, line);
+        self.emit_leb_i64(value, line);
+    }
+
+    /// Emit WASM `f64.const` (0x44) with 8 raw bytes.
+    pub fn emit_f64_const(&mut self, value: f64, line: u32) {
+        self.emit_op(Op::F64_CONST, line);
+        for b in value.to_le_bytes() {
+            self.emit(b, line);
+        }
+    }
+
+    /// Emit WASM `f32.const` (0x43) with 4 raw bytes.
+    pub fn emit_f32_const(&mut self, value: f32, line: u32) {
+        self.emit_op(Op::F32_CONST, line);
+        for b in value.to_le_bytes() {
+            self.emit(b, line);
+        }
+    }
+
+    /// Duplicate top of stack using `local.tee` + `local.get` (WASM-compliant DUP).
+    /// Reuses a single scratch local to avoid unbounded local growth.
+    pub fn emit_dup(&mut self, line: u32) {
+        if self.dup_slot.is_none() {
+            let slot = self.local_count;
+            self.local_count = slot + 1;
+            self.dup_slot = Some(slot);
+        }
+        let slot = self.dup_slot.unwrap();
+        self.emit_op_u16(Op::LOCAL_TEE, slot, line);
+        self.emit_op_u16(Op::LOCAL_GET, slot, line);
     }
 
     pub fn add_constant(&mut self, value: Value) -> u16 {

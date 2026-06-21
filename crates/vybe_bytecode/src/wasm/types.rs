@@ -178,7 +178,7 @@ pub fn build_type_context(
         let code = &chunk.code;
         let mut bip = 0;
         while bip + 1 < code.len() {
-            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
+            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1] as u16) {
                 if op == crate::opcode::Op::BLOCK
                     || op == crate::opcode::Op::LOOP
                     || op == crate::opcode::Op::IF
@@ -208,7 +208,7 @@ pub fn build_type_context(
         let code = &chunk.code;
         let mut bip = 0;
         while bip + 1 < code.len() {
-            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
+            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1] as u16) {
                 if matches!(op,
                     o if o == crate::opcode::Op::CONT_NEW
                       || o == crate::opcode::Op::CONT_NEW_TYPED
@@ -384,7 +384,7 @@ pub fn build_type_context(
             if ip + 1 >= chunk.code.len() {
                 break;
             }
-            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
                 if op == crate::opcode::Op::CALL_IMPORT {
                     let import_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
                     let argc = chunk.code[ip + 4];

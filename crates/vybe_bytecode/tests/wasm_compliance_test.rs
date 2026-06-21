@@ -1332,7 +1332,7 @@ fn every_opcode_is_two_bytes() {
     for byte1 in [0x00u8, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF] {
         for byte2 in 0u8..=0xFF {
             // Not all combinations are valid opcodes — just check decode doesn't panic
-            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2);
+            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2 as u16);
         }
     }
 }
@@ -1340,19 +1340,19 @@ fn every_opcode_is_two_bytes() {
 #[test]
 fn core_wasm_opcode_bytes_match_spec() {
     // Verify specific opcodes have the correct WASM byte values
-    assert_eq!(Op::DROP.sub(), 0x1A, "drop should be 0x1A per WASM spec");
-    assert_eq!(Op::I32_ADD.sub(), 0x6A, "i32.add should be 0x6A");
-    assert_eq!(Op::I32_SUB.sub(), 0x6B, "i32.sub should be 0x6B");
-    assert_eq!(Op::F64_ADD.sub(), 0xA0, "f64.add should be 0xA0");
-    assert_eq!(Op::F64_NEG.sub(), 0x9A, "f64.neg should be 0x9A");
-    assert_eq!(Op::LOCAL_GET.sub(), 0x20, "local.get should be 0x20");
-    assert_eq!(Op::LOCAL_SET.sub(), 0x21, "local.set should be 0x21");
-    assert_eq!(Op::CALL.sub(), 0x10, "call should be 0x10");
-    assert_eq!(Op::RETURN.sub(), 0x0F, "return should be 0x0F");
-    assert_eq!(Op::END.sub(), 0x0B, "end should be 0x0B");
-    assert_eq!(Op::BLOCK.sub(), 0x02, "block should be 0x02");
-    assert_eq!(Op::LOOP.sub(), 0x03, "loop should be 0x03");
-    assert_eq!(Op::BR.sub(), 0x0C, "br should be 0x0C");
+    assert_eq!(Op::DROP.sub_u8(), 0x1A, "drop should be 0x1A per WASM spec");
+    assert_eq!(Op::I32_ADD.sub_u8(), 0x6A, "i32.add should be 0x6A");
+    assert_eq!(Op::I32_SUB.sub_u8(), 0x6B, "i32.sub should be 0x6B");
+    assert_eq!(Op::F64_ADD.sub_u8(), 0xA0, "f64.add should be 0xA0");
+    assert_eq!(Op::F64_NEG.sub_u8(), 0x9A, "f64.neg should be 0x9A");
+    assert_eq!(Op::LOCAL_GET.sub_u8(), 0x20, "local.get should be 0x20");
+    assert_eq!(Op::LOCAL_SET.sub_u8(), 0x21, "local.set should be 0x21");
+    assert_eq!(Op::CALL.sub_u8(), 0x10, "call should be 0x10");
+    assert_eq!(Op::RETURN.sub_u8(), 0x0F, "return should be 0x0F");
+    assert_eq!(Op::END.sub_u8(), 0x0B, "end should be 0x0B");
+    assert_eq!(Op::BLOCK.sub_u8(), 0x02, "block should be 0x02");
+    assert_eq!(Op::LOOP.sub_u8(), 0x03, "loop should be 0x03");
+    assert_eq!(Op::BR.sub_u8(), 0x0C, "br should be 0x0C");
 }
 
 #[test]
@@ -1383,7 +1383,7 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     assert_eq!(Op::CONST.prefix(), 0xFF);
     assert_eq!(Op::CALL_IMPORT.prefix(), 0xFF);
     assert_eq!(Op::BR.prefix(), 0x00);
-    assert_eq!(Op::BR.sub(), 0x0C);
+    assert_eq!(Op::BR.sub_u8(), 0x0C);
     assert_eq!(Op::STR_CONCAT.prefix(), 0xFF);
 }
 
@@ -3204,7 +3204,7 @@ fn gc_opcodes_use_spec_byte_values() {
         );
         assert_eq!(
             op.sub(),
-            *sub,
+            *sub as u16,
             "{}: sub mismatch (got 0x{:02X}, spec 0x{:02X})",
             name,
             op.sub(),
@@ -3223,16 +3223,16 @@ fn gc_opcodes_use_spec_byte_values() {
 #[test]
 fn ref_eq_no_longer_collides_with_array_init_elem() {
     assert_eq!(Op::REF_EQ.prefix(), 0x00);
-    assert_eq!(Op::REF_EQ.sub(), 0xD3);
+    assert_eq!(Op::REF_EQ.sub_u8(), 0xD3);
     assert_eq!(Op::ARRAY_INIT_ELEM.prefix(), 0xFB);
-    assert_eq!(Op::ARRAY_INIT_ELEM.sub(), 0x13);
+    assert_eq!(Op::ARRAY_INIT_ELEM.sub_u8(), 0x13);
     assert_ne!(Op::REF_EQ.0, Op::ARRAY_INIT_ELEM.0);
 }
 
 #[test]
 fn array_new_fixed_vs_array_new_at_correct_spec_bytes() {
-    assert_eq!(Op::ARRAY_NEW_FIXED.sub(), 0x08);
-    assert_eq!(Op::ARRAY_NEW.sub(), 0x06);
+    assert_eq!(Op::ARRAY_NEW_FIXED.sub_u8(), 0x08);
+    assert_eq!(Op::ARRAY_NEW.sub_u8(), 0x06);
     assert_eq!(Op::ARRAY_NEW_FIXED.wasm_name(), "array.new_fixed");
     assert_eq!(Op::ARRAY_NEW.wasm_name(), "array.new");
 }
@@ -3390,9 +3390,8 @@ fn relaxed_simd_emits_correct_spec_subopcode() {
         seen,
         "emitted code must contain `0xFD 0x80 0x02` (relaxed_swizzle spec sub 0x100)"
     );
-    // Sanity: `spec_sub` matches the spec.
-    assert_eq!(relaxed_simd::spec_sub(0x00), 0x100);
-    assert_eq!(relaxed_simd::spec_sub(0x13), 0x113);
+    // Sanity: sub value matches the spec (256 = 0x100).
+    assert_eq!(Op::I8X16_RELAXED_SWIZZLE.sub(), 256);
 }
 
 #[test]

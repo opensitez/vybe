@@ -219,7 +219,7 @@ fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
     while offset + 1 < chunk.code.len() {
         let prefix = chunk.code[offset];
         let sub = chunk.code[offset + 1];
-        let op = match Op::decode(prefix, sub) {
+        let op = match Op::decode(prefix, sub as u16) {
             Some(op) => op,
             None => {
                 offset += 2;

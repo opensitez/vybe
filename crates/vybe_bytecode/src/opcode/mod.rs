@@ -1,22 +1,16 @@
 //! WASM-compliant opcode definitions.
 //!
-//! `Op` is a `u16` newtype: `(prefix << 8) | sub_opcode`.
-//! Every opcode is 2 bytes on the wire. No special-casing.
+//! `Op` is a `u32` newtype: `(prefix << 16) | sub_opcode`.
+//! Sub-opcode is u16, allowing spec values up to 65535 (relaxed SIMD
+//! uses sub-values 256+).
 //!
 //! Prefixes match the WASM spec:
 //! - `0x00`: Core MVP
 //! - `0xFB`: GC proposal
 //! - `0xFC`: Misc proposal
-//! - `0xFD`: SIMD proposal
+//! - `0xFD`: SIMD proposal (including relaxed SIMD at sub 256+)
 //! - `0xFE`: Threads proposal
-//! - `0xFF`: VM-internal (not WASM — lowered in .wasm output)
-//!
-//! Non-WASM prefixes used as a compact internal representation for
-//! proposals whose spec sub-values exceed the u8 range we reserve for
-//! the `sub` byte:
-//! - `0xDD`: Relaxed-SIMD (spec sub-values `0x100..=0x113` — emitted as
-//!           `0xFD + LEB128(0x100 + sub)` in binary). See
-//!           `opcode/relaxed_simd.rs` and `wasm/code.rs` emitter.
+//! - `0xFF`: VM-internal (not WASM — being eliminated)
 //!
 //! Opcodes are defined in category files (core.rs, gc.rs, etc.) as `pub const` values.
 //! Adding an opcode = one line in one file.
@@ -29,40 +23,54 @@ mod simd;
 mod threads;
 mod vm_internal;
 
-/// A bytecode opcode. Encoded as `(prefix << 8) | sub_opcode`.
-/// All opcodes are uniformly 2 bytes on the wire.
+/// A bytecode opcode. Encoded as `(prefix << 16) | sub_opcode`.
+/// Sub-opcode is u16, supporting spec values up to 65535.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Op(pub u16);
+pub struct Op(pub u32);
 
 impl Op {
-    /// Create from prefix + sub-opcode.
+    /// Create from prefix + sub-opcode (u16 for full spec range).
     #[inline]
-    pub const fn new(prefix: u8, sub: u8) -> Self {
-        Op(((prefix as u16) << 8) | sub as u16)
+    pub const fn new(prefix: u8, sub: u16) -> Self {
+        Op(((prefix as u32) << 16) | sub as u32)
+    }
+
+    /// Backward-compat: create from prefix + u8 sub (most opcodes).
+    #[inline]
+    pub const fn new_u8(prefix: u8, sub: u8) -> Self {
+        Self::new(prefix, sub as u16)
     }
 
     /// Prefix byte (0x00=core, 0xFB=GC, 0xFC=misc, 0xFD=SIMD, 0xFE=threads, 0xFF=VM-internal).
     #[inline]
     pub const fn prefix(self) -> u8 {
-        (self.0 >> 8) as u8
+        (self.0 >> 16) as u8
     }
 
-    /// Sub-opcode byte within the prefix group.
+    /// Sub-opcode within the prefix group (u16 range).
     #[inline]
-    pub const fn sub(self) -> u8 {
+    pub const fn sub(self) -> u16 {
+        (self.0 & 0xFFFF) as u16
+    }
+
+    /// Sub-opcode as u8 (for opcodes known to fit in u8).
+    #[inline]
+    pub const fn sub_u8(self) -> u8 {
         (self.0 & 0xFF) as u8
     }
 
-    /// Encode to 2 bytes: [prefix, sub_opcode]. Uniform encoding.
+    /// Encode to 2 bytes for the internal bytecode stream.
+    /// Core opcodes (prefix 0x00): [0x00, sub]. Prefixed: [prefix, sub].
+    /// For sub > 255, the bytecode stream uses 3+ bytes (handled by emit_op).
     #[inline]
     pub const fn encode(self) -> (u8, u8) {
-        (self.prefix(), self.sub())
+        (self.prefix(), self.sub_u8())
     }
 
-    /// All opcodes are uniformly 2 bytes.
+    /// Byte length in the internal bytecode stream.
     #[inline]
     pub const fn encoded_len(self) -> usize {
-        2
+        if self.sub() > 255 { 4 } else { 2 }
     }
 
     /// True if this is a VM-internal opcode (0xFF prefix), not standard WASM.
@@ -71,11 +79,9 @@ impl Op {
         self.prefix() == 0xFF
     }
 
-    /// Decode 2 bytes into a validated opcode.
-    /// Returns None if the prefix/sub combination is not a defined opcode.
-    pub fn decode(prefix: u8, sub: u8) -> Option<Op> {
+    /// Decode from prefix + u16 sub into a validated opcode.
+    pub fn decode(prefix: u8, sub: u16) -> Option<Op> {
         let op = Op::new(prefix, sub);
-        // Check if this is a valid opcode by looking up metadata
         if op.wasm_name_opt().is_some() {
             Some(op)
         } else {
@@ -83,13 +89,18 @@ impl Op {
         }
     }
 
+    /// Decode from prefix + u8 sub (backward compat).
+    pub fn decode_u8(prefix: u8, sub: u8) -> Option<Op> {
+        Self::decode(prefix, sub as u16)
+    }
+
     /// Operand format for this opcode.
     pub fn operand_format(self) -> OperandFormat {
         match self.prefix() {
             0x00 => core_ops::operand_format(self.sub()),
-            0xDD => relaxed_simd::operand_format(self.sub()),
             0xFB => gc::operand_format(self.sub()),
             0xFC => misc::operand_format(self.sub()),
+            0xFD if self.sub() >= 256 => relaxed_simd::operand_format(self.sub()),
             0xFD => simd::operand_format(self.sub()),
             0xFE => threads::operand_format(self.sub()),
             0xFF => vm_internal::operand_format(self.sub()),
@@ -101,9 +112,9 @@ impl Op {
     pub fn wasm_name_opt(self) -> Option<&'static str> {
         match self.prefix() {
             0x00 => core_ops::name(self.sub()),
-            0xDD => relaxed_simd::name(self.sub()),
             0xFB => gc::name(self.sub()),
             0xFC => misc::name(self.sub()),
+            0xFD if self.sub() >= 256 => relaxed_simd::name(self.sub()),
             0xFD => simd::name(self.sub()),
             0xFE => threads::name(self.sub()),
             0xFF => vm_internal::name(self.sub()),
@@ -169,6 +180,14 @@ pub enum OperandFormat {
     V128Const,
     /// 16 bytes lane indices (i8x16.shuffle).
     Shuffle,
+    /// Signed LEB128 i32 immediate (i32.const).
+    SlI32,
+    /// Signed LEB128 i64 immediate (i64.const).
+    SlI64,
+    /// 4 raw bytes (f32.const).
+    RawF32,
+    /// 8 raw bytes (f64.const).
+    RawF64,
 }
 
 impl OperandFormat {
@@ -180,6 +199,8 @@ impl OperandFormat {
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
+            Self::RawF32 => 4,
+            Self::RawF64 => 8,
             Self::V128Const | Self::Shuffle => 16,
             Self::Closure
             | Self::U32Leb
@@ -187,7 +208,9 @@ impl OperandFormat {
             | Self::MemArg
             | Self::MemArg64
             | Self::BrTable
-            | Self::TryTable => 0,
+            | Self::TryTable
+            | Self::SlI32
+            | Self::SlI64 => 0,
         }
     }
 
@@ -206,6 +229,8 @@ impl OperandFormat {
                 let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
                 2 + 1 + uv_count * 2
             }
+            Self::SlI32 => leb_i32_size(code, operand_start),
+            Self::SlI64 => leb_i64_size(code, operand_start),
             Self::BrTable => br_table_size(code, operand_start),
             Self::TryTable => {
                 let count = code.get(operand_start).copied().unwrap_or(0) as usize;
@@ -267,6 +292,24 @@ pub fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
     result
 }
 
+pub fn leb_i32_size(code: &[u8], start: usize) -> usize {
+    leb_u32_size(code, start)
+}
+
+pub fn leb_i64_size(code: &[u8], start: usize) -> usize {
+    let mut len = 0usize;
+    while let Some(byte) = code.get(start + len) {
+        len += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if len >= 10 {
+            break;
+        }
+    }
+    len
+}
+
 pub fn leb_u32_size(code: &[u8], start: usize) -> usize {
     let mut len = 0usize;
     while let Some(byte) = code.get(start + len) {
@@ -299,6 +342,50 @@ pub fn read_leb_u32(code: &[u8], ip: &mut usize) -> u32 {
     result
 }
 
+pub fn read_leb_i32(code: &[u8], ip: &mut usize) -> i32 {
+    let mut result = 0u32;
+    let mut shift = 0u32;
+    let mut byte;
+    loop {
+        byte = code.get(*ip).copied().unwrap_or(0);
+        *ip += 1;
+        result |= ((byte & 0x7f) as u32) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if shift >= 35 {
+            break;
+        }
+    }
+    if shift < 32 && (byte & 0x40) != 0 {
+        result |= !0u32 << shift;
+    }
+    result as i32
+}
+
+pub fn read_leb_i64(code: &[u8], ip: &mut usize) -> i64 {
+    let mut result = 0u64;
+    let mut shift = 0u32;
+    let mut byte;
+    loop {
+        byte = code.get(*ip).copied().unwrap_or(0);
+        *ip += 1;
+        result |= ((byte & 0x7f) as u64) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if shift >= 70 {
+            break;
+        }
+    }
+    if shift < 64 && (byte & 0x40) != 0 {
+        result |= !0u64 << shift;
+    }
+    result as i64
+}
+
 pub fn br_table_size(code: &[u8], operand_start: usize) -> usize {
     let mut ip = operand_start;
     let count = read_leb_u32(code, &mut ip) as usize;
@@ -313,14 +400,14 @@ pub fn br_table_size(code: &[u8], operand_start: usize) -> usize {
 /// from a table of [sub] name => format entries.
 macro_rules! opcode_category {
     ( $( [$sub:literal] $name:ident => $fmt:ident, $wasm_name:literal; )* ) => {
-        pub(super) fn name(sub: u8) -> Option<&'static str> {
+        pub(super) fn name(sub: u16) -> Option<&'static str> {
             match sub {
                 $( $sub => Some($wasm_name), )*
                 _ => None,
             }
         }
 
-        pub(super) fn operand_format(sub: u8) -> super::OperandFormat {
+        pub(super) fn operand_format(sub: u16) -> super::OperandFormat {
             match sub {
                 $( $sub => super::OperandFormat::$fmt, )*
                 _ => super::OperandFormat::None,

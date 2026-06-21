@@ -195,7 +195,7 @@ fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
         let op_start = ip;
         let prefix = code[ip];
         let sub = code[ip + 1];
-        let op = match Op::decode(prefix, sub) {
+        let op = match Op::decode(prefix, sub as u16) {
             Some(op) => op,
             None => {
                 ip += 2;
@@ -244,7 +244,7 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
     while ip + 1 < code.len() {
         let prefix = code[ip];
         let sub = code[ip + 1];
-        let op = match Op::decode(prefix, sub) {
+        let op = match Op::decode(prefix, sub as u16) {
             Some(op) => op,
             None => {
                 ip += 2;

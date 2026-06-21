@@ -340,7 +340,7 @@ impl Linker {
                         if ip + 1 >= code.len() {
                             break;
                         }
-                        if let Some(op) = crate::opcode::Op::decode(code[ip], code[ip + 1]) {
+                        if let Some(op) = crate::opcode::Op::decode(code[ip], code[ip + 1] as u16) {
                             if op == crate::opcode::Op::CALL_IMPORT {
                                 // Remap import index: operand u16 is at ip+2..ip+3
                                 if ip + 3 < code.len() {

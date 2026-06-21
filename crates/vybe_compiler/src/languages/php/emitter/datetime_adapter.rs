@@ -32,8 +32,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 
 fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
@@ -81,10 +88,10 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
     local_set(chunk, ms_slot, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, type_tag, line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, ms_slot, line);
     struct_set(chunk, TIME_KEY, line);
 }
@@ -171,7 +178,7 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, "/", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     emit_array_get_const_index(chunk, date_parts_slot, 2.0, line);
@@ -210,7 +217,7 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, " ", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     let parts_slot = alloc_local(chunk);
     local_set(chunk, parts_slot, line);
     emit_array_get_const_index(chunk, parts_slot, 0.0, line);
@@ -221,12 +228,12 @@ fn emit_datetime_create_from_format_impl(
     local_set(chunk, time_str_slot, line);
     local_get(chunk, date_str_slot, line);
     push_str(chunk, "/", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     local_get(chunk, time_str_slot, line);
     push_str(chunk, ":", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     let time_parts_slot = alloc_local(chunk);
     local_set(chunk, time_parts_slot, line);
 
@@ -368,7 +375,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
     for _ in 1..width {
         // if STR_LENGTH(s) < width: s = "0" + s
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        chunk.emit_op(Op::STR_LENGTH, line);
+        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
         let idx = chunk.add_constant(Value::F64(width as f64));
         chunk.emit_op_u16(Op::CONST, idx, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -1068,7 +1075,7 @@ fn emit_format_dt_runtime(
     local_set(chunk, i_slot, line);
     // len = STR_LENGTH(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     local_set(chunk, len_slot, line);
 
     // while i < len:  block { loop { ... } } — WASM structured control flow
@@ -1086,7 +1093,7 @@ fn emit_format_dt_runtime(
     //   c = fmt.charAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
+    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     local_set(chunk, c_slot, line);
 
     if !mode_strftime {
@@ -1107,7 +1114,7 @@ fn emit_format_dt_runtime(
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        chunk.emit_op(Op::STR_CHAR_AT, line);
+        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         emit_append_to_result(chunk, result_slot, line);
         chunk.emit_end(line);
         // i++
@@ -1148,7 +1155,7 @@ fn emit_format_dt_runtime(
         // c = fmt.charAt(i)
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        chunk.emit_op(Op::STR_CHAR_AT, line);
+        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         local_set(chunk, c_slot, line);
         emit_format_code_dispatch(
             chunks,
@@ -1414,7 +1421,7 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 
     // Range checks: 1<=m<=12, 1<=d<=31, 1<=y<=32767.
     let result_slot = alloc_local(chunk);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     local_set(chunk, result_slot, line);
     for &(slot, lo, hi) in &[
         (m_slot, 1.0_f64, 12.0_f64),
@@ -1425,14 +1432,14 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         push_const(chunk, Value::F64(lo), line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         local_set(chunk, result_slot, line);
         chunk.emit_end(line);
         local_get(chunk, slot, line);
         push_const(chunk, Value::F64(hi), line);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if(line);
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         local_set(chunk, result_slot, line);
         chunk.emit_end(line);
     }
@@ -1486,7 +1493,7 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         crate::emitter::ops::emit_dyn_eq(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         local_set(chunk, result_slot, line);
         chunk.emit_end(line);
     }
@@ -1743,10 +1750,10 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     chunk.emit_if(line);
     // Build the clone: STRUCT_NEW + copy __type + copy __time.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
@@ -2244,10 +2251,10 @@ pub fn emit_datetime_immutable_modify(chunks: &mut [Chunk], current: usize, line
     // Build a fresh DateTimeImmutable carrying the same __time, then
     // delegate to the mutable modify path on it.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
@@ -2355,10 +2362,10 @@ pub fn emit_datetime_immutable_add(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, dt_slot, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
@@ -2378,10 +2385,10 @@ pub fn emit_datetime_immutable_sub(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, dt_slot, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
@@ -2416,7 +2423,7 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get(chunk, TIME_KEY, line);
     chunk.emit_op(Op::F64_SUB, line);
     let signed_slot = alloc_local(chunk);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_set(chunk, signed_slot, line);
     chunk.emit_op(Op::F64_ABS, line);
     local_set(chunk, delta_slot, line);
@@ -2472,31 +2479,31 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Build the DateInterval object.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
     struct_set(chunk, TYPE_KEY, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, days_slot, line);
     struct_set(chunk, "days", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, years_slot, line);
     struct_set(chunk, "y", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, months_slot, line);
     struct_set(chunk, "m", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, day_comp_slot, line);
     struct_set(chunk, "d", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "h", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "i", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "s", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     local_get(chunk, invert_slot, line);
     struct_set(chunk, "invert", line);
 }
@@ -2530,7 +2537,7 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     local_set(chunk, y_slot, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
     struct_set(chunk, TYPE_KEY, line);
 
@@ -2543,14 +2550,14 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
         ("s", s_slot),
     ];
     for (key, slot) in pairs {
-        chunk.emit_op(Op::DUP, line);
+        chunk.emit_dup(line);
         local_get(chunk, *slot, line);
         struct_set(chunk, key, line);
     }
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "days", line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "invert", line);
 }

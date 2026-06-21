@@ -19,8 +19,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     s
 }
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
@@ -256,25 +263,25 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     lset(chunk, filename_slot, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, dirname_slot, line);
     let dirname_key = chunk.add_constant(Value::String(Arc::from("dirname")));
     chunk.emit_op_u16(Op::STRUCT_SET, dirname_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, basename_slot, line);
     let basename_key = chunk.add_constant(Value::String(Arc::from("basename")));
     chunk.emit_op_u16(Op::STRUCT_SET, basename_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, extension_slot, line);
     let extension_key = chunk.add_constant(Value::String(Arc::from("extension")));
     chunk.emit_op_u16(Op::STRUCT_SET, extension_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, filename_slot, line);
     let filename_key = chunk.add_constant(Value::String(Arc::from("filename")));
     chunk.emit_op_u16(Op::STRUCT_SET, filename_key, line);
@@ -297,7 +304,7 @@ pub fn emit_file(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     call_import(chunks, current, "node:fs", "readFileSync", 2, line);
     let chunk = &mut chunks[current];
     push_str(chunk, "\n", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
 }
 
 /// PHP `glob($pattern, $flags = 0)` — current support covers the common
@@ -343,7 +350,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
-    chunk.emit_op(Op::STR_CONTAINS, line);
+    { let idx = chunk.add_import("ecma:string", "includes"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -361,7 +368,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, parts_slot, line);
 
     lget(chunk, parts_slot, line);
@@ -414,7 +421,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, entry_slot, line);
 
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     lset(chunk, pass_slot, line);
     lget(chunk, prefix_slot, line);
     push_str(chunk, "", line);
@@ -423,7 +430,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, prefix_slot, line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
@@ -431,7 +438,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(0, line);
 
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     lset(chunk, pass_slot, line);
     lget(chunk, suffix_slot, line);
     push_str(chunk, "", line);
@@ -440,7 +447,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, suffix_slot, line);
-    chunk.emit_op(Op::STR_ENDS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "endsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
@@ -450,9 +457,9 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, dir_slot, line);
     push_str(chunk, "/", line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lget(chunk, entry_slot, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, full_path_slot, line);
 
     lget(chunk, full_path_slot, line);
@@ -524,19 +531,19 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // wrapper = STRUCT_NEW; wrapper.__type = "Directory";
     // wrapper.__entries = entries; wrapper.__index = 0
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_str(chunk, "Directory", line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, entries_slot, line);
     let entries_key = chunk.add_constant(Value::String(Arc::from("__entries")));
     chunk.emit_op_u16(Op::STRUCT_SET, entries_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     let index_key = chunk.add_constant(Value::String(Arc::from("__index")));
     chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
@@ -580,7 +587,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lset(chunk, entry_slot, line);
 
     lget(chunk, dir_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
@@ -589,7 +596,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lget(chunk, entry_slot, line);
 
     chunk.emit_else(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
 }
 

@@ -82,7 +82,7 @@ pub fn module_uses_exceptions(chunks: &[Chunk]) -> bool {
     for chunk in chunks {
         let mut ip = 0;
         while ip + 1 < chunk.code.len() {
-            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
                 if op == crate::opcode::Op::THROW
                     || op == crate::opcode::Op::THROW_REF
                     || op == crate::opcode::Op::TRY_START

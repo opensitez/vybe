@@ -3,8 +3,8 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use crate::emitter::functions::create_function_chunk;
 use super::{GclClass, GclMethod, GclMethodTarget};
+use crate::emitter::functions::create_function_chunk;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AccessorBinding<'a> {
@@ -18,7 +18,12 @@ pub struct MethodBinding<'a> {
     pub chunk_idx: usize,
 }
 
-pub fn build_setter_chunk(class_name: &str, property_name: &str, set_import_idx: u16) -> Chunk {
+pub fn build_setter_chunk(
+    class_name: &str,
+    property_name: &str,
+    set_import_idx: u16,
+    size_sync_import_idx: Option<u16>,
+) -> Chunk {
     let chunk_name = format!("{}::__set_{}", class_name, property_name.to_lowercase());
     let mut chunk = create_function_chunk(&chunk_name, 2);
     let line = 0u32;
@@ -47,6 +52,14 @@ pub fn build_setter_chunk(class_name: &str, property_name: &str, set_import_idx:
     chunk.emit_op_u16(Op::CALL_IMPORT, set_import_idx, line);
     chunk.emit(3, line);
     chunk.emit_op(Op::DROP, line);
+    if is_client_size_property(property_name) {
+        if let Some(import_idx) = size_sync_import_idx {
+            chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+            chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
+            chunk.emit(1, line);
+            chunk.emit_op(Op::DROP, line);
+        }
+    }
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.local_count = 2;
@@ -183,6 +196,29 @@ pub fn build_constructor_chunk(
         chunk.emit_op(Op::DROP, line);
     }
 
+    if matches!(
+        class.name,
+        "TRadioGroup" | "TComboBox" | "TListBox" | "TListView" | "TTreeView"
+    ) {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, new_controls_collection_idx, line);
+        chunk.emit(1, line);
+        let key = chunk.add_constant(Value::String(Arc::from("items")));
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    if class.name == "TMemo" {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, new_controls_collection_idx, line);
+        chunk.emit(1, line);
+        let key = chunk.add_constant(Value::String(Arc::from("lines")));
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
     if let Some(import_idx) = widget_new_idx {
         for i in 0..arity {
             chunk.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -237,8 +273,11 @@ pub fn emit_install_class_global(
 pub fn build_application_run_chunk(run_application_idx: u16) -> Chunk {
     let mut chunk = create_function_chunk("Application::Run", 1);
     let line = 0u32;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let main_form_key = chunk.add_constant(Value::String(Arc::from("__main_form")));
+    chunk.emit_op_u16(Op::STRUCT_GET, main_form_key, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, run_application_idx, line);
-    chunk.emit(0, line);
+    chunk.emit(1, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.local_count = 1;
     chunk
@@ -254,10 +293,95 @@ pub fn build_application_exit_chunk(app_exit_idx: u16) -> Chunk {
     chunk
 }
 
+pub fn build_application_initialize_chunk() -> Chunk {
+    let mut chunk = create_function_chunk("Application::Initialize", 1);
+    let line = 0u32;
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = 1;
+    chunk
+}
+
+pub fn build_application_title_setter_chunk() -> Chunk {
+    let mut chunk = create_function_chunk("Application::__set_title", 2);
+    let line = 0u32;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
+    let title_key = chunk.add_constant(Value::String(Arc::from("__gcl_title")));
+    chunk.emit_op_u16(Op::STRUCT_SET, title_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = 2;
+    chunk
+}
+
+pub fn build_application_title_getter_chunk() -> Chunk {
+    let mut chunk = create_function_chunk("Application::__get_title", 1);
+    let line = 0u32;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let title_key = chunk.add_constant(Value::String(Arc::from("__gcl_title")));
+    chunk.emit_op_u16(Op::STRUCT_GET, title_key, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = 1;
+    chunk
+}
+
+pub fn build_show_message_chunk(msg_box_idx: u16) -> Chunk {
+    let mut chunk = create_function_chunk("ShowMessage", 1);
+    let line = 0u32;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let title = chunk.add_constant(Value::String(Arc::from("Message")));
+    chunk.emit_op_u16(Op::CONST, title, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, msg_box_idx, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = 1;
+    chunk
+}
+
+pub fn build_message_dlg_chunk(msg_box_idx: u16) -> Chunk {
+    let mut chunk = create_function_chunk("MessageDlg", 4);
+    let line = 0u32;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let title = chunk.add_constant(Value::String(Arc::from("Message")));
+    chunk.emit_op_u16(Op::CONST, title, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, msg_box_idx, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = 4;
+    chunk
+}
+
+pub fn emit_install_function_global(
+    script_chunk: &mut Chunk,
+    name: &str,
+    chunk_idx: usize,
+    line: u32,
+) {
+    script_chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
+    script_chunk.emit(0, line);
+    let name_const = script_chunk.add_constant(Value::String(Arc::from(name)));
+    script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
+    script_chunk.emit_op(Op::DROP, line);
+
+    let lower = name.to_lowercase();
+    if lower != name {
+        script_chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
+        script_chunk.emit(0, line);
+        let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
+        script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
+        script_chunk.emit_op(Op::DROP, line);
+    }
+}
+
 pub fn emit_install_application_global(
     script_chunk: &mut Chunk,
     run_chunk_idx: usize,
     exit_chunk_idx: usize,
+    initialize_chunk_idx: usize,
+    title_setter_idx: usize,
+    title_getter_idx: usize,
     line: u32,
 ) {
     script_chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -277,6 +401,27 @@ pub fn emit_install_application_global(
     script_chunk.emit_op(Op::DROP, line);
 
     script_chunk.emit_op(Op::DUP, line);
+    script_chunk.emit_op_u16(Op::REF_FUNC, initialize_chunk_idx as u16, line);
+    script_chunk.emit(0, line);
+    let initialize_key = script_chunk.add_constant(Value::String(Arc::from("initialize")));
+    script_chunk.emit_op_u16(Op::STRUCT_SET, initialize_key, line);
+    script_chunk.emit_op(Op::DROP, line);
+
+    script_chunk.emit_op(Op::DUP, line);
+    script_chunk.emit_op_u16(Op::REF_FUNC, title_setter_idx as u16, line);
+    script_chunk.emit(0, line);
+    let set_title_key = script_chunk.add_constant(Value::String(Arc::from("__set_title")));
+    script_chunk.emit_op_u16(Op::STRUCT_SET, set_title_key, line);
+    script_chunk.emit_op(Op::DROP, line);
+
+    script_chunk.emit_op(Op::DUP, line);
+    script_chunk.emit_op_u16(Op::REF_FUNC, title_getter_idx as u16, line);
+    script_chunk.emit(0, line);
+    let get_title_key = script_chunk.add_constant(Value::String(Arc::from("__get_title")));
+    script_chunk.emit_op_u16(Op::STRUCT_SET, get_title_key, line);
+    script_chunk.emit_op(Op::DROP, line);
+
+    script_chunk.emit_op(Op::DUP, line);
     let app_name = script_chunk.add_constant(Value::String(Arc::from("Application")));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, app_name, line);
     script_chunk.emit_op(Op::DROP, line);
@@ -290,6 +435,11 @@ fn bind_ref(chunk: &mut Chunk, this_slot: u16, key: &str, chunk_idx: usize, line
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
     chunk.emit(0, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
+    chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
+    chunk.emit_op(Op::DROP, line);
     let key_const = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_SET, key_const, line);
     chunk.emit_op(Op::DROP, line);
@@ -316,6 +466,13 @@ pub fn is_event_property(property_name: &str) -> bool {
     event_property_name(property_name).is_some()
 }
 
+fn is_client_size_property(property_name: &str) -> bool {
+    matches!(
+        property_name.to_ascii_lowercase().as_str(),
+        "clientwidth" | "clientheight"
+    )
+}
+
 fn event_property_name(property_name: &str) -> Option<&'static str> {
     match property_name.to_ascii_lowercase().as_str() {
         "onclick" => Some("click"),
@@ -323,6 +480,9 @@ fn event_property_name(property_name: &str) -> Option<&'static str> {
         "oncreate" => Some("create"),
         "onclose" => Some("close"),
         "ontimer" => Some("timer"),
+        "onkeypress" => Some("keyPress"),
+        "onkeydown" => Some("keyDown"),
+        "onkeyup" => Some("keyUp"),
         _ => None,
     }
 }

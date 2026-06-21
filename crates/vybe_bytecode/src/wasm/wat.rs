@@ -117,7 +117,7 @@ fn render_body(out: &mut String, chunk: &Chunk, base_indent: usize) {
         if ip + 1 >= chunk.code.len() {
             break;
         }
-        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
+        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) else {
             let _ = writeln!(
                 out,
                 "{:indent$};; unknown 0x{:02X} 0x{:02X}",
@@ -237,6 +237,26 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
         }
         OperandFormat::Closure | OperandFormat::TryTable => {
             let _ = write!(out, " <variable-length>");
+        }
+        OperandFormat::SlI32 => {
+            let mut pos = ip + 2;
+            let val = crate::opcode::read_leb_i32(&chunk.code, &mut pos);
+            let _ = write!(out, " {val}");
+        }
+        OperandFormat::SlI64 => {
+            let mut pos = ip + 2;
+            let val = crate::opcode::read_leb_i64(&chunk.code, &mut pos);
+            let _ = write!(out, " {val}");
+        }
+        OperandFormat::RawF32 => {
+            let start = ip + 2;
+            let bytes: [u8; 4] = chunk.code[start..start+4].try_into().unwrap_or([0;4]);
+            let _ = write!(out, " {}", f32::from_le_bytes(bytes));
+        }
+        OperandFormat::RawF64 => {
+            let start = ip + 2;
+            let bytes: [u8; 8] = chunk.code[start..start+8].try_into().unwrap_or([0;8]);
+            let _ = write!(out, " {}", f64::from_le_bytes(bytes));
         }
     }
 }

@@ -270,7 +270,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, ifaces_slot, line);
         chunk.emit_op(Op::NULL, line);
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
-        chunk.emit_op(Op::FALSE, line);
+        { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);

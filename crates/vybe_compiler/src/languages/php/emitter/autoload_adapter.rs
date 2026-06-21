@@ -14,7 +14,6 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use crate::emitter::ops::{emit_dyn_eq, emit_dyn_to_bool};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;
@@ -22,8 +21,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     s
 }
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
@@ -47,10 +53,11 @@ pub fn emit_constructor_ref_with_autoload(
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "undefined", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    {
+        let undef_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
+        chunk.emit(1, line);
+    }
     chunk.emit_if(line);
 
     emit_autoload_invoke(chunk, autoload_name, line);
@@ -83,10 +90,11 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "undefined", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    {
+        let undef_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
+        chunk.emit(1, line);
+    }
     chunk.emit_if(line);
 
     emit_autoload_invoke(chunk, autoload_name, line);
@@ -105,10 +113,11 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
 /// `if ctor_slot is undefined { ctor_slot = GLOBAL_GET fallback }`.
 fn emit_fallback_if_undefined(chunk: &mut Chunk, ctor_slot: u16, fallback: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "undefined", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    {
+        let undef_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
+        chunk.emit(1, line);
+    }
     chunk.emit_if(line);
     let fallback_idx = str_idx(chunk, fallback);
     chunk.emit_op_u16(Op::GLOBAL_GET, fallback_idx, line);
@@ -128,10 +137,11 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "undefined", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    {
+        let undef_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
+        chunk.emit(1, line);
+    }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
 
@@ -142,10 +152,11 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "undefined", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    {
+        let undef_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
+        chunk.emit(1, line);
+    }
     chunk.emit_if(line);
 
     // Plain function callback: call with just the class name.

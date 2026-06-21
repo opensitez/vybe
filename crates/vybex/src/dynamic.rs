@@ -1249,7 +1249,7 @@ fn remap_import_operands(chunks: &mut [Chunk], remap: &[u16]) -> Result<(), Stri
             if ip + 1 >= code.len() {
                 break;
             }
-            let Some(op) = Op::decode(code[ip], code[ip + 1]) else {
+            let Some(op) = Op::decode(code[ip], code[ip + 1] as u16) else {
                 ip += 2;
                 continue;
             };

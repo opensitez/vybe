@@ -106,19 +106,19 @@ pub fn emit_php_fiber_get_return(chunks: &mut [Chunk], current: usize, _argc: u8
 /// public properties; pending VM-level state accessor opcodes).
 pub fn emit_php_fiber_is_started(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::TRUE, line);
+    { let idx = chunks[current].add_constant(Value::Bool(true)); chunks[current].emit_op_u16(Op::CONST, idx, line); }
 }
 pub fn emit_php_fiber_is_suspended(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::FALSE, line);
+    { let idx = chunks[current].add_constant(Value::Bool(false)); chunks[current].emit_op_u16(Op::CONST, idx, line); }
 }
 pub fn emit_php_fiber_is_running(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::FALSE, line);
+    { let idx = chunks[current].add_constant(Value::Bool(false)); chunks[current].emit_op_u16(Op::CONST, idx, line); }
 }
 pub fn emit_php_fiber_is_terminated(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::FALSE, line);
+    { let idx = chunks[current].add_constant(Value::Bool(false)); chunks[current].emit_op_u16(Op::CONST, idx, line); }
 }
 
 // Suppress unused-import warnings if some helpers grow.

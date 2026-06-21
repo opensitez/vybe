@@ -1,6 +1,6 @@
 //! Register Pascal library adapters against the compiler.
 
-use crate::ast::{ImportKind, Module};
+use crate::ast::{Argument, ClassMember, ExprKind, Expression, ImportKind, Module, StmtKind};
 use crate::compiler::Compiler;
 use crate::emitter as common;
 use crate::platforms::plib::gcl::{GclClass, GclMethodTarget, builder, gcl_classes, is_gcl_unit};
@@ -11,7 +11,7 @@ pub(crate) fn module_uses_plib_gcl(module: &Module) -> bool {
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
         | ImportKind::Default { path, .. } => is_gcl_unit(path),
-    })
+    }) || module.body.iter().any(stmt_uses_gcl_dialog)
 }
 
 impl Compiler {
@@ -34,6 +34,7 @@ impl Compiler {
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_RUN_APPLICATION);
         let app_exit_idx = self.chunks_mut()[0]
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_APP_EXIT);
+        let msg_box_idx = self.chunks_mut()[0].add_import(common::gui::GUI_MODULE, "msgBox");
 
         for class in gcl_classes() {
             self.register_one_plib_gcl_class(
@@ -41,6 +42,7 @@ impl Compiler {
                 set_prop_idx,
                 get_prop_idx,
                 bind_event_idx,
+                run_application_idx,
                 new_controls_collection_idx,
                 new_components_collection_idx,
             )?;
@@ -52,15 +54,55 @@ impl Compiler {
         let exit_chunk = builder::build_application_exit_chunk(app_exit_idx);
         self.chunks_mut().push(exit_chunk);
         let exit_chunk_idx = self.chunks_mut().len() - 1;
+        let initialize_chunk = builder::build_application_initialize_chunk();
+        self.chunks_mut().push(initialize_chunk);
+        let initialize_chunk_idx = self.chunks_mut().len() - 1;
+        let title_setter_chunk = builder::build_application_title_setter_chunk();
+        self.chunks_mut().push(title_setter_chunk);
+        let title_setter_idx = self.chunks_mut().len() - 1;
+        let title_getter_chunk = builder::build_application_title_getter_chunk();
+        self.chunks_mut().push(title_getter_chunk);
+        let title_getter_idx = self.chunks_mut().len() - 1;
         let line = self.current_line();
         builder::emit_install_application_global(
             &mut self.chunks_mut()[0],
             run_chunk_idx,
             exit_chunk_idx,
+            initialize_chunk_idx,
+            title_setter_idx,
+            title_getter_idx,
             line,
         );
         self.note_defined_global("Application");
         self.note_defined_global("application");
+
+        let show_message = builder::build_show_message_chunk(msg_box_idx);
+        self.chunks_mut().push(show_message);
+        let show_message_idx = self.chunks_mut().len() - 1;
+        let message_dlg = builder::build_message_dlg_chunk(msg_box_idx);
+        self.chunks_mut().push(message_dlg);
+        let message_dlg_idx = self.chunks_mut().len() - 1;
+        let line = self.current_line();
+        builder::emit_install_function_global(
+            &mut self.chunks_mut()[0],
+            "ShowMessage",
+            show_message_idx,
+            line,
+        );
+        builder::emit_install_function_global(
+            &mut self.chunks_mut()[0],
+            "MessageDlg",
+            message_dlg_idx,
+            line,
+        );
+        self.note_defined_global("ShowMessage");
+        self.note_defined_global("showmessage");
+        self.note_defined_global("MessageDlg");
+        self.note_defined_global("messagedlg");
+        self.defined_functions.insert("ShowMessage".to_string());
+        self.defined_functions.insert("showmessage".to_string());
+        self.defined_functions.insert("MessageDlg".to_string());
+        self.defined_functions.insert("messagedlg".to_string());
 
         Ok(())
     }
@@ -71,6 +113,7 @@ impl Compiler {
         set_prop_idx: u16,
         get_prop_idx: u16,
         bind_event_idx: u16,
+        run_application_idx: u16,
         new_controls_collection_idx: u16,
         new_components_collection_idx: u16,
     ) -> Result<(), String> {
@@ -82,7 +125,15 @@ impl Compiler {
             } else {
                 set_prop_idx
             };
-            let setter = builder::build_setter_chunk(class.name, property, setter_idx);
+            let size_sync_idx = if matches!(
+                property.to_ascii_lowercase().as_str(),
+                "clientwidth" | "clientheight"
+            ) {
+                Some(run_application_idx)
+            } else {
+                None
+            };
+            let setter = builder::build_setter_chunk(class.name, property, setter_idx, size_sync_idx);
             self.chunks_mut().push(setter);
             setter_bindings.push(builder::AccessorBinding {
                 property_name: property,
@@ -107,8 +158,13 @@ impl Compiler {
             };
             let thunk = builder::build_method_chunk(class.name, method, import_idx);
             self.chunks_mut().push(thunk);
-            method_names.push(method.name.to_lowercase());
+            method_names.push(method.name.to_string());
             method_indices.push(self.chunks_mut().len() - 1);
+            let lower = method.name.to_lowercase();
+            if lower != method.name {
+                method_names.push(lower);
+                method_indices.push(self.chunks_mut().len() - 1);
+            }
         }
         let method_bindings: Vec<builder::MethodBinding> = method_names
             .iter()
@@ -148,4 +204,125 @@ impl Compiler {
 
         Ok(())
     }
+}
+
+fn stmt_uses_gcl_dialog(stmt: &crate::ast::Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => expr_uses_gcl_dialog(expr),
+        StmtKind::Block(stmts) => stmts.iter().any(stmt_uses_gcl_dialog),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(expr_uses_gcl_dialog)),
+        StmtKind::FunctionDecl { body, .. } => body.iter().any(stmt_uses_gcl_dialog),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => members.iter().any(member_uses_gcl_dialog),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_uses_gcl_dialog(cond)
+                || then_body.iter().any(stmt_uses_gcl_dialog)
+                || elifs
+                    .iter()
+                    .any(|(cond, body)| expr_uses_gcl_dialog(cond) || body.iter().any(stmt_uses_gcl_dialog))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_gcl_dialog))
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref().is_some_and(|stmt| stmt_uses_gcl_dialog(stmt))
+                || cond.as_ref().is_some_and(expr_uses_gcl_dialog)
+                || update.as_ref().is_some_and(expr_uses_gcl_dialog)
+                || body.iter().any(stmt_uses_gcl_dialog)
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            expr_uses_gcl_dialog(iter)
+                || body.iter().any(stmt_uses_gcl_dialog)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_gcl_dialog))
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            expr_uses_gcl_dialog(cond)
+                || body.iter().any(stmt_uses_gcl_dialog)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_uses_gcl_dialog))
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            expr_uses_gcl_dialog(cond) || body.iter().any(stmt_uses_gcl_dialog)
+        }
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_uses_gcl_dialog) || expr_uses_gcl_dialog(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_uses_gcl_dialog(target) || expr_uses_gcl_dialog(value)
+        }
+        _ => false,
+    }
+}
+
+fn member_uses_gcl_dialog(member: &ClassMember) -> bool {
+    match member {
+        ClassMember::Method(stmt) => stmt_uses_gcl_dialog(stmt),
+        ClassMember::Constructor { body, .. } => body.iter().any(stmt_uses_gcl_dialog),
+        ClassMember::Field { init, .. } => init.as_ref().is_some_and(expr_uses_gcl_dialog),
+        ClassMember::Property { getter, setter, .. } => {
+            getter
+                .as_ref()
+                .is_some_and(|body| body.iter().any(stmt_uses_gcl_dialog))
+                || setter
+                    .as_ref()
+                    .is_some_and(|setter| setter.body.iter().any(stmt_uses_gcl_dialog))
+        }
+        _ => false,
+    }
+}
+
+fn expr_uses_gcl_dialog(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            matches!(
+                &callee.kind,
+                ExprKind::Ident(name)
+                    if name.eq_ignore_ascii_case("ShowMessage")
+                        || name.eq_ignore_ascii_case("MessageDlg")
+            ) || expr_uses_gcl_dialog(callee)
+                || args.iter().any(arg_uses_gcl_dialog)
+        }
+        ExprKind::Member { object, .. } => expr_uses_gcl_dialog(object),
+        ExprKind::Binary { left, right, .. } => {
+            expr_uses_gcl_dialog(left) || expr_uses_gcl_dialog(right)
+        }
+        ExprKind::Unary { expr, .. } => expr_uses_gcl_dialog(expr),
+        ExprKind::Assign { target, value } => {
+            expr_uses_gcl_dialog(target) || expr_uses_gcl_dialog(value)
+        }
+        ExprKind::Array(items) => items.iter().any(|item| {
+            item.key.as_ref().is_some_and(expr_uses_gcl_dialog)
+                || expr_uses_gcl_dialog(&item.value)
+        }),
+        _ => false,
+    }
+}
+
+fn arg_uses_gcl_dialog(arg: &Argument) -> bool {
+    expr_uses_gcl_dialog(&arg.value)
 }

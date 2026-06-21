@@ -304,7 +304,7 @@ fn decoded_body_contains(bytes: &[u8], op: Op) -> bool {
     chunks[1]
         .code
         .windows(2)
-        .any(|w| w == [op.prefix(), op.sub()])
+        .any(|w| w == [op.prefix(), op.sub_u8()])
 }
 
 #[test]
@@ -1203,7 +1203,7 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     assert!(function.code.windows(5).any(|w| w
         == [
             Op::F64_STORE.prefix(),
-            Op::F64_STORE.sub(),
+            Op::F64_STORE.sub_u8(),
             0x43,
             0x00,
             0x01
@@ -1212,7 +1212,7 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
         function
             .code
             .windows(5)
-            .any(|w| w == [Op::F64_LOAD.prefix(), Op::F64_LOAD.sub(), 0x43, 0x00, 0x01])
+            .any(|w| w == [Op::F64_LOAD.prefix(), Op::F64_LOAD.sub_u8(), 0x43, 0x00, 0x01])
     );
 
     let mut vm = VM::new();

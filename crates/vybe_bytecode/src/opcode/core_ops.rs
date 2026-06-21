@@ -72,6 +72,11 @@ impl Op {
     // Memory
     pub const MEMORY_SIZE: Op = Op::new(0x00, 0x3F);
     pub const MEMORY_GROW: Op = Op::new(0x00, 0x40);
+    // Numeric constants (WASM MVP 0x41–0x44)
+    pub const I32_CONST: Op = Op::new(0x00, 0x41);
+    pub const I64_CONST: Op = Op::new(0x00, 0x42);
+    pub const F32_CONST: Op = Op::new(0x00, 0x43);
+    pub const F64_CONST: Op = Op::new(0x00, 0x44);
     // i32 comparisons (WASM MVP 0x45–0x4F)
     pub const I32_EQZ: Op = Op::new(0x00, 0x45);
     pub const I32_EQ: Op = Op::new(0x00, 0x46);
@@ -306,6 +311,11 @@ opcode_category! {
     // Memory
     [0x3F] memory_size => None, "memory.size";
     [0x40] memory_grow => U16, "memory.grow";
+    // Numeric constants
+    [0x41] i32_const => SlI32, "i32.const";
+    [0x42] i64_const => SlI64, "i64.const";
+    [0x43] f32_const => RawF32, "f32.const";
+    [0x44] f64_const => RawF64, "f64.const";
     // i32 comparisons
     [0x45] i32_eqz => None, "i32.eqz";
     [0x46] eq      => None, "i32.eq";

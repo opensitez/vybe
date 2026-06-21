@@ -1487,7 +1487,7 @@ impl VM {
                     }
                     let prefix = code[ip];
                     let sub = code[ip + 1];
-                    if let Some(op) = Op::decode(prefix, sub) {
+                    if let Some(op) = Op::decode(prefix, sub as u16) {
                         if op == Op::REF_FUNC {
                             if ip + 4 < code.len() {
                                 let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
@@ -1608,7 +1608,7 @@ impl VM {
                     }
                     let prefix = code[ip];
                     let sub = code[ip + 1];
-                    if let Some(op) = Op::decode(prefix, sub) {
+                    if let Some(op) = Op::decode(prefix, sub as u16) {
                         if op == Op::REF_FUNC {
                             if ip + 4 < code.len() {
                                 let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);

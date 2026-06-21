@@ -20,7 +20,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
 
     let prefix = chunk.code[offset];
     let sub = chunk.code[offset + 1];
-    let op = match Op::decode(prefix, sub) {
+    let op = match Op::decode(prefix, sub as u16) {
         Some(op) => op,
         None => {
             return (
@@ -161,5 +161,25 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
         }
         OperandFormat::V128Const => (format!("v128.const [16 bytes]"), operand_start + 16),
         OperandFormat::Shuffle => (format!("i8x16.shuffle [16 indices]"), operand_start + 16),
+        OperandFormat::SlI32 => {
+            let mut next = operand_start;
+            let val = crate::opcode::read_leb_i32(&chunk.code, &mut next);
+            (format!("{} {}", name, val), next)
+        }
+        OperandFormat::SlI64 => {
+            let mut next = operand_start;
+            let val = crate::opcode::read_leb_i64(&chunk.code, &mut next);
+            (format!("{} {}", name, val), next)
+        }
+        OperandFormat::RawF32 => {
+            let bytes: [u8; 4] = chunk.code[operand_start..operand_start+4].try_into().unwrap_or([0;4]);
+            let val = f32::from_le_bytes(bytes);
+            (format!("{} {}", name, val), operand_start + 4)
+        }
+        OperandFormat::RawF64 => {
+            let bytes: [u8; 8] = chunk.code[operand_start..operand_start+8].try_into().unwrap_or([0;8]);
+            let val = f64::from_le_bytes(bytes);
+            (format!("{} {}", name, val), operand_start + 8)
+        }
     }
 }

@@ -538,22 +538,6 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             for t in targets {
                 collect_addr_taken_in_expr(t, out);
             }
-            // When assigning a reference (`$b = &$a`), the TARGET also
-            // becomes a cell-backed binding so writes to `$b` go through
-            // cell_store (shared mutable alias with `$a`).
-            if matches!(
-                &value.kind,
-                ExprKind::Unary {
-                    op: UnaryOp::AddrOf,
-                    ..
-                }
-            ) {
-                for t in targets {
-                    if let ExprKind::Ident(name) = &t.kind {
-                        out.insert(name.clone());
-                    }
-                }
-            }
             collect_addr_taken_in_expr(value, out);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -1901,7 +1885,7 @@ impl Compiler {
             let code = &mut chunk.code;
             let mut ip = 0usize;
             while ip + 1 < code.len() {
-                let Some(op) = Op::decode(code[ip], code[ip + 1]) else {
+                let Some(op) = Op::decode(code[ip], code[ip + 1] as u16) else {
                     ip += 2;
                     continue;
                 };
@@ -7957,10 +7941,11 @@ impl Compiler {
                     // assignment stores the cell itself (GLOBAL_SET/LOCAL_SET),
                     // then mark `$b` as pointer-cell so SUBSEQUENT writes
                     // go through cell_store.
-                    let is_ref_assign = matches!(
-                        &value.kind,
-                        ExprKind::Unary { op: UnaryOp::AddrOf, .. }
-                    );
+                    let is_ref_assign = self.is_php_profile()
+                        && matches!(
+                            &value.kind,
+                            ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+                        );
                     for (i, target) in targets.iter().enumerate() {
                         if i < targets.len() - 1 {
                             self.emit(Op::DUP);

@@ -108,7 +108,7 @@ pub fn module_uses_memory64(chunks: &[Chunk]) -> bool {
     for chunk in chunks {
         let mut ip = 0;
         while ip + 1 < chunk.code.len() {
-            let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
+            let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) else {
                 ip += 2;
                 continue;
             };
@@ -190,7 +190,7 @@ pub fn collect_globals(chunks: &[Chunk]) -> (Vec<String>, std::collections::Hash
             if ip + 1 >= chunk.code.len() {
                 break;
             }
-            if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+            if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
                 if op == Op::GLOBAL_GET || op == Op::GLOBAL_SET {
                     let name_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
                     if let Some(crate::value::Value::String(name)) =

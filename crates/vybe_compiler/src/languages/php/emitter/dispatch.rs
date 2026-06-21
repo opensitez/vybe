@@ -6,14 +6,14 @@
 //! so PHP-specific routing lives in the PHP module instead of the common
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
-use vybe_bytecode::Chunk;
+use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
 fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc == 0 {
-        chunk.emit_op(Op::TRUE, line);
+        { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
         return;
     }
     let base = chunk.local_count;
@@ -476,7 +476,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             for _ in 0..argc {
                 chunk.emit_op(vybe_bytecode::Op::DROP, line);
             }
-            chunk.emit_op(vybe_bytecode::Op::TRUE, line);
+            { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
         }
         "php.mb_detect_enc" => {
             let chunk = &mut chunks[current];

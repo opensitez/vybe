@@ -23,9 +23,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
             match inner.as_rule() {
                 Rule::program_heading => {
                     // program Foo; or unit Foo;
-                    is_unit = inner.as_str().trim_start().get(..4).is_some_and(|prefix| {
-                        prefix.eq_ignore_ascii_case("unit")
-                    });
+                    is_unit = inner
+                        .as_str()
+                        .trim_start()
+                        .get(..4)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("unit"));
                     for p in inner.into_inner() {
                         if p.as_rule() == Rule::identifier {
                             name = p.as_str().to_string();
@@ -67,10 +69,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                             }
                             if let Some(path) = source_path.or(unit_name) {
                                 imports.push(Import {
-                                    kind: ImportKind::Simple {
-                                        path,
-                                        alias: None,
-                                    },
+                                    kind: ImportKind::Simple { path, alias: None },
                                     span,
                                 });
                             }
@@ -4266,7 +4265,10 @@ fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
         else {
             continue;
         };
-        if !parents.iter().any(|parent| parent.eq_ignore_ascii_case("TForm")) {
+        if !parents
+            .iter()
+            .any(|parent| parent.eq_ignore_ascii_case("TForm"))
+        {
             continue;
         }
 
@@ -4385,7 +4387,9 @@ fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
                 normalize_gcl_form_property_stmts(body);
             }
         }
-        StmtKind::While { body, else_body, .. } => {
+        StmtKind::While {
+            body, else_body, ..
+        } => {
             normalize_gcl_form_property_stmts(body);
             if let Some(body) = else_body {
                 normalize_gcl_form_property_stmts(body);
@@ -4423,7 +4427,7 @@ fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
     let ExprKind::Ident(target_name) = &args[1].value.kind else {
         return None;
     };
-    Some(Statement::with_span(
+    let assign_form = Statement::with_span(
         StmtKind::Assign {
             targets: vec![Expression::ident(target_name)],
             value: Expression::new(ExprKind::New {
@@ -4433,6 +4437,21 @@ fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
                 )))],
             }),
         },
+        stmt.span.clone(),
+    );
+    let remember_main_form = Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("Application")),
+                field: "__main_form".to_string(),
+                null_safe: false,
+            })],
+            value: Expression::ident(target_name),
+        },
+        stmt.span.clone(),
+    );
+    Some(Statement::with_span(
+        StmtKind::Block(vec![assign_form, remember_main_form]),
         stmt.span.clone(),
     ))
 }
@@ -7661,7 +7680,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Lit(Literal::Str(decoded)))
             }
         }
-        Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
+        Rule::identifier => Ok(pascal_bare_identifier_expr(pair.as_str()).kind),
 
         other => Err(format!("Unexpected expression rule: {:?}", other)),
     }
@@ -7687,7 +7706,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         None => {
             // If no inner pair, the whole primary text is an identifier or keyword
             // (pest sometimes doesn't create inner pairs for case-insensitive keyword matches)
-            return Ok(ExprKind::Ident(src.to_string()));
+            return Ok(pascal_bare_identifier_expr(src).kind);
         }
     };
 
@@ -7696,7 +7715,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::real_literal => walk_expr_kind(inner),
         Rule::string_literal => walk_expr_kind(inner),
         Rule::char_literal => walk_expr_kind(inner),
-        Rule::identifier => Ok(ExprKind::Ident(inner.as_str().to_string())),
+        Rule::identifier => Ok(pascal_bare_identifier_expr(inner.as_str()).kind),
         Rule::set_literal => walk_set_literal(inner),
         Rule::tuple_array_literal => walk_tuple_array_literal(inner),
         Rule::new_expression => walk_new_expression(inner),
@@ -7853,6 +7872,13 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             .unwrap_or_default();
 
         if let ExprKind::Ident(name) = &expr.kind {
+            if name.eq_ignore_ascii_case("FormatDateTime") && args.len() == 2 {
+                if let Some(formatted) =
+                    pascal_format_datetime_expr(&args[0].value, args[1].value.clone())
+                {
+                    return Ok(formatted);
+                }
+            }
             if name.eq_ignore_ascii_case("Format") && args.len() == 2 {
                 if let ExprKind::Array(elements) = &args[1].value.kind {
                     let mut expanded_args = vec![args[0].clone()];
@@ -7913,6 +7939,132 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
 }
 
 // ── Canonical builtin normalization ────────────────────────────────────────
+
+fn pascal_bare_identifier_expr(name: &str) -> Expression {
+    if name.eq_ignore_ascii_case("Now") {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Now")),
+            args: Vec::new(),
+            optional: false,
+        })
+    } else {
+        Expression::ident(name)
+    }
+}
+
+fn pascal_date_component_call(helper: &str, date: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(helper)),
+        args: vec![Argument::positional(date)],
+        optional: false,
+    })
+}
+
+fn pascal_date_month_expr(date: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(pascal_date_component_call("__pascal_date_month", date)),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+    })
+}
+
+fn pascal_format_datetime_expr(format: &Expression, date: Expression) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(picture)) = &format.kind else {
+        return None;
+    };
+
+    let mut sprintf = String::new();
+    let mut args = vec![Argument::positional(Expression::new(ExprKind::Lit(
+        Literal::Str(String::new()),
+    )))];
+    let mut chars = picture.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_alphabetic() {
+            let mut token = String::from(ch);
+            while chars
+                .peek()
+                .is_some_and(|next| next.eq_ignore_ascii_case(&ch))
+            {
+                token.push(chars.next().unwrap());
+            }
+
+            let lower = token.to_ascii_lowercase();
+            let width = token.len().min(2);
+            let spec = if width == 2 { "%02d" } else { "%d" };
+            let component = match lower.as_str() {
+                "yyyy" => {
+                    sprintf.push_str("%04d");
+                    Some(pascal_date_component_call(
+                        "__pascal_date_year",
+                        date.clone(),
+                    ))
+                }
+                "yy" => {
+                    sprintf.push_str("%02d");
+                    Some(Expression::new(ExprKind::Binary {
+                        op: BinOp::Mod,
+                        left: Box::new(pascal_date_component_call(
+                            "__pascal_date_year",
+                            date.clone(),
+                        )),
+                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(100)))),
+                    }))
+                }
+                "m" | "mm" => {
+                    sprintf.push_str(spec);
+                    Some(pascal_date_month_expr(date.clone()))
+                }
+                "d" | "dd" => {
+                    sprintf.push_str(spec);
+                    Some(pascal_date_component_call(
+                        "__pascal_date_day",
+                        date.clone(),
+                    ))
+                }
+                "h" | "hh" => {
+                    sprintf.push_str(spec);
+                    Some(pascal_date_component_call(
+                        "__pascal_date_hour",
+                        date.clone(),
+                    ))
+                }
+                "n" | "nn" => {
+                    sprintf.push_str(spec);
+                    Some(pascal_date_component_call(
+                        "__pascal_date_minute",
+                        date.clone(),
+                    ))
+                }
+                "s" | "ss" => {
+                    sprintf.push_str(spec);
+                    Some(pascal_date_component_call(
+                        "__pascal_date_second",
+                        date.clone(),
+                    ))
+                }
+                _ => {
+                    sprintf.push_str(&token.replace('%', "%%"));
+                    None
+                }
+            };
+            if let Some(component) = component {
+                args.push(Argument::positional(component));
+            }
+        } else {
+            if ch == '%' {
+                sprintf.push('%');
+            }
+            sprintf.push(ch);
+        }
+    }
+
+    args[0] = Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(sprintf))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Format")),
+        args,
+        optional: false,
+    }))
+}
 
 /// Normalize Pascal's function-style builtins to canonical names so the compiler
 /// can dispatch them through `compiler_common::canonical`. This keeps language

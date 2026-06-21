@@ -34,13 +34,9 @@ fn relaxed_simd_internal_subopcodes_map_to_spec_range() {
         Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,
     ];
 
-    for (internal_sub, op) in ops.into_iter().enumerate() {
-        assert_eq!(op.prefix(), 0xDD);
-        assert_eq!(op.sub(), internal_sub as u8);
-        assert_eq!(
-            vybe_bytecode::opcode::relaxed_simd::spec_sub(op.sub()),
-            0x100 + internal_sub as u32
-        );
+    for (i, op) in ops.into_iter().enumerate() {
+        assert_eq!(op.prefix(), 0xFD);
+        assert_eq!(op.sub(), 256 + i as u16);
     }
 }
 

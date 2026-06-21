@@ -17,8 +17,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     s
 }
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
@@ -42,6 +49,59 @@ fn call_import(
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(argc, line);
+}
+
+/// Emit `wasm:js-boolean.test(val)` → i32 (1 if boolean). Value must be on stack.
+pub fn emit_test_bool(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-boolean", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(1, line);
+}
+/// Emit `wasm:js-number.test(val)` → i32. Value must be on stack.
+pub fn emit_test_number(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(1, line);
+}
+/// Emit `wasm:js-string.test(val)` → i32. Value must be on stack.
+pub fn emit_test_string(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(1, line);
+}
+/// Emit `wasm:js-bigint.test(val)` → i32. Value must be on stack.
+pub fn emit_test_bigint(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-bigint", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(1, line);
+}
+/// Test if value is "object-like" (not null, not a primitive).
+/// Stack: [val] → i32.
+pub fn emit_test_object(chunk: &mut Chunk, line: u32) {
+    let slot = alloc_local(chunk);
+    lset(chunk, slot, line);
+    // not null AND not number AND not string AND not boolean AND not bigint AND not undefined
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not null
+    lget(chunk, slot, line);
+    emit_test_number(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not number
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    emit_test_string(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not string
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    emit_test_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not boolean
+    chunk.emit_op(Op::I32_AND, line);
+}
+/// Test if value is callable (function/closure). Not null, not a primitive type.
+/// For now same as object test — functions are non-primitive non-null values.
+/// Stack: [val] → i32.
+pub fn emit_test_function(chunk: &mut Chunk, line: u32) {
+    emit_test_object(chunk, line);
 }
 
 fn emit_is_array(chunks: &mut [Chunk], current: usize, arr_slot: u16, line: u32) {
@@ -94,7 +154,7 @@ pub fn emit_php_array_keys(chunks: &mut [Chunk], current: usize, argc: u8, line:
     if argc >= 3 {
         lset(chunk, strict_slot, line);
     } else {
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         lset(chunk, strict_slot, line);
     }
     if argc >= 2 {
@@ -178,7 +238,7 @@ pub fn emit_php_array_is_list(chunks: &mut [Chunk], current: usize, _argc: u8, l
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     let chunk = &mut chunks[current];
     lset(chunk, keys_slot, line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     lset(chunk, result_slot, line);
     lget(chunk, keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -211,7 +271,7 @@ pub fn emit_php_array_is_list(chunks: &mut [Chunk], current: usize, _argc: u8, l
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     lset(chunk, result_slot, line);
     chunk.emit_end(line);
 
@@ -341,7 +401,7 @@ pub fn emit_php_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
     lget(chunk, values_slot, line);
     lget(chunk, len_slot, line);
@@ -551,10 +611,8 @@ fn emit_call_via_invoke_dispatch<F>(
 {
     let chunk = &mut chunks[current];
     lget(chunk, fn_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "function", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
+    emit_test_function(chunk, line);
+    chunk.emit_if(line);
 
     let chunk = &mut chunks[current];
     lget(chunk, fn_slot, line);
@@ -796,7 +854,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     let arr_slot = alloc_local(chunk);
     let work_slot = alloc_local(chunk);
     let cur_slot = alloc_local(chunk);
-    let ty_slot = alloc_local(chunk);
+    let _ty_slot = alloc_local(chunk);
     let keys_slot = alloc_local(chunk);
     let i_slot = alloc_local(chunk);
     let key_slot = alloc_local(chunk);
@@ -838,10 +896,6 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(chunk, cur_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_br_if(0, line);
-
-    lget(chunk, cur_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    lset(chunk, ty_slot, line);
 
     emit_is_array(chunks, current, cur_slot, line);
     let chunk = &mut chunks[current];
@@ -890,9 +944,8 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     chunks[current].emit_end(line);
 
     let chunk = &mut chunks[current];
-    lget(chunk, ty_slot, line);
-    push_str(chunk, "object", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    lget(chunk, cur_slot, line);
+    emit_test_object(chunk, line);
     chunk.emit_if(line);
 
     lget(chunk, cur_slot, line);
@@ -950,7 +1003,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     let _ = chunk;
     crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
 }
 
 // ── array_pad ──────────────────────────────────────────────────────
@@ -1084,7 +1137,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         lset(chunk, preserve_slot, line);
     } else {
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         lset(chunk, preserve_slot, line);
     }
     lset(chunk, size_slot, line);
@@ -1455,7 +1508,7 @@ fn emit_array_diff_or_intersect(chunks: &mut [Chunk], current: usize, intersect:
     lset(chunk, key_slot, line);
     lget(chunk, seen_slot, line);
     lget(chunk, key_slot, line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_op(Op::ARRAY_SET, line);
 
     lget(chunk, i_slot, line);
@@ -2248,8 +2301,8 @@ fn emit_generator_yield_value_from_slot(
 
     let chunk = &mut chunks[current];
     lget(chunk, yielded_slot, line);
-    chunk.emit_op(Op::REF_IS_OBJECT, line);
-    chunk.emit_if_value(line);
+    emit_test_object(chunk, line);
+    chunk.emit_if(line);
 
     lget(chunk, yielded_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
@@ -2295,8 +2348,8 @@ fn emit_generator_yield_key_or_fallback_from_slot(
 ) {
     let chunk = &mut chunks[current];
     lget(chunk, yielded_slot, line);
-    chunk.emit_op(Op::REF_IS_OBJECT, line);
-    chunk.emit_if_value(line);
+    emit_test_object(chunk, line);
+    chunk.emit_if(line);
 
     lget(chunk, yielded_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
@@ -2356,7 +2409,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         chunks[current].emit_op_u16(Op::LOCAL_SET, preserve_keys_slot, line);
         chunks[current].emit_op(Op::DROP, line);
     } else {
-        chunks[current].emit_op(Op::TRUE, line);
+        push_const(&mut chunks[current], Value::Bool(true), line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, preserve_keys_slot, line);
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -2596,7 +2649,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         chunk.emit_op(Op::ARRAY_GET, line);
         lset(chunk, cur_val_slot, line);
 
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         lset(chunk, should_merge_slot, line);
 
         lget(chunk, cur_val_slot, line);
@@ -2631,7 +2684,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if(line);
 
-        chunk.emit_op(Op::TRUE, line);
+        push_const(chunk, Value::Bool(true), line);
         lset(chunk, should_merge_slot, line);
 
         chunk.emit_end(line);
@@ -2829,7 +2882,7 @@ fn emit_assoc_sort_impl(
             lget(chunk, keys_slot, line);
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            chunk.emit_op(Op::STR_COMPARE, line);
+            { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
             push_const(chunk, Value::F64(0.0), line);
             if mode == 2 {
                 crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -2870,7 +2923,7 @@ fn emit_assoc_sort_impl(
             crate::emitter::ops::emit_dyn_lt(chunk, line);
         }
         _ => {
-            chunk.emit_op(Op::FALSE, line);
+            push_const(chunk, Value::Bool(false), line);
         }
     }
     chunk.emit_if(line);
@@ -2892,7 +2945,7 @@ fn emit_assoc_sort_impl(
     // used[best] = true
     lget(chunk, used_slot, line);
     lget(chunk, best_slot, line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -2995,7 +3048,7 @@ fn emit_assoc_sort_impl(
     crate::emitter::loops::emit_loop_end(chunks, current, ins_state, line);
 
     // PHP sort family returns true.
-    chunks[current].emit_op(Op::TRUE, line);
+    push_const(&mut chunks[current], Value::Bool(true), line);
 }
 
 pub fn emit_php_asort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -3234,7 +3287,7 @@ pub fn emit_php_array_unique(chunks: &mut Vec<Chunk>, current: usize, _argc: u8,
         lget(c, val_slot, line); // value
         c.emit_op(Op::ARRAY_SET, line); c.emit_op(Op::DROP, line);
         lget(c, seen_slot, line); lget(c, val_slot, line);
-        c.emit_op(Op::TRUE, line);
+        push_const(c, Value::Bool(true), line);
     }
     call_import(chunks, current, "ecma:map", "set", 3, line);
     {
@@ -3351,7 +3404,7 @@ pub fn emit_php_array_reverse(chunks: &mut [Chunk], current: usize, argc: u8, li
     {
         let c = &mut chunks[current];
         if argc >= 2 { lset(c, preserve_slot, line); }
-        else { c.emit_op(Op::FALSE, line); lset(c, preserve_slot, line); }
+        else { push_const(c, Value::Bool(false), line); lset(c, preserve_slot, line); }
         lset(c, arr_slot, line);
         lget(c, arr_slot, line);
     }
@@ -3448,7 +3501,7 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
     {
         let c = &mut chunks[current];
         if argc >= 4 { lset(c, preserve_slot, line); }
-        else { c.emit_op(Op::FALSE, line); lset(c, preserve_slot, line); }
+        else { push_const(c, Value::Bool(false), line); lset(c, preserve_slot, line); }
         if argc >= 3 {
             lset(c, len_slot, line);
         } else {
@@ -3853,12 +3906,10 @@ pub fn emit_php_print_r(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
     lset(chunk, val_slot, line);
 
-    // Check if val is array-like (typeof === "object")
+    // Check if val is array-like (object test)
     lget(chunk, val_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "object", line);
-    crate::emitter::ops::emit_js_strict_eq(chunk, line);
-    chunk.emit_if_value(line);
+    emit_test_object(chunk, line);
+    chunk.emit_if(line);
     push_str(chunk, "Array\n(\n)", line);
     lset(chunk, result_slot, line);
     chunk.emit_else(line);

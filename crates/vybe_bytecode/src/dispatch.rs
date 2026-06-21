@@ -38,7 +38,7 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
     let mut ip = 0usize;
     while ip + 1 < code.len() {
         let opcode_start = ip;
-        let op = match Op::decode(code[ip], code[ip + 1]) {
+        let op = match Op::decode(code[ip], code[ip + 1] as u16) {
             Some(op) => op,
             None => {
                 ip += 2;
@@ -383,7 +383,7 @@ impl VM {
     fn next_bytes_decode_opcode(&self) -> bool {
         let f = self.frame();
         let code = &self.chunks[f.chunk_index].code;
-        f.ip + 1 < code.len() && Op::decode(code[f.ip], code[f.ip + 1]).is_some()
+        f.ip + 1 < code.len() && Op::decode(code[f.ip], code[f.ip + 1] as u16).is_some()
     }
 
     pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
@@ -527,7 +527,7 @@ impl VM {
             let opcode_start = self.frame().ip;
             let prefix = self.read_byte();
             let sub = self.read_byte();
-            let op = match Op::decode(prefix, sub) {
+            let op = match Op::decode(prefix, sub as u16) {
                 Some(op) => op,
                 None => {
                     return Err(VMError::new(format!(
@@ -2442,6 +2442,41 @@ impl VM {
                 _ if op == Op::I32_CONST_0 => self.push(Value::I32(0))?,
                 _ if op == Op::I32_CONST_1 => self.push(Value::I32(1))?,
                 _ if op == Op::F64_CONST_0 => self.push(Value::F64(0.0))?,
+                // WASM MVP const opcodes (0x41–0x44)
+                _ if op == Op::I32_CONST => {
+                    let f = self.frame();
+                    let ip = f.ip;
+                    let ci = f.chunk_index;
+                    let mut pos = ip;
+                    let val = crate::opcode::read_leb_i32(&self.chunks[ci].code, &mut pos);
+                    self.frame_mut().ip = pos;
+                    self.push(Value::I32(val))?;
+                }
+                _ if op == Op::I64_CONST => {
+                    let f = self.frame();
+                    let ip = f.ip;
+                    let ci = f.chunk_index;
+                    let mut pos = ip;
+                    let val = crate::opcode::read_leb_i64(&self.chunks[ci].code, &mut pos);
+                    self.frame_mut().ip = pos;
+                    self.push(Value::I64(val))?;
+                }
+                _ if op == Op::F32_CONST => {
+                    let f = self.frame();
+                    let ip = f.ip;
+                    let ci = f.chunk_index;
+                    let bytes: [u8; 4] = self.chunks[ci].code[ip..ip+4].try_into().unwrap_or([0;4]);
+                    self.frame_mut().ip += 4;
+                    self.push(Value::F64(f32::from_le_bytes(bytes) as f64))?;
+                }
+                _ if op == Op::F64_CONST => {
+                    let f = self.frame();
+                    let ip = f.ip;
+                    let ci = f.chunk_index;
+                    let bytes: [u8; 8] = self.chunks[ci].code[ip..ip+8].try_into().unwrap_or([0;8]);
+                    self.frame_mut().ip += 8;
+                    self.push(Value::F64(f64::from_le_bytes(bytes)))?;
+                }
 
                 // ref.eq (GC proposal) — reference identity equality.
                 // Two references are equal iff they point at the same
@@ -6774,7 +6809,7 @@ impl VM {
                     self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
                 }
 
-                // -- Relaxed-SIMD proposal (prefix 0xDD internal, 0xFD 0x100+ in WASM) --
+                // -- Relaxed-SIMD proposal (prefix 0xFD, sub 0x100+ in WASM) --
                 //
                 // All 20 ops implemented deterministically. The "relaxed"
                 // semantics give the implementation freedom on edge cases

@@ -115,6 +115,16 @@ strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args
 booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
 
+# ── Date/time ───────────────────────────────────────────────────────────────
+
+now           = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
+__pascal_date_year   = { emit = "host:ecma:date:getUTCFullYear", min_args = 1, max_args = 1 }
+__pascal_date_month  = { emit = "host:ecma:date:getUTCMonth",    min_args = 1, max_args = 1 }
+__pascal_date_day    = { emit = "host:ecma:date:getUTCDate",     min_args = 1, max_args = 1 }
+__pascal_date_hour   = { emit = "host:ecma:date:getUTCHours",    min_args = 1, max_args = 1 }
+__pascal_date_minute = { emit = "host:ecma:date:getUTCMinutes",  min_args = 1, max_args = 1 }
+__pascal_date_second = { emit = "host:ecma:date:getUTCSeconds",  min_args = 1, max_args = 1 }
+
 # ── Ordinal / increment / decrement ─────────────────────────────────────────
 
 inc           = { emit = "mutate:add",                     min_args = 1, max_args = 2 }

@@ -15,8 +15,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 }
 
 fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
-    let idx = chunk.add_constant(value);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &value {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(value);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
@@ -145,27 +152,27 @@ fn emit_mysqli_field_object(
     struct_set_key(chunk, "max_length", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "not_null", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "primary_key", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "multiple_key", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "unique_key", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "numeric", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "blob", line);
 
     lget(chunk, field_slot, line);
@@ -173,11 +180,11 @@ fn emit_mysqli_field_object(
     struct_set_key(chunk, "type", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "unsigned", line);
 
     lget(chunk, field_slot, line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     struct_set_key(chunk, "zerofill", line);
 
     lget(chunk, field_slot, line);
@@ -230,14 +237,14 @@ fn emit_string_slot_nonempty(chunk: &mut Chunk, slot: u16, line: u32) {
 fn concat_slot_with_literal(chunk: &mut Chunk, slot: u16, suffix: &str, line: u32) {
     lget(chunk, slot, line);
     push_str(chunk, suffix, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, slot, line);
 }
 
 fn concat_slot_with_slot(chunk: &mut Chunk, target_slot: u16, value_slot: u16, line: u32) {
     lget(chunk, target_slot, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, target_slot, line);
 }
 
@@ -245,7 +252,7 @@ fn replace_in_slot(chunk: &mut Chunk, slot: u16, from: &str, to: &str, line: u32
     lget(chunk, slot, line);
     push_str(chunk, from, line);
     push_str(chunk, to, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
+    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, slot, line);
 }
 
@@ -288,7 +295,7 @@ fn normalize_pdo_dsn(
 
     lget(chunk, dsn_slot, line);
     push_str(chunk, "mysql:", line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -299,7 +306,7 @@ fn normalize_pdo_dsn(
     chunk.emit_else(line);
     lget(chunk, dsn_slot, line);
     push_str(chunk, "pgsql:", line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -307,7 +314,7 @@ fn normalize_pdo_dsn(
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
     lget(chunk, normalized_slot, line);
     push_str(chunk, "port=", line);
-    chunk.emit_op(Op::STR_CONTAINS, line);
+    { let idx = chunk.add_import("ecma:string", "includes"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -318,7 +325,7 @@ fn normalize_pdo_dsn(
     chunk.emit_else(line);
     lget(chunk, dsn_slot, line);
     push_str(chunk, "postgres:", line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -326,7 +333,7 @@ fn normalize_pdo_dsn(
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
     lget(chunk, normalized_slot, line);
     push_str(chunk, "port=", line);
-    chunk.emit_op(Op::STR_CONTAINS, line);
+    { let idx = chunk.add_import("ecma:string", "includes"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -383,9 +390,36 @@ fn emit_sql_literal_from_slot(
         lget(chunk, value_slot, line);
         lset(chunk, resolved_slot, line);
 
+        // object test: not null AND not number AND not string AND not boolean
+        let obj_test_slot = alloc_local(chunk);
         lget(chunk, value_slot, line);
-        chunk.emit_op(Op::REF_IS_OBJECT, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, obj_test_slot, line);
+        chunk.emit_op(Op::DROP, line);
+        // not null
+        lget(chunk, obj_test_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        // AND not number
+        lget(chunk, obj_test_slot, line);
+        let test_num = chunk.add_import("wasm:js-number", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_num, line);
+        chunk.emit(1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
+        // AND not string
+        lget(chunk, obj_test_slot, line);
+        let test_str = chunk.add_import("wasm:js-string", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_str, line);
+        chunk.emit(1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
+        // AND not boolean
+        lget(chunk, obj_test_slot, line);
+        let test_bool = chunk.add_import("wasm:js-boolean", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_bool, line);
+        chunk.emit(1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
         chunk.emit_if(line);
 
         lget(chunk, value_slot, line);
@@ -397,7 +431,7 @@ fn emit_sql_literal_from_slot(
         lset(chunk, inner_slot, line);
 
         lget(chunk, inner_slot, line);
-        chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+        { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); chunk.emit(1, line); }
         crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
@@ -411,14 +445,6 @@ fn emit_sql_literal_from_slot(
 
     let out_slot = alloc_local(&mut chunks[current]);
     let string_slot = alloc_local(&mut chunks[current]);
-    let type_slot = alloc_local(&mut chunks[current]);
-
-    {
-        let chunk = &mut chunks[current];
-        lget(chunk, resolved_slot, line);
-        chunk.emit_op(Op::REF_TYPEOF, line);
-        lset(chunk, type_slot, line);
-    }
 
     {
         let chunk = &mut chunks[current];
@@ -429,15 +455,16 @@ fn emit_sql_literal_from_slot(
         lset(chunk, out_slot, line);
         chunk.emit_else(line);
         lget(chunk, resolved_slot, line);
-        chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+        { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); chunk.emit(1, line); }
         chunk.emit_if(line);
         push_str(chunk, "null", line);
         lset(chunk, out_slot, line);
         chunk.emit_else(line);
-        lget(chunk, type_slot, line);
-        push_str(chunk, "number", line);
-        crate::emitter::ops::emit_dyn_eq(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        // number test (covers f64, i32)
+        lget(chunk, resolved_slot, line);
+        let test_num = chunk.add_import("wasm:js-number", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_num, line);
+        chunk.emit(1, line);
         chunk.emit_if(line);
         lget(chunk, resolved_slot, line);
     }
@@ -451,10 +478,11 @@ fn emit_sql_literal_from_slot(
         let chunk = &mut chunks[current];
         lset(chunk, out_slot, line);
         chunk.emit_else(line);
-        lget(chunk, type_slot, line);
-        push_str(chunk, "i32", line);
-        crate::emitter::ops::emit_dyn_eq(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        // bigint test (covers i64)
+        lget(chunk, resolved_slot, line);
+        let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_bigint, line);
+        chunk.emit(1, line);
         chunk.emit_if(line);
         lget(chunk, resolved_slot, line);
     }
@@ -468,27 +496,11 @@ fn emit_sql_literal_from_slot(
         let chunk = &mut chunks[current];
         lset(chunk, out_slot, line);
         chunk.emit_else(line);
-        lget(chunk, type_slot, line);
-        push_str(chunk, "i64", line);
-        crate::emitter::ops::emit_dyn_eq(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
+        // boolean test
         lget(chunk, resolved_slot, line);
-    }
-    call_import(chunks, current, "ecma:number", "Number", 1, line);
-    {
-        let chunk = &mut chunks[current];
-        push_const(chunk, Value::F64(10.0), line);
-    }
-    call_import(chunks, current, "ecma:number", "toString", 2, line);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, out_slot, line);
-        chunk.emit_else(line);
-        lget(chunk, type_slot, line);
-        push_str(chunk, "boolean", line);
-        crate::emitter::ops::emit_dyn_eq(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        let test_bool = chunk.add_import("wasm:js-boolean", "test");
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_bool, line);
+        chunk.emit(1, line);
         chunk.emit_if(line);
         lget(chunk, resolved_slot, line);
         convert::emit_to_string(chunk, line);
@@ -505,17 +517,16 @@ fn emit_sql_literal_from_slot(
         lget(chunk, string_slot, line);
         push_str(chunk, "'", line);
         push_str(chunk, "''", line);
-        chunk.emit_op(Op::STR_REPLACE, line);
+        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
         lset(chunk, string_slot, line);
 
         push_str(chunk, "'", line);
         lget(chunk, string_slot, line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         push_str(chunk, "'", line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lset(chunk, out_slot, line);
 
-        chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -589,7 +600,7 @@ fn emit_apply_named_bound_pairs(
         push_const(chunk, Value::F64(0.0), line);
         chunk.emit_op(Op::ARRAY_GET, line);
         lget(chunk, literal_slot, line);
-        chunk.emit_op(Op::STR_REPLACE, line);
+        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
         lset(chunk, sql_slot, line);
 
         lget(chunk, index_slot, line);
@@ -657,13 +668,13 @@ fn emit_apply_named_params_from_entries(
 
     lget(chunk, key_text_slot, line);
     push_str(chunk, ":", line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
 
     push_str(chunk, ":", line);
     lget(chunk, key_text_slot, line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, key_text_slot, line);
     chunk.emit_end(line);
 
@@ -677,7 +688,7 @@ fn emit_apply_named_params_from_entries(
     lget(chunk, sql_slot, line);
     lget(chunk, key_text_slot, line);
     lget(chunk, literal_slot, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
+    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, sql_slot, line);
 
     lget(chunk, index_slot, line);
@@ -756,7 +767,7 @@ fn emit_mark_queryish_prefix(
 ) {
     lget(chunk, sql_slot, line);
     push_str(chunk, prefix, line);
-    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     chunk.emit_if(line);
     chunk.emit_op(Op::I32_CONST_1, line);
     lset(chunk, is_query_slot, line);
@@ -869,7 +880,7 @@ pub fn emit_php_pdo_set_attribute(chunks: &mut [Chunk], current: usize, _argc: u
     lget(chunk, conn_slot, line);
     lget(chunk, value_slot, line);
     struct_set_key(chunk, "__pdo_attr", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
 }
 
 pub fn emit_php_pdo_begin_transaction(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -921,7 +932,9 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
     let chunk = &mut chunks[current];
 
     lget(chunk, param_slot, line);
-    chunk.emit_op(Op::REF_IS_STRING, line);
+    let test_str_param = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_param, line);
+    chunk.emit(1, line);
     chunk.emit_if(line);
 
     lget(chunk, stmt_slot, line);
@@ -955,7 +968,7 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
 }
 
 pub fn emit_php_pdo_statement_bind_param(
@@ -1037,8 +1050,8 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     {
         let chunk = &mut chunks[current];
         lget(chunk, sql_text_slot, line);
-        chunk.emit_op(Op::STR_TRIM, line);
-        chunk.emit_op(Op::STR_TO_LOWER, line);
+        { let idx = chunk.add_import("ecma:string", "trim"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
+        { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     }
     let sql_slot = alloc_local(&mut chunks[current]);
     {
@@ -1079,7 +1092,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     lget(chunk, stmt_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set_key(chunk, "__cursor", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, stmt_slot, line);
@@ -1385,7 +1398,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         lget(chunk, slot, line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lset(chunk, url_slot, line);
         chunk.emit_end(line);
     }
@@ -1398,9 +1411,9 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, ":", line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lget(chunk, pass_slot, line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lset(chunk, url_slot, line);
         chunk.emit_end(line);
     }
@@ -1408,13 +1421,13 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     // Append @host
     lget(chunk, url_slot, line);
     push_str(chunk, "@", line);
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     if let Some(slot) = host_slot {
         lget(chunk, slot, line);
     } else {
         push_str(chunk, "localhost", line);
     }
-    chunk.emit_op(Op::STR_CONCAT, line);
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, url_slot, line);
 
     // Note: port handling skipped for simplicity; MySQL will use default port
@@ -1428,9 +1441,9 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, "/", line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lget(chunk, slot, line);
-        chunk.emit_op(Op::STR_CONCAT, line);
+        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
         lset(chunk, url_slot, line);
         chunk.emit_end(line);
     }
@@ -1458,7 +1471,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, dbh_slot, line);
     push_str(chunk, "Connection failed", line);
     struct_set_key(chunk, "error", line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
 
     chunk.emit_else(line);
 
@@ -1473,7 +1486,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, dbh_slot, line);
     lget(chunk, conn_slot, line);
     struct_set_key(chunk, "__connection", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
 
@@ -1508,8 +1521,8 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, sql_slot, line);
     lset(chunk, dbh_slot, line);
     lget(chunk, sql_slot, line);
-    chunk.emit_op(Op::STR_TRIM, line);
-    chunk.emit_op(Op::STR_TO_LOWER, line);
+    { let idx = chunk.add_import("ecma:string", "trim"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
+    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     let normalized_sql_slot = alloc_local(chunk);
     lset(chunk, normalized_sql_slot, line);
 
@@ -1575,7 +1588,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, dbh_slot, line);
     push_str(chunk, "", line);
     struct_set_key(chunk, "error", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
 
     chunk.emit_end(line);
 }
@@ -1619,7 +1632,7 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
 
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
@@ -1627,7 +1640,7 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
     struct_set_key(chunk, "database", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
 
@@ -1642,7 +1655,7 @@ pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: 
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
 
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, charset_slot, line);
@@ -1650,7 +1663,7 @@ pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: 
     lget(chunk, dbh_slot, line);
     lget(chunk, charset_slot, line);
     struct_set_key(chunk, "character_set_name", line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
 
@@ -1663,9 +1676,9 @@ pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     struct_get_key(chunk, "__connection", line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::TRUE, line);
+    push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
 
@@ -1798,7 +1811,7 @@ pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: 
         push_const(chunk, Value::F64(0.0), line);
         struct_set_key(chunk, "__field_cursor", line);
 
-        chunk.emit_op(Op::TRUE, line);
+        push_const(chunk, Value::Bool(true), line);
     }
 }
 
@@ -1807,7 +1820,7 @@ pub fn emit_php_mysqli_more_results(chunks: &mut [Chunk], current: usize, argc: 
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
 }
 
 pub fn emit_php_mysqli_next_result(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1815,7 +1828,7 @@ pub fn emit_php_mysqli_next_result(chunks: &mut [Chunk], current: usize, argc: u
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
 }
 
 pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1828,7 +1841,7 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
 
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
 
     {
@@ -1842,7 +1855,7 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
         lget(chunk, dbh_slot, line);
         chunk.emit_op(Op::NULL, line);
         struct_set_key(chunk, "__connection", line);
-        chunk.emit_op(Op::TRUE, line);
+        push_const(chunk, Value::Bool(true), line);
         chunk.emit_end(line);
     }
 }
@@ -1862,13 +1875,13 @@ pub fn emit_php_mysqli_real_escape_string(
     lget(chunk, data_slot, line);
     push_str(chunk, "\\", line);
     push_str(chunk, "\\\\", line);
-    chunk.emit_op(Op::STR_REPLACE, line);
+    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, data_slot, line);
 
     lget(chunk, data_slot, line);
     push_str(chunk, "'", line);
     push_str(chunk, "\\'", line);
-    chunk.emit_op(Op::STR_REPLACE, line);
+    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(3, line); }
     lset(chunk, data_slot, line);
 
     lget(chunk, data_slot, line);

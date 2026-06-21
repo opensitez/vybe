@@ -118,19 +118,19 @@ fn reader_preserves_if_else_and_i32_conditions() {
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::IF.prefix(), Op::IF.sub()])
+            .any(|w| w == [Op::IF.prefix(), Op::IF.sub_u8()])
     );
     assert!(
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::ELSE.prefix(), Op::ELSE.sub()])
+            .any(|w| w == [Op::ELSE.prefix(), Op::ELSE.sub_u8()])
     );
     assert!(
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::END.prefix(), Op::END.sub()])
+            .any(|w| w == [Op::END.prefix(), Op::END.sub_u8()])
     );
     assert_eq!(run_chunk(chunk).as_i32(), 22);
 }
@@ -168,7 +168,7 @@ fn reader_preserves_br_if_depth() {
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::BR_IF.prefix(), Op::BR_IF.sub()])
+            .any(|w| w == [Op::BR_IF.prefix(), Op::BR_IF.sub_u8()])
     );
     assert_eq!(run_chunk(chunk).as_i32(), 9);
 }
@@ -191,7 +191,7 @@ fn reader_preserves_br_table_vector_and_default_depths() {
     let br_table = chunk
         .code
         .windows(2)
-        .position(|w| w == [Op::BR_TABLE.prefix(), Op::BR_TABLE.sub()])
+        .position(|w| w == [Op::BR_TABLE.prefix(), Op::BR_TABLE.sub_u8()])
         .expect("br_table should be decoded");
     assert_eq!(
         &chunk.code[br_table + 2..br_table + 6],
@@ -263,19 +263,19 @@ fn reader_decodes_prefixed_proposal_opcodes() {
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::I31_NEW.prefix(), Op::I31_NEW.sub()])
+            .any(|w| w == [Op::I31_NEW.prefix(), Op::I31_NEW.sub_u8()])
     );
     assert!(
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::V128_CONST.prefix(), Op::V128_CONST.sub()])
+            .any(|w| w == [Op::V128_CONST.prefix(), Op::V128_CONST.sub_u8()])
     );
     assert!(
         chunk
             .code
             .windows(2)
-            .any(|w| w == [Op::ATOMIC_FENCE.prefix(), Op::ATOMIC_FENCE.sub()])
+            .any(|w| w == [Op::ATOMIC_FENCE.prefix(), Op::ATOMIC_FENCE.sub_u8()])
     );
 }
 

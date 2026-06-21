@@ -462,7 +462,7 @@ fn opcode_encoding_consistency() {
     // Verify that decode(encode()) roundtrips for a standard WASM opcode
     let op = Op::F64_ADD;
     let (prefix, sub) = op.encode();
-    let decoded = Op::decode(prefix, sub);
+    let decoded = Op::decode(prefix, sub as u16);
     assert!(decoded.is_some());
     assert_eq!(decoded.unwrap(), op);
 }

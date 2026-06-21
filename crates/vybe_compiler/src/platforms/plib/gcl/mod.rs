@@ -59,27 +59,9 @@ pub fn is_gcl_unit(path: &str) -> bool {
 }
 
 const CONTROL_PROPERTIES: &[&str] = &[
-    "Name",
-    "Text",
-    "Caption",
-    "Left",
-    "Top",
-    "Width",
-    "Height",
-    "Enabled",
-    "Visible",
-    "Align",
-    "Anchors",
-    "Color",
-    "Parent",
-    "Hint",
-    "ShowHint",
-    "Tag",
-    "OnClick",
-    "OnChange",
-    "OnCreate",
-    "OnClose",
-    "OnTimer",
+    "Name", "Text", "Caption", "Left", "Top", "Width", "Height", "Enabled", "Visible", "Align",
+    "Anchors", "Color", "Parent", "Hint", "ShowHint", "Tag", "OnClick", "OnChange", "OnCreate",
+    "OnClose", "OnTimer", "OnKeyPress", "OnKeyDown", "OnKeyUp",
 ];
 
 const FORM_PROPERTIES: &[&str] = &[
@@ -95,14 +77,16 @@ const FORM_PROPERTIES: &[&str] = &[
     "OnCreate",
     "OnClose",
 ];
-const TEXT_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "Lines", "MaxLength"];
+const TEXT_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength"];
 const CHECK_PROPERTIES: &[&str] = &["Checked", "State"];
 const LIST_PROPERTIES: &[&str] = &["Items", "ItemIndex", "Sorted"];
 const GRID_PROPERTIES: &[&str] = &["ColCount", "RowCount", "FixedCols", "FixedRows", "Cells"];
 const RANGE_PROPERTIES: &[&str] = &["Min", "Max", "Position", "Step"];
 const SPIN_PROPERTIES: &[&str] = &["MinValue", "MaxValue", "Value", "Increment"];
 const PAGE_PROPERTIES: &[&str] = &["ActivePage", "PageIndex", "PageControl"];
-const MENU_PROPERTIES: &[&str] = &["ShortCut", "Checked", "Enabled"];
+const MENU_PROPERTIES: &[&str] = &[
+    "Caption", "Text", "Name", "ShortCut", "Checked", "Enabled", "Visible", "OnClick",
+];
 
 const SHOW_METHODS: &[GclMethod] = &[
     GclMethod {
@@ -160,7 +144,7 @@ static CLASSES: &[GclClass] = &[
         name: "TComponent",
         parent: Some("TObject"),
         properties: &["Name", "Tag", "Owner"],
-        methods: EMPTY_METHODS,
+        methods: ADD_METHODS,
         ctor_arity: 1,
         widget_host_fn: None,
     },
@@ -180,32 +164,177 @@ static CLASSES: &[GclClass] = &[
         ctor_arity: 1,
         widget_host_fn: None,
     },
-    widget_class!("TForm", "TWinControl", "new_Form", FORM_PROPERTIES, SHOW_METHODS),
+    widget_class!(
+        "TForm",
+        "TWinControl",
+        "new_Form",
+        FORM_PROPERTIES,
+        SHOW_METHODS
+    ),
     widget_class!("TButton", "TWinControl", "new_Button", &[], EMPTY_METHODS),
     widget_class!("TLabel", "TControl", "new_Label", &[], EMPTY_METHODS),
-    widget_class!("TEdit", "TWinControl", "new_TextBox", TEXT_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TMemo", "TWinControl", "new_RichTextBox", TEXT_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TCheckBox", "TWinControl", "new_CheckBox", CHECK_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TRadioButton", "TWinControl", "new_RadioButton", CHECK_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TComboBox", "TWinControl", "new_ComboBox", LIST_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TListBox", "TWinControl", "new_ListBox", LIST_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TGroupBox", "TWinControl", "new_GroupBox", &[], EMPTY_METHODS),
+    widget_class!(
+        "TEdit",
+        "TWinControl",
+        "new_TextBox",
+        TEXT_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TMemo",
+        "TWinControl",
+        "new_RichTextBox",
+        TEXT_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TCheckBox",
+        "TWinControl",
+        "new_CheckBox",
+        CHECK_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TRadioButton",
+        "TWinControl",
+        "new_RadioButton",
+        CHECK_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TRadioGroup",
+        "TWinControl",
+        "new_GroupBox",
+        LIST_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TComboBox",
+        "TWinControl",
+        "new_ComboBox",
+        LIST_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TListBox",
+        "TWinControl",
+        "new_ListBox",
+        LIST_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TGroupBox",
+        "TWinControl",
+        "new_GroupBox",
+        &[],
+        EMPTY_METHODS
+    ),
     widget_class!("TPanel", "TWinControl", "new_Panel", &[], EMPTY_METHODS),
     widget_class!("TImage", "TControl", "new_PictureBox", &[], EMPTY_METHODS),
-    widget_class!("TShape", "TControl", "new_Panel", &["Shape", "Brush", "Pen"], EMPTY_METHODS),
-    widget_class!("TBevel", "TControl", "new_Panel", &["Shape", "Style"], EMPTY_METHODS),
+    widget_class!(
+        "TShape",
+        "TControl",
+        "new_Panel",
+        &["Shape", "Brush", "Pen"],
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TBevel",
+        "TControl",
+        "new_Panel",
+        &["Shape", "Style"],
+        EMPTY_METHODS
+    ),
     widget_class!("TSplitter", "TControl", "new_Panel", &[], EMPTY_METHODS),
-    widget_class!("TPageControl", "TWinControl", "new_TabControl", PAGE_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TTabSheet", "TWinControl", "new_TabPage", PAGE_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TTimer", "TComponent", "new_Timer", &["Interval", "Enabled", "OnTimer"], EMPTY_METHODS),
-    widget_class!("TStringGrid", "TWinControl", "new_DataGridView", GRID_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TTrackBar", "TWinControl", "new_TrackBar", RANGE_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TProgressBar", "TWinControl", "new_ProgressBar", RANGE_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TSpinEdit", "TWinControl", "new_NumericUpDown", SPIN_PROPERTIES, EMPTY_METHODS),
-    widget_class!("TListView", "TWinControl", "new_ListView", &["ViewStyle", "Items"], EMPTY_METHODS),
-    widget_class!("TTreeView", "TWinControl", "new_TreeView", &["Items"], EMPTY_METHODS),
-    widget_class!("TColorDialog", "TComponent", "new_ColorDialog", &["Color"], EMPTY_METHODS),
-    widget_class!("TMainMenu", "TComponent", "new_MenuStrip", MENU_PROPERTIES, ADD_METHODS),
-    widget_class!("TPopupMenu", "TComponent", "new_ContextMenuStrip", MENU_PROPERTIES, ADD_METHODS),
-    widget_class!("TMenuItem", "TComponent", "new_MenuStrip", MENU_PROPERTIES, ADD_METHODS),
+    widget_class!(
+        "TPageControl",
+        "TWinControl",
+        "new_TabControl",
+        PAGE_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TTabSheet",
+        "TWinControl",
+        "new_TabPage",
+        PAGE_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TTimer",
+        "TComponent",
+        "new_Timer",
+        &["Interval", "Enabled", "OnTimer"],
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TStringGrid",
+        "TWinControl",
+        "new_DataGridView",
+        GRID_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TTrackBar",
+        "TWinControl",
+        "new_TrackBar",
+        RANGE_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TProgressBar",
+        "TWinControl",
+        "new_ProgressBar",
+        RANGE_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TSpinEdit",
+        "TWinControl",
+        "new_NumericUpDown",
+        SPIN_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TListView",
+        "TWinControl",
+        "new_ListView",
+        &["ViewStyle", "Items"],
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TTreeView",
+        "TWinControl",
+        "new_TreeView",
+        &["Items"],
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TColorDialog",
+        "TComponent",
+        "new_ColorDialog",
+        &["Color"],
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TMainMenu",
+        "TComponent",
+        "new_MenuStrip",
+        MENU_PROPERTIES,
+        ADD_METHODS
+    ),
+    widget_class!(
+        "TPopupMenu",
+        "TComponent",
+        "new_ContextMenuStrip",
+        MENU_PROPERTIES,
+        ADD_METHODS
+    ),
+    widget_class!(
+        "TMenuItem",
+        "TComponent",
+        "new_MenuStrip",
+        MENU_PROPERTIES,
+        ADD_METHODS
+    ),
 ];

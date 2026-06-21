@@ -16,8 +16,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
@@ -55,10 +62,9 @@ fn emit_to_number(chunk: &mut Chunk, pf_idx: u16, line: u32) {
     let t = alloc_local(chunk);
     lset(chunk, t, line);
     lget(chunk, t, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "number", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    let test_num_t = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_num_t, line);
+    chunk.emit(1, line);
     chunk.emit_if_value(line);
     lget(chunk, t, line);
     chunk.emit_else(line);
@@ -77,7 +83,7 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
     let pf_idx = chunks[0].add_import("ecma:number".to_string(), "parseFloat".to_string());
     let chunk = &mut chunks[current];
     if argc == 0 {
-        chunk.emit_op(Op::FALSE, line);
+        push_const(chunk, Value::Bool(false), line);
         return;
     }
     // Stash all args into slots in argument order.
@@ -144,7 +150,7 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::FALSE, line);
+    push_const(chunk, Value::Bool(false), line);
     lset(chunk, result_slot, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
@@ -275,7 +281,7 @@ fn emit_dec_to_radix(
     if hex_digits {
         push_str(chunk, "0123456789abcdef", line);
         lget(chunk, digit_slot, line);
-        chunk.emit_op(Op::STR_CHAR_AT, line);
+        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     } else {
         push_str(chunk, "", line);
         lget(chunk, digit_slot, line);
@@ -326,7 +332,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_str(chunk, "", line);
     lget(chunk, s_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
-    chunk.emit_op(Op::STR_TO_LOWER, line);
+    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     lset(chunk, s_slot, line);
 
     let table_str = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -335,7 +341,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, n_slot, line);
     lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     lset(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -354,8 +360,8 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_str(chunk, table_str, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
+    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lset(chunk, d_slot, line);
 
     // if d >= 0 && d < from: n = n*from + d
@@ -425,7 +431,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     push_str(chunk, table_str, line);
     lget(chunk, digit_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
+    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     lget(chunk, out_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);

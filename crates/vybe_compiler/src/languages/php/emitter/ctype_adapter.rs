@@ -46,7 +46,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // len = s.length
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -58,7 +58,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::CONST, zero, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::FALSE, line);
+    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
@@ -70,7 +70,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::TRUE, line);
+    { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -85,11 +85,11 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     // code = s.codePointAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::STR_CODE_POINT_AT, line);
+    { let idx = chunk.add_import("wasm:js-string", "codePointAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::FALSE, line);
+    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -109,7 +109,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         crate::emitter::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
-        chunk.emit_op(Op::TRUE, line);
+        { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
@@ -122,7 +122,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::FALSE, line);
+    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(2, line);

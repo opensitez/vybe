@@ -24,8 +24,15 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     s
 }
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::F64(v) => chunk.emit_f64_const(*v, line),
+        Value::I32(v) => chunk.emit_i32_const(*v, line),
+        
+        _ => {
+            let idx = chunk.add_constant(val);
+            chunk.emit_op_u16(Op::CONST, idx, line);
+        }
+    }
 }
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
@@ -57,15 +64,15 @@ pub fn emit_php_loose_eq(
     lset(chunk, a_slot, line);
 
     lget(chunk, a_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "string", line);
-    chunk.emit_op(Op::STR_EQUALS, line);
+    let test_str_a = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_a, line);
+    chunk.emit(1, line);
     chunk.emit_if_value(line);
 
     lget(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "string", line);
-    chunk.emit_op(Op::STR_EQUALS, line);
+    let test_str_b = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_b, line);
+    chunk.emit(1, line);
     chunk.emit_if_value(line);
 
     lget(chunk, a_slot, line);
@@ -132,23 +139,21 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     maybe_unbox_datetime(chunk, t_b, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "string", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    let test_str_ta = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_ta, line);
+    chunk.emit(1, line);
     chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "string", line);
-    emit_dyn_eq(chunk, line);
-    emit_dyn_to_bool(chunk, line);
+    let test_str_tb = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_tb, line);
+    chunk.emit(1, line);
     chunk.emit_if_value(line);
 
     // Both strings → lexicographic compare.
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    chunk.emit_op(Op::STR_COMPARE, line);
+    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
     push_const(chunk, Value::I32(0), line);
     cmp_fn(chunk, line);
 
@@ -168,9 +173,36 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
 /// If the value in `slot` is a boxed DateTime-like object, replace it
 /// with its `__time` field so comparisons operate on the timestamp.
 fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
+    // object test: not null AND not number AND not string AND not boolean
+    let obj_dt_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op(Op::REF_IS_OBJECT, line);
-    emit_dyn_to_bool(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_dt_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    // not null
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    // AND not number
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
+    let test_num_dt = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_num_dt, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    // AND not string
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
+    let test_str_dt = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_dt, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    // AND not boolean
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
+    let test_bool_dt = chunk.add_import("wasm:js-boolean", "test");
+    chunk.emit_op_u16(Op::CALL_IMPORT, test_bool_dt, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
