@@ -654,6 +654,7 @@ __refl_class                   = { emit = "common:php.refl_class",              
 __refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 5 }
 __refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 2 }
 __refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 3 }
+__weak_ref_create              = { emit = "common:php.weak_ref_create",          min_args = 1, max_args = 1 }
 __php_fiber_new           = { emit = "common:php.fiber_new",           min_args = 1, max_args = 1 }
 __php_fiber_suspend       = { emit = "common:php.fiber_suspend",       min_args = 0, max_args = 1 }
 __php_fiber_start         = { emit = "common:php.fiber_start",         min_args = 1, max_args = 16 }

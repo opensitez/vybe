@@ -167,7 +167,7 @@ fn ctype_upper_lower() {
         run_prints(
             r#"<?php echo ctype_upper('HELLO') ? '1' : '0'; echo ctype_lower('world') ? '1' : '0'; "#
         ),
-        vec!["11"]
+        vec!["1", "1"]
     );
 }
 

@@ -199,7 +199,7 @@ echo "{$fruit}";
 echo "\n";
 "#
         ),
-        vec!["${fruit}", " ", "apple"]
+        vec!["${fruit} ", "apple"]
     );
 }
 

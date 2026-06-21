@@ -21,6 +21,7 @@ pub mod emitter;
 pub mod languages;
 pub mod lsp;
 pub mod platforms;
+pub mod plib_register;
 pub mod profile;
 pub mod projects;
 pub mod scope;

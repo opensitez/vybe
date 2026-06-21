@@ -396,9 +396,8 @@ echo "\n";
         &[
             "00042",
             "3.14",
-            "cart has 5 items",
-            "     right",
-            "left      |"
+            "cart has 5 items     right",
+            "left      |",
         ]
     );
 }

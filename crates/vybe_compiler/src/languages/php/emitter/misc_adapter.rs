@@ -1235,3 +1235,53 @@ pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     lget(chunk, parsed_slot, line);
     call_ref(chunk, 1, line);
 }
+
+/// `WeakReference::create($obj)` → struct with `get` method that derefs the weak ref.
+pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    // Build the `get()` method: deref the weak ref stored in this.__weak
+    let get_idx = {
+        let mut c = Chunk::new("__weak_ref_get");
+        c.arity = 1; // this
+        let weak_k = c.add_constant(Value::String(Arc::from("__weak")));
+        c.emit_op_u16(Op::LOCAL_GET, 0, line);
+        c.emit_op_u16(Op::STRUCT_GET, weak_k, line);
+        c.emit_op(Op::REF_DEREF_WEAK, line);
+        c.emit_op(Op::RETURN, line);
+        c.local_count = c.local_count.max(1);
+        chunks.push(c);
+        chunks.len() - 1
+    };
+
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.local_count;
+    let this_slot = chunk.local_count + 1;
+    chunk.local_count += 2;
+
+    // Pop the object arg
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // Create struct, store weak ref
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // this.__weak = REF_MAKE_WEAK(obj)
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op(Op::REF_MAKE_WEAK, line);
+    let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
+    chunk.emit_op_u16(Op::STRUCT_SET, weak_k, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // Bind get method
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, get_idx as u16, line);
+    chunk.emit(0, line);
+    let get_k = chunk.add_constant(Value::String(Arc::from("get")));
+    chunk.emit_op_u16(Op::STRUCT_SET, get_k, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // Return the struct
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}

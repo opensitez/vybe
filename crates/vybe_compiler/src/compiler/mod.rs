@@ -538,6 +538,22 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             for t in targets {
                 collect_addr_taken_in_expr(t, out);
             }
+            // When assigning a reference (`$b = &$a`), the TARGET also
+            // becomes a cell-backed binding so writes to `$b` go through
+            // cell_store (shared mutable alias with `$a`).
+            if matches!(
+                &value.kind,
+                ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    ..
+                }
+            ) {
+                for t in targets {
+                    if let ExprKind::Ident(name) = &t.kind {
+                        out.insert(name.clone());
+                    }
+                }
+            }
             collect_addr_taken_in_expr(value, out);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -1719,6 +1735,10 @@ impl Compiler {
         // don't get the names installed in their global scope.
         if self.profile.namespaces.use_dotnet {
             self.register_dotnet_classes()?;
+        }
+
+        if crate::plib_register::module_uses_plib_gcl(module) {
+            self.register_plib_gcl_classes()?;
         }
 
         // Pre-pass: merge `Partial Class` declarations sharing the same name.
@@ -7933,11 +7953,30 @@ impl Compiler {
                             );
                         }
                     }
+                    // PHP reference assignment: `$b = &$a` — the first
+                    // assignment stores the cell itself (GLOBAL_SET/LOCAL_SET),
+                    // then mark `$b` as pointer-cell so SUBSEQUENT writes
+                    // go through cell_store.
+                    let is_ref_assign = matches!(
+                        &value.kind,
+                        ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+                    );
                     for (i, target) in targets.iter().enumerate() {
                         if i < targets.len() - 1 {
                             self.emit(Op::DUP);
                         }
                         self.compile_assign_target(target)?;
+                    }
+                    // Mark targets as pointer-cell AFTER the first
+                    // assignment so the initial store uses GLOBAL/LOCAL_SET
+                    // (writes the cell itself), and subsequent writes
+                    // use cell_store (writes through the cell).
+                    if is_ref_assign {
+                        for target in targets.iter() {
+                            if let ExprKind::Ident(name) = &target.kind {
+                                self.mark_pointer_cell_binding(name);
+                            }
+                        }
                     }
                 }
             }

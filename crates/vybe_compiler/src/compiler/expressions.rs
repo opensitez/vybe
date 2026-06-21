@@ -3589,6 +3589,16 @@ impl Compiler {
                 self.compile_expr(value)?;
                 self.emit(Op::DUP);
                 self.compile_assign_target(target)?;
+                // PHP reference assignment: mark target as pointer-cell
+                // AFTER the first store so subsequent writes use cell_store.
+                if matches!(
+                    &value.kind,
+                    ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+                ) {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        self.mark_pointer_cell_binding(name);
+                    }
+                }
             }
 
             // ── Lambda ──────────────────────────────────────────────────

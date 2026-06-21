@@ -3239,119 +3239,233 @@ fn emit_trim_impl(
 /// from PHP's pat-first to ECMA's str-first convention. Optional flags
 /// arg ignored (MVP).
 pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let flags_slot = alloc_local(chunk);
-    let limit_slot = alloc_local(chunk);
-    let str_slot = alloc_local(chunk);
-    let pat_slot = alloc_local(chunk);
-    let result_slot = alloc_local(chunk);
     let has_limit = argc >= 3;
     let has_flags = argc >= 4;
 
-    if has_flags {
-        lset(chunk, flags_slot, line);
-    } else {
-        push_const(chunk, Value::F64(0.0), line);
-        lset(chunk, flags_slot, line);
-    }
-    if has_limit {
-        lset(chunk, limit_slot, line);
-    }
-    lset(chunk, str_slot, line);
-    lset(chunk, pat_slot, line);
+    // Alloc ALL locals up front in one block
+    let (flags_slot, limit_slot, str_slot, pat_slot, result_slot,
+         count_slot, pos_slot, new_result_slot, match_slot, i_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
+         alloc_local(c), alloc_local(c))
+    };
 
-    // Call ecma:regexp.split — skip limit when negative (PHP -1 = no limit)
-    lget(chunk, str_slot, line);
-    lget(chunk, pat_slot, line);
-    if has_limit {
-        // if limit >= 0: 3-arg split; else: 2-arg split
-        lget(chunk, limit_slot, line);
-        push_const(chunk, Value::F64(0.0), line);
-        crate::emitter::ops::emit_dyn_ge(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if_value(line);
-        lget(chunk, limit_slot, line);
-        let _ = chunk;
-        call_import(chunks, current, "ecma:regexp", "split", 3, line);
-        let chunk = &mut chunks[current];
-        chunk.emit_else(line);
-        let _ = chunk;
-        call_import(chunks, current, "ecma:regexp", "split", 2, line);
-        let chunk = &mut chunks[current];
-        chunk.emit_end(line);
-    } else {
-        let _ = chunk;
-        call_import(chunks, current, "ecma:regexp", "split", 2, line);
+    // Pop args
+    {
+        let c = &mut chunks[current];
+        if has_flags { lset(c, flags_slot, line); }
+        else { push_const(c, Value::F64(0.0), line); lset(c, flags_slot, line); }
+        if has_limit { lset(c, limit_slot, line); }
+        lset(c, str_slot, line);
+        lset(c, pat_slot, line);
+        lget(c, str_slot, line);
+        lget(c, pat_slot, line);
     }
-    let chunk = &mut chunks[current];
-    lset(chunk, result_slot, line);
+    call_import(chunks, current, "ecma:regexp", "split", 2, line);
+    { let c = &mut chunks[current]; lset(c, result_slot, line); }
+
+    if has_limit {
+        {
+            let c = &mut chunks[current];
+            lget(c, limit_slot, line);
+            push_const(c, Value::F64(1.0), line);
+            crate::emitter::ops::emit_dyn_gt(c, line);
+            crate::emitter::ops::emit_dyn_to_bool(c, line);
+            c.emit_if(line);
+
+            lget(c, result_slot, line);
+            c.emit_op(Op::ARRAY_LENGTH, line);
+            lget(c, limit_slot, line);
+            crate::emitter::ops::emit_dyn_gt(c, line);
+            crate::emitter::ops::emit_dyn_to_bool(c, line);
+            c.emit_if(line);
+
+            push_const(c, Value::F64(0.0), line);
+            lset(c, count_slot, line);
+            push_const(c, Value::F64(0.0), line);
+            lset(c, pos_slot, line);
+        }
+
+        // Exec loop to find (limit-1)th match position
+        let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+        {
+            let c = &mut chunks[current];
+            lget(c, count_slot, line);
+            lget(c, limit_slot, line);
+            push_const(c, Value::F64(1.0), line);
+            c.emit_op(Op::F64_SUB, line);
+            crate::emitter::ops::emit_dyn_lt(c, line);
+            crate::emitter::ops::emit_dyn_to_bool(c, line);
+        }
+        crate::emitter::loops::emit_loop_cond(chunks, current, line);
+        {
+            let c = &mut chunks[current];
+            lget(c, pat_slot, line);
+            lget(c, str_slot, line);
+            lget(c, pos_slot, line);
+            push_const(c, Value::I32(i32::MAX), line);
+            c.emit_op(Op::STR_SUBSTRING, line);
+        }
+        call_import(chunks, current, "ecma:regexp", "exec", 2, line);
+        {
+            let c = &mut chunks[current];
+            lset(c, match_slot, line);
+            lget(c, match_slot, line);
+            c.emit_op(Op::REF_IS_NULL, line);
+            c.emit_if(line);
+            lget(c, limit_slot, line);
+            lset(c, count_slot, line);
+            c.emit_end(line);
+
+            lget(c, match_slot, line);
+            c.emit_op(Op::REF_IS_NULL, line);
+            c.emit_op(Op::I32_EQZ, line);
+            c.emit_if(line);
+            let index_k = c.add_constant(Value::String(std::sync::Arc::from("index")));
+            lget(c, match_slot, line);
+            c.emit_op_u16(Op::STRUCT_GET, index_k, line);
+            lget(c, match_slot, line);
+            push_const(c, Value::F64(0.0), line);
+            c.emit_op(Op::ARRAY_GET, line);
+            c.emit_op(Op::STR_LENGTH, line);
+            c.emit_op(Op::F64_ADD, line);
+            lget(c, pos_slot, line);
+            c.emit_op(Op::F64_ADD, line);
+            lset(c, pos_slot, line);
+            c.emit_end(line);
+
+            lget(c, count_slot, line);
+            push_const(c, Value::F64(1.0), line);
+            c.emit_op(Op::F64_ADD, line);
+            lset(c, count_slot, line);
+        }
+        crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+
+        // Build new result array
+        {
+            let c = &mut chunks[current];
+            c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+            lset(c, new_result_slot, line);
+            push_const(c, Value::F64(0.0), line);
+            lset(c, i_slot, line);
+        }
+
+        // Copy first limit-1 elements
+        let loop2 = crate::emitter::loops::emit_loop_start(chunks, current, line);
+        {
+            let c = &mut chunks[current];
+            lget(c, i_slot, line);
+            lget(c, limit_slot, line);
+            push_const(c, Value::F64(1.0), line);
+            c.emit_op(Op::F64_SUB, line);
+            crate::emitter::ops::emit_dyn_lt(c, line);
+            crate::emitter::ops::emit_dyn_to_bool(c, line);
+        }
+        crate::emitter::loops::emit_loop_cond(chunks, current, line);
+        {
+            let c = &mut chunks[current];
+            lget(c, new_result_slot, line);
+            lget(c, result_slot, line);
+            lget(c, i_slot, line);
+            c.emit_op(Op::ARRAY_GET, line);
+        }
+        call_import(chunks, current, "ecma:array", "push", 2, line);
+        {
+            let c = &mut chunks[current];
+            c.emit_op(Op::DROP, line);
+            lget(c, i_slot, line);
+            push_const(c, Value::F64(1.0), line);
+            c.emit_op(Op::F64_ADD, line);
+            lset(c, i_slot, line);
+        }
+        crate::emitter::loops::emit_loop_end(chunks, current, loop2, line);
+
+        // Append remainder
+        {
+            let c = &mut chunks[current];
+            lget(c, new_result_slot, line);
+            lget(c, str_slot, line);
+            lget(c, pos_slot, line);
+            push_const(c, Value::I32(i32::MAX), line);
+            c.emit_op(Op::STR_SUBSTRING, line);
+        }
+        call_import(chunks, current, "ecma:array", "push", 2, line);
+        {
+            let c = &mut chunks[current];
+            c.emit_op(Op::DROP, line);
+            lget(c, new_result_slot, line);
+            lset(c, result_slot, line);
+        }
+
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+    }
 
     // If PREG_SPLIT_NO_EMPTY (flags & 1): filter out empty strings
-    lget(chunk, flags_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::I32_AND, line);
-    push_const(chunk, Value::F64(0.0), line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    crate::emitter::ops::emit_dyn_not(chunk, line); // true if NO_EMPTY flag set
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line); // only run filter if flag is set
-
-    // Build filtered array: iterate result, skip empty strings
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let elem_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, result_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, len_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-
-    let _ = chunk;
-    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let _ = chunk;
+    let (ne_i, ne_len, ne_elem, ne_out) = {
+        let c = &mut chunks[current];
+        lget(c, flags_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::I32_AND, line);
+        push_const(c, Value::F64(0.0), line);
+        crate::emitter::ops::emit_dyn_eq(c, line);
+        crate::emitter::ops::emit_dyn_not(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+        let a = alloc_local(c);
+        let b = alloc_local(c);
+        let d = alloc_local(c);
+        let e = alloc_local(c);
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        lset(c, e, line);
+        lget(c, result_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, b, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, a, line);
+        (a, b, d, e)
+    };
+    let ne_loop = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, ne_i, line);
+        lget(c, ne_len, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+    }
     crate::emitter::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    lget(chunk, result_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, elem_slot, line);
-
-    // push only if non-empty string
-    lget(chunk, elem_slot, line);
-    push_str(chunk, "", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    crate::emitter::ops::emit_dyn_not(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, out_slot, line);
-    lget(chunk, elem_slot, line);
-    let _ = chunk;
+    {
+        let c = &mut chunks[current];
+        lget(c, result_slot, line);
+        lget(c, ne_i, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, ne_elem, line);
+        lget(c, ne_elem, line);
+        push_str(c, "", line);
+        crate::emitter::ops::emit_dyn_eq(c, line);
+        crate::emitter::ops::emit_dyn_not(c, line);
+        c.emit_if(line);
+        lget(c, ne_out, line);
+        lget(c, ne_elem, line);
+    }
     call_import(chunks, current, "ecma:array", "push", 2, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_end(line);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    crate::emitter::ops::emit_dyn_add(chunk, line);
-    lset(chunk, i_slot, line);
-    let _ = chunk;
-    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, out_slot, line);
-    lset(chunk, result_slot, line);
-
-    chunk.emit_end(line); // end PREG_SPLIT_NO_EMPTY if
-
-    lget(chunk, result_slot, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, ne_i, line);
+        push_const(c, Value::F64(1.0), line);
+        crate::emitter::ops::emit_dyn_add(c, line);
+        lset(c, ne_i, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, ne_loop, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, ne_out, line);
+        lset(c, result_slot, line);
+        c.emit_end(line);
+        lget(c, result_slot, line);
+    }
 }
 
 // ── preg_match_all_groups / preg_match_groups ──────────────────────
