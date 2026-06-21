@@ -4947,7 +4947,46 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         .trim()
     {
         "int" | "integer" | "long" => Some("intval"),
-        "float" | "double" | "real" => Some("floatval"),
+        "float" | "double" | "real" => {
+            // PHP (float)'hello' → 0, not NaN. Wrap floatval with NaN→0 fallback.
+            let tmp = next_tmp_name("cast_f");
+            let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+            let fval_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("floatval")),
+                    args: vec![Argument::positional(expr)],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let save = Expression::with_span(
+                ExprKind::Assign { target: Box::new(tmp_ident()), value: Box::new(fval_call) },
+                span.clone(),
+            );
+            // Number.isNaN(tmp)
+            let number_isnan = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::ident("Number")),
+                    field: "isNaN".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            let is_nan = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(number_isnan),
+                    args: vec![Argument::positional(tmp_ident())],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let zero = Expression::with_span(ExprKind::Lit(Literal::Float(0.0)), span.clone());
+            let ternary = Expression::with_span(
+                ExprKind::Ternary { cond: Box::new(is_nan), then: Box::new(zero), else_: Box::new(tmp_ident()) },
+                span.clone(),
+            );
+            return Ok(Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span));
+        }
         "bool" | "boolean" => Some("boolval"),
         "string" | "binary" => Some("strval"),
         // `(array)` cast: null→[], object→Object.entries, scalar→[$x], array→identity.
@@ -10094,8 +10133,117 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         "is_float" | "is_double" | "is_real" => {
             mk_call(Expression::ident("__php_is_float"), vec![arg(0)?])
         }
+        // PHP 7+ is_numeric rejects hex strings like '0x1A'
+        "is_numeric" => {
+            let v = arg(0)?;
+            let tmp = next_tmp_name("isnum");
+            let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+            let save = Expression::with_span(
+                ExprKind::Assign { target: Box::new(tmp_ident()), value: Box::new(v) },
+                span.clone(),
+            );
+            // typeof tmp === "string" && (tmp.startsWith("0x") || tmp.startsWith("0X"))
+            let is_str = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(ExprKind::TypeOf(Box::new(tmp_ident())), span.clone())),
+                    right: Box::new(Expression::string("string")),
+                },
+                span.clone(),
+            );
+            let starts_0x = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Member { object: Box::new(tmp_ident()), field: "startsWith".to_string(), null_safe: false },
+                        span.clone(),
+                    )),
+                    args: vec![Argument::positional(Expression::string("0x"))],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let starts_0x_upper = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Member { object: Box::new(tmp_ident()), field: "startsWith".to_string(), null_safe: false },
+                        span.clone(),
+                    )),
+                    args: vec![Argument::positional(Expression::string("0X"))],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let is_hex = Expression::with_span(
+                ExprKind::Binary { op: BinOp::Or, left: Box::new(starts_0x), right: Box::new(starts_0x_upper) },
+                span.clone(),
+            );
+            let is_str_hex = Expression::with_span(
+                ExprKind::Binary { op: BinOp::And, left: Box::new(is_str), right: Box::new(is_hex) },
+                span.clone(),
+            );
+            // is_str_hex ? false : is_numeric(tmp)
+            let orig_call = mk_call(Expression::ident("__php_is_numeric"), vec![tmp_ident()]);
+            let ternary = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(is_str_hex),
+                    then: Box::new(Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone())),
+                    else_: Box::new(Expression::with_span(orig_call, span.clone())),
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![save, ternary])
+        }
         "is_finite" => mk_call(mk_member("Number", "isFinite"), vec![arg(0)?]),
         "is_nan" => mk_call(mk_member("Number", "isNaN"), vec![arg(0)?]),
+        // ── bcmath — arbitrary precision via intval arithmetic ──────
+        "bcadd" | "bcsub" | "bcmul" | "bcpow" => {
+            let a = arg(0)?;
+            let b = arg(1)?;
+            let int_a = Expression::with_span(mk_call(Expression::ident("intval"), vec![a]), span.clone());
+            let int_b = Expression::with_span(mk_call(Expression::ident("intval"), vec![b]), span.clone());
+            let op = match name {
+                "bcadd" => BinOp::Add,
+                "bcsub" => BinOp::Sub,
+                "bcmul" => BinOp::Mul,
+                "bcpow" => BinOp::Pow,
+                _ => unreachable!(),
+            };
+            let result = Expression::with_span(
+                ExprKind::Binary { op, left: Box::new(int_a), right: Box::new(int_b) },
+                span.clone(),
+            );
+            mk_call(Expression::ident("strval"), vec![result])
+        }
+        "bccomp" => {
+            let a = arg(0)?;
+            let b = arg(1)?;
+            let fa = Expression::with_span(mk_call(Expression::ident("floatval"), vec![a]), span.clone());
+            let fb = Expression::with_span(mk_call(Expression::ident("floatval"), vec![b]), span.clone());
+            ExprKind::Binary { op: BinOp::Spaceship, left: Box::new(fa), right: Box::new(fb) }
+        }
+        "bcdiv" => {
+            let a = arg(0)?;
+            let b = arg(1)?;
+            let scale = arg(2);
+            let fa = Expression::with_span(mk_call(Expression::ident("floatval"), vec![a]), span.clone());
+            let fb = Expression::with_span(mk_call(Expression::ident("floatval"), vec![b]), span.clone());
+            let div = Expression::with_span(
+                ExprKind::Binary { op: BinOp::Div, left: Box::new(fa), right: Box::new(fb) },
+                span.clone(),
+            );
+            if let Some(sc) = scale {
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member { object: Box::new(div), field: "toFixed".to_string(), null_safe: false },
+                        span.clone(),
+                    ),
+                    vec![sc],
+                )
+            } else {
+                mk_call(Expression::ident("strval"), vec![div])
+            }
+        }
+        "bcscale" => ExprKind::Lit(Literal::Null),
         // PHP `is_infinite($x)` ≡ `Math.abs($x) === Infinity`.
         // `$x` is evaluated once because Math.abs receives it as an
         // argument; the comparison sees only the result.

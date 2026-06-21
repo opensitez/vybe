@@ -337,7 +337,7 @@ boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max
 #     PHP distinguishes arrays from class instances; Vybe's runtime
 #     doesn't tag them differently yet, so a JS-shape rewrite would be
 #     half-correct. The intrinsic forms stay until that's resolved.
-is_numeric          = { emit = "common:php.isnumeric",               min_args = 1, max_args = 1 }
+__php_is_numeric    = { emit = "common:php.isnumeric",               min_args = 1, max_args = 1 }
 is_float            = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_double           = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_real             = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }

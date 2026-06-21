@@ -107,6 +107,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.krsort" => super::array_adapter::emit_php_krsort(chunks, current, argc, line),
         "php.uasort" => super::array_adapter::emit_php_uasort(chunks, current, argc, line),
         "php.uksort" => super::array_adapter::emit_php_uksort(chunks, current, argc, line),
+        "php.implode" => super::array_adapter::emit_php_implode(chunks, current, argc, line),
         "php.in_array" => super::array_adapter::emit_php_in_array(chunks, current, argc, line),
         "php.obj_to_array" => super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line),
         "php.array_to_object" => super::array_adapter::emit_php_array_to_object(chunks, current, argc, line),

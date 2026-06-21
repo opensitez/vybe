@@ -3568,6 +3568,108 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
     { let c = &mut chunks[current]; lget(c, out_slot, line); }
 }
 
+// ── implode (PHP bool-to-string coercion) ─────────────────────────
+/// PHP `implode($glue, $arr)` — like JS join but bools → "1"/"".
+/// Stack: [arr, glue] → [string].
+pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let glue_slot = alloc_local(chunk);
+    let arr_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let v_slot = alloc_local(chunk);
+    let str_slot = alloc_local(chunk);
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+
+    // Args come as (arr, glue) after walker reorder
+    lset(chunk, glue_slot, line);
+    lset(chunk, arr_slot, line);
+
+    // Build a new array with stringified elements
+    chunk.emit_op_u8(Op::ARRAY_NEW_FIXED, 0, line);
+    lset(chunk, out_slot, line);
+
+    // Get values from array (works for both Array and Map)
+    lget(chunk, arr_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "values", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, arr_slot, line);
+    lget(chunk, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, n_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    let lp = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line);
+        lget(c, n_slot, line);
+        crate::emitter::ops::emit_dyn_lt(c, line);
+    }
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, arr_slot, line);
+        lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, v_slot, line);
+
+        // null → ""
+        lget(c, v_slot, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_if(line);
+        push_str(c, "", line);
+        lset(c, str_slot, line);
+        c.emit_else(line);
+        // boolean check
+        lget(c, v_slot, line);
+        c.emit_op_u16(Op::CALL_IMPORT, test_bool, line);
+        c.emit(1, line);
+        c.emit_if(line);
+        lget(c, v_slot, line);
+        c.emit_op_u16(Op::CALL_IMPORT, cast_bool, line);
+        c.emit(1, line);
+        c.emit_if(line);
+        push_str(c, "1", line);
+        lset(c, str_slot, line);
+        c.emit_else(line);
+        push_str(c, "", line);
+        lset(c, str_slot, line);
+        c.emit_end(line);
+        c.emit_else(line);
+        lget(c, v_slot, line);
+        lset(c, str_slot, line);
+        c.emit_end(line);
+        c.emit_end(line);
+
+        lget(c, out_slot, line);
+        lget(c, str_slot, line);
+    }
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::DROP, line);
+        // i++
+        lget(c, i_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, i_slot, line);
+    }
+    crate::emitter::loops::emit_loop_end(chunks, current, lp, line);
+    // join the stringified array
+    {
+        let c = &mut chunks[current];
+        lget(c, out_slot, line);
+        lget(c, glue_slot, line);
+    }
+    call_import(chunks, current, "ecma:array", "join", 2, line);
+}
+
 // ── in_array (loose by default) ───────────────────────────────────
 /// PHP `in_array($needle, $haystack, $strict=false)`.
 /// After arg reorder: stack [haystack, needle, strict?] → [bool].
