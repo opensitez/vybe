@@ -196,7 +196,7 @@ pub fn build_method_thunk_chunk(
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
             // arity - 1 because we dropped `this`.
-            chunk.emit_op_u8(Op::CALL, method.arity - 1, line);
+            chunk.emit_op_u8(Op::CALL_REF, method.arity - 1, line);
             chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::Body(ops) => {
@@ -358,7 +358,7 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                     "MethodOp::NewDotnet currently only supports argc=0; \
                      for arity-N factories, switch to a Host target or extend the DSL"
                 );
-                chunk.emit_op_u8(Op::CALL, 0, line);
+                chunk.emit_op_u8(Op::CALL_REF, 0, line);
             }
             MethodOp::SetField(field) => {
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
@@ -509,7 +509,7 @@ pub fn build_constructor_chunk(
         // this = <Parent>()  — global_get parent ; call(0) ; local_set this ; drop
         let parent_const = chunk.add_constant(Value::String(Arc::from(parent_name)));
         chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
-        chunk.emit_op_u8(Op::CALL, 0, line);
+        chunk.emit_op_u8(Op::CALL_REF, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
         chunk.emit_op(Op::DROP, line);
     } else {

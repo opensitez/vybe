@@ -95,8 +95,7 @@ fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
-    let zero = c.add_constant(Value::F64(0.0));
-    c.emit_op_u16(Op::CONST, zero, line);
+    c.emit_f64_const(0.0, line);
     crate::emitter::ops::emit_dyn_ge(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -110,10 +109,9 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 2; // this, filter
     let all_k = sconst(&mut c, "__methods");
     let pub_k = sconst(&mut c, "__methods_public");
-    let one = c.add_constant(Value::F64(1.0));
     // if filter == 1 → __methods_public, else → __methods
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_op_u16(Op::CONST, one, line);
+    c.emit_f64_const(1.0, line);
     crate::emitter::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -134,9 +132,8 @@ fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 2; // this, filter
     let all_k = sconst(&mut c, "__fields");
     let pub_k = sconst(&mut c, "__fields_public");
-    let one = c.add_constant(Value::F64(1.0));
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_op_u16(Op::CONST, one, line);
+    c.emit_f64_const(1.0, line);
     crate::emitter::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -175,8 +172,7 @@ fn finish(
     chunk.emit_op(Op::DROP, line);
     // __type
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let kc = sconst(chunk, kind);
-    chunk.emit_op_u16(Op::CONST, kc, line);
+    chunk.emit_string_const(kind, line);
     let tk = sconst(chunk, "__type");
     chunk.emit_op_u16(Op::STRUCT_SET, tk, line);
     chunk.emit_op(Op::DROP, line);
@@ -266,7 +262,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, ifaces_slot, line);
         chunk.emit_op(Op::NULL, line);
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
-        { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
+        chunk.emit_bool_const(false, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
@@ -372,13 +368,12 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
         chunk.emit_op(Op::DROP, line);
     } else {
-        let zero = chunk.add_constant(Value::F64(0.0));
-        chunk.emit_op_u16(Op::CONST, zero, line);
+        chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
-        chunk.emit_op_u16(Op::CONST, zero, line);
+        chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
         let pub_s = sconst(chunk, "public");
-        chunk.emit_op_u16(Op::CONST, pub_s, line);
+        chunk.emit_string_const("public", line);
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
@@ -389,19 +384,19 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     // Compute boolean visibility flags from the string
     let pub_str = sconst(chunk, "public");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
-    chunk.emit_op_u16(Op::CONST, pub_str, line);
+    chunk.emit_string_const("public", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_pub_slot, line);
 
     let prot_str = sconst(chunk, "protected");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
-    chunk.emit_op_u16(Op::CONST, prot_str, line);
+    chunk.emit_string_const("protected", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_prot_slot, line);
 
     let priv_str = sconst(chunk, "private");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
-    chunk.emit_op_u16(Op::CONST, priv_str, line);
+    chunk.emit_string_const("private", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_priv_slot, line);
 
@@ -479,10 +474,9 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
         chunk.emit_op(Op::DROP, line);
     } else {
-        let zero = chunk.add_constant(Value::F64(0.0));
-        chunk.emit_op_u16(Op::CONST, zero, line);
+        chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
-        chunk.emit_op_u16(Op::CONST, zero, line);
+        chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);

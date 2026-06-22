@@ -35,10 +35,13 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
+        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::BigInt(v) => chunk.emit_i64_const(*v, line),
+        Value::String(s) => chunk.emit_string_const(&s, line),
+        Value::Bool(b) => chunk.emit_bool_const(*b, line),
         
         _ => {
-            let idx = chunk.add_constant(val);
-            chunk.emit_op_u16(Op::CONST, idx, line);
+            unreachable!("push_const: unexpected value type");
         }
     }
 }
@@ -375,7 +378,6 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
         { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
         let idx = chunk.add_constant(Value::F64(width as f64));
-        chunk.emit_op_u16(Op::CONST, idx, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "0", line);
@@ -473,8 +475,7 @@ fn emit_format_code_dispatch(
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
                 // % 100
-                let idx = chunks[current].add_constant(Value::F64(100.0));
-                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_f64_const(100.0, line);
                 crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
@@ -490,8 +491,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-                let idx = chunks[current].add_constant(Value::F64(1.0));
-                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
@@ -507,8 +507,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-                let idx = chunks[current].add_constant(Value::F64(1.0));
-                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
                 emit_stringify(&mut chunks[current], line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
@@ -759,8 +758,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-                let idx = chunks[current].add_constant(Value::F64(100.0));
-                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_f64_const(100.0, line);
                 crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
@@ -775,8 +773,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
-                let idx = chunks[current].add_constant(Value::F64(1.0));
-                chunks[current].emit_op_u16(Op::CONST, idx, line);
+                chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
@@ -970,7 +967,6 @@ fn emit_am_pm(
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
     let chunk = &mut chunks[current];
     let idx = chunk.add_constant(Value::F64(12.0));
-    chunk.emit_op_u16(Op::CONST, idx, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, if upper { "AM" } else { "am" }, line);
@@ -1397,7 +1393,6 @@ fn default_now_component(
     let chunk = &mut chunks[current];
     if bias != 0.0 {
         let idx = chunk.add_constant(Value::F64(bias));
-        chunk.emit_op_u16(Op::CONST, idx, line);
         chunk.emit_op(Op::F64_ADD, line);
     }
     local_set(chunk, slot, line);

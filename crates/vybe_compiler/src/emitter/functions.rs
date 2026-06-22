@@ -174,8 +174,8 @@ pub fn emit_await(chunk: &mut Chunk, line: u32) {
 /// (chunks[0]) — matching how those builders register every other import.
 /// Adding it to `code`'s own import list instead would shift `code`'s import
 /// indices and mis-resolve its other `CALL_IMPORT`s.
-pub fn emit_await_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    let idx = imports.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
+pub fn emit_await_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    let idx = code.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
     code.emit_op_u16(Op::CALL_IMPORT, idx, line);
     code.emit(1, line); // argc = 1 (the awaited value)
 }

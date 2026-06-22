@@ -2094,7 +2094,7 @@ fn build_uniq(imports: &mut Chunk) -> Chunk {
     // if !result.includes(elem) result.push(elem)
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, elem, 0);
-    let inc_idx = imports.add_import("ecma:array", "includes");
+    let inc_idx = c.add_import("ecma:array", "includes");
     c.emit_op_u16(Op::CALL_IMPORT, inc_idx, 0);
     c.emit(2u8, 0);
     crate::emitter::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
@@ -2126,13 +2126,13 @@ fn build_uniq(imports: &mut Chunk) -> Chunk {
 // ── pymap(fn, iter) — Python `map(fn, iter)` shape adapter ──
 // Wraps ECMA `Array.prototype.map(fn)` (§23.1.3.21) with swapped
 // args: Python passes (fn, iter), ECMA expects (iter, fn).
-fn build_pymap(imports: &mut Chunk) -> Chunk {
+fn build_pymap(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pymap");
     c.arity = 2; // fn(0), iter(1)
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // iter
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // fn
-    let idx = imports.add_import("ecma:array", "map");
+    let idx = c.add_import("ecma:array", "map");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2140,13 +2140,13 @@ fn build_pymap(imports: &mut Chunk) -> Chunk {
 }
 
 // ── pyfilter(fn, iter) — Python `filter(fn, iter)` shape adapter ──
-fn build_pyfilter(imports: &mut Chunk) -> Chunk {
+fn build_pyfilter(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pyfilter");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let idx = imports.add_import("ecma:array", "filter");
+    let idx = c.add_import("ecma:array", "filter");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2270,7 +2270,7 @@ fn build_pynext(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     // shift first element off iter
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let sh_idx = imports.add_import("ecma:array", "shift");
+    let sh_idx = c.add_import("ecma:array", "shift");
     c.emit_op_u16(Op::CALL_IMPORT, sh_idx, 0);
     c.emit(1u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2302,7 +2302,7 @@ fn build_rand_choice(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
 
     // idx = floor(random() * len)
-    let r_idx = imports.add_import("ecma:math", "random");
+    let r_idx = c.add_import("ecma:math", "random");
     c.emit_op_u16(Op::CALL_IMPORT, r_idx, 0);
     c.emit(0u8, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
@@ -2351,7 +2351,7 @@ fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(1, 0); // exit if i <= 0
 
     // j = floor(random() * (i + 1))
-    let r_idx = imports.add_import("ecma:math", "random");
+    let r_idx = c.add_import("ecma:math", "random");
     c.emit_op_u16(Op::CALL_IMPORT, r_idx, 0);
     c.emit(0u8, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -2414,7 +2414,7 @@ fn build_rand_sample(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    let sl_idx = imports.add_import("ecma:array", "slice");
+    let sl_idx = c.add_import("ecma:array", "slice");
     c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0);
     c.emit(3u8, 0);
     c.emit_op_u16(Op::LOCAL_SET, 2, 0);
@@ -2491,7 +2491,7 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, n_norm, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    let sl_idx = imports.add_import("ecma:array", "slice");
+    let sl_idx = c.add_import("ecma:array", "slice");
     c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0);
     c.emit(3u8, 0);
     // [first_part]
@@ -2501,7 +2501,7 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0);
     c.emit(3u8, 0);
     // [first_part, second_part]
-    let cc_idx = imports.add_import("ecma:array", "concat");
+    let cc_idx = c.add_import("ecma:array", "concat");
     c.emit_op_u16(Op::CALL_IMPORT, cc_idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2532,9 +2532,9 @@ fn build_array_copy(imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn build_unary_env_math(imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
-    let idx = imports.add_import("env", env_name);
+fn build_unary_env_math(_imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
     let mut c = Chunk::new(chunk_name);
+    let idx = c.add_import("env", env_name);
     c.arity = 1;
     c.local_count = 1;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -2544,9 +2544,9 @@ fn build_unary_env_math(imports: &mut Chunk, chunk_name: &str, env_name: &str) -
     c
 }
 
-fn build_binary_env_math(imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
-    let idx = imports.add_import("env", env_name);
+fn build_binary_env_math(_imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
     let mut c = Chunk::new(chunk_name);
+    let idx = c.add_import("env", env_name);
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -2813,26 +2813,26 @@ fn build_str_remove_range(imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn build_pascal_set_include(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_include(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_include");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = imports.add_import("ecma:set", "add");
+    let idx = c.add_import("ecma:set", "add");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
-fn build_pascal_set_exclude(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_exclude(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_exclude");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = imports.add_import("ecma:set", "delete");
+    let idx = c.add_import("ecma:set", "delete");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::DROP, 0);
@@ -2841,52 +2841,52 @@ fn build_pascal_set_exclude(imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn build_pascal_set_union(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_union(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_union");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = imports.add_import("ecma:set", "union");
+    let idx = c.add_import("ecma:set", "union");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
-fn build_pascal_set_intersection(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_intersection(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_intersection");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = imports.add_import("ecma:set", "intersection");
+    let idx = c.add_import("ecma:set", "intersection");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
-fn build_pascal_set_difference(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_difference(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_difference");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = imports.add_import("ecma:set", "difference");
+    let idx = c.add_import("ecma:set", "difference");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
-fn build_pascal_set_contains(imports: &mut Chunk) -> Chunk {
+fn build_pascal_set_contains(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_set_contains");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let idx = imports.add_import("ecma:set", "has");
+    let idx = c.add_import("ecma:set", "has");
     c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2947,7 +2947,7 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, line);
 
-    let log_idx = imports.add_import("wasi:logging/logging", "log");
+    let log_idx = c.add_import("wasi:logging/logging", "log");
     c.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
     c.emit(1u8, line);
     c.emit_op(Op::DROP, line);
@@ -3203,7 +3203,7 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // not a string → done with result still false
 
     // result = !isNaN(parseFloat(v))  ≡  parsed == parsed
-    let pf_idx = imports.add_import("ecma:number", "parseFloat");
+    let pf_idx = c.add_import("ecma:number", "parseFloat");
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op_u16(Op::CALL_IMPORT, pf_idx, 0);
     c.emit(1, 0);
@@ -3233,7 +3233,7 @@ fn build_val(imports: &mut Chunk) -> Chunk {
     let arg = 0u16;
     let result = 1u16;
 
-    let pf_idx = imports.add_import("ecma:number", "parseFloat");
+    let pf_idx = c.add_import("ecma:number", "parseFloat");
 
     // result = parseFloat(arg)
     c.emit_op_u16(Op::LOCAL_GET, arg, 0);
@@ -3361,7 +3361,7 @@ fn build_isdate(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isdate");
     c.arity = 1;
     c.local_count = 2;
-    let parse_idx = imports.add_import("ecma:date", "parse");
+    let parse_idx = c.add_import("ecma:date", "parse");
     let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
     let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
@@ -3632,13 +3632,13 @@ fn build_qbcolor(_imports: &mut Chunk) -> Chunk {
 // Python's `hex(5)` returns `"0x5"` (with prefix); the underlying
 // `ecma:number.toString(n, radix)` produces just `"5"`. Each chunk
 // concatenates the prefix and forwards to the host.
-fn build_pyradix(imports: &mut Chunk, name: &str, prefix: &str, radix: i32) -> Chunk {
+fn build_pyradix(_imports: &mut Chunk, name: &str, prefix: &str, radix: i32) -> Chunk {
     let mut c = Chunk::new(name);
     c.arity = 1;
     c.local_count = 1;
     let pref = c.add_constant(Value::String(std::sync::Arc::from(prefix)));
     let r = c.add_constant(Value::I32(radix));
-    let ts_idx = imports.add_import("ecma:number", "toString");
+    let ts_idx = c.add_import("ecma:number", "toString");
     c.emit_op_u16(Op::CONST, pref, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::CONST, r, 0);
@@ -3656,8 +3656,8 @@ fn build_isinf(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isinf");
     c.arity = 1;
     c.local_count = 1;
-    let isfin = imports.add_import("ecma:number", "isFinite");
-    let isnan = imports.add_import("ecma:number", "isNaN");
+    let isfin = c.add_import("ecma:number", "isFinite");
+    let isnan = c.add_import("ecma:number", "isNaN");
 
     // !isFinite(n) && !isNaN(n)
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -3772,7 +3772,7 @@ fn build_has_value(imports: &mut Chunk) -> Chunk {
     let len = 4u16;
     let result = 5u16;
 
-    let entries_idx = imports.add_import("ecma:object", "entries");
+    let entries_idx = c.add_import("ecma:object", "entries");
 
     // entries = ecma:object.entries(map)
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
@@ -3854,8 +3854,8 @@ fn build_invert(imports: &mut Chunk) -> Chunk {
     let len = 3u16;
     let result = 4u16;
 
-    let entries_idx = imports.add_import("ecma:object", "entries");
-    let map_new_idx = imports.add_import("ecma:map", "new");
+    let entries_idx = c.add_import("ecma:object", "entries");
+    let map_new_idx = c.add_import("ecma:map", "new");
 
     // entries = ecma:object.entries(map); result = ecma:map.new()
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
@@ -3981,15 +3981,15 @@ fn build_setdefault(imports: &mut Chunk) -> Chunk {
 // pure spec-aligned dispatch. Variadic encoding arg in Python (e.g.
 // `bytes(s, "utf-8")`) is ignored: WHATWG `TextEncoder` is fixed to
 // UTF-8 by spec.
-fn build_to_bytes(imports: &mut Chunk) -> Chunk {
+fn build_to_bytes(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_to_bytes");
     c.arity = 1;
     c.local_count = 2;
     let s = 0u16;
     let enc = 1u16;
 
-    let new_idx = imports.add_import("web:encoding", "encoderNew");
-    let encode_idx = imports.add_import("web:encoding", "encode");
+    let new_idx = c.add_import("web:encoding", "encoderNew");
+    let encode_idx = c.add_import("web:encoding", "encode");
 
     c.emit_op_u16(Op::CALL_IMPORT, new_idx, 0);
     c.emit(0, 0);
@@ -4011,12 +4011,12 @@ fn build_to_bytes(imports: &mut Chunk) -> Chunk {
 // raw object addresses (intentionally — GC-relocatable), so this is a
 // best-effort stable handle that satisfies the Python/Ruby contract
 // (same object → same id within a run).
-fn build_id(imports: &mut Chunk) -> Chunk {
+fn build_id(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_id");
     c.arity = 1;
     c.local_count = 1;
-    let to_str = imports.add_import("ecma:string", "String");
-    let len_idx = imports.add_import("ecma:string", "length");
+    let to_str = c.add_import("ecma:string", "String");
+    let len_idx = c.add_import("ecma:string", "length");
 
     // Convert value to string and return its length as a stand-in id.
     // Same value (toString-stable) → same id. Not unique across all
@@ -4034,12 +4034,12 @@ fn build_id(imports: &mut Chunk) -> Chunk {
 // Same shape as `id` for now: derive a stable integer from the
 // stringified value. Not cryptographic — matches the Python guarantee
 // that `hash(a) == hash(b)` whenever `a == b` for hashable types.
-fn build_hash(imports: &mut Chunk) -> Chunk {
+fn build_hash(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_hash");
     c.arity = 1;
     c.local_count = 1;
-    let to_str = imports.add_import("ecma:string", "String");
-    let len_idx = imports.add_import("ecma:string", "length");
+    let to_str = c.add_import("ecma:string", "String");
+    let len_idx = c.add_import("ecma:string", "length");
 
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
@@ -4079,11 +4079,11 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let idx_c = 10u16;
     let percent = 11u16;
 
-    let to_str = imports.add_import("ecma:string", "String");
-    let to_lower = imports.add_import("ecma:string", "toLowerCase");
-    let pad_start = imports.add_import("ecma:string", "padStart");
-    let to_fixed = imports.add_import("ecma:number", "toFixed");
-    let parse_int = imports.add_import("ecma:number", "parseInt");
+    let to_str = c.add_import("ecma:string", "String");
+    let to_lower = c.add_import("ecma:string", "toLowerCase");
+    let pad_start = c.add_import("ecma:string", "padStart");
+    let to_fixed = c.add_import("ecma:number", "toFixed");
+    let parse_int = c.add_import("ecma:number", "parseInt");
 
     // prefix = ""
     let empty = c.add_constant(Value::String(Arc::from("")));
@@ -4476,14 +4476,14 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let rendered = 6u16;
     let abs_width = 7u16;
 
-    let to_str = imports.add_import("ecma:string", "String");
-    let parse_int = imports.add_import("ecma:number", "parseInt");
-    let number = imports.add_import("ecma:number", "Number");
-    let number_to_string = imports.add_import("ecma:number", "toString");
-    let to_fixed = imports.add_import("ecma:number", "toFixed");
-    let to_upper = imports.add_import("ecma:string", "toUpperCase");
-    let pad_start = imports.add_import("ecma:string", "padStart");
-    let pad_end = imports.add_import("ecma:string", "padEnd");
+    let to_str = c.add_import("ecma:string", "String");
+    let parse_int = c.add_import("ecma:number", "parseInt");
+    let number = c.add_import("ecma:number", "Number");
+    let number_to_string = c.add_import("ecma:number", "toString");
+    let to_fixed = c.add_import("ecma:number", "toFixed");
+    let to_upper = c.add_import("ecma:string", "toUpperCase");
+    let pad_start = c.add_import("ecma:string", "padStart");
+    let pad_end = c.add_import("ecma:string", "padEnd");
 
     let zero_num = c.add_constant(Value::F64(0.0));
     let sixteen = c.add_constant(Value::F64(16.0));
@@ -4789,8 +4789,8 @@ fn build_transform_values(imports: &mut Chunk) -> Chunk {
     let result = 5u16;
     let pair = 6u16;
 
-    let entries_idx = imports.add_import("ecma:object", "entries");
-    let map_new_idx = imports.add_import("ecma:map", "new");
+    let entries_idx = c.add_import("ecma:object", "entries");
+    let map_new_idx = c.add_import("ecma:map", "new");
 
     // entries = ecma:object.entries(map); result = ecma:map.new()
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
@@ -4872,8 +4872,8 @@ fn build_transform_keys(imports: &mut Chunk) -> Chunk {
     let result = 5u16;
     let pair = 6u16;
 
-    let entries_idx = imports.add_import("ecma:object", "entries");
-    let map_new_idx = imports.add_import("ecma:map", "new");
+    let entries_idx = c.add_import("ecma:object", "entries");
+    let map_new_idx = c.add_import("ecma:map", "new");
 
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
     c.emit_op_u16(Op::CALL_IMPORT, entries_idx, 0);
@@ -4959,7 +4959,7 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     let end = 5u16;
     let key = 6u16;
 
-    let to_str = imports.add_import("ecma:string", "String");
+    let to_str = c.add_import("ecma:string", "String");
 
     // out = ""
     let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
@@ -5926,7 +5926,7 @@ fn build_fmod(_imports: &mut Chunk) -> Chunk {
 
 // ── array_insert(arr, index, value) → null ──────────────────────────────
 // splice(arr, index, 0, value) — inserts value at index without removing anything.
-fn build_array_insert(imports: &mut Chunk) -> Chunk {
+fn build_array_insert(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_insert");
     c.arity = 3; // arr, index, value
     c.local_count = 3;
@@ -5939,7 +5939,7 @@ fn build_array_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op(Op::I32_CONST_0, 0); // deleteCount = 0
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let splice = imports.add_import("ecma:array", "splice");
+    let splice = c.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(4u8, 0); // 4 args
     c.emit_op(Op::DROP, 0); // drop returned removed-elements array
@@ -5950,7 +5950,7 @@ fn build_array_insert(imports: &mut Chunk) -> Chunk {
 
 // ── array_remove_at(arr, index) → null ──────────────────────────────────
 // splice(arr, index, 1) — removes 1 element at index.
-fn build_array_remove_at(imports: &mut Chunk) -> Chunk {
+fn build_array_remove_at(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_remove_at");
     c.arity = 2; // arr, index
     c.local_count = 2;
@@ -5960,7 +5960,7 @@ fn build_array_remove_at(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
-    let splice = imports.add_import("ecma:array", "splice");
+    let splice = c.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(3u8, 0);
     c.emit_op(Op::DROP, 0);
@@ -5982,7 +5982,7 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     // idx = indexOf(arr, value)
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let index_of = imports.add_import("ecma:array", "indexOf");
+    let index_of = c.add_import("ecma:array", "indexOf");
     c.emit_op_u16(Op::CALL_IMPORT, index_of, 0);
     c.emit(2u8, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx, 0);
@@ -5998,7 +5998,7 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx, 0);
     c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
-    let splice = imports.add_import("ecma:array", "splice");
+    let splice = c.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(3u8, 0);
     c.emit_op(Op::DROP, 0);
@@ -6023,9 +6023,9 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     let i = 3;
     let src_len = 4;
 
-    let len_import = imports.add_import("ecma:array", "length");
-    let get_import = imports.add_import("ecma:array", "get");
-    let splice_import = imports.add_import("ecma:array", "splice");
+    let len_import = c.add_import("ecma:array", "length");
+    let get_import = c.add_import("ecma:array", "get");
+    let splice_import = c.add_import("ecma:array", "splice");
 
     // src_len = length(src)
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
@@ -6086,9 +6086,9 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     let i = 3;
     let src_len = 4;
 
-    let len_import = imports.add_import("ecma:array", "length");
-    let get_import = imports.add_import("ecma:array", "get");
-    let set_import = imports.add_import("ecma:array", "set");
+    let len_import = c.add_import("ecma:array", "length");
+    let get_import = c.add_import("ecma:array", "get");
+    let set_import = c.add_import("ecma:array", "set");
 
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
     c.emit_op_u16(Op::CALL_IMPORT, len_import, 0);
@@ -6135,13 +6135,13 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
 // ── array_binary_search(arr, value) → i32 ───────────────────────────────
 // Delegates to indexOf — correct for unsorted arrays, O(n) not O(log n)
 // but avoids needing integer division opcode.
-fn build_array_binary_search(imports: &mut Chunk) -> Chunk {
+fn build_array_binary_search(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_binary_search");
     c.arity = 2; // arr, value
     c.local_count = 2;
     let arr = 0u16;
     let value = 1;
-    let index_of = imports.add_import("ecma:array", "indexOf");
+    let index_of = c.add_import("ecma:array", "indexOf");
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op_u16(Op::CALL_IMPORT, index_of, 0);
@@ -6162,8 +6162,8 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     let hi = 4;
     let tmp = 5;
 
-    let get_import = imports.add_import("ecma:array", "get");
-    let set_import = imports.add_import("ecma:array", "set");
+    let get_import = c.add_import("ecma:array", "get");
+    let set_import = c.add_import("ecma:array", "set");
 
     // lo = index; hi = index + count - 1
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
@@ -6233,7 +6233,7 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
 }
 
 // ── array_last_index_of(arr, value) → i32 ───────────────────────────────
-fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
+fn build_array_last_index_of(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_last_index_of");
     c.arity = 2; // arr, value
     c.local_count = 2;
@@ -6242,7 +6242,7 @@ fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let last_index_of = imports.add_import("ecma:array", "lastIndexOf");
+    let last_index_of = c.add_import("ecma:array", "lastIndexOf");
     c.emit_op_u16(Op::CALL_IMPORT, last_index_of, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
@@ -6261,14 +6261,14 @@ fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
 // first). The body just LOCAL_GETs in the right order then calls
 // `ecma:regexp.replace`.
 
-fn build_regex_replace_pat_first(imports: &mut Chunk) -> Chunk {
+fn build_regex_replace_pat_first(_imports: &mut Chunk) -> Chunk {
     // PHP `preg_replace` and Python `re.sub` are GLOBAL by default
     // (replace every match). JS `str.replace` is single-match unless
     // the regex has `/g`. Route through `ecma:regexp.replaceAll` so
     // the always-global semantic is preserved without forcing a `/g`
     // flag through the pattern string.
-    let idx = imports.add_import("ecma:regexp", "replaceAll");
     let mut c = Chunk::new("__stdlib_regex_replace_pat_first");
+    let idx = c.add_import("ecma:regexp", "replaceAll");
     c.arity = 3;
     c.local_count = 3; // pat(0), repl(1), str(2)
     // Push (str, pat, repl) — ecma:regexp.replaceAll order.
@@ -6283,9 +6283,9 @@ fn build_regex_replace_pat_first(imports: &mut Chunk) -> Chunk {
 
 // PHP `preg_split($pat, $str)` / Python `re.split(pat, str)` →
 // `ecma:regexp.split(str, regex)`.
-fn build_regex_split_pat_first(imports: &mut Chunk) -> Chunk {
-    let idx = imports.add_import("ecma:regexp", "split");
+fn build_regex_split_pat_first(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_regex_split_pat_first");
+    let idx = c.add_import("ecma:regexp", "split");
     c.arity = 2;
     c.local_count = 2; // pat(0), str(1)
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -6298,9 +6298,9 @@ fn build_regex_split_pat_first(imports: &mut Chunk) -> Chunk {
 
 // PHP `preg_match_all($pat, $str)` / Python `re.findall(pat, str)` →
 // `ecma:regexp.matchAll(str, regex)`.
-fn build_regex_match_all_pat_first(imports: &mut Chunk) -> Chunk {
-    let idx = imports.add_import("ecma:regexp", "matchAll");
+fn build_regex_match_all_pat_first(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_regex_match_all_pat_first");
+    let idx = c.add_import("ecma:regexp", "matchAll");
     c.arity = 2;
     c.local_count = 2; // pat(0), str(1)
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);

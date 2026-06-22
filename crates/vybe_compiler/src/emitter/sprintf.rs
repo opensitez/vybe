@@ -236,30 +236,30 @@ fn inc(c: &mut Chunk, s: u16) {
 
 /// Build the sprintf helper chunk.  Takes (fmt: string, args: array) and
 /// returns the formatted string.
-pub fn build_sprintf(imports: &mut Chunk) -> Chunk {
+pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new(CHUNK_NAME);
     c.arity = 2;
     c.local_count = NLOCALS;
 
-    let str_len = imports.add_import("ecma:string", "length");
-    let str_ccat = imports.add_import("ecma:string", "charCodeAt");
-    let str_chat = imports.add_import("ecma:string", "charAt");
-    let str_slice = imports.add_import("ecma:string", "slice");
-    let str_tostr = imports.add_import("ecma:string", "String");
-    let str_fcc = imports.add_import("ecma:string", "fromCharCode");
-    let str_cat = imports.add_import("ecma:string", "concat");
-    let str_upper = imports.add_import("ecma:string", "toUpperCase");
-    let str_pstart = imports.add_import("ecma:string", "padStart");
-    let str_pend = imports.add_import("ecma:string", "padEnd");
-    let num_num = imports.add_import("ecma:number", "Number");
-    let num_fixed = imports.add_import("ecma:number", "toFixed");
-    let num_exp = imports.add_import("ecma:number", "toExponential");
-    let num_radix = imports.add_import("ecma:number", "toString");
-    let num_prec = imports.add_import("ecma:number", "toPrecision");
-    let math_trunc = imports.add_import("ecma:math", "trunc");
-    let math_abs = imports.add_import("ecma:math", "abs");
-    let math_pow = imports.add_import("ecma:math", "pow");
-    let arr_at = imports.add_import("ecma:array", "at");
+    let str_len = c.add_import("ecma:string", "length");
+    let str_ccat = c.add_import("ecma:string", "charCodeAt");
+    let str_chat = c.add_import("ecma:string", "charAt");
+    let str_slice = c.add_import("ecma:string", "slice");
+    let str_tostr = c.add_import("ecma:string", "String");
+    let str_fcc = c.add_import("ecma:string", "fromCharCode");
+    let str_cat = c.add_import("ecma:string", "concat");
+    let str_upper = c.add_import("ecma:string", "toUpperCase");
+    let str_pstart = c.add_import("ecma:string", "padStart");
+    let str_pend = c.add_import("ecma:string", "padEnd");
+    let num_num = c.add_import("ecma:number", "Number");
+    let num_fixed = c.add_import("ecma:number", "toFixed");
+    let num_exp = c.add_import("ecma:number", "toExponential");
+    let num_radix = c.add_import("ecma:number", "toString");
+    let num_prec = c.add_import("ecma:number", "toPrecision");
+    let math_trunc = c.add_import("ecma:math", "trunc");
+    let math_abs = c.add_import("ecma:math", "abs");
+    let math_pow = c.add_import("ecma:math", "pow");
+    let arr_at = c.add_import("ecma:array", "at");
 
     // init
     lg(&mut c, FMT);
@@ -1447,14 +1447,14 @@ fn ss_skip_ws(c: &mut Chunk) {
 /// Build the `__fmt_sscanf(input, fmt)` helper. Returns an array of the
 /// values parsed out of `input` according to the C-style `fmt` (handles
 /// `%d`/`%i`, `%f`, `%s`, `%c`, literal chars and whitespace runs).
-pub fn build_sscanf(imports: &mut Chunk) -> Chunk {
+pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new(SSCANF_CHUNK);
     c.arity = 2;
     c.local_count = S_NLOCALS;
 
-    let num_num = imports.add_import("ecma:number", "Number");
-    let arr_push = imports.add_import("ecma:array", "push");
-    let arr_new = imports.add_import("vybe:js-array", "newWithLength");
+    let num_num = c.add_import("ecma:number", "Number");
+    let arr_push = c.add_import("ecma:array", "push");
+    let arr_new = c.add_import("vybe:js-array", "newWithLength");
 
     // ilen / flen ; i = j = 0 ; out = []
     lg(&mut c, S_INP);

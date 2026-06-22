@@ -18,10 +18,13 @@ fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
     match &value {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
+        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::BigInt(v) => chunk.emit_i64_const(*v, line),
+        Value::String(s) => chunk.emit_string_const(&s, line),
+        Value::Bool(b) => chunk.emit_bool_const(*b, line),
         
         _ => {
             let idx = chunk.add_constant(value);
-            chunk.emit_op_u16(Op::CONST, idx, line);
         }
     }
 }

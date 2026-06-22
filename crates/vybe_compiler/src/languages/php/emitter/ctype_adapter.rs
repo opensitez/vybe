@@ -37,8 +37,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.local_count = v_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, v_slot, line);
     chunk.emit_op(Op::DROP, line);
-    let empty = chunk.add_constant(Value::String(Arc::from("")));
-    chunk.emit_op_u16(Op::CONST, empty, line);
+    chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
@@ -54,23 +53,21 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // if len === 0: result = false; break.
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    let zero = chunk.add_constant(Value::F64(0.0));
-    chunk.emit_op_u16(Op::CONST, zero, line);
+    chunk.emit_f64_const(0.0, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
+    chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
 
     // i = 0
-    let zero2 = chunk.add_constant(Value::F64(0.0));
-    chunk.emit_op_u16(Op::CONST, zero2, line);
+    chunk.emit_f64_const(0.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
+    chunk.emit_bool_const(true, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -89,7 +86,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
+    chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -97,19 +94,17 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     for rng in ranges {
         // code >= lo  ≡  !(code < lo)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        let lo_const = chunk.add_constant(Value::F64(rng.lo as f64));
-        chunk.emit_op_u16(Op::CONST, lo_const, line);
+        chunk.emit_f64_const(rng.lo as f64, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         crate::emitter::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
         // code <= hi  ≡  !(code > hi)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        let hi_const = chunk.add_constant(Value::F64(rng.hi as f64));
-        chunk.emit_op_u16(Op::CONST, hi_const, line);
+        chunk.emit_f64_const(rng.hi as f64, line);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         crate::emitter::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
-        { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
+        chunk.emit_bool_const(true, line);
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
@@ -122,7 +117,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    { let idx = chunk.add_constant(Value::Bool(false)); chunk.emit_op_u16(Op::CONST, idx, line); }
+    chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(2, line);
@@ -130,8 +125,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    let one = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::CONST, one, line);
+    chunk.emit_f64_const(1.0, line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);

@@ -240,6 +240,22 @@ fn register_boolean(vm: &mut VM) {
             Value::I32(bit)
         }),
     );
+
+    // fromI32(i32) -> externref — convert i32 to Bool value.
+    // 0 → Bool(false), nonzero → Bool(true).
+    vm.register_host_fn(
+        "wasm:js-boolean",
+        "fromI32",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let v = match args.first() {
+                Some(Value::I32(n)) => *n != 0,
+                Some(Value::F64(n)) => *n != 0.0,
+                Some(Value::Bool(b)) => *b,
+                _ => false,
+            };
+            Value::Bool(v)
+        }),
+    );
 }
 
 // ── wasm:js-undefined ─────────────────────────────────────────────────

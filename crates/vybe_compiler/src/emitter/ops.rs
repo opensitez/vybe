@@ -718,18 +718,18 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
 // (e.g. ecma:array.new).  Use the _into variants in any stdlib builder that
 // has a separate `imports: &mut Chunk` parameter.
 
-pub fn emit_dyn_to_bool_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+pub fn emit_dyn_to_bool_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let slots = alloc_locals(code, 2);
     let v = slots;
     let f = slots + 1;
 
-    let test_bool = imports.add_import("wasm:js-boolean", "test");
-    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
-    let test_num = imports.add_import("wasm:js-number", "test");
-    let to_f64 = imports.add_import("wasm:js-number", "toF64");
-    let test_str = imports.add_import("wasm:js-string", "test");
-    let str_length = imports.add_import("wasm:js-string", "length");
-    let test_bigint = imports.add_import("wasm:js-bigint", "test");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_str = code.add_import("wasm:js-string", "test");
+    let str_length = code.add_import("wasm:js-string", "length");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
 
     save(code, v, line);
 
@@ -789,23 +789,23 @@ pub fn emit_dyn_to_bool_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_end(line);
 }
 
-pub fn emit_dyn_not_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_to_bool_into(imports, code, line);
+pub fn emit_dyn_not_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_to_bool_into(_imports, code, line);
     code.emit_op(Op::I32_EQZ, line); // i32
 }
 
-pub fn emit_dyn_eq_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let slots = alloc_locals(code, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
 
-    let test_num = imports.add_import("wasm:js-number", "test");
-    let to_f64 = imports.add_import("wasm:js-number", "toF64");
-    let test_str = imports.add_import("wasm:js-string", "test");
-    let str_eq = imports.add_import("wasm:js-string", "equals");
-    let test_bool = imports.add_import("wasm:js-boolean", "test");
-    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
-    let test_bigint = imports.add_import("wasm:js-bigint", "test");
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_str = code.add_import("wasm:js-string", "test");
+    let str_eq = code.add_import("wasm:js-string", "equals");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
 
     save(code, b_slot, line);
     save(code, a_slot, line);
@@ -880,23 +880,23 @@ pub fn emit_dyn_eq_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     // Result is i32 — WASM-compliant
 }
 
-pub fn emit_dyn_ne_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_eq_into(imports, code, line); // i32
+pub fn emit_dyn_ne_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_eq_into(_imports, code, line); // i32
     code.emit_op(Op::I32_EQZ, line); // negate: 1 if not-equal, i32
 }
 
-fn emit_dyn_cmp_into(imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp) {
+fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp) {
     let slots = alloc_locals(code, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
 
-    let test_num = imports.add_import("wasm:js-number", "test");
-    let to_f64 = imports.add_import("wasm:js-number", "toF64");
-    let test_str = imports.add_import("wasm:js-string", "test");
-    let str_compare = imports.add_import("wasm:js-string", "compare");
-    let test_bool = imports.add_import("wasm:js-boolean", "test");
-    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
-    let test_bigint = imports.add_import("wasm:js-bigint", "test");
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_str = code.add_import("wasm:js-string", "test");
+    let str_compare = code.add_import("wasm:js-string", "compare");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
 
     save(code, b_slot, line);
     save(code, a_slot, line);
@@ -946,33 +946,33 @@ fn emit_dyn_cmp_into(imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp
     // Result is i32 — WASM-compliant
 }
 
-pub fn emit_dyn_lt_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_cmp_into(imports, code, line, CmpOp::Lt);
+pub fn emit_dyn_lt_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_cmp_into(_imports, code, line, CmpOp::Lt);
 }
-pub fn emit_dyn_gt_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_cmp_into(imports, code, line, CmpOp::Gt);
+pub fn emit_dyn_gt_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_cmp_into(_imports, code, line, CmpOp::Gt);
 }
-pub fn emit_dyn_le_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_cmp_into(imports, code, line, CmpOp::Le);
+pub fn emit_dyn_le_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_cmp_into(_imports, code, line, CmpOp::Le);
 }
-pub fn emit_dyn_ge_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_dyn_cmp_into(imports, code, line, CmpOp::Ge);
+pub fn emit_dyn_ge_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_cmp_into(_imports, code, line, CmpOp::Ge);
 }
 
-pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+pub fn emit_dyn_add_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let slots = alloc_locals(code, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
 
-    let test_str = imports.add_import("wasm:js-string", "test");
-    let str_cast = imports.add_import("wasm:js-string", "cast");
-    let str_concat = imports.add_import("wasm:js-string", "concat");
-    let str_from_f64 = imports.add_import("wasm:js-string", "fromF64");
-    let test_bigint = imports.add_import("wasm:js-bigint", "test");
-    let to_f64 = imports.add_import("wasm:js-number", "toF64");
-    let from_f64 = imports.add_import("wasm:js-number", "fromF64");
-    let test_bool = imports.add_import("wasm:js-boolean", "test");
-    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
+    let test_str = code.add_import("wasm:js-string", "test");
+    let str_cast = code.add_import("wasm:js-string", "cast");
+    let str_concat = code.add_import("wasm:js-string", "concat");
+    let str_from_f64 = code.add_import("wasm:js-string", "fromF64");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let from_f64 = code.add_import("wasm:js-number", "fromF64");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
 
     save(code, b_slot, line);
     save(code, a_slot, line);
@@ -1022,14 +1022,14 @@ pub fn emit_dyn_add_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_end(line);
 }
 
-pub fn emit_dyn_neg_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let v = alloc_locals(code, 1);
 
-    let test_bigint = imports.add_import("wasm:js-bigint", "test");
-    let to_f64 = imports.add_import("wasm:js-number", "toF64");
-    let from_f64 = imports.add_import("wasm:js-number", "fromF64");
-    let test_bool = imports.add_import("wasm:js-boolean", "test");
-    let cast_bool = imports.add_import("wasm:js-boolean", "cast");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let from_f64 = code.add_import("wasm:js-number", "fromF64");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
 
     save(code, v, line);
 

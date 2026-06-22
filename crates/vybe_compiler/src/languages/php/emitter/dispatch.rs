@@ -13,7 +13,7 @@ use vybe_bytecode::opcode::Op;
 /// can't be a fixed-arity stdlib chunk.
 fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc == 0 {
-        { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
+        chunk.emit_bool_const(true, line);
         return;
     }
     let base = chunk.local_count;
@@ -476,16 +476,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             for _ in 0..argc {
                 chunk.emit_op(vybe_bytecode::Op::DROP, line);
             }
-            { let idx = chunk.add_constant(Value::Bool(true)); chunk.emit_op_u16(Op::CONST, idx, line); }
+            chunk.emit_bool_const(true, line);
         }
         "php.mb_detect_enc" => {
             let chunk = &mut chunks[current];
             for _ in 0..argc {
                 chunk.emit_op(vybe_bytecode::Op::DROP, line);
             }
-            let v = vybe_bytecode::Value::String(std::sync::Arc::from("UTF-8"));
-            let idx = chunk.add_constant(v);
-            chunk.emit_op_u16(vybe_bytecode::Op::CONST, idx, line);
+            chunk.emit_string_const("UTF-8", line);
         }
         "php.metaphone" => {
             crate::emitter::php::string_adapter::emit_metaphone(chunks, current, argc, line)

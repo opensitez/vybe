@@ -1734,7 +1734,12 @@ impl VM {
                 self.import_table.push(ImportTarget::JspiSuspend);
                 continue;
             }
-            // 1. Try host function registry (exact module:name match)
+            // 1. js-string-builtins: imported string constants
+            if import.module == "wasm:string-constants" {
+                self.import_table.push(ImportTarget::StringConst(Arc::from(import.name.as_str())));
+                continue;
+            }
+            // 2. Try host function registry (exact module:name match)
             if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
                 self.import_table.push(ImportTarget::Host(idx));
                 continue;

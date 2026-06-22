@@ -71,8 +71,7 @@ fn build_is_empty_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 1;
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op(Op::ARRAY_LENGTH, line);
-    let zero = c.add_constant(Value::F64(0.0));
-    c.emit_op_u16(Op::CONST, zero, line);
+    c.emit_f64_const(0.0, line);
     crate::emitter::ops::emit_dyn_eq(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
@@ -86,8 +85,7 @@ fn build_top_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 1;
     let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let neg1 = c.add_constant(Value::F64(-1.0));
-    c.emit_op_u16(Op::CONST, neg1, line);
+    c.emit_f64_const(-1.0, line);
     c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
@@ -101,8 +99,7 @@ fn build_bottom_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 1;
     let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let zero = c.add_constant(Value::F64(0.0));
-    c.emit_op_u16(Op::CONST, zero, line);
+    c.emit_f64_const(0.0, line);
     c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
@@ -155,12 +152,11 @@ fn build_heap_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) 
 fn build_pq_comparator(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_pqcmp");
     c.arity = 2;
-    let zero = c.add_constant(Value::F64(0.0));
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::CONST, zero, line);
+    c.emit_f64_const(0.0, line);
     c.emit_op(Op::ARRAY_GET, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_op_u16(Op::CONST, zero, line);
+    c.emit_f64_const(0.0, line);
     c.emit_op(Op::ARRAY_GET, line);
     c.emit_op(Op::F64_SUB, line);
     c.emit_op(Op::RETURN, line);
@@ -200,10 +196,9 @@ fn build_pq_extract_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_pq_extract");
     c.arity = 1;
     let pop_i = c.add_import("ecma:array".to_string(), "pop".to_string());
-    let one = c.add_constant(Value::F64(1.0));
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_call(pop_i, 1, line); // → [priority, value]
-    c.emit_op_u16(Op::CONST, one, line);
+    c.emit_f64_const(1.0, line);
     c.emit_op(Op::ARRAY_GET, line); // pair[1] = value
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
