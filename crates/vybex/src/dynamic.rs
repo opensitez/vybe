@@ -1252,24 +1252,26 @@ fn remap_import_operands(chunks: &mut [Chunk], remap: &[u16]) -> Result<(), Stri
         let code = &mut chunk.code;
         let mut ip = 0;
         while ip < code.len() {
-            if ip + 1 >= code.len() {
+            if ip + 3 >= code.len() {
                 break;
             }
-            let Some(op) = Op::decode(code[ip], code[ip + 1] as u16) else {
-                ip += 2;
+            let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+            let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+            let Some(op) = Op::decode(group, sub) else {
+                ip += 4;
                 continue;
             };
-            if op == Op::CALL_IMPORT && ip + 3 < code.len() {
-                let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+            if op == Op::CALL_IMPORT && ip + 5 < code.len() {
+                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
                 let Some(&new_idx) = remap.get(old_idx as usize) else {
                     return Err(format!(
                         "dynamic include import remap missing entry for index {old_idx}"
                     ));
                 };
-                code[ip + 2] = (new_idx >> 8) as u8;
-                code[ip + 3] = (new_idx & 0xff) as u8;
+                code[ip + 4] = (new_idx >> 8) as u8;
+                code[ip + 5] = (new_idx & 0xff) as u8;
             }
-            ip += 2;
+            ip += 4;
             match op.operand_format() {
                 OperandFormat::Closure => {
                     ip += 2 + 1;

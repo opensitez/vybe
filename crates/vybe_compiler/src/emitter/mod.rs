@@ -11,6 +11,7 @@
 
 pub mod bundle;
 pub mod canonical;
+pub mod instructions;
 pub mod channels;
 pub mod classes;
 pub mod collections;

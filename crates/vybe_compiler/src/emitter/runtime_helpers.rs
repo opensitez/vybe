@@ -275,17 +275,17 @@ pub(crate) fn build_polyfill(
 fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
     use vybe_bytecode::opcode::Op;
     let mut offset = 0;
-    while offset + 1 < chunk.code.len() {
-        let prefix = chunk.code[offset];
-        let sub = chunk.code[offset + 1];
-        let op = match Op::decode(prefix, sub as u16) {
+    while offset + 3 < chunk.code.len() {
+        let group = ((chunk.code[offset] as u16) << 8) | chunk.code[offset + 1] as u16;
+        let sub = ((chunk.code[offset + 2] as u16) << 8) | chunk.code[offset + 3] as u16;
+        let op = match Op::decode(group, sub) {
             Some(op) => op,
             None => {
-                offset += 2;
+                offset += 4;
                 continue;
             }
         };
-        let operand_start = offset + 2;
+        let operand_start = offset + 4;
         let next = operand_start + op.operand_format().size_in(&chunk.code, operand_start);
         // Rewrite the import index for CALL_IMPORT specifically — other
         // U16_U8 opcodes (if any) don't index into the imports table.
@@ -3073,7 +3073,7 @@ fn build_str_count(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, max, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, needle, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     // Save indexOf result to local (don't use DUP — value can't cross block boundary)
     let idx_result = 4u16; // reuse local slot (local_count=4, slot 4 is beyond declared but safe with extra locals)
     c.local_count = 5; // need one more local for idx_result
@@ -4145,7 +4145,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
 
     // fmt_lower = picture.Trim().ToLowerCase(); val_str = String(value)
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    c.emit_op(Op::STR_TRIM, 0);
+    { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
     c.emit_call(to_lower, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt_lower, 0);
     c.emit_op(Op::DROP, 0);
@@ -4163,7 +4163,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
     emit_const_index(&mut c, space_str, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op(Op::DROP, 0);
     let no_date_space = c.emit_block(0);
@@ -4196,7 +4196,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     emit_const_index(&mut c, space_str, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op(Op::DROP, 0);
     let no_prefix = c.emit_block(0);
@@ -4212,7 +4212,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, slash_str, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
     c.emit_op(Op::DROP, 0);
     let keep_work = c.emit_block(0);
@@ -4235,7 +4235,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.patch_block(no_prefix);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     emit_const_index(&mut c, space_str, 0);
-    c.emit_op(Op::STR_LAST_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
@@ -4255,12 +4255,12 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
-    c.emit_op(Op::STR_LAST_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
     c.emit_op(Op::DROP, 0);
     let already_short_time = c.emit_block(0);
@@ -4353,7 +4353,7 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     let dot_str = c.add_constant(Value::String(Arc::from(".")));
     emit_const_index(&mut c, dot_str, 0);
-    c.emit_op(Op::STR_INDEX_OF, 0);
+    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, dot_pos, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -4515,7 +4515,7 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, format, 0);
     c.emit_call(to_str, 1, 0);
-    c.emit_op(Op::STR_TRIM, 0);
+    { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
     c.emit_call(to_upper, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt, 0);
     c.emit_op(Op::DROP, 0);
@@ -5522,7 +5522,7 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op(Op::STR_CHAR_AT, 0);
+    { let idx = c.add_import("ecma:string", "charAt"); c.emit_call(idx, 2, 0); }
     crate::emitter::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_else(0);
@@ -5583,7 +5583,7 @@ fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // skip if a is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_op(Op::STR_REPEAT, 0);
+    { let idx = c.add_import("ecma:string", "repeat"); c.emit_call(idx, 2, 0); }
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0);
     c.patch_block(a_block_p);
@@ -5597,7 +5597,7 @@ fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // skip if b is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_op(Op::STR_REPEAT, 0);
+    { let idx = c.add_import("ecma:string", "repeat"); c.emit_call(idx, 2, 0); }
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0);
     c.patch_block(b_block_p);
