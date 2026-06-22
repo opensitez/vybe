@@ -424,10 +424,21 @@ impl VM {
         let local_count = self.chunks[chunk_index].local_count as usize;
         let total = local_count.max(arity);
         let have = self.stack.len() - base;
-        // Local slots beyond the arity range are uninitialized variables,
-        // not missing args — Null is the right default here.
         for _ in have..total {
             self.push(Value::Null)?;
+        }
+
+        let capture_count = self.chunks[chunk_index].capture_count as usize;
+        let capture_base = self.chunks[chunk_index].capture_base as usize;
+        for (i, uv) in func.upvalues.iter().enumerate().take(capture_count) {
+            let val = match &uv.lock().unwrap().location {
+                crate::value::UpvalueLocation::Open(si) => self.stack[*si].clone(),
+                crate::value::UpvalueLocation::Closed(v) => v.clone(),
+            };
+            let slot = base + capture_base + i;
+            if slot < self.stack.len() {
+                self.stack[slot] = val;
+            }
         }
 
         let upvalues = func.upvalues.clone();

@@ -658,7 +658,11 @@ impl VM {
             chunks: Vec::new(),
             frames: Vec::new(),
             stack: Vec::with_capacity(256),
-            globals: HashMap::new(),
+            globals: {
+                let mut g = HashMap::new();
+                g.insert("undefined".to_string(), Value::Undefined);
+                g
+            },
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
             host_registry: HashMap::new(),

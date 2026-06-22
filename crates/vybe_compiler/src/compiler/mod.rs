@@ -12,16 +12,28 @@
 //! Each sibling is a separate `impl Compiler { ... }` block; the public
 //! surface is unchanged (`Compiler::with_profile`, `Compiler::compile`).
 
-mod calls;
-mod classes;
-mod events;
-mod expressions;
-
 macro_rules! inst {
     ($self:expr, $($path:ident)::+ $(, $arg:expr)*) => {{
         crate::emitter::instructions::$($path)::+(&mut $self.chunks[$self.current], $self.line $(, $arg)*)
     }};
 }
+
+macro_rules! fn_call {
+    ($self:expr, $module:literal, $name:literal, $argc:expr) => {{
+        crate::emitter::instructions::host::emit(
+            &mut $self.chunks[$self.current],
+            $module,
+            $name,
+            $argc,
+            $self.line,
+        )
+    }};
+}
+
+mod calls;
+mod classes;
+mod events;
+mod expressions;
 
 use crate::ast::*;
 use crate::emitter as common;
@@ -329,6 +341,7 @@ pub struct Compiler {
     pending_label: Option<String>,
     with_targets: Vec<u16>,
     capture_by_value_vars: Vec<String>,
+    capture_locals: HashMap<u8, u16>,
     pointer_cell_bindings: HashMap<usize, HashSet<String>>,
 
     /// Names of locals/params in the function currently being compiled whose
@@ -1136,6 +1149,7 @@ impl Compiler {
             pending_label: None,
             with_targets: Vec::new(),
             capture_by_value_vars: Vec::new(),
+            capture_locals: HashMap::new(),
             pointer_cell_bindings: HashMap::new(),
             current_addr_taken_locals: HashSet::new(),
 
@@ -1814,7 +1828,7 @@ impl Compiler {
         }
 
         self.emit(Op::NULL);
-        self.emit(Op::HALT);
+        self.emit(Op::RETURN);
         // Take the max of the scope's highest slot and whatever raw local
         // slots compiler_common helpers (e.g. `invoke::emit_invoke_method`)
         // reserved directly on the chunk — those bypass `Scope` but still
@@ -3671,7 +3685,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        inst!(self, ecma_value::is_object);
+        inst!(self, recipes::is_object);
         let obj_line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), obj_line);
         self.chunk().emit_if(obj_line);
@@ -3713,7 +3727,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
-        inst!(self, ecma_value::is_object);
+        inst!(self, recipes::is_object);
         let base_obj_line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), base_obj_line);
         self.chunk().emit_if(base_obj_line);
@@ -3972,7 +3986,7 @@ impl Compiler {
         }
         if self.current_chunk_is_js_async() {
             for _ in 0..self.active_async_try_depth {
-                self.emit(Op::TRY_END);
+                self.emit(Op::END);
             }
         }
         self.emit_return();
@@ -4091,8 +4105,32 @@ impl Compiler {
         self.chunks[self.current].emit_op_u8(op, v, l);
     }
     pub(crate) fn emit_const(&mut self, val: Value) {
-        let idx = self.chunks[self.current].add_constant(val);
-        self.emit_u16(Op::CONST, idx);
+        let l = self.line;
+        let c = &mut self.chunks[self.current];
+        match val {
+            Value::I32(v) => c.emit_i32_const(v, l),
+            Value::I64(v) => c.emit_i64_const(v, l),
+            Value::F64(v) => c.emit_f64_const(v, l),
+            Value::Bool(v) => c.emit_bool_const(v, l),
+            Value::Null => c.emit_op(Op::NULL, l),
+            Value::Undefined => {
+                let idx = c.add_constant(Value::String(Arc::from("undefined")));
+                c.emit_op_u16(Op::GLOBAL_GET, idx, l);
+            }
+            Value::String(ref s) => c.emit_string_const(s, l),
+            Value::BigInt(v) => c.emit_i64_const(v, l),
+            Value::V128(v) => {
+                c.emit_op(Op::V128_CONST, l);
+                for b in v {
+                    c.emit(b, l);
+                }
+            }
+            other => {
+                debug_assert!(false, "emit_const called with non-primitive value: {:?}", other);
+                let idx = c.add_constant(other);
+                c.emit_op_u16(Op::CONST, idx, l);
+            }
+        }
     }
 
     /// Compute WASM `br` depth for `break`.
@@ -4136,8 +4174,8 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
-        inst!(self, ecma_value::typeof_op);
-        self.emit_u16(Op::CONST, function_str);
+        fn_call!(self, "ecma:value", "typeof", 1);
+        inst!(self, core_wasm::string_const, "function");
         crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
@@ -4678,7 +4716,7 @@ impl Compiler {
         let read_file_idx = self.import("wasi:filesystem", "readFile");
         self.emit_host_call(read_file_idx, 1);
         self.emit_const(Value::String(Arc::from("\n")));
-        inst!(self, ecma_string::split);
+        fn_call!(self, "ecma:string", "split", 2);
         self.emit_u16(Op::LOCAL_SET, rows_slot);
         self.emit(Op::DROP);
 
@@ -6591,7 +6629,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, source_slot);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, source_slot);
-        inst!(self, js_undefined::test);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, source_slot);
         self.chunk().emit_else(line);
@@ -7403,7 +7441,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, value_slot);
             self.emit_host_call(typeof_idx, 1);
             self.emit_const(Value::String(Arc::from("object")));
-            inst!(self, js_string::equals);
+            fn_call!(self, "wasm:js-string", "equals", 2);
             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
 
@@ -7425,7 +7463,7 @@ impl Compiler {
             inst!(self, core_wasm::i32_const, 0);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, keys_slot);
-            inst!(self, js_undefined::test);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
             inst!(self, core_wasm::i32_const, 0);
@@ -7450,7 +7488,7 @@ impl Compiler {
             inst!(self, core_wasm::i32_const, 0);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, tracker_slot);
-            inst!(self, js_undefined::test);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
             inst!(self, core_wasm::i32_const, 0);
@@ -7489,7 +7527,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("object")));
-        inst!(self, js_string::equals);
+        fn_call!(self, "wasm:js-string", "equals", 2);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
@@ -7825,7 +7863,7 @@ impl Compiler {
 
                             if !self.expr_is_array_like(value) {
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                                inst!(self, ecma_array::is_array);
+                                fn_call!(self, "ecma:array", "isArray", 1);
                                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                                 self.chunk().emit_if(line);
 
@@ -8333,7 +8371,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
-                        inst!(self, ecma_value::is_func);
+                        inst!(self, recipes::is_func);
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_not(self.chunk(), line);
@@ -8930,8 +8968,7 @@ impl Compiler {
                                         key,
                                         line,
                                     );
-                                    let v = self.str_const(expected);
-                                    self.chunks[self.current].emit_op_u16(Op::CONST, v, line);
+                                    inst!(self, core_wasm::string_const, expected);
                                     {
                                         let line = self.line;
                                         crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
@@ -8941,7 +8978,7 @@ impl Compiler {
                                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                                     };
                                     self.chunk().emit_if(line);
-                                    self.emit_const(Value::Bool(true));
+                                    inst!(self, core_wasm::bool_const, true);
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
                                     self.emit(Op::DROP);
                                     self.chunk().emit_end(line);
@@ -8961,8 +8998,7 @@ impl Compiler {
                                         key,
                                         line,
                                     );
-                                    let v = self.str_const(expected);
-                                    self.chunks[self.current].emit_op_u16(Op::CONST, v, line);
+                                    inst!(self, core_wasm::string_const, expected);
                                     {
                                         let line = self.line;
                                         crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
@@ -8972,7 +9008,7 @@ impl Compiler {
                                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                                     };
                                     self.chunk().emit_if(line);
-                                    self.emit_const(Value::Bool(true));
+                                    inst!(self, core_wasm::bool_const, true);
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
                                     self.emit(Op::DROP);
                                     self.chunk().emit_end(line);
@@ -9831,7 +9867,7 @@ impl Compiler {
                         self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, seed_slot);
-                        inst!(self, js_boolean::test);
+                        fn_call!(self, "wasm:js-boolean", "test", 1);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         inst!(self, core_wasm::bool_const, false);
@@ -9839,7 +9875,7 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, seed_slot);
-                        inst!(self, js_number::test);
+                        fn_call!(self, "wasm:js-number", "test", 1);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         inst!(self, core_wasm::i32_const, 0);
@@ -10279,7 +10315,7 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, row_slot);
                 self.emit_const(Value::String(Arc::from(",")));
-                inst!(self, ecma_string::split);
+                fn_call!(self, "ecma:string", "split", 2);
                 self.emit_u16(Op::LOCAL_SET, values_slot);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, values_slot);
@@ -10377,7 +10413,7 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, row_slot);
                     self.emit_const(Value::String(Arc::from(",")));
-                    inst!(self, ecma_string::split);
+                    fn_call!(self, "ecma:string", "split", 2);
                     self.emit_u16(Op::LOCAL_SET, values_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, values_slot);
@@ -10421,7 +10457,7 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, row_slot);
                     self.emit_const(Value::String(Arc::from(",")));
-                    inst!(self, ecma_string::split);
+                    fn_call!(self, "ecma:string", "split", 2);
                     self.emit_u16(Op::LOCAL_SET, values_slot);
                     self.emit(Op::DROP);
                     self.emit_record_assign_values_from_local(values_slot, variables);
@@ -10475,7 +10511,7 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, row_slot);
                     self.emit_const(Value::String(Arc::from(",")));
-                    inst!(self, ecma_string::split);
+                    fn_call!(self, "ecma:string", "split", 2);
                     self.emit_u16(Op::LOCAL_SET, values_slot);
                     self.emit(Op::DROP);
                     self.emit_record_assign_values_from_local(values_slot, variables);
@@ -11627,7 +11663,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, js_undefined::test);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
@@ -11644,7 +11680,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, js_undefined::test);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
                         self.compile_expr(default)?;
@@ -11706,7 +11742,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
                                 self.emit(Op::DROP);
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                                inst!(self, js_undefined::test);
+                                fn_call!(self, "wasm:js-undefined", "test", 1);
                                 let line = self.line;
                                 self.chunk().emit_if_value(line);
                                 self.compile_expr(def)?;
@@ -12109,7 +12145,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                inst!(self, ecma_value::is_object);
+                inst!(self, recipes::is_object);
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
@@ -12166,7 +12202,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, base_slot);
-                inst!(self, ecma_value::is_object);
+                inst!(self, recipes::is_object);
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
@@ -12272,7 +12308,7 @@ impl Compiler {
                                 inst!(self, core_wasm::bool_const, true);
                             } else {
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                inst!(self, js_string::test);
+                                fn_call!(self, "wasm:js-string", "test", 1);
                             }
                             {
                                 let line = self.line;
@@ -12333,7 +12369,7 @@ impl Compiler {
                             self.chunk().emit_else(line);
 
                             self.emit_u16(Op::LOCAL_GET, value_tmp);
-                            inst!(self, ecma_array::is_array);
+                            fn_call!(self, "ecma:array", "isArray", 1);
                             {
                                 let line = self.line;
                                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -12741,7 +12777,7 @@ impl Compiler {
                         self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        inst!(self, ecma_value::is_object);
+                        inst!(self, recipes::is_object);
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
@@ -13123,7 +13159,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, value_slot);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        inst!(self, ecma_value::is_object);
+        inst!(self, recipes::is_object);
         let line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
@@ -13220,7 +13256,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, t_a);
-        inst!(self, ecma_value::typeof_op);
+        fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
@@ -13231,7 +13267,7 @@ impl Compiler {
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, t_b);
-        inst!(self, ecma_value::typeof_op);
+        fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("string")));
         crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -13239,7 +13275,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, t_a);
         self.emit_u16(Op::LOCAL_GET, t_b);
-        inst!(self, js_string::compare);
+        fn_call!(self, "wasm:js-string", "compare", 2);
         self.emit_const(Value::I32(0));
         cmp_fn(self.chunk(), line);
 
@@ -13279,19 +13315,19 @@ impl Compiler {
         self.emit_to_primitive("string");
         self.emit_const(Value::String(Arc::from("")));
         common::strings::emit_str_concat(self.chunk(), line);
-        inst!(self, js_string::concat);
+        fn_call!(self, "wasm:js-string", "concat", 2);
     }
 
     fn emit_js_add_numeric_from_locals(&mut self, lhs_slot: u16, rhs_slot: u16) {
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
-        inst!(self, js_undefined::test);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if_value(line);
         self.emit_const(Value::F64(f64::NAN));
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
-        inst!(self, js_undefined::test);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let rhs_line = self.line;
         self.chunk().emit_if_value(rhs_line);
         self.emit_const(Value::F64(f64::NAN));
@@ -13309,11 +13345,11 @@ impl Compiler {
     fn emit_python_contains_from_locals(&mut self, container_slot: u16, needle_slot: u16) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, container_slot);
-        inst!(self, js_string::test);
+        fn_call!(self, "wasm:js-string", "test", 1);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, container_slot);
         self.emit_u16(Op::LOCAL_GET, needle_slot);
-        inst!(self, ecma_string::includes);
+        fn_call!(self, "ecma:string", "includes", 2);
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, container_slot);
@@ -13349,7 +13385,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
-        inst!(self, ecma_value::typeof_op);
+        fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
@@ -13362,7 +13398,7 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
-        inst!(self, ecma_value::typeof_op);
+        fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
@@ -13414,9 +13450,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, a_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, a_slot);
-                    inst!(self, ecma_value::is_object);
+                    inst!(self, recipes::is_object);
                     self.emit_u16(Op::LOCAL_GET, b_slot);
-                    inst!(self, ecma_value::is_object);
+                    inst!(self, recipes::is_object);
                     self.emit(Op::I32_AND);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
@@ -14050,7 +14086,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, t_ctor);
                     let name_key = self.str_const("name");
                     self.chunk().emit_op_u16(Op::STRUCT_GET, name_key, l);
-                    inst!(self, js_string::equals);
+                    fn_call!(self, "wasm:js-string", "equals", 2);
                 }
             }
             BinOp::NullCoalesce => unreachable!(), // handled in compile_expr
@@ -14649,10 +14685,8 @@ impl Compiler {
             // Stack: [arr]. Dup first so we still have the result.
             inst!(self, core_wasm::dup);
             self.compile_expr(args[1])?;
-            let zero_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(0));
-            self.emit_u16(Op::CONST, zero_k);
-            let max_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(i32::MAX));
-            self.emit_u16(Op::CONST, max_k);
+            inst!(self, core_wasm::i32_const, 0);
+            inst!(self, core_wasm::i32_const, i32::MAX);
             common::collections::emit_fill(&mut self.chunks, self.current, line);
             // fill returns the array; drop the dup'd copy — the pre-dup
             // copy stays on TOS as the expression's value.
@@ -15244,40 +15278,40 @@ impl Compiler {
                 crate::emitter::ops::emit_dyn_not(self.chunk(), line);
             }
             "ref_is_null" => self.emit(Op::REF_IS_NULL),
-            "ref_is_array" => inst!(self, ecma_array::is_array),
-            "ref_typeof" => inst!(self, ecma_value::typeof_op),
-            "str_length" => inst!(self, js_string::length),
-            "str_to_upper" => inst!(self, ecma_string::to_upper_case),
-            "str_to_lower" => inst!(self, ecma_string::to_lower_case),
-            "str_trim" => inst!(self, ecma_string::trim),
-            "str_trim_start" => inst!(self, ecma_string::trim_start),
-            "str_trim_end" => inst!(self, ecma_string::trim_end),
-            "str_reverse" => inst!(self, ecma_string::reverse),
-            "str_from_char_code" => inst!(self, js_string::from_char_code),
-            "str_char_at" => inst!(self, ecma_string::char_at),
-            "str_char_code_at" => inst!(self, js_string::char_code_at),
-            "str_starts_with" => inst!(self, ecma_string::starts_with),
-            "str_ends_with" => inst!(self, ecma_string::ends_with),
-            "str_index_of" => inst!(self, ecma_string::index_of),
-            "str_last_index_of" => inst!(self, ecma_string::last_index_of),
+            "ref_is_array" => fn_call!(self, "ecma:array", "isArray", 1),
+            "ref_typeof" => fn_call!(self, "ecma:value", "typeof", 1),
+            "str_length" => fn_call!(self, "wasm:js-string", "length", 1),
+            "str_to_upper" => fn_call!(self, "ecma:string", "toUpperCase", 1),
+            "str_to_lower" => fn_call!(self, "ecma:string", "toLowerCase", 1),
+            "str_trim" => fn_call!(self, "ecma:string", "trim", 1),
+            "str_trim_start" => fn_call!(self, "ecma:string", "trimStart", 1),
+            "str_trim_end" => fn_call!(self, "ecma:string", "trimEnd", 1),
+            "str_reverse" => inst!(self, recipes::string_reverse),
+            "str_from_char_code" => fn_call!(self, "wasm:js-string", "fromCharCode", 1),
+            "str_char_at" => fn_call!(self, "ecma:string", "charAt", 2),
+            "str_char_code_at" => fn_call!(self, "wasm:js-string", "charCodeAt", 2),
+            "str_starts_with" => fn_call!(self, "ecma:string", "startsWith", 2),
+            "str_ends_with" => fn_call!(self, "ecma:string", "endsWith", 2),
+            "str_index_of" => fn_call!(self, "ecma:string", "indexOf", 2),
+            "str_last_index_of" => fn_call!(self, "ecma:string", "lastIndexOf", 2),
             "str_includes" => {
                 // includes → indexOf then check >= 0
-                inst!(self, ecma_string::index_of);
+                fn_call!(self, "ecma:string", "indexOf", 2);
                 inst!(self, core_wasm::i32_const, 0);
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
                 };
             }
-            "str_contains" => inst!(self, ecma_string::includes),
-            "str_substring" => inst!(self, js_string::substring),
-            "str_split" => inst!(self, ecma_string::split),
-            "str_replace" => inst!(self, ecma_string::replace),
-            "str_repeat" => inst!(self, ecma_string::repeat),
-            "str_pad_start" => inst!(self, ecma_string::pad_start),
-            "str_pad_end" => inst!(self, ecma_string::pad_end),
-            "str_compare" => inst!(self, js_string::compare),
-            "str_concat" => inst!(self, js_string::concat),
+            "str_contains" => fn_call!(self, "ecma:string", "includes", 2),
+            "str_substring" => fn_call!(self, "wasm:js-string", "substring", 3),
+            "str_split" => fn_call!(self, "ecma:string", "split", 2),
+            "str_replace" => fn_call!(self, "ecma:string", "replace", 3),
+            "str_repeat" => fn_call!(self, "ecma:string", "repeat", 2),
+            "str_pad_start" => fn_call!(self, "ecma:string", "padStart", 3),
+            "str_pad_end" => fn_call!(self, "ecma:string", "padEnd", 3),
+            "str_compare" => fn_call!(self, "wasm:js-string", "compare", 2),
+            "str_concat" => fn_call!(self, "wasm:js-string", "concat", 2),
             // Array primitives — every emit flows through
             // `common::collections::*` so the emitted bytecode uses
             // `ecma:array.*` imports. One-place-to-change: flip the
@@ -15440,7 +15474,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::includes);
+                    fn_call!(self, "ecma:string", "includes", 2);
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -15449,7 +15483,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::starts_with);
+                    fn_call!(self, "ecma:string", "startsWith", 2);
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -15458,7 +15492,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::ends_with);
+                    fn_call!(self, "ecma:string", "endsWith", 2);
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -15651,55 +15685,55 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_array::is_array);
+                fn_call!(self, "ecma:array", "isArray", 1);
             }
             "ref_typeof" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_value::typeof_op);
+                fn_call!(self, "ecma:value", "typeof", 1);
             }
             "str_length" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, js_string::length);
+                fn_call!(self, "wasm:js-string", "length", 1);
             }
             "str_to_upper" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::to_upper_case);
+                fn_call!(self, "ecma:string", "toUpperCase", 1);
             }
             "str_to_lower" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::to_lower_case);
+                fn_call!(self, "ecma:string", "toLowerCase", 1);
             }
             "str_trim" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::trim);
+                fn_call!(self, "ecma:string", "trim", 1);
             }
             "str_trim_start" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::trim_start);
+                fn_call!(self, "ecma:string", "trimStart", 1);
             }
             "str_trim_end" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::trim_end);
+                fn_call!(self, "ecma:string", "trimEnd", 1);
             }
             "str_reverse" => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, ecma_string::reverse);
+                inst!(self, recipes::string_reverse);
             }
             // SIMD v128 ops — args may be absent in plain WAT form
             "i8x16_splat" => {
@@ -15916,33 +15950,33 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::last_index_of);
+                    fn_call!(self, "ecma:string", "lastIndexOf", 2);
                 }
             }
             "str_from_char_code" => {
                 // String.fromCharCode(72, 105) → "Hi"
                 self.compile_expr(args[0])?;
                 common::convert::emit_to_int(self.chunk(), line);
-                inst!(self, js_string::from_char_code);
+                fn_call!(self, "wasm:js-string", "fromCharCode", 1);
                 for a in &args[1..] {
                     self.compile_expr(a)?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    inst!(self, js_string::from_char_code);
-                    inst!(self, js_string::concat);
+                    fn_call!(self, "wasm:js-string", "fromCharCode", 1);
+                    fn_call!(self, "wasm:js-string", "concat", 2);
                 }
             }
             "str_compare" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, js_string::compare);
+                    fn_call!(self, "wasm:js-string", "compare", 2);
                 }
             }
             "str_split" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::split);
+                    fn_call!(self, "ecma:string", "split", 2);
                 }
             }
             "str_getcsv" => {
@@ -15960,7 +15994,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    inst!(self, ecma_string::repeat);
+                    fn_call!(self, "ecma:string", "repeat", 2);
                 }
             }
             "array_join" => {
@@ -15973,10 +16007,6 @@ impl Compiler {
                     }
                 }
             }
-            // setTimeout/setInterval — emit Op::SET_TIMER directly. Old JS
-            // compiler did this inline; the profile now routes through
-            // `opcode:set_timer` so the dispatch lives here.
-            // Stack: [callback, ms] → [timer_id]
             "set_timer" => {
                 if let Some(cb) = args.first() {
                     self.compile_expr(cb)?;
@@ -15988,7 +16018,7 @@ impl Compiler {
                 } else {
                     inst!(self, core_wasm::i32_const, 0);
                 }
-                self.emit(Op::SET_TIMER);
+                fn_call!(self, "web:timers", "setTimeout", 2);
             }
             // Array primitives — every caller dispatches through
             // `common::collections::*`, which now routes to `ecma:array.*`
@@ -16163,8 +16193,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, set_slot);
         self.emit_u16(Op::LOCAL_GET, source_slot);
         self.emit_u16(Op::LOCAL_GET, index_slot);
-        inst!(self, ecma_string::char_at);
-        inst!(self, ecma_string::includes);
+        fn_call!(self, "ecma:string", "charAt", 2);
+        fn_call!(self, "ecma:string", "includes", 2);
         if invert_match {
             {
                 let line = self.line;
@@ -16210,8 +16240,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, set_slot);
         self.emit_u16(Op::LOCAL_GET, source_slot);
         self.emit_u16(Op::LOCAL_GET, index_slot);
-        inst!(self, ecma_string::char_at);
-        inst!(self, ecma_string::includes);
+        fn_call!(self, "ecma:string", "charAt", 2);
+        fn_call!(self, "ecma:string", "includes", 2);
         if invert_match {
             {
                 let line = self.line;
@@ -16253,7 +16283,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                inst!(self, ecma_value::typeof_op);
+                fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_const(Value::String(Arc::from("boolean")));
                 {
                     let line = self.line;
@@ -16317,7 +16347,7 @@ impl Compiler {
             "asc" => {
                 self.compile_expr(args[0])?;
                 inst!(self, core_wasm::i32_const, 0);
-                inst!(self, js_string::char_code_at);
+                fn_call!(self, "wasm:js-string", "charCodeAt", 2);
             }
             "space" => {
                 self.emit_const(Value::String(Arc::from(" ")));
@@ -16335,14 +16365,14 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, ecma_array::is_array);
+                        fn_call!(self, "ecma:array", "isArray", 1);
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         self.emit_const(Value::Bool(true));
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, ecma_value::is_object);
+                        inst!(self, recipes::is_object);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_end(line);
                     }
@@ -16361,20 +16391,20 @@ impl Compiler {
                         self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, js_string::test);
+                        fn_call!(self, "wasm:js-string", "test", 1);
                         let line = self.line;
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         self.emit_const(Value::Bool(true));
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, ecma_array::is_array);
+                        fn_call!(self, "ecma:array", "isArray", 1);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         self.emit_const(Value::Bool(true));
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        inst!(self, ecma_value::is_object);
+                        inst!(self, recipes::is_object);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
@@ -16389,7 +16419,7 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(name)));
                     } else {
                         self.compile_expr(arg)?;
-                        inst!(self, ecma_value::typeof_op);
+                        fn_call!(self, "ecma:value", "typeof", 1);
                     }
                 } else {
                     self.emit_const(Value::String(Arc::from("Nothing")));
@@ -16521,7 +16551,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, v_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, v_slot);
-                    inst!(self, js_number::test);
+                    fn_call!(self, "wasm:js-number", "test", 1);
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
@@ -16542,7 +16572,7 @@ impl Compiler {
             "php_is_string" => {
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    inst!(self, js_string::test);
+                    fn_call!(self, "wasm:js-string", "test", 1);
                 } else {
                     self.emit_const(Value::Bool(false));
                 }
@@ -16555,7 +16585,7 @@ impl Compiler {
                 // Ordinary too — both are Object-kind values).
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    inst!(self, ecma_value::is_object);
+                    inst!(self, recipes::is_object);
                 } else {
                     self.emit_const(Value::Bool(false));
                 }
@@ -16563,7 +16593,7 @@ impl Compiler {
             "php_is_bool" => {
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    inst!(self, js_boolean::test);
+                    fn_call!(self, "wasm:js-boolean", "test", 1);
                 } else {
                     self.emit_const(Value::Bool(false));
                 }
@@ -16584,7 +16614,7 @@ impl Compiler {
                 // tag which Vybe doesn't track yet.
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    inst!(self, ecma_value::is_object);
+                    inst!(self, recipes::is_object);
                 } else {
                     self.emit_const(Value::Bool(false));
                 }
@@ -16602,7 +16632,7 @@ impl Compiler {
                     }
                     let idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_GET, idx);
-                    inst!(self, ecma_value::typeof_op);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("undefined")));
                     {
                         let line = self.line;
@@ -16673,7 +16703,7 @@ impl Compiler {
                         self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, name_slot);
-                        inst!(self, ecma_value::typeof_op);
+                        fn_call!(self, "ecma:value", "typeof", 1);
                         self.emit_const(Value::String(Arc::from("string")));
                         {
                             let line = self.line;
@@ -16686,7 +16716,7 @@ impl Compiler {
                         self.chunk().emit_if_value(line);
 
                         self.emit_u16(Op::LOCAL_GET, name_slot);
-                        inst!(self, ecma_string::to_lower_case);
+                        fn_call!(self, "ecma:string", "toLowerCase", 1);
                         let lowered_slot = self.define_local("__php_function_exists_lowered");
                         self.emit_u16(Op::LOCAL_SET, lowered_slot);
                         self.emit(Op::DROP);
@@ -16739,7 +16769,7 @@ impl Compiler {
                     let global_name = self.canon(name);
                     let idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_GET, idx);
-                    inst!(self, ecma_value::typeof_op);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("undefined")));
                     {
                         let line = self.line;
@@ -16794,7 +16824,7 @@ impl Compiler {
                 // returns "function" — compare via DYN_EQ.
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    inst!(self, ecma_value::typeof_op);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("function")));
                     {
                         let line = self.line;
@@ -17278,7 +17308,7 @@ impl Compiler {
                     let line = self.line;
                     common::strings::emit_to_string(self.chunk(), line);
 
-                    inst!(self, ecma_string::includes);
+                    fn_call!(self, "ecma:string", "includes", 2);
                 } else {
                     inst!(self, core_wasm::bool_const, false);
                 }
@@ -17293,7 +17323,7 @@ impl Compiler {
                     let line = self.line;
                     common::strings::emit_to_string(self.chunk(), line);
 
-                    inst!(self, ecma_string::starts_with);
+                    fn_call!(self, "ecma:string", "startsWith", 2);
                 } else {
                     inst!(self, core_wasm::bool_const, false);
                 }
@@ -17308,7 +17338,7 @@ impl Compiler {
                     let line = self.line;
                     common::strings::emit_to_string(self.chunk(), line);
 
-                    inst!(self, ecma_string::ends_with);
+                    fn_call!(self, "ecma:string", "endsWith", 2);
                 } else {
                     inst!(self, core_wasm::bool_const, false);
                 }
@@ -17594,11 +17624,11 @@ impl Compiler {
                     common::strings::emit_to_lower(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, right_slot);
                     common::strings::emit_to_lower(self.chunk(), line);
-                    inst!(self, js_string::compare);
+                    fn_call!(self, "wasm:js-string", "compare", 2);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, left_slot);
                     self.emit_u16(Op::LOCAL_GET, right_slot);
-                    inst!(self, js_string::compare);
+                    fn_call!(self, "wasm:js-string", "compare", 2);
                     self.chunk().emit_end(line);
                 } else {
                     self.emit(Op::NULL);
@@ -18496,7 +18526,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, pair_slot);
                     self.emit_const(Value::I32(1));
                     common::collections::emit_get(&mut self.chunks, self.current, line);
-                    inst!(self, ecma_string::replace);
+                    fn_call!(self, "ecma:string", "replace", 3);
                     self.emit_u16(Op::LOCAL_SET, str_slot);
                     self.emit(Op::DROP);
 
@@ -18531,7 +18561,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, i_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, from_slot);
-                    inst!(self, js_string::length);
+                    fn_call!(self, "wasm:js-string", "length", 1);
                     self.emit_u16(Op::LOCAL_SET, flen_slot);
                     self.emit(Op::DROP);
 
@@ -18547,12 +18577,12 @@ impl Compiler {
                     let to_char_slot = self.define_local("__strtr3_tc");
                     self.emit_u16(Op::LOCAL_GET, from_slot);
                     self.emit_u16(Op::LOCAL_GET, i_slot);
-                    inst!(self, ecma_string::char_at);
+                    fn_call!(self, "ecma:string", "charAt", 2);
                     self.emit_u16(Op::LOCAL_SET, from_char_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, to_slot);
                     self.emit_u16(Op::LOCAL_GET, i_slot);
-                    inst!(self, ecma_string::char_at);
+                    fn_call!(self, "ecma:string", "charAt", 2);
                     self.emit_u16(Op::LOCAL_SET, to_char_slot);
                     self.emit(Op::DROP);
 
@@ -18560,7 +18590,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, str_slot);
                     self.emit_u16(Op::LOCAL_GET, from_char_slot);
                     self.emit_u16(Op::LOCAL_GET, to_char_slot);
-                    inst!(self, ecma_string::replace);
+                    fn_call!(self, "ecma:string", "replace", 3);
                     self.emit_u16(Op::LOCAL_SET, str_slot);
                     self.emit(Op::DROP);
 
@@ -18737,7 +18767,7 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    inst!(self, ecma_value::typeof_op);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("string")));
                     {
                         let line = self.line;
@@ -18764,7 +18794,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     inst!(self, core_wasm::i32_const, 0);
-                    inst!(self, js_string::char_code_at);
+                    fn_call!(self, "wasm:js-string", "charCodeAt", 2);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.emit(Op::DROP);
                     self.emit_const(Value::Bool(true));

@@ -120,7 +120,7 @@ impl Compiler {
             self.emit_default_value_for_type_hint(type_hint);
         } else if self.is_js_profile() {
             // JS spec: declared fields with no initializer default to undefined (not null).
-            self.emit(Op::UNDEFINED);
+            inst!(self, core_wasm::undefined);
         } else {
             self.emit(Op::NULL);
         }
@@ -256,7 +256,7 @@ impl Compiler {
     fn emit_load_instance_proto(&mut self, class_name: &str) {
         let nt_key = self.str_const("__js_new_target");
         self.emit_u16(Op::GLOBAL_GET, nt_key);
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunks[self.current].emit_if(line);
@@ -310,7 +310,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, proto_key);
                 let mkey = self.str_const(method_name);
                 self.emit_u16(Op::STRUCT_GET, mkey);
-                self.emit(Op::DUP);
+                inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -321,13 +321,13 @@ impl Compiler {
                 self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
             }
             if bind_receiver {
-                self.emit(Op::DUP);
+                inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.emit_u16(Op::STRUCT_SET, receiver_key);
                 self.emit(Op::DROP);
             }
             if let Some(fixed_count) = rest_fixed_count {
-                self.emit(Op::DUP);
+                inst!(self, core_wasm::dup);
                 self.emit_const(Value::F64(fixed_count as f64));
                 self.emit_u16(Op::STRUCT_SET, rest_key);
                 self.emit(Op::DROP);
@@ -590,7 +590,7 @@ impl Compiler {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
                 if self.profile.missing_arg_is_undefined {
-                    self.emit(Op::REF_IS_UNDEFINED);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
                 } else {
                     self.emit(Op::REF_IS_NULL);
                 }
@@ -1298,7 +1298,7 @@ impl Compiler {
                     let slot = cc.scope().resolve(&p.name).unwrap();
                     cc.emit_u16(Op::LOCAL_GET, slot);
                     if cc.profile.missing_arg_is_undefined {
-                        cc.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(cc, "wasm:js-undefined", "test", 1);
                     } else {
                         cc.emit(Op::REF_IS_NULL);
                     }
@@ -1708,7 +1708,7 @@ impl Compiler {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
                     if self.profile.missing_arg_is_undefined {
-                        self.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                     } else {
                         self.emit(Op::REF_IS_NULL);
                     }
@@ -1884,7 +1884,7 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 let parent_called_slot =
                                     self.define_local(&format!("__{}_parent_called", helper_name));
-                                self.emit(Op::I32_CONST_0);
+                                inst!(self, core_wasm::i32_const, 0);
                                 self.emit_u16(Op::LOCAL_SET, parent_called_slot);
                                 self.emit(Op::DROP);
                                 for count in (1..=IMPLICIT_CTOR_FORWARD_ARGS).rev() {
@@ -1907,7 +1907,7 @@ impl Compiler {
                                     self.emit_u8(Op::CALL_REF, count);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     self.emit(Op::DROP);
-                                    self.emit(Op::I32_CONST_1);
+                                    inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
                                     self.emit(Op::DROP);
                                     self.chunks[self.current].emit_end(line);
@@ -2355,7 +2355,7 @@ impl Compiler {
             // (`null` is a value, not an absent argument). Languages without a
             // distinct `undefined` fall back to the null test.
             if self.profile.missing_arg_is_undefined {
-                self.emit(Op::REF_IS_UNDEFINED);
+                fn_call!(self, "wasm:js-undefined", "test", 1);
             } else {
                 self.emit(Op::REF_IS_NULL);
             }

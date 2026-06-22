@@ -22,8 +22,8 @@ pub fn bool_const(c: &mut Chunk, line: u32, v: bool) {
 }
 
 pub fn undefined(c: &mut Chunk, line: u32) {
-    let idx = c.add_constant(Value::Undefined);
-    c.emit_op_u16(Op::CONST, idx, line);
+    let idx = c.add_constant(Value::String(std::sync::Arc::from("undefined")));
+    c.emit_op_u16(Op::GLOBAL_GET, idx, line);
 }
 
 pub fn null(c: &mut Chunk, line: u32) {

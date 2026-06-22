@@ -215,6 +215,12 @@ pub struct Chunk {
     pub is_generator: bool,
     /// Shared scratch local for emit_dup (local.tee + local.get).
     pub dup_slot: Option<u16>,
+    /// Number of captured variables (closures). The VM populates
+    /// local slots [capture_base..capture_base+capture_count) from
+    /// the function object's `__capture_N` properties at call time.
+    pub capture_count: u8,
+    /// First local slot for captured variables.
+    pub capture_base: u16,
 }
 
 impl Chunk {
@@ -245,6 +251,8 @@ impl Chunk {
             result_arity: 1,
             is_async: false,
             is_generator: false,
+            capture_count: 0,
+            capture_base: 0,
         }
     }
 

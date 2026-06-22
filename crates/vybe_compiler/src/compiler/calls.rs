@@ -978,7 +978,7 @@ impl Compiler {
 
     pub(super) fn emit_stamp_rest_metadata_on_stack(&mut self, fixed_count: usize) {
         let key = self.str_const("__vybe_rest_fixed_arity");
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_const(Value::F64(fixed_count as f64));
         self.emit_u16(Op::STRUCT_SET, key);
         self.emit(Op::DROP);
@@ -1010,16 +1010,16 @@ impl Compiler {
         let line = self.line;
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, line);
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_u16(Op::GLOBAL_SET, js_global_this);
         self.emit(Op::DROP);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
-        self.emit(Op::REF_IS_UNDEFINED);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, self.line);
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_u16(Op::GLOBAL_SET, js_global_this);
         self.emit(Op::DROP);
         self.chunk().emit_else(line);
@@ -1058,7 +1058,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, *slot);
         }
         if self.profile.name == "fortran" && receiver_slot.is_none() && arg_slots.len() == 1 {
-            self.emit(Op::UNDEFINED);
+            inst!(self, core_wasm::undefined);
             self.emit_u8(Op::CALL_REF, 2);
         } else {
             self.emit_u8(
@@ -1091,7 +1091,7 @@ impl Compiler {
             if let Some(slot) = arg_slots.get(index) {
                 self.emit_u16(Op::LOCAL_GET, *slot);
             } else {
-                self.emit(Op::UNDEFINED);
+                inst!(self, core_wasm::undefined);
             }
         }
         let rest_slot = self.define_local("__runtime_rest_call_array");
@@ -1128,7 +1128,7 @@ impl Compiler {
         self.emit_const(Value::F64(index as f64));
         common::collections::emit_get(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(line);
-        self.emit(Op::UNDEFINED);
+        inst!(self, core_wasm::undefined);
         self.chunk().emit_end(line);
     }
 
@@ -1175,46 +1175,18 @@ impl Compiler {
         callee_slot: u16,
         receiver_slot: Option<u16>,
         args_slot: u16,
-        known_len: Option<usize>,
+        _known_len: Option<usize>,
     ) {
-        let line = self.line;
         let saved_js_this = self.bind_js_this_for_call(receiver_slot, "__js_prev_this_array_call");
-        if let Some(known_len) = known_len {
-            self.emit_u16(Op::LOCAL_GET, callee_slot);
-            if let Some(receiver_slot) = receiver_slot {
-                self.emit_u16(Op::LOCAL_GET, receiver_slot);
-            }
-            self.emit_u16(Op::LOCAL_GET, args_slot);
-            self.emit(Op::SPREAD);
-            self.emit_u8(
-                Op::CALL_REF,
-                (known_len + usize::from(receiver_slot.is_some())) as u8,
-            );
-            self.restore_js_this_after_call(saved_js_this, "__js_array_call_result");
-            return;
-        }
-
-        self.emit_u16(Op::LOCAL_GET, args_slot);
-        self.emit_const(Value::I32(16));
-        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
-        common::collections::emit_concat(&mut self.chunks, self.current, line);
-        self.emit_const(Value::F64(0.0));
-        self.emit_const(Value::F64(16.0));
-        common::collections::emit_slice(&mut self.chunks, self.current, line);
-        let padded_slot = self.define_local("__runtime_spread_args16");
-        self.emit_u16(Op::LOCAL_SET, padded_slot);
-        self.emit(Op::DROP);
-
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        if let Some(receiver_slot) = receiver_slot {
-            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        if let Some(rs) = receiver_slot {
+            self.emit_u16(Op::LOCAL_GET, rs);
+        } else {
+            inst!(self, core_wasm::undefined);
         }
-        self.emit_u16(Op::LOCAL_GET, padded_slot);
-        self.emit(Op::SPREAD);
-        self.emit_u8(
-            Op::CALL_REF,
-            (16 + usize::from(receiver_slot.is_some())) as u8,
-        );
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        fn_call!(self, "ecma:function", "apply", 3);
+        self.restore_js_this_after_call(saved_js_this, "__js_array_call_result");
     }
 
     fn emit_rest_call_from_args_array(
@@ -1240,7 +1212,7 @@ impl Compiler {
                         self.emit_const(Value::F64(index as f64));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
                     } else {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     }
                 }
                 self.emit_u16(Op::LOCAL_GET, args_slot);
@@ -1295,7 +1267,7 @@ impl Compiler {
             if let Some(this_slot) = js_this_slot {
                 self.emit_u16(Op::LOCAL_GET, this_slot);
             } else {
-                self.emit(Op::UNDEFINED);
+                inst!(self, core_wasm::undefined);
             }
             self.emit_u16(Op::LOCAL_GET, args_arr_slot);
             let idx = self.import("ecma:proxy", "apply");
@@ -1397,7 +1369,7 @@ impl Compiler {
             );
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-            self.emit(Op::REF_IS_UNDEFINED);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
             let line = self.line;
             self.chunk().emit_if(line);
             self.emit_dispatch_and_store_from_arg_slots(
@@ -1485,7 +1457,7 @@ impl Compiler {
         self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, lookup_slot);
-        self.emit(Op::REF_IS_UNDEFINED);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if_value(line);
         self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
@@ -1512,35 +1484,12 @@ impl Compiler {
         args_slot: u16,
         known_len: Option<usize>,
     ) {
-        let line = self.line;
-        let invoke = self.import("ecma:value", "invokeMethod");
-        match known_len {
-            Some(known_len) => {
-                self.emit_u16(Op::LOCAL_GET, obj_slot);
-                self.emit_const(Value::String(Arc::from(method_name)));
-                self.emit_u16(Op::LOCAL_GET, args_slot);
-                self.emit(Op::SPREAD);
-                self.emit_host_call(invoke, (known_len + 2) as u8);
-            }
-            None => {
-                self.emit_u16(Op::LOCAL_GET, args_slot);
-                self.emit_const(Value::I32(16));
-                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
-                common::collections::emit_concat(&mut self.chunks, self.current, line);
-                self.emit_const(Value::F64(0.0));
-                self.emit_const(Value::F64(16.0));
-                common::collections::emit_slice(&mut self.chunks, self.current, line);
-                let padded_slot = self.define_local("__js_invoke_spread_args16");
-                self.emit_u16(Op::LOCAL_SET, padded_slot);
-                self.emit(Op::DROP);
-
-                self.emit_u16(Op::LOCAL_GET, obj_slot);
-                self.emit_const(Value::String(Arc::from(method_name)));
-                self.emit_u16(Op::LOCAL_GET, padded_slot);
-                self.emit(Op::SPREAD);
-                self.emit_host_call(invoke, 18);
-            }
-        }
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        inst!(self, core_wasm::string_const, method_name);
+        fn_call!(self, "ecma:value", "getMethodForCall", 2);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        fn_call!(self, "ecma:function", "apply", 3);
     }
 
     fn emit_dispatch_and_store_from_args_array(
@@ -1639,7 +1588,7 @@ impl Compiler {
             );
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-            self.emit(Op::REF_IS_UNDEFINED);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
             let line = self.line;
             self.chunk().emit_if(line);
             self.emit_dispatch_and_store_from_args_array(
@@ -1701,7 +1650,7 @@ impl Compiler {
         self.emit(Op::DROP);
         let (args_slot, _) = self.compile_call_args_array(args, "spread_builtin")?;
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        self.emit(Op::UNDEFINED);
+        inst!(self, core_wasm::undefined);
         self.emit_u16(Op::LOCAL_GET, args_slot);
         let idx = self.import("ecma:reflect", "apply");
         self.emit_host_call(idx, 3);
@@ -1979,7 +1928,7 @@ impl Compiler {
                 if let Some(arg) = args.get(index) {
                     self.compile_expr_with_value_copy(&arg.value)?;
                 } else {
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                 }
             }
 
@@ -2038,7 +1987,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::STRUCT_NEW, 0);
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_GET, msg_val);
         let line = self.line;
         common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
@@ -2054,17 +2003,16 @@ impl Compiler {
 
             for prop_name in &["__type", "__exception_type", "message", "name"] {
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
-                let key_const = self.str_const(prop_name);
-                self.emit_u16(Op::CONST, key_const);
+                inst!(self, core_wasm::string_const, prop_name);
                 common::dict::emit_new(&mut self.chunks, self.current, line);
-                self.emit(Op::DUP);
+                inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 let prop_key = self.str_const(prop_name);
                 self.emit_u16(Op::STRUCT_GET, prop_key);
                 let val_key = self.str_const("value");
                 self.emit_u16(Op::STRUCT_SET, val_key);
                 self.emit(Op::DROP);
-                self.emit(Op::DUP);
+                inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(false));
                 let enum_key = self.str_const("enumerable");
                 self.emit_u16(Op::STRUCT_SET, enum_key);
@@ -2075,16 +2023,15 @@ impl Compiler {
 
             // Set tostringtag as non-enumerable
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
-            let tag_key = self.str_const("tostringtag");
-            self.emit_u16(Op::CONST, tag_key);
+            inst!(self, core_wasm::string_const, "tostringtag");
             common::dict::emit_new(&mut self.chunks, self.current, line);
-            self.emit(Op::DUP);
-            self.emit_const(Value::String(Arc::from("Error")));
+            inst!(self, core_wasm::dup);
+            inst!(self, core_wasm::string_const, "Error");
             let val_key = self.str_const("value");
             self.emit_u16(Op::STRUCT_SET, val_key);
             self.emit(Op::DROP);
-            self.emit(Op::DUP);
-            self.emit_const(Value::Bool(false));
+            inst!(self, core_wasm::dup);
+            inst!(self, core_wasm::bool_const, false);
             let enum_key = self.str_const("enumerable");
             self.emit_u16(Op::STRUCT_SET, enum_key);
             self.emit(Op::DROP);
@@ -2096,7 +2043,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, exc_tmp);
         let msg_k = self.str_const("message");
         self.emit_u16(Op::STRUCT_GET, msg_k);
-        self.emit(Op::STR_CONCAT);
+        fn_call!(self, "wasm:js-string", "concat", 2);
         let stack_val = self.define_local("__stack_val");
         self.emit_u16(Op::LOCAL_SET, stack_val);
         self.emit(Op::DROP);
@@ -2105,16 +2052,15 @@ impl Compiler {
             // Set stack as non-enumerable using Object.defineProperty
             let define_prop_idx = self.import("ecma:object", "defineProperty");
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
-            let stack_key = self.str_const("stack");
-            self.emit_u16(Op::CONST, stack_key);
+            inst!(self, core_wasm::string_const, "stack");
             common::dict::emit_new(&mut self.chunks, self.current, line);
-            self.emit(Op::DUP);
+            inst!(self, core_wasm::dup);
             self.emit_u16(Op::LOCAL_GET, stack_val);
             let val_key = self.str_const("value");
             self.emit_u16(Op::STRUCT_SET, val_key);
             self.emit(Op::DROP);
-            self.emit(Op::DUP);
-            self.emit_const(Value::Bool(false));
+            inst!(self, core_wasm::dup);
+            inst!(self, core_wasm::bool_const, false);
             let enum_key = self.str_const("enumerable");
             self.emit_u16(Op::STRUCT_SET, enum_key);
             self.emit(Op::DROP);
@@ -2234,19 +2180,19 @@ impl Compiler {
         let line = self.line;
         common::dict::emit_new(&mut self.chunks, self.current, line);
 
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_const(Value::Bool(true));
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_SET, marker_key);
         self.emit(Op::DROP);
 
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_const(Value::String(Arc::from(op)));
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_SET, op_key);
         self.emit(Op::DROP);
 
-        self.emit(Op::DUP);
+        inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let value_key = self.str_const("value");
         self.emit_u16(Op::STRUCT_SET, value_key);
@@ -2363,7 +2309,7 @@ impl Compiler {
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunk().emit_if_value(line);
-        self.emit(Op::FALSE);
+        inst!(self, core_wasm::bool_const, false);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, map_slot);
         self.compile_expr(&args[1].value)?;
@@ -2449,7 +2395,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, arg_slot);
-                        self.emit(Op::REF_TYPEOF);
+                        fn_call!(self, "ecma:value", "typeof", 1);
                         self.emit_const(Value::String(Arc::from("symbol")));
                         {
                             let line = self.line;
@@ -2591,13 +2537,13 @@ impl Compiler {
                     if args.iter().all(|arg| arg.name.is_some()) {
                         for arg in args {
                             let key = arg.name.as_ref().unwrap();
-                            self.emit(Op::DUP);
+                            inst!(self, core_wasm::dup);
                             self.compile_expr(&arg.value)?;
                             let key_idx = self.str_const(key);
                             self.emit_u16(Op::STRUCT_SET, key_idx);
                             self.emit(Op::DROP);
 
-                            self.emit(Op::DUP);
+                            inst!(self, core_wasm::dup);
                             let keys_key = self.str_const("__keys");
                             self.emit_u16(Op::STRUCT_GET, keys_key);
                             self.emit_const(Value::String(Arc::from(key.as_str())));
@@ -2617,17 +2563,17 @@ impl Compiler {
                                     continue;
                                 }
 
-                                self.emit(Op::DUP);
+                                inst!(self, core_wasm::dup);
                                 self.compile_expr(&items[0])?;
                                 let key_tmp = self.define_local("__py_dict_ctor_key");
-                                self.emit(Op::DUP);
+                                inst!(self, core_wasm::dup);
                                 self.emit_u16(Op::LOCAL_SET, key_tmp);
                                 self.emit(Op::DROP);
                                 self.compile_expr(&items[1])?;
                                 common::collections::emit_set(&mut self.chunks, self.current, line);
                                 self.emit(Op::DROP);
 
-                                self.emit(Op::DUP);
+                                inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -2662,7 +2608,7 @@ impl Compiler {
                                 let ExprKind::Lit(Literal::Str(class_name)) =
                                     &elements[0].value.kind
                                 else {
-                                    self.emit(Op::UNDEFINED);
+                                    inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                                     self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
@@ -2679,7 +2625,7 @@ impl Compiler {
                                 let ExprKind::Lit(Literal::Str(method_name)) =
                                     &elements[1].value.kind
                                 else {
-                                    self.emit(Op::UNDEFINED);
+                                    inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                                     self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
@@ -2699,30 +2645,30 @@ impl Compiler {
                                 {
                                     let class_idx = self.str_const(&class_global);
                                     self.emit_u16(Op::GLOBAL_GET, class_idx);
-                                    self.emit(Op::DUP);
+                                    inst!(self, core_wasm::dup);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                                     self.emit(Op::DROP);
                                     let method_idx = self.str_const(&self.canon(method_name));
                                     self.emit_u16(Op::STRUCT_GET, method_idx);
                                 } else {
-                                    self.emit(Op::UNDEFINED);
+                                    inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                                     self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
                                 }
                             }
                             _ => {
-                                self.emit(Op::UNDEFINED);
+                                inst!(self, core_wasm::undefined);
                                 self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                                 self.emit(Op::DROP);
                                 self.compile_php_autoload_callable_ref(&callback.value)?;
                             }
                         }
                     } else {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                         self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                         self.emit(Op::DROP);
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     }
                     let global_idx = self.str_const("__php_autoload_callback");
                     self.emit_u16(Op::GLOBAL_SET, global_idx);
@@ -2743,11 +2689,11 @@ impl Compiler {
                         self.emit(Op::DROP);
                     }
 
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                     let receiver_idx = self.str_const("__php_autoload_callback_receiver");
                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
                     self.emit(Op::DROP);
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                     let global_idx = self.str_const("__php_autoload_callback");
                     self.emit_u16(Op::GLOBAL_SET, global_idx);
                     self.emit(Op::DROP);
@@ -2764,7 +2710,7 @@ impl Compiler {
                             return Ok(());
                         };
                         let php_var_name = format!("${}", var_name);
-                        self.emit(Op::DUP);
+                        inst!(self, core_wasm::dup);
                         self.emit_const(Value::String(Arc::from(var_name.as_str())));
                         self.emit_var_get(&php_var_name);
                         common::collections::emit_set(&mut self.chunks, self.current, line);
@@ -2867,7 +2813,7 @@ impl Compiler {
                             .resolve(&self_kw)
                             .or_else(|| self.scope().resolve_ci(&self_kw))
                         {
-                            self.emit(Op::DUP);
+                            inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         }
@@ -2885,7 +2831,7 @@ impl Compiler {
                         .resolve(&self_kw)
                         .or_else(|| self.scope().resolve_ci(&self_kw))
                     {
-                        self.emit(Op::DUP);
+                        inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_SET, slot);
                         self.emit(Op::DROP);
                     }
@@ -3713,8 +3659,8 @@ impl Compiler {
                                     };
                                     if is_char_like {
                                         self.compile_expr(arg_exprs[0])?;
-                                        self.emit(Op::I32_CONST_0);
-                                        self.emit(Op::STR_CHAR_CODE_AT);
+                                        inst!(self, core_wasm::i32_const, 0);
+                                        fn_call!(self, "wasm:js-string", "charCodeAt", 2);
                                         return Ok(());
                                     }
                                 }
@@ -3823,7 +3769,7 @@ impl Compiler {
                                         self.emit_u16(Op::STRUCT_GET, idx);
                                     }
                                     let method_idx = self.str_const(&method_name);
-                                    self.emit(Op::DUP);
+                                    inst!(self, core_wasm::dup);
                                     self.emit_u16(Op::STRUCT_GET, method_idx);
                                     let fn_tmp = self.define_local("__ns_fn");
                                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
@@ -4244,7 +4190,7 @@ impl Compiler {
 
                     let cls_idx = self.str_const(&canon);
                     self.emit_u16(Op::GLOBAL_GET, cls_idx);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     let m = self.canon(field);
                     let method_idx = self.str_const(&m);
                     self.emit_u16(Op::STRUCT_GET, method_idx);
@@ -4835,7 +4781,7 @@ impl Compiler {
                             if arg_exprs.is_empty() {
                                 self.emit(Op::NULL); // val
                             }
-                            self.emit(Op::I32_CONST_0); // start
+                            inst!(self, core_wasm::i32_const, 0); // start
                             self.emit_const(Value::I32(i32::MAX)); // end (clamped by VM)
                         }
                         // C# `s.Substring(start)` — 1-arg form means
@@ -5005,7 +4951,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.emit(Op::DROP);
                             // Inline reduce loop starting from i=0
-                            self.emit(Op::I32_CONST_0);
+                            inst!(self, core_wasm::i32_const, 0);
                             self.emit_u16(Op::LOCAL_SET, idx_slot);
                             self.emit(Op::DROP);
                             let loop_block = self.chunk().emit_block(line);
@@ -5127,7 +5073,7 @@ impl Compiler {
                         // other languages stick with Null for cross-compat
                         // (Python None / VB Nothing / .NET null match Null).
                         if self.is_js_profile() {
-                            self.emit(Op::UNDEFINED);
+                            inst!(self, core_wasm::undefined);
                         } else {
                             self.emit(Op::NULL);
                         }
@@ -5868,19 +5814,19 @@ impl Compiler {
                     self.chunk().emit_if(line);
 
                     if arg_exprs.is_empty() {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     } else {
                         self.compile_expr(&arg_exprs[0])?;
                     }
                     self.emit_u16(Op::LOCAL_SET, value_slot);
                     self.emit(Op::DROP);
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
                     self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     if arg_exprs.is_empty() {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     } else {
                         self.compile_expr(&arg_exprs[0])?;
                     }
@@ -5898,17 +5844,17 @@ impl Compiler {
 
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::STRUCT_SET, returned_key);
                     self.emit(Op::DROP);
 
                     common::dict::emit_new(&mut self.chunks, self.current, line);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_u16(Op::STRUCT_SET, value_key);
                     self.emit(Op::DROP);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_u16(Op::STRUCT_SET, done_key);
@@ -5954,10 +5900,10 @@ impl Compiler {
                     };
                     let line = self.line;
                     self.chunk().emit_if(line);
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
                     self.emit(Op::DROP);
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
                     self.emit(Op::DROP);
                     self.chunk().emit_else(line);
@@ -5998,7 +5944,7 @@ impl Compiler {
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
                             self.chunk().emit_if(line);
-                            self.emit(Op::UNDEFINED);
+                            inst!(self, core_wasm::undefined);
                             self.emit_u16(Op::LOCAL_SET, value_slot);
                             self.emit(Op::DROP);
                             self.chunk().emit_end(line);
@@ -6023,19 +5969,19 @@ impl Compiler {
                     }
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::STRUCT_SET, started_key);
                     self.emit(Op::DROP);
                     // Both the early-`returned` short-circuit and the
                     // GEN_NEXT/RESUME paths converge here to build the
                     // `{value, done}` wrapper.
                     common::dict::emit_new(&mut self.chunks, self.current, line);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_u16(Op::STRUCT_SET, value_key);
                     self.emit(Op::DROP);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_u16(Op::STRUCT_SET, done_key);
@@ -6081,7 +6027,7 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::STRUCT_SET, started_key);
                     self.emit(Op::DROP);
 
@@ -6094,7 +6040,7 @@ impl Compiler {
                     let line = self.line;
                     self.chunk().emit_if(line);
                     if arg_exprs.is_empty() {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     } else {
                         self.compile_expr(&arg_exprs[0])?;
                     }
@@ -6104,7 +6050,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     if arg_exprs.is_empty() {
-                        self.emit(Op::UNDEFINED);
+                        inst!(self, core_wasm::undefined);
                     } else {
                         self.compile_expr(&arg_exprs[0])?;
                     }
@@ -6120,12 +6066,12 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     common::dict::emit_new(&mut self.chunks, self.current, line);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_u16(Op::STRUCT_SET, value_key);
                     self.emit(Op::DROP);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_u16(Op::STRUCT_SET, done_key);
@@ -6152,7 +6098,7 @@ impl Compiler {
                     let line = self.line;
                     self.chunk().emit_if_value(line);
                     // Per ECMA-262 §13.5.9: optional chain short-circuit yields undefined.
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                     self.chunk().emit_else(line);
 
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -6188,7 +6134,7 @@ impl Compiler {
                         );
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, marker_slot);
-                        self.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
                         self.emit_js_lookup_or_invoke_method_call(
@@ -6236,7 +6182,7 @@ impl Compiler {
                     self.chunk().emit_else(line);
 
                     self.emit_u16(Op::LOCAL_GET, marker_slot);
-                    self.emit(Op::REF_IS_UNDEFINED);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
                     let line = self.line;
                     self.chunk().emit_if(line);
                     self.chunk().emit_else(line);
@@ -6319,7 +6265,7 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                self.emit(Op::REF_IS_UNDEFINED);
+                fn_call!(self, "wasm:js-undefined", "test", 1);
                 let line = self.line;
                 self.chunk().emit_if(line);
                 if let Some((args_slot, known_len)) = spread_call_args {
@@ -6784,7 +6730,7 @@ impl Compiler {
                 {
                     let type_tmp = self.define_local("__dotnet_tostring_type");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit(Op::REF_TYPEOF);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_u16(Op::LOCAL_SET, type_tmp);
                     self.emit(Op::DROP);
 
@@ -6824,7 +6770,7 @@ impl Compiler {
                     && field.eq_ignore_ascii_case("Count")
                 {
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                    self.emit(Op::REF_TYPEOF);
+                    fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("function")));
                     {
                         let line = self.line;
@@ -6927,7 +6873,7 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_UNDEFINED);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
@@ -6955,7 +6901,7 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_UNDEFINED);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
@@ -6980,7 +6926,7 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        self.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
@@ -7118,7 +7064,7 @@ impl Compiler {
             }
             let member_index_if = if self.profile.parens_for_index && !arg_exprs.is_empty() {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit(Op::REF_TYPEOF);
+                fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_const(Value::String(Arc::from("function")));
                 {
                     let line = self.line;
@@ -7270,7 +7216,7 @@ impl Compiler {
             {
                 let type_tmp = self.define_local("__dotnet_tostring_type");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit(Op::REF_TYPEOF);
+                fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_u16(Op::LOCAL_SET, type_tmp);
                 self.emit(Op::DROP);
 
@@ -7310,7 +7256,7 @@ impl Compiler {
                 && field.eq_ignore_ascii_case("Count")
             {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit(Op::REF_TYPEOF);
+                fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_const(Value::String(Arc::from("function")));
                 {
                     let line = self.line;
@@ -7374,7 +7320,7 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
@@ -7465,7 +7411,7 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                    self.emit(Op::REF_IS_UNDEFINED);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
                     let line = self.line;
                     self.chunk().emit_if(line);
                     if let Some((args_slot, known_len)) = spread_call_args {
@@ -7577,7 +7523,7 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_UNDEFINED);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
@@ -7605,7 +7551,7 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_UNDEFINED);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
                             self.chunk().emit_if(line);
                             self.chunk().emit_else(line);
@@ -7630,7 +7576,7 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        self.emit(Op::REF_IS_UNDEFINED);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if(line);
                         self.chunk().emit_else(line);
@@ -7940,7 +7886,7 @@ impl Compiler {
                     }
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, table_idx_slot);
-                    self.emit(Op::REF_IS_UNDEFINED);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -7989,7 +7935,7 @@ impl Compiler {
                         // invoked as plain function values.
                         let field_name = self.canon(name);
                         let prop = self.str_const(&field_name);
-                        self.emit(Op::DUP);
+                        inst!(self, core_wasm::dup);
                         self.emit_u16(Op::STRUCT_GET, prop);
                         let fn_tmp = self.define_local("__bare_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
@@ -8116,31 +8062,10 @@ impl Compiler {
                                 }
                             }
                         }
-                        if let Some(arity) = known_len {
-                            self.emit_var_get(name);
-                            self.emit_u16(Op::LOCAL_GET, args_slot);
-                            self.emit(Op::SPREAD);
-                            self.emit_u8(Op::CALL_REF, arity as u8);
-                        } else {
-                            self.emit_u16(Op::LOCAL_GET, args_slot);
-                            self.emit_const(Value::I32(16));
-                            common::collections::emit_new_with_length(
-                                &mut self.chunks,
-                                self.current,
-                                line,
-                            );
-                            common::collections::emit_concat(&mut self.chunks, self.current, line);
-                            self.emit_const(Value::F64(0.0));
-                            self.emit_const(Value::F64(16.0));
-                            common::collections::emit_slice(&mut self.chunks, self.current, line);
-                            self.emit_u16(Op::LOCAL_SET, args_slot);
-                            self.emit(Op::DROP);
-
-                            self.emit_var_get(name);
-                            self.emit_u16(Op::LOCAL_GET, args_slot);
-                            self.emit(Op::SPREAD);
-                            self.emit_u8(Op::CALL_REF, 16);
-                        }
+                        self.emit_var_get(name);
+                        inst!(self, core_wasm::undefined);
+                        self.emit_u16(Op::LOCAL_GET, args_slot);
+                        fn_call!(self, "ecma:function", "apply", 3);
 
                         self.chunk().emit_else(line);
 
@@ -8293,7 +8218,7 @@ impl Compiler {
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
                 self.chunk().emit_if_value(line);
-                self.emit(Op::UNDEFINED);
+                inst!(self, core_wasm::undefined);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, dunder_slot);
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -8482,7 +8407,7 @@ impl Compiler {
                 let provided = arg_slots.len();
                 for index in provided..gen_param_count {
                     let pad_slot = self.define_local(&format!("__gen_pad_arg_{}", index));
-                    self.emit(Op::UNDEFINED);
+                    inst!(self, core_wasm::undefined);
                     self.emit_u16(Op::LOCAL_SET, pad_slot);
                     self.emit(Op::DROP);
                     arg_slots.push(pad_slot);
@@ -8586,7 +8511,7 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
-                self.emit(Op::REF_IS_UNDEFINED);
+                fn_call!(self, "wasm:js-undefined", "test", 1);
                 let line = self.line;
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::GLOBAL_GET, lookup);
@@ -8676,7 +8601,7 @@ impl Compiler {
             && matches!(&callee.kind, ExprKind::Call { .. } | ExprKind::Index { .. })
         {
             self.emit_u16(Op::LOCAL_GET, callee_slot);
-            self.emit(Op::REF_IS_ARRAY);
+            fn_call!(self, "ecma:array", "isArray", 1);
             let line = self.line;
             self.chunk().emit_if(line);
 
@@ -8786,7 +8711,7 @@ impl Compiler {
 
         self.emit(Op::NULL);
         self.compile_assign_target(&args[1].value)?;
-        self.emit(Op::FALSE);
+        inst!(self, core_wasm::bool_const, false);
 
         self.chunk().emit_else(line);
 
@@ -8809,7 +8734,7 @@ impl Compiler {
                     .insert(self.canon(name), normalized.clone());
             }
         }
-        self.emit(Op::TRUE);
+        inst!(self, core_wasm::bool_const, true);
         self.chunk().emit_end(line);
         Ok(true)
     }
@@ -8873,11 +8798,11 @@ impl Compiler {
                 self.global_type_hints.insert(self.canon(name), normalized);
             }
         }
-        self.emit(Op::TRUE);
+        inst!(self, core_wasm::bool_const, true);
         self.chunk().emit_else(line);
         self.emit_const(Value::F64(0.0));
         self.compile_assign_target(&args[1].value)?;
-        self.emit(Op::FALSE);
+        inst!(self, core_wasm::bool_const, false);
         self.chunk().emit_end(line);
         Ok(true)
     }
@@ -8965,12 +8890,12 @@ impl Compiler {
         self.chunk().emit_end(line);
 
         self.compile_assign_target(&args[1].value)?;
-        self.emit(Op::TRUE);
+        inst!(self, core_wasm::bool_const, true);
 
         self.chunk().emit_else(line);
         self.emit(Op::NULL);
         self.compile_assign_target(&args[1].value)?;
-        self.emit(Op::FALSE);
+        inst!(self, core_wasm::bool_const, false);
         self.chunk().emit_end(line);
         Ok(true)
     }
@@ -9026,7 +8951,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::STRUCT_SET, keys_key);
@@ -9475,7 +9400,7 @@ impl Compiler {
         let line = self.line;
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         for type_name in type_names {
-            self.emit(Op::DUP);
+            inst!(self, core_wasm::dup);
             self.compile_reflection_type_value(type_name)?;
             common::collections::emit_push(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
@@ -9641,7 +9566,7 @@ impl Compiler {
         let line = self.line;
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         for attr in attrs {
-            self.emit(Op::DUP);
+            inst!(self, core_wasm::dup);
             self.compile_reflection_attribute_instance(attr)?;
             common::collections::emit_push(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
@@ -9800,11 +9725,7 @@ impl Compiler {
             };
             let attrs =
                 self.reflection_attributes_for_binding(&provider, Some(&attribute_type), true);
-            self.emit(if attrs.is_empty() {
-                Op::FALSE
-            } else {
-                Op::TRUE
-            });
+            inst!(self, core_wasm::bool_const, !attrs.is_empty());
             return Ok(true);
         }
 
@@ -9914,13 +9835,8 @@ impl Compiler {
                 let Some(other_type) = self.resolve_reflection_type_arg(&args[0].value) else {
                     return Ok(false);
                 };
-                self.emit(
-                    if self.reflection_is_assignable_from(&type_name, &other_type) {
-                        Op::TRUE
-                    } else {
-                        Op::FALSE
-                    },
-                );
+                let v = self.reflection_is_assignable_from(&type_name, &other_type);
+                inst!(self, core_wasm::bool_const, v);
                 Ok(true)
             }
             "GetParameters" if args.is_empty() => {
@@ -9940,7 +9856,7 @@ impl Compiler {
                 let line = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 for (index, param) in params.iter().enumerate() {
-                    self.emit(Op::DUP);
+                    inst!(self, core_wasm::dup);
                     self.compile_expr(&Expression::new(ExprKind::Object(vec![
                         ObjectProperty::KeyValue {
                             key: Expression::string("Name"),
@@ -10036,7 +9952,7 @@ impl Compiler {
                         self.emit(Op::DROP);
 
                         self.compile_expr(&args[0].value)?;
-                        self.emit(Op::DUP);
+                        inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         let field_idx = self.str_const(&self.canon(&field_name));
                         self.emit_u16(Op::STRUCT_SET, field_idx);
@@ -10180,7 +10096,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit(Op::REF_TYPEOF);
+        fn_call!(self, "ecma:value", "typeof", 1);
         let type_slot = self.define_local("__dotnet_tostring_type");
         self.emit_u16(Op::LOCAL_SET, type_slot);
         self.emit(Op::DROP);
@@ -10233,7 +10149,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, fn_slot);
-        self.emit(Op::REF_IS_UNDEFINED);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if(line);
         if field.as_str() != self.canon(field) {
@@ -10246,7 +10162,7 @@ impl Compiler {
         self.chunk().emit_end(line);
 
         self.emit_u16(Op::LOCAL_GET, fn_slot);
-        self.emit(Op::REF_IS_UNDEFINED);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -10575,7 +10491,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit(Op::REF_TYPEOF);
+        fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("number")));
         {
             let line = self.line;
@@ -10771,11 +10687,11 @@ impl Compiler {
                     self.chunk().emit_if_value(line);
                     self.emit(Op::NULL);
                     self.compile_assign_target(out_arg)?;
-                    self.emit(Op::FALSE);
+                    inst!(self, core_wasm::bool_const, false);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, parsed_slot);
                     self.compile_assign_target(out_arg)?;
-                    self.emit(Op::TRUE);
+                    inst!(self, core_wasm::bool_const, true);
                     self.chunk().emit_end(line);
                     return Ok(true);
                 }
@@ -11121,13 +11037,13 @@ impl Compiler {
                 .take_while(|p| p.default.is_none() && !p.is_rest)
                 .count();
 
-            self.emit(Op::DUP);
+            inst!(self, core_wasm::dup);
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
             self.emit_u16(Op::STRUCT_SET, length_key);
             self.emit(Op::DROP);
 
-            self.emit(Op::DUP);
+            inst!(self, core_wasm::dup);
             self.emit_var_get("Function");
             let function_proto_key = self.str_const("prototype");
             self.emit_u16(Op::STRUCT_GET, function_proto_key);
@@ -11201,7 +11117,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         common::collections::emit_get(&mut self.chunks, self.current, line);
-        self.emit(Op::REF_IS_UNDEFINED);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
