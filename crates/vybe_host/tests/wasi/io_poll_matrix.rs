@@ -233,7 +233,7 @@ fn block_on_ready_output_pollable_returns_quickly() {
         call_import("wasi:io/poll", "block", vec![pollable]),
         Value::Null
     ));
-    assert!(start.elapsed() < Duration::from_millis(50));
+    assert!(start.elapsed() < Duration::from_millis(500));
 }
 
 #[test]

@@ -480,34 +480,34 @@ fn proposal_ip_name_lookup_resolve_addresses_accepts_name_only_signature() {
 }
 
 #[test]
-fn proposal_tcp_socket_static_create_import_is_registered() {
+fn proposal_tcp_create_socket_import_is_registered() {
     assert!(
-        has_import("wasi:sockets/types", "[static]tcp-socket.create"),
-        "wasi:sockets/types.[static]tcp-socket.create should be covered by the sockets category"
+        has_import("wasi:sockets/tcp-create-socket", "create-tcp-socket"),
+        "wasi:sockets/tcp-create-socket.create-tcp-socket should be registered"
     );
 }
 
 #[test]
-fn proposal_tcp_socket_bind_import_is_registered() {
+fn proposal_tcp_socket_start_bind_import_is_registered() {
     assert!(
-        has_import("wasi:sockets/types", "[method]tcp-socket.bind"),
-        "wasi:sockets/types.[method]tcp-socket.bind should be covered by the sockets category"
+        has_import("wasi:sockets/tcp", "[method]tcp-socket.start-bind"),
+        "wasi:sockets/tcp.[method]tcp-socket.start-bind should be registered"
     );
 }
 
 #[test]
-fn proposal_tcp_socket_connect_import_is_registered() {
+fn proposal_tcp_socket_start_connect_import_is_registered() {
     assert!(
-        has_import("wasi:sockets/types", "[method]tcp-socket.connect"),
-        "wasi:sockets/types.[method]tcp-socket.connect should be covered by the sockets category"
+        has_import("wasi:sockets/tcp", "[method]tcp-socket.start-connect"),
+        "wasi:sockets/tcp.[method]tcp-socket.start-connect should be registered"
     );
 }
 
 #[test]
-fn proposal_udp_socket_static_create_import_is_registered() {
+fn proposal_udp_create_socket_import_is_registered() {
     assert!(
-        has_import("wasi:sockets/types", "[static]udp-socket.create"),
-        "wasi:sockets/types.[static]udp-socket.create should be covered by the sockets category"
+        has_import("wasi:sockets/udp-create-socket", "create-udp-socket"),
+        "wasi:sockets/udp-create-socket.create-udp-socket should be registered"
     );
 }
 

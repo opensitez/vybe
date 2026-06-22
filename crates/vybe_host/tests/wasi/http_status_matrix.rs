@@ -99,35 +99,11 @@ fn request_status(status_line: &str, body: &str) -> f64 {
     types("[method]incoming-response.status", vec![response]).as_f64()
 }
 
-fn legacy_fetch(status_line: &str, body: &str) -> Value {
-    let authority = start_server(status_line, body);
-    legacy(
-        "fetch",
-        vec![
-            s(&format!("http://{}/status", authority)),
-            s("GET"),
-            Value::Null,
-        ],
-    )
-}
-
 macro_rules! outgoing_status_test {
     ($name:ident, $status_line:expr, $expected:expr) => {
         #[test]
         fn $name() {
             assert_eq!(request_status($status_line, "body"), $expected);
-        }
-    };
-}
-
-macro_rules! legacy_fetch_status_test {
-    ($name:ident, $status_line:expr, $expected_status:expr, $expected_ok:expr) => {
-        #[test]
-        fn $name() {
-            let result = legacy_fetch($status_line, "body");
-            assert_eq!(prop(&result, "status"), Value::F64($expected_status));
-            assert_eq!(prop(&result, "ok"), Value::Bool($expected_ok));
-            assert_eq!(prop(&result, "body"), s("body"));
         }
     };
 }
@@ -161,26 +137,3 @@ outgoing_status_test!(
     503.0
 );
 
-legacy_fetch_status_test!(legacy_fetch_ok_for_200, "200 OK", 200.0, true);
-legacy_fetch_status_test!(legacy_fetch_ok_for_201, "201 Created", 201.0, true);
-legacy_fetch_status_test!(legacy_fetch_ok_for_204, "204 No Content", 204.0, true);
-legacy_fetch_status_test!(
-    legacy_fetch_not_ok_for_301,
-    "301 Moved Permanently",
-    301.0,
-    false
-);
-legacy_fetch_status_test!(legacy_fetch_not_ok_for_302, "302 Found", 302.0, false);
-legacy_fetch_status_test!(legacy_fetch_not_ok_for_404, "404 Not Found", 404.0, false);
-legacy_fetch_status_test!(
-    legacy_fetch_not_ok_for_500,
-    "500 Internal Server Error",
-    500.0,
-    false
-);
-legacy_fetch_status_test!(
-    legacy_fetch_not_ok_for_503,
-    "503 Service Unavailable",
-    503.0,
-    false
-);

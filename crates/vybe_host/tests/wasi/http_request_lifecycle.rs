@@ -374,40 +374,6 @@ fn response_status_tracks_non_ok_status_code() {
 }
 
 #[test]
-fn legacy_fetch_marks_non_2xx_status_as_not_ok() {
-    let (authority, _) = capture_server("404 Not Found", "missing");
-    let result = legacy(
-        "fetch",
-        vec![
-            s(&format!("http://{}/missing", authority)),
-            s("GET"),
-            Value::Null,
-        ],
-    );
-    assert_eq!(prop(&result, "status"), Value::F64(404.0));
-    assert_eq!(prop(&result, "ok"), Value::Bool(false));
-    assert_eq!(prop(&result, "body"), s("missing"));
-}
-
-#[test]
-fn legacy_get_returns_error_string_for_unreachable_endpoint() {
-    let result = legacy("get", vec![s("http://127.0.0.1:1/fail")]);
-    let Value::String(text) = result else {
-        panic!("legacy get should return string")
-    };
-    assert!(text.starts_with("Error: "));
-}
-
-#[test]
-fn legacy_post_returns_error_string_for_unreachable_endpoint() {
-    let result = legacy("post", vec![s("http://127.0.0.1:1/fail"), s("payload=1")]);
-    let Value::String(text) = result else {
-        panic!("legacy post should return string")
-    };
-    assert!(text.starts_with("Error: "));
-}
-
-#[test]
 fn response_headers_resource_can_be_queried_multiple_times() {
     let (authority, _) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);

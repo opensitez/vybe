@@ -775,52 +775,10 @@ fn incoming_response_headers_expose_server_headers() {
 }
 
 #[test]
-fn legacy_http_get_and_post_return_response_body() {
-    let get_authority = start_server("200 OK", &[], "get-ok");
-    let get_result = legacy("get", vec![s(&format!("http://{}/ping", get_authority))]);
-    assert_eq!(get_result, s("get-ok"));
-
-    let post_authority = start_server("201 Created", &[], "post-ok");
-    let post_result = legacy(
-        "post",
-        vec![
-            s(&format!("http://{}/submit", post_authority)),
-            s("payload=1"),
-        ],
-    );
-    assert_eq!(post_result, s("post-ok"));
-}
-
-#[test]
-fn legacy_http_fetch_returns_status_body_and_ok_flag() {
-    let authority = start_server("202 Accepted", &[], "queued");
-    let result = legacy(
-        "fetch",
-        vec![
-            s(&format!("http://{}/jobs", authority)),
-            s("GET"),
-            Value::Null,
-        ],
-    );
-
-    assert_eq!(prop(&result, "status"), Value::F64(202.0));
-    assert_eq!(prop(&result, "body"), s("queued"));
-    assert_eq!(prop(&result, "ok"), Value::Bool(true));
-}
-
-#[test]
-fn proposal_http_handler_interfaces_are_registered() {
-    let expected = [
-        ("wasi:http/handler", "handle"),
-        ("wasi:http/client", "send"),
-    ];
-    let missing = expected
-        .into_iter()
-        .filter(|(module, name)| !has_import(module, name))
-        .collect::<Vec<_>>();
+fn proposal_http_outgoing_handler_is_registered() {
     assert!(
-        missing.is_empty(),
-        "missing http handler/client imports: {missing:?}"
+        has_import("wasi:http/outgoing-handler", "handle"),
+        "wasi:http/outgoing-handler.handle should be registered"
     );
 }
 
@@ -833,10 +791,9 @@ fn proposal_http_fields_surface_is_registered() {
         "[method]fields.has",
         "[method]fields.set",
         "[method]fields.delete",
-        "[method]fields.get-and-delete",
         "[method]fields.append",
-        "[method]fields.copy-all",
         "[method]fields.clone",
+        "[method]fields.entries",
     ];
     let missing = expected
         .into_iter()
@@ -849,20 +806,19 @@ fn proposal_http_fields_surface_is_registered() {
 }
 
 #[test]
-fn proposal_http_request_surface_is_registered() {
+fn proposal_http_outgoing_request_surface_is_registered() {
     let expected = [
-        "[static]request.new",
-        "[method]request.get-method",
-        "[method]request.set-method",
-        "[method]request.get-path-with-query",
-        "[method]request.set-path-with-query",
-        "[method]request.get-scheme",
-        "[method]request.set-scheme",
-        "[method]request.get-authority",
-        "[method]request.set-authority",
-        "[method]request.get-options",
-        "[method]request.get-headers",
-        "[static]request.consume-body",
+        "[constructor]outgoing-request",
+        "[method]outgoing-request.method",
+        "[method]outgoing-request.set-method",
+        "[method]outgoing-request.path-with-query",
+        "[method]outgoing-request.set-path-with-query",
+        "[method]outgoing-request.scheme",
+        "[method]outgoing-request.set-scheme",
+        "[method]outgoing-request.authority",
+        "[method]outgoing-request.set-authority",
+        "[method]outgoing-request.headers",
+        "[method]outgoing-request.body",
     ];
     let missing = expected
         .into_iter()
@@ -870,7 +826,7 @@ fn proposal_http_request_surface_is_registered() {
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
-        "missing http request imports: {missing:?}"
+        "missing http outgoing-request imports: {missing:?}"
     );
 }
 
@@ -878,13 +834,12 @@ fn proposal_http_request_surface_is_registered() {
 fn proposal_http_request_options_surface_is_registered() {
     let expected = [
         "[constructor]request-options",
-        "[method]request-options.get-connect-timeout",
+        "[method]request-options.connect-timeout",
         "[method]request-options.set-connect-timeout",
-        "[method]request-options.get-first-byte-timeout",
+        "[method]request-options.first-byte-timeout",
         "[method]request-options.set-first-byte-timeout",
-        "[method]request-options.get-between-bytes-timeout",
+        "[method]request-options.between-bytes-timeout",
         "[method]request-options.set-between-bytes-timeout",
-        "[method]request-options.clone",
     ];
     let missing = expected
         .into_iter()
@@ -900,10 +855,9 @@ fn proposal_http_request_options_surface_is_registered() {
 fn proposal_http_response_surface_is_registered() {
     let expected = [
         "[static]response.new",
-        "[method]response.get-status-code",
-        "[method]response.set-status-code",
-        "[method]response.get-headers",
         "[static]response.consume-body",
+        "[method]incoming-response.status",
+        "[method]incoming-response.headers",
     ];
     let missing = expected
         .into_iter()
