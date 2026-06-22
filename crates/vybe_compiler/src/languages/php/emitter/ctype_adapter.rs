@@ -46,7 +46,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // len = s.length
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -85,7 +85,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     // code = s.codePointAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "codePointAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("wasm:js-string", "codePointAt"); chunk.emit_call(idx, 2, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
     chunk.emit_op(Op::DROP, line);
 

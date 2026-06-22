@@ -46,34 +46,28 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 /// Emit `wasm:js-boolean.test(val)` → i32 (1 if boolean). Value must be on stack.
 pub fn emit_test_bool(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-boolean", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 /// Emit `wasm:js-number.test(val)` → i32. Value must be on stack.
 pub fn emit_test_number(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-number", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 /// Emit `wasm:js-string.test(val)` → i32. Value must be on stack.
 pub fn emit_test_string(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 /// Emit `wasm:js-bigint.test(val)` → i32. Value must be on stack.
 pub fn emit_test_bigint(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-bigint", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 /// Test if value is "object-like" (not null, not a primitive).
 /// Stack: [val] → i32.
@@ -2882,7 +2876,7 @@ fn emit_assoc_sort_impl(
             lget(chunk, keys_slot, line);
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+            { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
             push_const(chunk, Value::F64(0.0), line);
             if mode == 2 {
                 crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -3681,12 +3675,10 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         c.emit_else(line);
         // boolean check
         lget(c, v_slot, line);
-        c.emit_op_u16(Op::CALL_IMPORT, test_bool, line);
-        c.emit(1, line);
+        c.emit_call(test_bool, 1, line);
         c.emit_if(line);
         lget(c, v_slot, line);
-        c.emit_op_u16(Op::CALL_IMPORT, cast_bool, line);
-        c.emit(1, line);
+        c.emit_call(cast_bool, 1, line);
         c.emit_if(line);
         push_str(c, "1", line);
         lset(c, str_slot, line);

@@ -48,9 +48,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 /// Push `wasi:filesystem.stat(path)` — leaves the stat record or null
@@ -304,7 +302,7 @@ pub fn emit_file(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     call_import(chunks, current, "node:fs", "readFileSync", 2, line);
     let chunk = &mut chunks[current];
     push_str(chunk, "\n", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
 }
 
 /// PHP `glob($pattern, $flags = 0)` — current support covers the common
@@ -350,7 +348,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
-    { let idx = chunk.add_import("ecma:string", "includes"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "includes"); chunk.emit_call(idx, 2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -368,7 +366,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     lset(chunk, parts_slot, line);
 
     lget(chunk, parts_slot, line);
@@ -430,7 +428,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, prefix_slot, line);
-    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_call(idx, 2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
@@ -447,7 +445,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, suffix_slot, line);
-    { let idx = chunk.add_import("ecma:string", "endsWith"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "endsWith"); chunk.emit_call(idx, 2, line); }
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
@@ -457,9 +455,9 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, dir_slot, line);
     push_str(chunk, "/", line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
     lget(chunk, entry_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
     lset(chunk, full_path_slot, line);
 
     lget(chunk, full_path_slot, line);

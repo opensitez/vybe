@@ -55,8 +55,7 @@ pub fn emit_constructor_ref_with_autoload(
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     {
         let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
-        chunk.emit(1, line);
+        chunk.emit_call(undef_test, 1, line);
     }
     chunk.emit_if(line);
 
@@ -92,8 +91,7 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     {
         let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
-        chunk.emit(1, line);
+        chunk.emit_call(undef_test, 1, line);
     }
     chunk.emit_if(line);
 
@@ -115,8 +113,7 @@ fn emit_fallback_if_undefined(chunk: &mut Chunk, ctor_slot: u16, fallback: &str,
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     {
         let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
-        chunk.emit(1, line);
+        chunk.emit_call(undef_test, 1, line);
     }
     chunk.emit_if(line);
     let fallback_idx = str_idx(chunk, fallback);
@@ -139,8 +136,7 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
     {
         let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
-        chunk.emit(1, line);
+        chunk.emit_call(undef_test, 1, line);
     }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -154,8 +150,7 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     {
         let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_op_u16(Op::CALL_IMPORT, undef_test, line);
-        chunk.emit(1, line);
+        chunk.emit_call(undef_test, 1, line);
     }
     chunk.emit_if(line);
 

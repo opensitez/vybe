@@ -50,9 +50,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn call_import_into(
@@ -64,8 +62,7 @@ fn call_import_into(
     line: u32,
 ) {
     let idx = imports.add_import(module.to_string(), name.to_string());
-    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    code.emit(argc, line);
+    code.emit_call(idx, argc, line);
 }
 
 fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
@@ -153,8 +150,7 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if let Some(slot) = response_code_slot {
         lget(chunk, slot, line);
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, send_header_import, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(send_header_import, argc, line);
     chunk.emit_op(Op::DROP, line);
 
     if let Some(slot) = response_code_slot {
@@ -165,25 +161,20 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     }
 
     lget(chunk, header_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, string_import, line);
-    chunk.emit(1, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, lower_import, line);
-    chunk.emit(1, line);
+    chunk.emit_call(string_import, 1, line);
+    chunk.emit_call(lower_import, 1, line);
     push_str(chunk, "location:", line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, starts_with_import, line);
-    chunk.emit(2, line);
+    chunk.emit_call(starts_with_import, 2, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, response_code_import, line);
-    chunk.emit(0, line);
+    chunk.emit_call(response_code_import, 0, line);
     push_const(chunk, Value::F64(200.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
 
     push_const(chunk, Value::F64(302.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, response_code_import, line);
-    chunk.emit(1, line);
+    chunk.emit_call(response_code_import, 1, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -209,10 +200,8 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
         chunk.emit_op(Op::DROP, line);
     }
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, string_import, line);
-    chunk.emit(1, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, lower_import, line);
-    chunk.emit(1, line);
+    chunk.emit_call(string_import, 1, line);
+    chunk.emit_call(lower_import, 1, line);
 
     let ext_slot = alloc_local(chunk);
     lset(chunk, ext_slot, line);
@@ -296,8 +285,7 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     push_str(chunk, "PHPSESSID", line);
     chunk.emit_op_u16(Op::GLOBAL_GET, session_id, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, set_cookie_import, line);
-    chunk.emit(2, line);
+    chunk.emit_call(set_cookie_import, 2, line);
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
@@ -336,8 +324,7 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
 
     push_str(chunk, "PHPSESSID", line);
     push_str(chunk, "", line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, set_cookie_import, line);
-    chunk.emit(2, line);
+    chunk.emit_call(set_cookie_import, 2, line);
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(true), line);
 }
@@ -375,7 +362,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.emit_else(line);
-    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); chunk.emit(1, line); }
+    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(undef_idx, 1, line); }
     chunk.emit_if(line);
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::RETURN, line);
@@ -430,7 +417,8 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 helper.add_constant(Value::String(Arc::from(format!("__tid_{}", ty.name))));
             lget(&mut helper, obj_slot, line);
             helper.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-            helper.emit_op(Op::SET_TYPE_ID, line);
+            let tid_key = helper.add_constant(Value::String(Arc::from("__type_id")));
+            helper.emit_op_u16(Op::STRUCT_SET, tid_key, line);
             helper.emit_op(Op::DROP, line);
 
             for field in &ty.fields {
@@ -497,7 +485,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
     {
         let imports = &mut chunks[0];
         // ALL imports in a helper chunk must register on `imports` (chunks[0])
-        // via the `_into` ops — `add_import` is per-chunk and CALL_IMPORT
+        // via the `_into` ops — `add_import` is per-chunk and emit_call
         // resolves against chunks[0]'s table, so the non-`_into` ops (which use
         // the helper's own list) produce clashing indices.
 
@@ -509,7 +497,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         helper.emit_op(Op::RETURN, line);
         helper.emit_end(line);
         lget(&mut helper, value_slot, line);
-        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); helper.emit(1, line); }
+        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
         helper.emit_if(line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -561,22 +549,19 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         // AND not number
         lget(&mut helper, obj_norm_slot, line);
         let test_num_norm = imports.add_import("wasm:js-number", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_num_norm, line);
-        helper.emit(1, line);
+        helper.emit_call(test_num_norm, 1, line);
         helper.emit_op(Op::I32_EQZ, line);
         helper.emit_op(Op::I32_AND, line);
         // AND not string
         lget(&mut helper, obj_norm_slot, line);
         let test_str_norm = imports.add_import("wasm:js-string", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_str_norm, line);
-        helper.emit(1, line);
+        helper.emit_call(test_str_norm, 1, line);
         helper.emit_op(Op::I32_EQZ, line);
         helper.emit_op(Op::I32_AND, line);
         // AND not boolean
         lget(&mut helper, obj_norm_slot, line);
         let test_bool_norm = imports.add_import("wasm:js-boolean", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_bool_norm, line);
-        helper.emit(1, line);
+        helper.emit_call(test_bool_norm, 1, line);
         helper.emit_op(Op::I32_EQZ, line);
         helper.emit_op(Op::I32_AND, line);
         helper.emit_if(line);
@@ -667,8 +652,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         // boolean test
         lget(&mut helper, value_slot, line);
         let test_bool_ser = imports.add_import("wasm:js-boolean", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_bool_ser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_bool_ser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -676,8 +660,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         // number test
         lget(&mut helper, value_slot, line);
         let test_num_ser = imports.add_import("wasm:js-number", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_num_ser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_num_ser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -685,8 +668,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         // string test
         lget(&mut helper, value_slot, line);
         let test_str_ser = imports.add_import("wasm:js-string", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_str_ser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_str_ser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -734,7 +716,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_if(line);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
-        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); helper.emit(1, line); }
+        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
         helper.emit_if(line);
         helper.emit_else(line);
         lget(&mut helper, tmp_slot, line);
@@ -786,20 +768,17 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             helper.emit_op(Op::I32_EQZ, line);
             lget(&mut helper, fn_slot_ser, line);
             let tn = imports.add_import("wasm:js-number", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tn, line);
-            helper.emit(1, line);
+            helper.emit_call(tn, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_ser, line);
             let ts = imports.add_import("wasm:js-string", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, ts, line);
-            helper.emit(1, line);
+            helper.emit_call(ts, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_ser, line);
             let tb = imports.add_import("wasm:js-boolean", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tb, line);
-            helper.emit(1, line);
+            helper.emit_call(tb, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
         }
@@ -840,20 +819,17 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             helper.emit_op(Op::I32_EQZ, line);
             lget(&mut helper, fn_slot_slp, line);
             let tn = imports.add_import("wasm:js-number", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tn, line);
-            helper.emit(1, line);
+            helper.emit_call(tn, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_slp, line);
             let ts = imports.add_import("wasm:js-string", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, ts, line);
-            helper.emit(1, line);
+            helper.emit_call(ts, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_slp, line);
             let tb = imports.add_import("wasm:js-boolean", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tb, line);
-            helper.emit(1, line);
+            helper.emit_call(tb, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
         }
@@ -959,20 +935,17 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             helper.emit_op(Op::I32_EQZ, line);
             lget(&mut helper, fn_slot_tmp, line);
             let tn = imports.add_import("wasm:js-number", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tn, line);
-            helper.emit(1, line);
+            helper.emit_call(tn, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_tmp, line);
             let ts = imports.add_import("wasm:js-string", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, ts, line);
-            helper.emit(1, line);
+            helper.emit_call(ts, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_tmp, line);
             let tb = imports.add_import("wasm:js-boolean", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tb, line);
-            helper.emit(1, line);
+            helper.emit_call(tb, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
         }
@@ -1023,8 +996,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         // boolean test
         lget(&mut helper, node_slot, line);
         let test_bool_unser = imports.add_import("wasm:js-boolean", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_bool_unser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_bool_unser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -1032,8 +1004,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         // number test
         lget(&mut helper, node_slot, line);
         let test_num_unser = imports.add_import("wasm:js-number", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_num_unser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_num_unser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -1041,8 +1012,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         // string test
         lget(&mut helper, node_slot, line);
         let test_str_unser = imports.add_import("wasm:js-string", "test");
-        helper.emit_op_u16(Op::CALL_IMPORT, test_str_unser, line);
-        helper.emit(1, line);
+        helper.emit_call(test_str_unser, 1, line);
         helper.emit_if(line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -1059,7 +1029,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
         helper.emit_else(line);
-        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); helper.emit(1, line); }
+        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
         helper.emit_if(line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -1106,7 +1076,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_if(line);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
-        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); helper.emit(1, line); }
+        { let undef_idx = imports.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
         helper.emit_if(line);
         helper.emit_else(line);
         lget(&mut helper, assoc_slot, line);
@@ -1169,20 +1139,17 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
             helper.emit_op(Op::I32_EQZ, line);
             lget(&mut helper, fn_slot_uns, line);
             let tn = imports.add_import("wasm:js-number", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tn, line);
-            helper.emit(1, line);
+            helper.emit_call(tn, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_uns, line);
             let ts = imports.add_import("wasm:js-string", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, ts, line);
-            helper.emit(1, line);
+            helper.emit_call(ts, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_uns, line);
             let tb = imports.add_import("wasm:js-boolean", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tb, line);
-            helper.emit(1, line);
+            helper.emit_call(tb, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
         }
@@ -1246,20 +1213,17 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
             helper.emit_op(Op::I32_EQZ, line);
             lget(&mut helper, fn_slot_wk, line);
             let tn = imports.add_import("wasm:js-number", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tn, line);
-            helper.emit(1, line);
+            helper.emit_call(tn, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_wk, line);
             let ts = imports.add_import("wasm:js-string", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, ts, line);
-            helper.emit(1, line);
+            helper.emit_call(ts, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
             lget(&mut helper, fn_slot_wk, line);
             let tb = imports.add_import("wasm:js-boolean", "test");
-            helper.emit_op_u16(Op::CALL_IMPORT, tb, line);
-            helper.emit(1, line);
+            helper.emit_call(tb, 1, line);
             helper.emit_op(Op::I32_EQZ, line);
             helper.emit_op(Op::I32_AND, line);
         }
@@ -1295,7 +1259,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     lget(chunk, value_slot, line);
-    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_op_u16(Op::CALL_IMPORT, undef_idx, line); chunk.emit(1, line); }
+    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(undef_idx, 1, line); }
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
@@ -1303,8 +1267,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // boolean test
     lget(chunk, value_slot, line);
     let test_bool_empty = chunk.add_import("wasm:js-boolean", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_bool_empty, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_bool_empty, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, value_slot, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -1314,8 +1277,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // number test
     lget(chunk, value_slot, line);
     let test_num_empty = chunk.add_import("wasm:js-number", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_num_empty, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_num_empty, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, value_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -1325,8 +1287,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // string test
     lget(chunk, value_slot, line);
     let test_str_empty = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_empty, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_empty, 1, line);
     chunk.emit_if_value(line);
 
     lget(chunk, value_slot, line);
@@ -1429,7 +1390,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         let weak_k = c.add_constant(Value::String(Arc::from("__weak")));
         c.emit_op_u16(Op::LOCAL_GET, 0, line);
         c.emit_op_u16(Op::STRUCT_GET, weak_k, line);
-        c.emit_op(Op::REF_DEREF_WEAK, line);
+        { let idx = c.add_import("ecma:weakref", "deref"); c.emit_call(idx, 1, line); }
         c.emit_op(Op::RETURN, line);
         c.local_count = c.local_count.max(1);
         chunks.push(c);
@@ -1453,7 +1414,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     // this.__weak = REF_MAKE_WEAK(obj)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::REF_MAKE_WEAK, line);
+    { let idx = chunk.add_import("ecma:weakref", "new"); chunk.emit_call(idx, 1, line); }
     let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
     chunk.emit_op_u16(Op::STRUCT_SET, weak_k, line);
     chunk.emit_op(Op::DROP, line);

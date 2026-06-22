@@ -39,8 +39,7 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
-    c.emit_op_u16(Op::CALL_IMPORT, get_i, line);
-    c.emit(2, line);
+    c.emit_call(get_i, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
     chunks.push(c);
@@ -57,8 +56,7 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // value
-    c.emit_op_u16(Op::CALL_IMPORT, set_i, line);
-    c.emit(3, line);
+    c.emit_call(set_i, 3, line);
     c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
@@ -76,8 +74,7 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, method_k, line);
-    c.emit_op_u16(Op::CALL_IMPORT, get_i, line);
-    c.emit(2, line);
+    c.emit_call(get_i, 2, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
     c.emit_op_u8(Op::CALL_REF, 2, line);
@@ -96,8 +93,7 @@ fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, ifaces_k, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_op_u16(Op::CALL_IMPORT, indexof_i, line);
-    c.emit(2, line);
+    c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
     let zero = c.add_constant(Value::F64(0.0));
     c.emit_op_u16(Op::CONST, zero, line);

@@ -76,9 +76,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 /// Wrap a millisecond timestamp on stack-top in a `{__type:tag, __time:ms}`
@@ -178,7 +176,7 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, "/", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     emit_array_get_const_index(chunk, date_parts_slot, 2.0, line);
@@ -217,7 +215,7 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     let parts_slot = alloc_local(chunk);
     local_set(chunk, parts_slot, line);
     emit_array_get_const_index(chunk, parts_slot, 0.0, line);
@@ -228,12 +226,12 @@ fn emit_datetime_create_from_format_impl(
     local_set(chunk, time_str_slot, line);
     local_get(chunk, date_str_slot, line);
     push_str(chunk, "/", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     local_get(chunk, time_str_slot, line);
     push_str(chunk, ":", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     let time_parts_slot = alloc_local(chunk);
     local_set(chunk, time_parts_slot, line);
 
@@ -312,7 +310,7 @@ pub fn emit_datetime_immutable_create_from_format(chunks: &mut [Chunk], current:
 /// The walker pre-parses *literal* format strings via
 /// `format_php_literal_to_ast` (compile-time ECMA-262 §21.4 calls).
 /// This adapter is the runtime path for *dynamic* format strings —
-/// pure bytecode loop + `ecma:date.*` getter `CALL_IMPORT`s.
+/// pure bytecode loop + `ecma:date.*` getter `emit_call`s.
 pub fn emit_datetime_format(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let fmt_slot = alloc_local(chunk);
@@ -375,7 +373,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
     for _ in 1..width {
         // if STR_LENGTH(s) < width: s = "0" + s
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
+        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
         let idx = chunk.add_constant(Value::F64(width as f64));
         chunk.emit_op_u16(Op::CONST, idx, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -1075,7 +1073,7 @@ fn emit_format_dt_runtime(
     local_set(chunk, i_slot, line);
     // len = STR_LENGTH(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(1, line); }
+    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
     local_set(chunk, len_slot, line);
 
     // while i < len:  block { loop { ... } } — WASM structured control flow
@@ -1093,7 +1091,7 @@ fn emit_format_dt_runtime(
     //   c = fmt.charAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
     local_set(chunk, c_slot, line);
 
     if !mode_strftime {
@@ -1114,7 +1112,7 @@ fn emit_format_dt_runtime(
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
         emit_append_to_result(chunk, result_slot, line);
         chunk.emit_end(line);
         // i++
@@ -1155,7 +1153,7 @@ fn emit_format_dt_runtime(
         // c = fmt.charAt(i)
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
         local_set(chunk, c_slot, line);
         emit_format_code_dispatch(
             chunks,

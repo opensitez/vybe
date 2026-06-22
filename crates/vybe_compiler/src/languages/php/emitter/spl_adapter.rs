@@ -42,8 +42,7 @@ fn build_array_method(
     for slot in 1..arity {
         c.emit_op_u16(Op::LOCAL_GET, slot as u16, line);
     }
-    c.emit_op_u16(Op::CALL_IMPORT, fn_i, line);
-    c.emit(arity, line);
+    c.emit_call(fn_i, arity, line);
     if discard_result {
         c.emit_op(Op::DROP, line);
         c.emit_op(Op::NULL, line);
@@ -89,8 +88,7 @@ fn build_top_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     let neg1 = c.add_constant(Value::F64(-1.0));
     c.emit_op_u16(Op::CONST, neg1, line);
-    c.emit_op_u16(Op::CALL_IMPORT, at_i, line);
-    c.emit(2, line);
+    c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -105,8 +103,7 @@ fn build_bottom_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     let zero = c.add_constant(Value::F64(0.0));
     c.emit_op_u16(Op::CONST, zero, line);
-    c.emit_op_u16(Op::CALL_IMPORT, at_i, line);
-    c.emit(2, line);
+    c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -137,15 +134,13 @@ fn build_heap_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) 
     // this.push(v)
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_op_u16(Op::CALL_IMPORT, push_i, line);
-    c.emit(2, line);
+    c.emit_call(push_i, 2, line);
     c.emit_op(Op::DROP, line);
     // this.sort(numcmp)
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::REF_FUNC, cmp_idx as u16, line);
     c.emit(0, line);
-    c.emit_op_u16(Op::CALL_IMPORT, sort_i, line);
-    c.emit(2, line);
+    c.emit_call(sort_i, 2, line);
     c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
@@ -185,15 +180,13 @@ fn build_pq_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) ->
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // priority → pair[0]
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // value    → pair[1]
     c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
-    c.emit_op_u16(Op::CALL_IMPORT, push_i, line);
-    c.emit(2, line);
+    c.emit_call(push_i, 2, line);
     c.emit_op(Op::DROP, line);
     // this.sort(pqcmp)
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::REF_FUNC, cmp_idx as u16, line);
     c.emit(0, line);
-    c.emit_op_u16(Op::CALL_IMPORT, sort_i, line);
-    c.emit(2, line);
+    c.emit_call(sort_i, 2, line);
     c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
@@ -209,8 +202,7 @@ fn build_pq_extract_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let pop_i = c.add_import("ecma:array".to_string(), "pop".to_string());
     let one = c.add_constant(Value::F64(1.0));
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::CALL_IMPORT, pop_i, line);
-    c.emit(1, line); // → [priority, value]
+    c.emit_call(pop_i, 1, line); // → [priority, value]
     c.emit_op_u16(Op::CONST, one, line);
     c.emit_op(Op::ARRAY_GET, line); // pair[1] = value
     c.emit_op(Op::RETURN, line);
@@ -246,8 +238,7 @@ fn build_map_method(
     for slot in 1..arity {
         c.emit_op_u16(Op::LOCAL_GET, slot as u16, line);
     }
-    c.emit_op_u16(Op::CALL_IMPORT, fn_i, line);
-    c.emit(arity, line);
+    c.emit_call(fn_i, arity, line);
     if discard_result {
         c.emit_op(Op::DROP, line);
         c.emit_op(Op::NULL, line);
@@ -264,8 +255,7 @@ fn build_map_count_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 1;
     let size_i = c.add_import("ecma:map".to_string(), "size".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::CALL_IMPORT, size_i, line);
-    c.emit(1, line);
+    c.emit_call(size_i, 1, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -301,8 +291,7 @@ pub fn emit_spl_objectstorage_new(
     chunk.local_count += 1;
     // this = ecma:map.new() — the instance IS the Map
     let map_new_i = chunk.add_import("ecma:map".to_string(), "new".to_string());
-    chunk.emit_op_u16(Op::CALL_IMPORT, map_new_i, line);
-    chunk.emit(0, line);
+    chunk.emit_call(map_new_i, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     // Bind methods as named props on the Map object
     for (mname, midx) in binds {

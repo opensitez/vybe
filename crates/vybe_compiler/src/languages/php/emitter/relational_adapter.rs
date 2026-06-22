@@ -65,23 +65,19 @@ pub fn emit_php_loose_eq(
 
     lget(chunk, a_slot, line);
     let test_str_a = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_a, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_a, 1, line);
     chunk.emit_if_value(line);
 
     lget(chunk, b_slot, line);
     let test_str_b = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_b, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_b, 1, line);
     chunk.emit_if_value(line);
 
     lget(chunk, a_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, parse_float, line);
-    chunk.emit(1, line);
+    chunk.emit_call(parse_float, 1, line);
     lset(chunk, a_num_slot, line);
     lget(chunk, b_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, parse_float, line);
-    chunk.emit(1, line);
+    chunk.emit_call(parse_float, 1, line);
     lset(chunk, b_num_slot, line);
 
     lget(chunk, a_num_slot, line);
@@ -106,15 +102,13 @@ pub fn emit_php_loose_eq(
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, abstract_eq, line);
-    chunk.emit(2, line);
+    chunk.emit_call(abstract_eq, 2, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, abstract_eq, line);
-    chunk.emit(2, line);
+    chunk.emit_call(abstract_eq, 2, line);
     chunk.emit_end(line);
 
     if negate {
@@ -140,20 +134,18 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
 
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
     let test_str_ta = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_ta, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_ta, 1, line);
     chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
     let test_str_tb = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_tb, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_tb, 1, line);
     chunk.emit_if_value(line);
 
     // Both strings → lexicographic compare.
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_op_u16(Op::CALL_IMPORT, idx, line); chunk.emit(2, line); }
+    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
     push_const(chunk, Value::I32(0), line);
     cmp_fn(chunk, line);
 
@@ -185,22 +177,19 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     // AND not number
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     let test_num_dt = chunk.add_import("wasm:js-number", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_num_dt, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_num_dt, 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
     // AND not string
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     let test_str_dt = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_str_dt, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_str_dt, 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
     // AND not boolean
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     let test_bool_dt = chunk.add_import("wasm:js-boolean", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_bool_dt, line);
-    chunk.emit(1, line);
+    chunk.emit_call(test_bool_dt, 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
