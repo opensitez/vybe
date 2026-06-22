@@ -119,9 +119,9 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
         if arity > 0 && class.ctor_arity == 1 && parent_name != "TObject" {
             chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-            chunk.emit_op_u8(Op::CALL, 1, line);
+            chunk.emit_op_u8(Op::CALL_REF, 1, line);
         } else {
-            chunk.emit_op_u8(Op::CALL, 0, line);
+            chunk.emit_op_u8(Op::CALL_REF, 0, line);
         }
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
         chunk.emit_op(Op::DROP, line);
