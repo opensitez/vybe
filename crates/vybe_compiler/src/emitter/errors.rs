@@ -25,24 +25,21 @@ pub fn emit_exception_constructor(
 
     // __type = exc_name (for ref_test matching)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let t_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::CONST, t_val, line);
+    chunk.emit_string_const(exc_name, line);
     let t_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::STRUCT_SET, t_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __exception_type = exc_name (Python convention)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let et_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::CONST, et_val, line);
+    chunk.emit_string_const(exc_name, line);
     let et_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::STRUCT_SET, et_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // name = exc_name (JS Error convention)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let n_val = chunk.add_constant(Value::String(Arc::from(exc_name)));
-    chunk.emit_op_u16(Op::CONST, n_val, line);
+    chunk.emit_string_const(exc_name, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -101,7 +98,7 @@ pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
 
 /// Emit the end of the try body (normal exit path).
 pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::TRY_END, line);
+    chunk.emit_op(Op::END, line);
 }
 
 /// Patch the catch handler offset after the handler code has been emitted.
@@ -198,9 +195,8 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     // __type and __exception_type use the canonical name (for cross-language
     // catch dispatch).
     for (key, val) in [("__type", canon), ("__exception_type", canon)] {
-        chunk.emit_op(Op::DUP, line);
-        let v = chunk.add_constant(Value::String(Arc::from(val)));
-        chunk.emit_op_u16(Op::CONST, v, line);
+        chunk.emit_dup(line);
+        chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
         chunk.emit_op_u16(Op::STRUCT_SET, k, line);
         chunk.emit_op(Op::DROP, line);
@@ -208,9 +204,8 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
 
     // Set name as a dynamic (non-indexed) property with the original language-specific name.
     // It will be added to __nonenum at the type level, making it non-enumerable.
-    chunk.emit_op(Op::DUP, line);
-    let n_val = chunk.add_constant(Value::String(Arc::from(original)));
-    chunk.emit_op_u16(Op::CONST, n_val, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const(original, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -236,7 +231,7 @@ pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str,
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, dispose_key, line);
     // if method is null/undefined, skip the call.
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_br_if(0, line);
     // Stack: [method]. Push receiver and CALL_REF(1). Drop result.

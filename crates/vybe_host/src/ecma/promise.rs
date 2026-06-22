@@ -1,7 +1,7 @@
 //! ECMA-262 §27.7 — Promise.
 //!
-//! Vybe's promise model is synchronous-by-default for already-settled
-//! promises, and defers via event-loop microtasks for pending ones.
+//! Promise reactions are scheduled as event-loop microtasks, including
+//! reactions attached to already-settled promises.
 //! A Promise is an Object stamped `__type=Promise` with `__state` ∈
 //! {pending, fulfilled, rejected} and `__value` holding the settled value.
 //!
@@ -20,9 +20,11 @@
 //!   §27.7.4.7 Promise.try(callbackfn)
 //!   §27.7.4.x Promise.withResolvers() (ES2024)
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
+
+static PROMISE_REACTION_HOST_IDX: OnceLock<usize> = OnceLock::new();
 
 pub fn register(vm: &mut VM) {
     // Internal settle helpers — never called directly from user code.
@@ -73,6 +75,22 @@ pub fn register(vm: &mut VM) {
             Value::Undefined
         }),
     );
+    vm.register_host_fn(
+        "ecma:promise",
+        "__reaction",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let result_promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let state = args
+                .get(1)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| "fulfilled".to_string());
+            let on_fulfilled = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let on_rejected = args.get(3).cloned().unwrap_or(Value::Undefined);
+            let value = args.get(4).cloned().unwrap_or(Value::Undefined);
+            run_reaction(ctx, result_promise, &state, on_fulfilled, on_rejected, value);
+            Value::Undefined
+        }),
+    );
 
     let resolve_idx = vm
         .host_registry
@@ -94,6 +112,12 @@ pub fn register(vm: &mut VM) {
         .get(&("ecma:promise".to_string(), "__aggregate_reject".to_string()))
         .copied()
         .expect("__aggregate_reject just registered");
+    let reaction_idx = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__reaction".to_string()))
+        .copied()
+        .expect("__reaction just registered");
+    let _ = PROMISE_REACTION_HOST_IDX.set(reaction_idx);
 
     vm.register_host_fn(
         "ecma:promise",
@@ -505,18 +529,21 @@ pub fn dispatch_promise_method(
 fn then_impl(ctx: &mut HostContext, p: Value, on_fulfilled: Value, on_rejected: Value) -> Value {
     let (state, value) = read_promise_state(&p);
     match state.as_str() {
-        "fulfilled" => settle_callback(ctx, on_fulfilled, value, "fulfilled"),
-        "rejected" => settle_callback(ctx, on_rejected, value, "rejected"),
+        "fulfilled" | "rejected" => {
+            let result_promise = pending_promise_with_id(ctx);
+            queue_promise_reaction(
+                ctx,
+                result_promise.clone(),
+                &state,
+                on_fulfilled,
+                on_rejected,
+                value,
+            );
+            result_promise
+        }
         // Pending: register a reaction to fire when the promise settles.
         _ => {
-            let result_promise = make_promise("pending", Value::Undefined);
-            let id = ctx.next_promise_id();
-            if let Value::Object(ref obj) = result_promise {
-                obj.lock()
-                    .unwrap()
-                    .properties
-                    .insert("__id".into(), Value::F64(id as f64));
-            }
+            let result_promise = pending_promise_with_id(ctx);
             add_reaction(&p, on_fulfilled, on_rejected, result_promise.clone());
             result_promise
         }
@@ -528,53 +555,14 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
     if !is_callable(&on_finally) {
         return p;
     }
-    match ctx.try_invoke(&on_finally, &[]) {
-        Err(exc) => make_promise("rejected", exc),
-        Ok(_) => {
-            // Forward the original outcome regardless of the callback's return.
-            match state.as_str() {
-                "fulfilled" => make_promise("fulfilled", value),
-                "rejected" => make_promise("rejected", value),
-                _ => p,
-            }
+    match state.as_str() {
+        "fulfilled" | "rejected" => {
+            let result_promise = pending_promise_with_id(ctx);
+            let reaction = finally_reaction(result_promise.clone(), state.as_str(), on_finally);
+            ctx.queue_microtask(reaction, value);
+            result_promise
         }
-    }
-}
-
-/// Invoke `cb(value)` and wrap the result as a Promise.
-/// If the callback throws, the result is a rejected Promise (§27.7.5.4 step 8.a.i).
-/// If the callback returns a Promise, adopt its state (step 8.b thenable assimilation).
-fn settle_callback(ctx: &mut HostContext, cb: Value, value: Value, fallback_state: &str) -> Value {
-    // Magic callbacks for tests.
-    if let Value::Object(obj) = &cb {
-        let o = obj.lock().unwrap();
-        if let Some(Value::I32(n)) = o.properties.get("__map_add") {
-            let n = *n;
-            drop(o);
-            let result = if let Value::I32(v) = value {
-                Value::I32(v + n)
-            } else {
-                value
-            };
-            return make_promise("fulfilled", result);
-        }
-        if let Some(ret) = o.properties.get("__catch_return").cloned() {
-            drop(o);
-            return make_promise("fulfilled", ret);
-        }
-    }
-    if !is_callable(&cb) {
-        return make_promise(fallback_state, value);
-    }
-    match ctx.try_invoke(&cb, &[value]) {
-        Err(exc) => make_promise("rejected", exc),
-        Ok(result) => {
-            if is_promise(&result) {
-                result
-            } else {
-                make_promise("fulfilled", result)
-            }
-        }
+        _ => p,
     }
 }
 
@@ -597,6 +585,139 @@ fn add_reaction(promise: &Value, on_fulfilled: Value, on_rejected: Value, result
     if let Value::Object(arr) = reactions {
         if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
             elems.push(reaction);
+        }
+    }
+}
+
+fn pending_promise_with_id(ctx: &mut HostContext) -> Value {
+    let promise = make_promise("pending", Value::Undefined);
+    let id = ctx.next_promise_id();
+    if let Value::Object(ref obj) = promise {
+        obj.lock()
+            .unwrap()
+            .properties
+            .insert("__id".into(), Value::F64(id as f64));
+    }
+    promise
+}
+
+fn promise_reaction(result_promise: Value, state: &str, on_fulfilled: Value, on_rejected: Value) -> Value {
+    let idx = *PROMISE_REACTION_HOST_IDX
+        .get()
+        .expect("ecma:promise::__reaction registered before Promise reactions");
+    let mut obj = Object::new();
+    obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            result_promise,
+            Value::String(Arc::from(state)),
+            on_fulfilled,
+            on_rejected,
+        ])))),
+    );
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn finally_reaction(result_promise: Value, state: &str, on_finally: Value) -> Value {
+    promise_reaction(
+        result_promise,
+        state,
+        finalizer_forwarder(on_finally.clone(), state),
+        finalizer_forwarder(on_finally, state),
+    )
+}
+
+fn finalizer_forwarder(on_finally: Value, state: &str) -> Value {
+    let idx = *PROMISE_REACTION_HOST_IDX
+        .get()
+        .expect("ecma:promise::__reaction registered before Promise reactions");
+    let mut obj = Object::new();
+    obj.properties.insert("__promise_finally".into(), on_finally);
+    obj.properties
+        .insert("__promise_finally_state".into(), Value::String(Arc::from(state)));
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn queue_promise_reaction(
+    ctx: &mut HostContext,
+    result_promise: Value,
+    state: &str,
+    on_fulfilled: Value,
+    on_rejected: Value,
+    value: Value,
+) {
+    let reaction = promise_reaction(result_promise, state, on_fulfilled, on_rejected);
+    ctx.queue_microtask(reaction, value);
+}
+
+fn run_reaction(
+    ctx: &mut HostContext,
+    result_promise: Value,
+    state: &str,
+    on_fulfilled: Value,
+    on_rejected: Value,
+    value: Value,
+) {
+    let cb = if state == "fulfilled" {
+        on_fulfilled
+    } else {
+        on_rejected
+    };
+
+    if let Value::Object(obj) = &cb {
+        let maybe_finally = {
+            let o = obj.lock().unwrap();
+            o.properties.get("__promise_finally").cloned()
+        };
+        if let Some(on_finally) = maybe_finally {
+            match ctx.try_invoke(&on_finally, &[]) {
+                Err(exc) => mutate_promise_state(ctx, &result_promise, "rejected", exc),
+                Ok(_) => mutate_promise_state(ctx, &result_promise, state, value),
+            }
+            return;
+        }
+    }
+
+    let (settled_state, settled_value) = settle_callback_result(ctx, cb, value, state);
+    mutate_promise_state(ctx, &result_promise, &settled_state, settled_value);
+}
+
+fn settle_callback_result(
+    ctx: &mut HostContext,
+    cb: Value,
+    value: Value,
+    fallback_state: &str,
+) -> (String, Value) {
+    if let Value::Object(obj) = &cb {
+        let o = obj.lock().unwrap();
+        if let Some(Value::I32(n)) = o.properties.get("__map_add") {
+            let n = *n;
+            drop(o);
+            let result = if let Value::I32(v) = value {
+                Value::I32(v + n)
+            } else {
+                value
+            };
+            return ("fulfilled".to_string(), result);
+        }
+        if let Some(ret) = o.properties.get("__catch_return").cloned() {
+            drop(o);
+            return ("fulfilled".to_string(), ret);
+        }
+    }
+    if !is_callable(&cb) {
+        return (fallback_state.to_string(), value);
+    }
+    match ctx.try_invoke(&cb, &[value]) {
+        Err(exc) => ("rejected".to_string(), exc),
+        Ok(result) => {
+            if is_promise(&result) {
+                read_promise_state(&result)
+            } else {
+                ("fulfilled".to_string(), result)
+            }
         }
     }
 }
@@ -657,7 +778,7 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
         }
     }
 
-    // Fire each reaction synchronously (the executor already ran synchronously).
+    // Queue each reaction as a PromiseJob microtask.
     for reaction in &reactions {
         let Value::Object(r) = reaction else { continue };
         let r = r.lock().unwrap();
@@ -678,36 +799,20 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
             .unwrap_or(Value::Undefined);
         drop(r);
 
-        let cb = if state == "fulfilled" {
-            on_fulfilled
-        } else {
-            on_rejected
-        };
-        let fallback = state;
-
-        let (settled_state, settled_value) = if is_callable(&cb) {
-            match ctx.try_invoke(&cb, &[value.clone()]) {
-                Err(exc) => ("rejected".to_string(), exc),
-                Ok(result) => {
-                    if is_promise(&result) {
-                        let (s, v) = read_promise_state(&result);
-                        (s, v)
-                    } else {
-                        ("fulfilled".to_string(), result)
-                    }
-                }
-            }
-        } else {
-            (fallback.to_string(), value.clone())
-        };
-
-        // Mutate the result promise to reflect the outcome.
-        mutate_promise_state(ctx, &result_promise, &settled_state, settled_value);
+        queue_promise_reaction(
+            ctx,
+            result_promise,
+            state,
+            on_fulfilled,
+            on_rejected,
+            value.clone(),
+        );
     }
 }
 
 /// Overwrite a promise's state/value in-place and wake up any suspended fiber.
 fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, value: Value) {
+    let mut reactions: Vec<Value> = vec![];
     let promise_id = if let Value::Object(obj) = promise {
         let mut o = obj.lock().unwrap();
         if o.properties
@@ -727,6 +832,12 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
             o.properties
                 .insert("__state".into(), Value::String(Arc::from(state)));
             o.properties.insert("__value".into(), value.clone());
+            if let Some(Value::Object(arr)) = o.properties.remove("__pending_reactions") {
+                let mut a = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut elems) = a.kind {
+                    reactions = std::mem::take(elems);
+                }
+            }
             o.properties.get("__id").map(|v| v.as_f64() as u64)
         } else {
             None
@@ -736,10 +847,38 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
     };
     if let Some(id) = promise_id {
         if state == "rejected" {
-            ctx.reject_promise(id, value);
+            ctx.reject_promise(id, value.clone());
         } else {
-            ctx.resolve_promise(id, value);
+            ctx.resolve_promise(id, value.clone());
         }
+    }
+    for reaction in reactions {
+        let Value::Object(r) = reaction else { continue };
+        let r = r.lock().unwrap();
+        let on_fulfilled = r
+            .properties
+            .get("on_fulfilled")
+            .cloned()
+            .unwrap_or(Value::Undefined);
+        let on_rejected = r
+            .properties
+            .get("on_rejected")
+            .cloned()
+            .unwrap_or(Value::Undefined);
+        let result_promise = r
+            .properties
+            .get("result_promise")
+            .cloned()
+            .unwrap_or(Value::Undefined);
+        drop(r);
+        queue_promise_reaction(
+            ctx,
+            result_promise,
+            state,
+            on_fulfilled,
+            on_rejected,
+            value.clone(),
+        );
     }
 }
 

@@ -3799,6 +3799,12 @@ impl Compiler {
     /// makes every helper using `chunk.local_count` for scratch correct
     /// by construction.
     pub(crate) fn define_local(&mut self, name: &str) -> u16 {
+        if let Some(dup_slot) = self.chunks[self.current].dup_slot {
+            let scope = self.scopes.last_mut().unwrap();
+            if scope.next_slot <= dup_slot {
+                scope.next_slot = dup_slot + 1;
+            }
+        }
         let slot = self.scopes.last_mut().unwrap().define(name);
         let high = self.scopes.last().unwrap().next_slot;
         let cur = self.current;
@@ -4036,6 +4042,12 @@ impl Compiler {
     /// Same as `define_local` but with a type hint — sugar around
     /// `Scope::define_typed`. Keeps the sync invariant.
     pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+        if let Some(dup_slot) = self.chunks[self.current].dup_slot {
+            let scope = self.scopes.last_mut().unwrap();
+            if scope.next_slot <= dup_slot {
+                scope.next_slot = dup_slot + 1;
+            }
+        }
         let slot = self
             .scopes
             .last_mut()
@@ -4058,7 +4070,11 @@ impl Compiler {
 
     pub(crate) fn emit(&mut self, op: Op) {
         let l = self.line;
-        self.chunks[self.current].emit_op(op, l);
+        if op == Op::DUP {
+            self.chunks[self.current].emit_dup(l);
+        } else {
+            self.chunks[self.current].emit_op(op, l);
+        }
     }
     pub(crate) fn emit_u16(&mut self, op: Op, v: u16) {
         let l = self.line;
@@ -8834,6 +8850,7 @@ impl Compiler {
                 self.label_depth += 1;
                 let catch_jump =
                     common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                self.label_depth += 1;
                 if let Some(fin) = finally.clone() {
                     self.active_finally_blocks
                         .push(FinallyAction::Statements(fin));
@@ -8842,6 +8859,7 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
                 // Python else: runs if no exception
                 if let Some(else_stmts) = else_body {
                     for s in else_stmts {

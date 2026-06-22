@@ -25,6 +25,26 @@ fn struct_key(chunk: &mut Chunk, name: &str) -> u16 {
     chunk.add_constant(Value::String(Arc::from(name)))
 }
 
+fn emit_ref_is_object_like(chunk: &mut Chunk, slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+
+    for (module, func) in [
+        ("wasm:js-undefined", "test"),
+        ("wasm:js-number", "test"),
+        ("wasm:js-string", "test"),
+        ("wasm:js-boolean", "test"),
+        ("wasm:js-bigint", "test"),
+    ] {
+        lget(chunk, slot, line);
+        let idx = chunk.add_import(module, func);
+        chunk.emit_call(idx, 1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
+    }
+}
+
 fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = alloc_local(&mut chunks[current]);
     let result_slot = alloc_local(&mut chunks[current]);
@@ -34,14 +54,13 @@ fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(&mut chunks[current], result_slot, line);
 
     lget(&mut chunks[current], obj_slot, line);
-    chunks[current].emit_op(Op::REF_IS_OBJECT, line);
+    emit_ref_is_object_like(&mut chunks[current], obj_slot, line);
     chunks[current].emit_if(line);
 
     lget(&mut chunks[current], obj_slot, line);
     let kind_key = struct_key(&mut chunks[current], "__ref_kind");
     chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
-    let cell_value = chunks[current].add_constant(Value::String(Arc::from("cell")));
-    chunks[current].emit_op_u16(Op::CONST, cell_value, line);
+    chunks[current].emit_string_const("cell", line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
@@ -110,7 +129,7 @@ pub fn emit_cap(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_close(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_autoderef_cell(chunks, current, line);
     let closed_key = chunks[current].add_constant(Value::String(Arc::from("closed")));
-    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_bool_const(true, line);
     chunks[current].emit_op_u16(Op::STRUCT_SET, closed_key, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);

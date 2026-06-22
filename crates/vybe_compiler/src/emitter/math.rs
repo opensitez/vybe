@@ -100,46 +100,39 @@ pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
 /// Pow via direct ECMA host import. Stack: [base, exponent] → [result].
 pub fn emit_pow(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "pow");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(idx, 2, line);
 }
 
 /// Stack: [value] → [result]
 pub fn emit_log(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "log");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 pub fn emit_sin(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "sin");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 pub fn emit_cos(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "cos");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 pub fn emit_tan(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "tan");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 pub fn emit_exp(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "exp");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 /// Stack: [] → [f64 random 0..1]
 pub fn emit_random(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "random");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(0, line);
+    chunk.emit_call(idx, 0, line);
 }
 
 // ── Target-aware variants ───────────────────────────────────
@@ -154,8 +147,7 @@ pub fn emit_pow_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
         // Standard WASM fallback: import from a portable math module.
         // Any compliant embedder must provide "env"/"pow" or "math"/"pow".
         let idx = chunk.add_import("env", "pow");
-        chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-        chunk.emit(2, line);
+        chunk.emit_call(idx, 2, line);
     }
 }
 
@@ -167,6 +159,5 @@ pub fn emit_math_fn_targeted(chunk: &mut Chunk, name: &str, target: &Target, lin
         ("env", name)
     };
     let idx = chunk.add_import(module, func);
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }

@@ -163,8 +163,7 @@ pub fn emit_for_in_start(
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     {
         let idx = chunks[current].add_import("ecma:array", "length");
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-        chunks[current].emit(1u8, line);
+        chunks[current].emit_call(idx, 1, line);
     }
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     emit_loop_cond(chunks, current, line);
@@ -344,15 +343,13 @@ pub fn emit_reduce(
 
     // acc = arr[0]
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    let zero = chunks[current].add_constant(Value::I32(0));
-    chunks[current].emit_op_u16(Op::CONST, zero, line);
+    chunks[current].emit_i32_const(0, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // i = 1
-    let one = chunks[current].add_constant(Value::I32(1));
-    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     // block { loop {
@@ -363,8 +360,7 @@ pub fn emit_reduce(
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     {
         let idx = chunks[current].add_import("ecma:array", "length");
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-        chunks[current].emit(1u8, line);
+        chunks[current].emit_call(idx, 1, line);
     }
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     emit_loop_cond(chunks, current, line);
@@ -417,9 +413,9 @@ pub fn emit_any_every(
 
     // Set default result BEFORE the loop
     if is_any {
-        chunks[current].emit_op(Op::FALSE, line);
+        chunks[current].emit_bool_const(false, line);
     } else {
-        chunks[current].emit_op(Op::TRUE, line);
+        chunks[current].emit_bool_const(true, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -442,7 +438,7 @@ pub fn emit_any_every(
         let skip = chunks[current].emit_block(line);
         crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
         chunks[current].emit_br_if(0, line); // skip if false
-        chunks[current].emit_op(Op::TRUE, line);
+        chunks[current].emit_bool_const(true, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
@@ -451,7 +447,7 @@ pub fn emit_any_every(
     } else {
         let skip = chunks[current].emit_block(line);
         chunks[current].emit_br_if(0, line); // skip if true
-        chunks[current].emit_op(Op::FALSE, line);
+        chunks[current].emit_bool_const(false, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3

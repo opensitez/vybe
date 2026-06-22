@@ -37,7 +37,7 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    chunks[current].emit_op(Op::REF_IS_ARRAY, line);
+    { let idx = chunks[current].add_import("ecma:array", "isArray"); chunks[current].emit_call(idx, 1, line); }
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
@@ -49,11 +49,11 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -89,7 +89,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    chunks[current].emit_op(Op::REF_IS_ARRAY, line);
+    { let idx = chunks[current].add_import("ecma:array", "isArray"); chunks[current].emit_call(idx, 1, line); }
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
@@ -101,8 +101,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    let minus_one_idx = chunks[current].add_constant(Value::F64(-1.0));
-    chunks[current].emit_op_u16(Op::CONST, minus_one_idx, line);
+    chunks[current].emit_f64_const(-1.0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 

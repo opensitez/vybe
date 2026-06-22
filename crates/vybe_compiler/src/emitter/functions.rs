@@ -73,7 +73,7 @@ pub fn emit_async_body_start(chunk: &mut Chunk, line: u32) -> usize {
 /// `Promise.resolve(undefined)` before returning.
 pub fn emit_async_body_fallthrough(chunk: &mut Chunk, catch_jump: usize, line: u32) {
     crate::emitter::errors::emit_try_end(chunk, line);
-    chunk.emit_op(Op::UNDEFINED, line);
+    chunk.emit_op(Op::NULL, line);
     let _ = catch_jump;
 }
 
@@ -165,8 +165,7 @@ pub fn emit_await(chunk: &mut Chunk, line: u32) {
     // until the Promise settles, then resume with its value. A non-Promise
     // value passes straight through (proposal §"nosuspend").
     let idx = chunk.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line); // argc = 1 (the awaited value)
+    chunk.emit_call(idx, 1, line); // argc = 1 (the awaited value)
 }
 
 /// Two-chunk `await` for runtime-helper builders: the awaited-value `call` is
@@ -176,8 +175,7 @@ pub fn emit_await(chunk: &mut Chunk, line: u32) {
 /// indices and mis-resolve its other `CALL_IMPORT`s.
 pub fn emit_await_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let idx = code.add_import(JSPI_SUSPEND_MODULE, JSPI_SUSPEND_NAME);
-    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    code.emit(1, line); // argc = 1 (the awaited value)
+    code.emit_call(idx, 1, line); // argc = 1 (the awaited value)
 }
 
 /// Emit async function wrapper: wraps the body chunk as a continuation.

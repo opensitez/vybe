@@ -23,7 +23,7 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, line: u32) {
     // Create empty Object
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     // Create empty __keys array and attach it
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_SET, keys_key, line);
@@ -44,11 +44,10 @@ pub fn emit_set_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
     chunks[current].emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunks[current].emit_op(Op::DROP, line);
     // Append key to __keys: dict.__keys.push(key)
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
-    let key_str = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_op_u16(Op::CONST, key_str, line);
+    chunks[current].emit_string_const(key, line);
     crate::emitter::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 }
@@ -198,7 +197,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
     chunks[current].emit_if(line);
 
-    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_bool_const(true, line);
 
     chunks[current].emit_else(line);
 
@@ -250,11 +249,11 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
     crate::emitter::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_bool_const(true, line);
 
     chunks[current].emit_else(line);
 
-    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_bool_const(false, line);
 
     chunks[current].emit_end(line);
 }
@@ -297,7 +296,7 @@ pub fn emit_method_size(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack before: [set, value]  Stack after: [set]
 pub fn emit_set_add(chunks: &mut [Chunk], current: usize, line: u32) {
     // set[value] = true
-    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_bool_const(true, line);
     crate::emitter::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     // TODO: __keys tracking (needs key saved to a local)
@@ -326,7 +325,7 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     // If __keys doesn't exist (legacy dict without tracking), fall back to host
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     // Null — return an empty array for legacy dicts without key tracking.
@@ -428,7 +427,7 @@ pub fn emit_items_from_local(
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line); // key = keys[i]
-    chunks[current].emit_op(Op::DUP, line); // keep key for value lookup
+    chunks[current].emit_dup(line); // keep key for value lookup
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     // Stack: [key, key_dup, dict]. Need dict[key] → [key, dict, key_dup] for array_get
     // Hmm, this is getting complicated without a swap op or temp local.
@@ -512,8 +511,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     // [dict] → entries → [[k,v], ...]
     let entries_fn = chunks[0].add_import("ecma:object", "entries");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, entries_fn, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(entries_fn, 1, line);
 
     // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
     let global_name =
@@ -532,8 +530,7 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack before: [dict]  Stack after: [array_of_pairs]
 pub fn emit_items(chunks: &mut [Chunk], current: usize, line: u32) {
     let items_fn = chunks[0].add_import("ecma:object", "entries");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, items_fn, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(items_fn, 1, line);
 }
 
 // ── Builder pattern for dict literals ───────────────────────────────────

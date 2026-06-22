@@ -30,8 +30,7 @@ pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
 /// Emit bitwise NOT (i32). WASM equivalent: i32.const -1, i32.xor.
 /// Stack: [i32] → [i32]
 pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
-    let neg1 = chunk.add_constant(Value::I32(-1));
-    chunk.emit_op_u16(Op::CONST, neg1, line);
+    chunk.emit_i32_const(-1, line);
     chunk.emit_op(Op::I32_XOR, line);
 }
 
@@ -98,7 +97,7 @@ pub fn emit_ternary_end(chunk: &mut Chunk, _end_jump: usize) {
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
     let block = chunk.emit_block(line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(0, line);
@@ -118,7 +117,7 @@ pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
     let block = chunk.emit_block(line);
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
@@ -145,7 +144,7 @@ pub fn emit_short_circuit_end(chunk: &mut Chunk, block: usize) {
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 /// Returns (block_patch, 0).
 pub fn emit_null_coalesce_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let block = chunk.emit_block(line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -172,7 +171,7 @@ pub fn emit_null_coalesce_end(chunk: &mut Chunk, block: usize) {
 /// After object is on stack: if null, skip the member access.
 /// Stack before: [object]  Stack after: [object] (if non-null) or control jumps to end
 pub fn emit_null_safe_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let block = chunk.emit_block(line);
     chunk.emit_br_if(0, line);
@@ -252,8 +251,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let to_str = chunk.add_import("ecma:string", "String");
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str, 1, line);
     chunk.emit_end(line);
 }
 

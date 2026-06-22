@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 
 // ── Block table ──────────────────────────────────────────────────────────────
 
-/// Scan `code` once and build a map from every BLOCK/LOOP/IF/ELSE opcode
+/// Scan `code` once and build a map from every BLOCK/LOOP/IF/TRY_TABLE/ELSE opcode
 /// position (first byte) to its jump targets.
 ///
 /// Format (WASM-compliant): every BLOCK/LOOP/IF carries exactly 1 blocktype
-/// byte. ELSE and END carry no operands.
+/// byte. TRY_TABLE carries its EH table operands. ELSE and END carry no operands.
 pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
     let mut table: HashMap<usize, BlockTargets> = HashMap::new();
     // Stack of opcode_starts for open BLOCK/LOOP/IF scopes.
@@ -49,6 +49,9 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
 
         if op == Op::BLOCK || op == Op::LOOP || op == Op::IF {
             ip += 1; // skip result_count byte
+            stack.push(opcode_start);
+        } else if op == Op::TRY_TABLE {
+            ip += op.operand_format().size_in(code, ip);
             stack.push(opcode_start);
         } else if op == Op::ELSE {
             // Associate ELSE with the top-of-stack IF entry.
@@ -2867,6 +2870,19 @@ impl VM {
                     for h in handlers.into_iter().rev() {
                         self.exception_handlers.push(h);
                     }
+                    let ci = self.frame().chunk_index;
+                    self.ensure_block_table(ci);
+                    let end_ip = self.block_tables[&ci]
+                        .get(&opcode_start)
+                        .map(|t| t.end_ip)
+                        .unwrap_or(self.frame().ip);
+                    self.label_stack.push(LabelEntry {
+                        target: end_ip,
+                        is_loop: false,
+                        is_try: true,
+                        result_arity: 0,
+                        stack_height: self.stack.len(),
+                    });
                 }
 
                 // -- Tail call --
@@ -3177,6 +3193,7 @@ impl VM {
                     self.label_stack.push(LabelEntry {
                         target: end_ip,
                         is_loop: false,
+                        is_try: false,
                         result_arity,
                         stack_height: self.stack.len(),
                     });
@@ -3189,6 +3206,7 @@ impl VM {
                     self.label_stack.push(LabelEntry {
                         target: loop_body_start,
                         is_loop: true,
+                        is_try: false,
                         result_arity,
                         stack_height: self.stack.len(),
                     });
@@ -3224,6 +3242,7 @@ impl VM {
                         self.label_stack.push(LabelEntry {
                             target: targets.end_ip,
                             is_loop: false,
+                            is_try: false,
                             result_arity,
                             stack_height: self.stack.len(),
                         });
@@ -3234,6 +3253,7 @@ impl VM {
                         self.label_stack.push(LabelEntry {
                             target: targets.end_ip,
                             is_loop: false,
+                            is_try: false,
                             result_arity,
                             stack_height: self.stack.len(),
                         });
@@ -3258,7 +3278,11 @@ impl VM {
                     self.frame_mut().ip = end_ip;
                 }
                 _ if op == Op::END => {
-                    self.label_stack.pop();
+                    if let Some(label) = self.label_stack.pop() {
+                        if label.is_try {
+                            self.exception_handlers.pop();
+                        }
+                    }
                 }
                 _ if op == Op::BR_TABLE => {
                     let ci = self.frame().chunk_index;

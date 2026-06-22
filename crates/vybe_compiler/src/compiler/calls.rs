@@ -1864,6 +1864,16 @@ impl Compiler {
         field: &str,
         arg_exprs: &[&Expression],
     ) -> Result<bool, String> {
+        // Promise.prototype.then/catch/finally must enqueue PromiseJobs.
+        // The previous async-wrapper fast path used JSPI await internally,
+        // which is correct for `await` but eager for already-settled promises:
+        // fulfilled inputs unwrap immediately and run callbacks before the
+        // current task completes. Let the ecma:promise host implementation own
+        // reaction scheduling.
+        let _ = (object, field, arg_exprs);
+        return Ok(false);
+
+        #[allow(unreachable_code)]
         let is_promise_like = self.expr_is_known_js_promise_like(object);
         if !is_promise_like {
             return Ok(false);

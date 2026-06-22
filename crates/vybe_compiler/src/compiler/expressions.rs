@@ -4222,11 +4222,11 @@ impl Compiler {
                                 self.emit_js_exception_ctor_from_message_value("TypeError")?;
                                 common::errors::emit_throw(self.chunk(), line);
                                 self.chunk().emit_end(line);
-                                // Primitive → string: concat with "".
+                                // Primitive -> string after the template-literal
+                                // Symbol guard above.
                                 self.emit_u16(Op::LOCAL_GET, v_slot);
-                                self.emit_const(Value::String(Arc::from("")));
                                 let line = self.line;
-                                common::strings::emit_str_concat(self.chunk(), line);
+                                common::strings::emit_to_string(self.chunk(), line);
                             } else {
                                 self.compile_expr(e)?;
                                 let value_slot = self.define_local("__interp_value");

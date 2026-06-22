@@ -14,13 +14,11 @@ use vybe_bytecode::{Chunk, Value};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn call1(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(import_idx, 1, line);
 }
 
 fn call2(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(import_idx, 2, line);
 }
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
@@ -33,9 +31,9 @@ fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
 /// Stack: [i32 or Bool] → [Bool(true) if nonzero/true, Bool(false) otherwise]
 fn i32_to_bool(chunk: &mut Chunk, line: u32) {
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_bool_const(true, line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_bool_const(false, line);
     chunk.emit_end(line);
 }
 
@@ -59,18 +57,15 @@ fn load(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn i32_const(chunk: &mut Chunk, v: i32, line: u32) {
-    let k = chunk.add_constant(Value::I32(v));
-    chunk.emit_op_u16(Op::CONST, k, line);
+    chunk.emit_i32_const(v, line);
 }
 
 fn i64_const(chunk: &mut Chunk, v: i64, line: u32) {
-    let k = chunk.add_constant(Value::I64(v));
-    chunk.emit_op_u16(Op::CONST, k, line);
+    chunk.emit_i64_const(v, line);
 }
 
 fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
-    let k = chunk.add_constant(Value::F64(v));
-    chunk.emit_op_u16(Op::CONST, k, line);
+    chunk.emit_f64_const(v, line);
 }
 
 fn emit_js_to_number_f64(
@@ -82,7 +77,7 @@ fn emit_js_to_number_f64(
     line: u32,
 ) {
     load(chunk, slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
     chunk.emit_if(line);
     f64_const(chunk, f64::NAN, line);
     chunk.emit_else(line);
@@ -299,7 +294,7 @@ fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
     load(chunk, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     load(chunk, slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
 }
@@ -321,10 +316,10 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     save(chunk, a_slot, line);
 
     load(chunk, a_slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
     chunk.emit_if(line);
     load(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
     chunk.emit_else(line);
 
     emit_slot_is_null_only(chunk, a_slot, line);

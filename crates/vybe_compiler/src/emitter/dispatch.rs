@@ -85,8 +85,7 @@ pub fn emit_common(
         // consulted.
         "object.new" => {
             let idx = chunks[0].add_import("ecma:object", "new");
-            chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-            chunks[current].emit(0, line);
+            chunks[current].emit_call(idx, 0, line);
         }
 
         // ── Collection ops (route through ecma:array imports;

@@ -298,6 +298,9 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
         },
         Value::BigInt(n) => dispatch_bigint(*n, method, args),
         Value::Object(obj) => {
+            if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
+                return tagged;
+            }
             // WeakMap/WeakSet use ObjectKind::Array backing — check their tag before kind dispatch.
             let kind_tag = {
                 let o = obj.lock().unwrap();
@@ -2579,15 +2582,22 @@ fn dispatch_plain_object(
         ctx.set_js_this(saved_this);
         return result;
     }
+    dispatch_tagged_object(ctx, obj, method, args).unwrap_or(Value::Undefined)
+}
+
+fn dispatch_tagged_object(
+    ctx: &mut HostContext,
+    obj: Arc<Mutex<Object>>,
+    method: &str,
+    args: &[Value],
+) -> Option<Value> {
     if let Some(result) = dispatch_error_object_method(ctx, &obj, method) {
-        return result;
+        return Some(result);
     }
     // Type-tagged object fallback: known stamped-`__type` instances
-    // (Date) get their methods inline. The polymorphic invokeMethod
-    // shim doesn't see the type registry, so `d.toString()` would
-    // otherwise return undefined when the instance has no callable
-    // `toString` property of its own. ECMA-262 §21.4.4 dispatches
-    // these via the Date prototype — same semantics, inline impl.
+    // (Promise, Date, boxed primitives, etc.) get their prototype methods
+    // inline. Run this before generic ObjectKind dispatch so plain objects
+    // stamped with `__type=Promise` do not miss `.then/.catch/.finally`.
     let type_tag = {
         let o = obj.lock().unwrap();
         o.properties.get("__type").map(|v| format!("{}", v))
@@ -2599,30 +2609,30 @@ fn dispatch_plain_object(
         };
         if tag == "Boolean" {
             if let Some(value) = primitive.as_ref() {
-                return dispatch_boolean(value, method, args);
+                return Some(dispatch_boolean(value, method, args));
             }
         } else if tag == "Number" {
             if let Some(value) = primitive.as_ref() {
-                return dispatch_number(value, method, args);
+                return Some(dispatch_number(value, method, args));
             }
         } else if tag == "String" {
             if let Some(value) = primitive.as_ref() {
-                return dispatch_string(ctx, value, method, args);
+                return Some(dispatch_string(ctx, value, method, args));
             }
         } else if tag == "Date" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
             if let Some(result) = crate::ecma::date::dispatch_date_method(method, &call_args) {
-                return result;
+                return Some(result);
             }
         } else if tag == "BigInt" {
             if let Some(Value::BigInt(value)) = primitive {
-                return dispatch_bigint(value, method, args);
+                return Some(dispatch_bigint(value, method, args));
             }
         } else if tag == "Symbol" {
             if let Some(Value::Symbol(desc)) = primitive.as_ref() {
-                return match method {
+                return Some(match method {
                     "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
                     "valueOf" => Value::Symbol(Arc::clone(desc)),
                     "description" => {
@@ -2633,14 +2643,14 @@ fn dispatch_plain_object(
                         }
                     }
                     _ => Value::Undefined,
-                };
+                });
             }
         } else if tag == "RegExp" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
             if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(method, &call_args) {
-                return result;
+                return Some(result);
             }
         } else if tag == "Promise" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
@@ -2649,20 +2659,20 @@ fn dispatch_plain_object(
             if let Some(result) =
                 crate::ecma::promise::dispatch_promise_method(ctx, method, &call_args)
             {
-                return result;
+                return Some(result);
             }
         } else if tag == "WeakRef" {
             if let Some(result) = crate::ecma::weakref::dispatch_weakref_method(obj, method, args) {
-                return result;
+                return Some(result);
             }
         } else if tag == "FinalizationRegistry" {
             if let Some(result) = crate::ecma::weakref::dispatch_registry_method(obj, method, args)
             {
-                return result;
+                return Some(result);
             }
         }
     }
-    Value::Undefined
+    None
 }
 
 fn dispatch_error_object_method(

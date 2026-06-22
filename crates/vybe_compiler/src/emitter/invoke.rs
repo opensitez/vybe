@@ -108,8 +108,7 @@ pub fn emit_invoke_method(
 
     // Rebuild call stack: receiver, name, args...
     c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let name_const = c.add_constant(Value::String(Arc::from(method_name)));
-    c.emit_op_u16(Op::CONST, name_const, line);
+    c.emit_string_const(method_name, line);
     for i in 0..argc {
         let slot = arg_base + i as u16;
         c.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -117,8 +116,7 @@ pub fn emit_invoke_method(
 
     let idx = chunks[current].add_import("ecma:value", "invokeMethod");
     let c = &mut chunks[current];
-    c.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    c.emit(argc + 2, line);
+    c.emit_call(idx, argc + 2, line);
 
     // Restore __js_this. Result is on top of stack — stash it, restore
     // the global, then re-push the result so the caller sees the same

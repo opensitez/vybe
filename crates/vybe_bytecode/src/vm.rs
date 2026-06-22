@@ -595,6 +595,9 @@ pub struct LabelEntry {
     pub target: usize,
     /// True if this is a loop (continue jumps to start), false if block/if (break jumps to end).
     pub is_loop: bool,
+    /// True if this label closes a try_table. Normal END must also pop
+    /// the active exception handler for the protected region.
+    pub is_try: bool,
     /// Number of stack values the label carries when branched to.
     pub result_arity: u8,
     /// Value-stack height at label entry. Branches restore this height while
@@ -999,11 +1002,19 @@ impl VM {
         self.stack.extend(keep);
 
         let len = self.label_stack.len();
-        if entry.is_loop {
-            self.label_stack.truncate(len - depth);
+        let new_len = if entry.is_loop {
+            len - depth
         } else {
-            self.label_stack.truncate(len - depth - 1);
+            len - depth - 1
+        };
+        let exited_try_count = self.label_stack[new_len..]
+            .iter()
+            .filter(|label| label.is_try)
+            .count();
+        for _ in 0..exited_try_count {
+            self.exception_handlers.pop();
         }
+        self.label_stack.truncate(new_len);
     }
 
     /// Get a reference to a specific extra memory by index (index > 0 only).

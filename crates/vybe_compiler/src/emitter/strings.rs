@@ -14,14 +14,12 @@ use vybe_bytecode::{Chunk, Value};
 /// Use `emit_to_string_with_import` if your compiler requires imports in chunk 0.
 pub fn emit_to_string(chunk: &mut Chunk, line: u32) {
     let to_str = chunk.add_import("ecma:string", "String");
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str, 1, line);
 }
 
 /// Emit toString using a pre-resolved import index.
 pub fn emit_to_string_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(import_idx, 1, line);
 }
 
 /// Emit concatenation of N string parts already on the stack.
@@ -29,17 +27,22 @@ pub fn emit_to_string_with_import(chunk: &mut Chunk, import_idx: u16, line: u32)
 /// Stack before: [part1, part2, ..., partN]  Stack after: [concatenated_string]
 pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
     if part_count == 0 {
-        let c = chunk.add_constant(Value::String(Arc::from("")));
-        chunk.emit_op_u16(Op::CONST, c, line);
+        chunk.emit_string_const("", line);
     } else if part_count > 1 {
-        // Use str_concat_n if available (more efficient for many parts)
-        if part_count <= 255 {
-            chunk.emit_op_u8(Op::STR_CONCAT_N, part_count as u8, line);
-        } else {
-            // Fallback: pairwise concat
-            for _ in 1..part_count {
-                chunk.emit_op(Op::STR_CONCAT, line);
-            }
+        let concat_idx = chunk.add_import("wasm:js-string", "concat");
+        let base = chunk.local_count;
+        chunk.local_count = chunk
+            .local_count
+            .checked_add(part_count as u16)
+            .expect("emit_concat: local slot overflow");
+        for i in (0..part_count).rev() {
+            chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+            chunk.emit_op(Op::DROP, line);
+        }
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        for i in 1..part_count {
+            chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+            chunk.emit_call(concat_idx, 2, line);
         }
     }
     // part_count == 1: string is already on stack, nothing to do
@@ -55,8 +58,7 @@ pub fn emit_interpolation_part(chunk: &mut Chunk, line: u32) {
 /// Emit a string literal part.
 /// Stack: [] → [string]
 pub fn emit_literal_part(chunk: &mut Chunk, text: &str, line: u32) {
-    let c = chunk.add_constant(Value::String(Arc::from(text)));
-    chunk.emit_op_u16(Op::CONST, c, line);
+    chunk.emit_string_const(text, line);
 }
 
 // ── String operations ──────────────────────────────────────────────────
@@ -64,65 +66,65 @@ pub fn emit_literal_part(chunk: &mut Chunk, text: &str, line: u32) {
 
 /// String length. Stack: [string] → [i32]
 pub fn emit_length(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_LENGTH, line);
+    let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line);
 }
 
 /// Substring. Stack: [string, start, length] → [string]
 pub fn emit_substring(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line);
 }
 
 /// Index of substring. Stack: [haystack, needle] → [i32]
 pub fn emit_index_of(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_INDEX_OF, line);
+    let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line);
 }
 
 /// Last index of substring. Stack: [haystack, needle] → [i32]
 pub fn emit_last_index_of(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_LAST_INDEX_OF, line);
+    let idx = chunk.add_import("ecma:string", "lastIndexOf"); chunk.emit_call(idx, 2, line);
 }
 
 /// Replace. Stack: [string, search, replace] → [string]
 pub fn emit_replace(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_REPLACE, line);
+    let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line);
 }
 
 /// Split. Stack: [string, delimiter] → [array]
 pub fn emit_split(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_SPLIT, line);
+    let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line);
 }
 
 /// To lowercase. Stack: [string] → [string]
 pub fn emit_to_lower(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_TO_LOWER, line);
+    let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line);
 }
 
 /// To uppercase. Stack: [string] → [string]
 pub fn emit_to_upper(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_TO_UPPER, line);
+    let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line);
 }
 
 /// Trim whitespace. Stack: [string] → [string]
 pub fn emit_trim(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_TRIM, line);
+    let idx = chunk.add_import("ecma:string", "trim"); chunk.emit_call(idx, 1, line);
 }
 
 /// Trim start. Stack: [string] → [string]
 pub fn emit_trim_start(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_TRIM_START, line);
+    let idx = chunk.add_import("ecma:string", "trimStart"); chunk.emit_call(idx, 1, line);
 }
 
 /// Trim end. Stack: [string] → [string]
 pub fn emit_trim_end(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_TRIM_END, line);
+    let idx = chunk.add_import("ecma:string", "trimEnd"); chunk.emit_call(idx, 1, line);
 }
 
 /// Repeat string. Stack: [string, count] → [string]
 pub fn emit_repeat(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_REPEAT, line);
+    let idx = chunk.add_import("ecma:string", "repeat"); chunk.emit_call(idx, 2, line);
 }
 
 /// Pairwise concatenation. Stack: [a, b] → [ab]
 pub fn emit_str_concat(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::STR_CONCAT, line);
+    let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line);
 }

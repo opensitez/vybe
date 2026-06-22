@@ -30,8 +30,7 @@ fn emit_import_call(
 ) {
     let idx = chunks[current].add_import(module, name);
     let c = &mut chunks[current];
-    c.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    c.emit(argc, line);
+    c.emit_call(idx, argc, line);
 }
 
 /// Two-chunk variant for callers that have the imports chunk and the
@@ -52,8 +51,7 @@ pub(crate) fn emit_import_call_into(
     line: u32,
 ) {
     let idx = code.add_import(module, name);
-    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    code.emit(argc, line);
+    code.emit_call(idx, argc, line);
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -73,14 +71,12 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 
 #[allow(dead_code)]
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(value)));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_string_const(value, line);
 }
 
 #[allow(dead_code)]
 fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
-    let idx = chunk.add_constant(Value::F64(value));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_f64_const(value, line);
 }
 
 fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_entries: bool) {
@@ -139,8 +135,8 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(&mut chunks[current], value_slot, line);
 
     lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op(Op::REF_IS_STRING, line);
-    // REF_IS_STRING already returns I32(0/1) — use it directly as the if
+    { let idx = chunks[current].add_import("wasm:js-string", "test"); chunks[current].emit_call(idx, 1, line); }
+    // wasm:js-string.test already returns I32(0/1) — use it directly as the if
     // condition. Do NOT call emit_dyn_to_bool here: that registers imports on
     // chunks[current] via chunk.add_import, which collides with the global
     // import indices emitted by emit_import_call (chunks[0]-based) below,
@@ -443,7 +439,7 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_local, line);
     chunks[current].emit_op(Op::DROP, line);
     // stack: [arr, index]
-    chunks[current].emit_op(Op::DUP, line); // [arr, index, index]
+    chunks[current].emit_dup(line); // [arr, index, index]
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_local, line); // [arr, index, index, count]
     crate::emitter::ops::emit_dyn_add(&mut chunks[current], line); // [arr, index, end]
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
@@ -453,8 +449,7 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Pushes 0 and i32::MAX as start/end, then slice.
 pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
-    chunks[current].emit_op_u16(Op::CONST, max_c, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
@@ -470,7 +465,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(&mut chunks[current], right_slot, line);
     lset(&mut chunks[current], left_slot, line);
 
-    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_bool_const(true, line);
     lset(&mut chunks[current], result_slot, line);
 
     lget(&mut chunks[current], left_slot, line);
@@ -510,7 +505,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
-    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_bool_const(false, line);
     lset(&mut chunks[current], result_slot, line);
     chunks[current].emit_br(2, line);
 
@@ -518,8 +513,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(equal_values);
 
     lget(&mut chunks[current], idx_slot, line);
-    let one = chunks[current].add_constant(Value::I32(1));
-    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_i32_const(1, line);
     crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     lset(&mut chunks[current], idx_slot, line);
     chunks[current].emit_br(0, line);
@@ -529,7 +523,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(outer_block);
 
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_bool_const(false, line);
     lset(&mut chunks[current], result_slot, line);
     chunks[current].emit_end(line);
 
@@ -571,8 +565,7 @@ pub fn emit_insert_at(chunks: &mut [Chunk], current: usize, line: u32) {
 /// splice(arr, 0, MAX_INT) removes all elements.
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
-    chunks[current].emit_op_u16(Op::CONST, max_c, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
@@ -634,7 +627,7 @@ pub fn emit_pack_n(chunks: &mut [Chunk], current: usize, n: u16, slot_base: u16,
     // Build empty array, push each in forward order.
     emit_array_new(chunks, current, 0, line);
     for i in 0..n {
-        chunks[current].emit_op(Op::DUP, line);
+        chunks[current].emit_dup(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot_base + i, line);
         emit_import_call(chunks, current, "ecma:array", "push", 2, line);
         chunks[current].emit_op(Op::DROP, line); // drop new_length
@@ -654,11 +647,11 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v1, line);
     emit_import_call(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v2, line);
     emit_import_call(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -706,8 +699,8 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let outer = code.emit_block(line);
     let str_block = code.emit_block(line);
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
-    code.emit_op(Op::REF_IS_STRING, line);
-    // REF_IS_STRING already yields i32(0/1); invert with I32_EQZ. Do NOT use
+    { let idx = code.add_import("wasm:js-string", "test"); code.emit_call(idx, 1, line); }
+    // wasm:js-string.test already yields i32(0/1); invert with I32_EQZ. Do NOT use
     // emit_dyn_not here — it calls emit_dyn_to_bool, which registers imports
     // on `code` via add_import. Those collide with the chunks[0]-based global
     // import indices used by emit_import_call_into below, making CALL_IMPORT
@@ -801,12 +794,12 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op(Op::I32_CONST_0, line);
     emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
     // arr.push(v1)
-    code.emit_op(Op::DUP, line);
+    code.emit_dup(line);
     code.emit_op_u16(Op::LOCAL_GET, v1, line);
     emit_import_call_into(imports, code, "ecma:array", "push", 2, line);
     code.emit_op(Op::DROP, line);
     // arr.push(v2)
-    code.emit_op(Op::DUP, line);
+    code.emit_dup(line);
     code.emit_op_u16(Op::LOCAL_GET, v2, line);
     emit_import_call_into(imports, code, "ecma:array", "push", 2, line);
     code.emit_op(Op::DROP, line);
@@ -861,8 +854,7 @@ pub fn emit_range_targeted(
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
             let push_idx = chunk.add_import("ecma:array", "push");
-            chunk.emit_op_u16(Op::CALL_IMPORT, push_idx, line);
-            chunk.emit(2u8, line);
+            chunk.emit_call(push_idx, 2, line);
             chunk.emit_op(Op::DROP, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);

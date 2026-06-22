@@ -6,14 +6,13 @@ use vybe_bytecode::{Chunk, Value};
 pub fn emit_cell_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
 
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     let kind_key = chunks[current].add_constant(Value::String(Arc::from("__ref_kind")));
-    let cell_value = chunks[current].add_constant(Value::String(Arc::from("cell")));
-    chunks[current].emit_op_u16(Op::CONST, cell_value, line);
+    chunks[current].emit_string_const("cell", line);
     chunks[current].emit_op_u16(Op::STRUCT_SET, kind_key, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_dup(line);
     let value_key = chunks[current].add_constant(Value::String(Arc::from("__value")));
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);

@@ -14,7 +14,6 @@
 
 use crate::emitter::functions::create_function_chunk;
 use vybe_bytecode::Chunk;
-use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
@@ -89,8 +88,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     let outer = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, line);
+    chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_ATOMIC_RMW_XCHG, line);
     // If old value was 0, we acquired the lock
     chunk.emit_op(Op::I32_CONST_0, line);
@@ -98,10 +96,8 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_br_if(1, line);
     // Not acquired — wait and retry
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
-    let one2 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one2, line);
-    let neg1 = chunk.add_constant(Value::I64(-1));
-    chunk.emit_op_u16(Op::CONST, neg1, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_i64_const(-1, line);
     chunk.emit_op(Op::MEMORY_ATOMIC_WAIT32, line);
     chunk.emit_op(Op::DROP, line); // drop wait result
     chunk.emit_br(0, line);
@@ -121,8 +117,7 @@ pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op(Op::I32_ATOMIC_STORE, line);
     // Notify one waiter
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, line);
+    chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::MEMORY_ATOMIC_NOTIFY, line);
     chunk.emit_op(Op::DROP, line); // drop notify count
 }

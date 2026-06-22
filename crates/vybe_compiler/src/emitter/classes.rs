@@ -48,18 +48,15 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     // Stamp __type string (untyped fallback for typeof/instanceof)
     // struct_set expects [obj, val] → leaves [val]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let type_str = chunk.add_constant(Value::String(Arc::from(class_name)));
+    chunk.emit_string_const(class_name, line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::CONST, type_str, line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // Stamp __control_name = lowercased class name (canonical control identity).
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let cname_str =
-        chunk.add_constant(Value::String(Arc::from(class_name.to_lowercase().as_str())));
+    chunk.emit_string_const(&class_name.to_lowercase(), line);
     let cname_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
-    chunk.emit_op_u16(Op::CONST, cname_str, line);
     chunk.emit_op_u16(Op::STRUCT_SET, cname_key, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -73,7 +70,7 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    chunk.emit_op(Op::SET_TYPE_ID, line);
+    { let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id"))); chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line); }
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -86,9 +83,8 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// canonicalised like there.
 pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let type_str = chunk.add_constant(Value::String(Arc::from(class_name)));
+    chunk.emit_string_const(class_name, line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::CONST, type_str, line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -97,7 +93,7 @@ pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, l
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    chunk.emit_op(Op::SET_TYPE_ID, line);
+    { let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id"))); chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line); }
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -134,9 +130,9 @@ pub fn emit_instanceof_chain(
 
     // Stack: []
     chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
-    chunks[current].emit_op(Op::DUP, line); // [this, this]
+    chunks[current].emit_dup(line); // [this, this]
     chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line); // [this, types_or_null]
-    chunks[current].emit_op(Op::DUP, line); // [this, tn, tn]
+    chunks[current].emit_dup(line); // [this, tn, tn]
     chunks[current].emit_op(Op::REF_IS_NULL, line); // [this, tn, bool]
     let init_block = chunks[current].emit_block(line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -149,9 +145,8 @@ pub fn emit_instanceof_chain(
     // Push class_name onto array while preserving array on stack.
     // ecma:array.push is [arr, val] → [new_length], so DUP the array
     // first: [this, array] → [this, array, array] → push → [this, array, len] → drop.
-    chunks[current].emit_op(Op::DUP, line); // [this, array, array]
-    let name_const = chunks[current].add_constant(Value::String(Arc::from(class_name)));
-    chunks[current].emit_op_u16(Op::CONST, name_const, line); // [this, array, array, name]
+    chunks[current].emit_dup(line); // [this, array, array]
+    chunks[current].emit_string_const(class_name, line); // [this, array, array, name]
     crate::emitter::collections::emit_push(chunks, current, line); // [this, array, len]
     chunks[current].emit_op(Op::DROP, line); // [this, array]
     // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
@@ -180,10 +175,9 @@ pub fn emit_bind_method(
 }
 
 fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
-    chunk.emit_op(Op::DUP, line);
-    let value = chunk.add_constant(Value::F64(fixed_count as f64));
+    chunk.emit_dup(line);
+    chunk.emit_f64_const(fixed_count as f64, line);
     let key = chunk.add_constant(Value::String(Arc::from("__vybe_rest_fixed_arity")));
-    chunk.emit_op_u16(Op::CONST, value, line);
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
 }
@@ -199,7 +193,7 @@ pub fn emit_bind_bound_method(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
     chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
@@ -434,12 +428,11 @@ pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, li
 /// Caller must have the constructor on TOS (typically via dup before this call).
 /// Stack before: [constructor]  Stack after: [constructor]
 pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_dup(line);
     let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
     chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
     let assign_fn = chunk.add_import("ecma:object", "assign");
-    chunk.emit_op_u16(Op::CALL_IMPORT, assign_fn, line);
-    chunk.emit(2, line);
+    chunk.emit_call(assign_fn, 2, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -461,7 +454,7 @@ pub fn emit_attach_static_method(
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line);
     if let Some(receiver_slot) = receiver_slot {
-        chunk.emit_op(Op::DUP, line);
+        chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
         let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
         chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);

@@ -14,14 +14,12 @@ use vybe_bytecode::opcode::Op;
 ///   N args → host joins them (info, "", joined)
 pub fn emit_print(chunk: &mut Chunk, arg_count: u8, line: u32) {
     let idx = chunk.add_import("wasi:logging/logging", "log");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(arg_count, line);
+    chunk.emit_call(idx, arg_count, line);
 }
 
 /// Emit print using a pre-resolved import index.
 pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(arg_count, line);
+    chunk.emit_call(import_idx, arg_count, line);
 }
 
 /// Emit a raw byte write to stdout — NO implicit newline, unlike
@@ -61,8 +59,7 @@ pub fn emit_write_stdout_with_imports(
     chunk.emit_op(Op::STREAM_DROP_WR, line);
     // wasi:cli/stdout.write-via-stream(rd) → future (discard)
     chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(write_idx, 1, line);
     chunk.emit_op(Op::DROP, line);
     // stream.drop-readable(rd)
     chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
@@ -71,11 +68,9 @@ pub fn emit_write_stdout_with_imports(
 
 /// Emit print to stderr (warn/error level). Stack: [message] → []
 pub fn emit_print_error(chunk: &mut Chunk, line: u32) {
-    let level_idx = chunk.add_constant(Value::String(std::sync::Arc::from("error")));
-    chunk.emit_op_u16(Op::CONST, level_idx, line);
+    chunk.emit_string_const("error", line);
     let idx = chunk.add_import("wasi:logging/logging", "log");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2, line); // (level, message)
+    chunk.emit_call(idx, 2, line); // (level, message)
 }
 
 /// Emit readline. Stack: [] → [string]
@@ -83,19 +78,15 @@ pub fn emit_print_error(chunk: &mut Chunk, line: u32) {
 /// Host returns a string for fd=0 (stdin line input).
 pub fn emit_input(chunk: &mut Chunk, line: u32) {
     let stdin_idx = chunk.add_import("wasi:cli/stdin", "get-stdin");
-    chunk.emit_op_u16(Op::CALL_IMPORT, stdin_idx, line);
-    chunk.emit(0, line);
-    let max_idx = chunk.add_constant(Value::I32(65536));
-    chunk.emit_op_u16(Op::CONST, max_idx, line);
+    chunk.emit_call(stdin_idx, 0, line);
+    chunk.emit_i32_const(65536, line);
     let read_idx = chunk.add_import("wasi:io/streams", "[method]input-stream.blocking-read");
-    chunk.emit_op_u16(Op::CALL_IMPORT, read_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(read_idx, 2, line);
 }
 
 /// Emit readline using a pre-resolved import index.
 pub fn emit_input_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-    chunk.emit(0, line);
+    chunk.emit_call(import_idx, 0, line);
 }
 
 /// Emit print + input (prompt then read). Stack: [prompt_string] → [string]
@@ -108,15 +99,13 @@ pub fn emit_prompt_input(chunk: &mut Chunk, line: u32) {
 /// Read file contents. Stack: [filename] → [contents_string]
 pub fn emit_read_file(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "readFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 /// Write to file. Stack: [target, data...] → [null]
 pub fn emit_write_file(chunk: &mut Chunk, argc: u8, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "writeFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 // ── File handle I/O (wasi:filesystem) ─────────────────────────────────
@@ -124,34 +113,29 @@ pub fn emit_write_file(chunk: &mut Chunk, argc: u8, line: u32) {
 /// Open file handle. Stack: [filename, mode] → [handle]
 pub fn emit_open_file(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "openFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(idx, 2, line);
 }
 
 /// Close file handle. Stack: [handle] → []
 pub fn emit_close_file(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "closeFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 /// Print to file handle. Stack: [handle, data...] → []
 pub fn emit_print_file(chunk: &mut Chunk, argc: u8, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "printFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 /// Read from file handle (Input). Stack: [handle] → [string]
 pub fn emit_input_file(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "inputFile");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }
 
 /// Read line from file handle. Stack: [handle] → [string]
 pub fn emit_line_input(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasi:filesystem", "lineInput");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(idx, 1, line);
 }

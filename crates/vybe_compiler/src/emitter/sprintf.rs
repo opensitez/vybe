@@ -75,8 +75,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
         let slot = first_arg_slot + k as u16;
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, push_idx, line);
-        chunks[current].emit(2u8, line);
+        chunks[current].emit_call(push_idx, 2, line);
         chunks[current].emit_op(Op::DROP, line);
     }
 
@@ -138,8 +137,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
         for _ in 0..argc {
             chunks[current].emit_op(Op::DROP, line);
         }
-        let k = chunks[current].add_constant(Value::Null);
-        chunks[current].emit_op_u16(Op::CONST, k, line);
+        chunks[current].emit_op(Op::NULL, line);
         return;
     }
     // Drop any extra reference args, leaving [string, format].
@@ -212,20 +210,16 @@ fn ls(c: &mut Chunk, s: u16) {
     c.emit_op(Op::DROP, 0);
 }
 fn ci(c: &mut Chunk, v: i32) {
-    let k = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(v, 0);
 }
 fn cf(c: &mut Chunk, v: f64) {
-    let k = c.add_constant(Value::F64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_f64_const(v, 0);
 }
 fn cs(c: &mut Chunk, v: &str) {
-    let k = c.add_constant(Value::String(Arc::from(v)));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_string_const(v, 0);
 }
 fn hc(c: &mut Chunk, i: u16, a: u8) {
-    c.emit_op_u16(Op::CALL_IMPORT, i, 0);
-    c.emit(a, 0);
+    c.emit_call(i, a, 0);
 }
 fn inc(c: &mut Chunk, s: u16) {
     lg(c, s);
@@ -356,7 +350,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
             // If arg is already a string, take its first character.
             // Otherwise coerce to char code and convert via fromCharCode.
             lg(&mut c, ARG);
-            c.emit_op(Op::REF_IS_STRING, 0);
+            { let idx = c.add_import("wasm:js-string", "test"); c.emit_call(idx, 1, 0); }
             let line = 0;
             c.emit_if(line);
             lg(&mut c, ARG);
@@ -767,28 +761,28 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
             c.emit_br_if(0, 0);
             lg(&mut c, PADCH);
             ci(&mut c, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(&mut c, 48);
             c.emit_op(Op::I32_NE, 0);
             c.emit_br_if(0, 0);
             lg(&mut c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             c.emit_op(Op::I32_EQZ, 0);
             c.emit_br_if(0, 0);
             lg(&mut c, RAW);
             ci(&mut c, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(&mut c, 43);
             c.emit_op(Op::I32_EQ, 0);
             lg(&mut c, RAW);
             ci(&mut c, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(&mut c, 45);
             c.emit_op(Op::I32_EQ, 0);
             c.emit_op(Op::I32_OR, 0);
             lg(&mut c, RAW);
             ci(&mut c, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(&mut c, 32);
             c.emit_op(Op::I32_EQ, 0);
             c.emit_op(Op::I32_OR, 0);
@@ -796,14 +790,14 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
             c.emit_br_if(0, 0);
             lg(&mut c, RAW);
             ci(&mut c, 0);
-            c.emit_op(Op::STR_CHAR_AT, 0);
+            { let idx = c.add_import("ecma:string", "charAt"); c.emit_call(idx, 2, 0); }
             ls(&mut c, CUSTPAD);
             lg(&mut c, CUSTPAD);
             lg(&mut c, RAW);
             ci(&mut c, 1);
             lg(&mut c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
-            c.emit_op(Op::STR_SLICE, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
+            { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
             lg(&mut c, WIDTH);
             ci(&mut c, 1);
             c.emit_op(Op::I32_SUB, 0);
@@ -1073,19 +1067,19 @@ fn push_precision_or_default(c: &mut Chunk, default_precision: f64) {
 fn normalize_negative_zero_raw(c: &mut Chunk) {
     let b = c.emit_block(0);
     lg(c, RAW);
-    c.emit_op(Op::STR_LENGTH, 0);
+    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
     ci(c, 2);
     c.emit_op(Op::I32_LT_S, 0);
     c.emit_br_if(0, 0);
     lg(c, RAW);
     ci(c, 0);
-    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
     ci(c, 45);
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
     lg(c, RAW);
     ci(c, 1);
-    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
     ci(c, 48);
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
@@ -1097,8 +1091,8 @@ fn normalize_negative_zero_raw(c: &mut Chunk) {
     lg(c, RAW);
     ci(c, 1);
     lg(c, RAW);
-    c.emit_op(Op::STR_LENGTH, 0);
-    c.emit_op(Op::STR_SLICE, 0);
+    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
+    { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
     ls(c, RAW);
     c.emit_end(0);
     c.patch_block(b);
@@ -1206,13 +1200,13 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16) {
         let sb = c.emit_block(0);
         lg(c, RAW);
         cs(c, ".");
-        c.emit_op(Op::STR_INDEX_OF, 0);
+        { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
         ci(c, 0);
         c.emit_op(Op::I32_LT_S, 0);
         c.emit_br_if(0, 0); // no '.' → skip
         lg(c, RAW);
         cs(c, "e");
-        c.emit_op(Op::STR_INDEX_OF, 0);
+        { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
         ci(c, 0);
         c.emit_op(Op::I32_GE_S, 0);
         c.emit_br_if(0, 0); // has 'e' → skip
@@ -1222,25 +1216,25 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16) {
             let zb = c.emit_block(0);
             let (zlp, _) = c.emit_loop_s(0);
             lg(c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             c.emit_op(Op::I32_EQZ, 0);
             c.emit_br_if(1, 0);
             lg(c, RAW);
             lg(c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(c, 48);
             c.emit_op(Op::I32_NE, 0);
             c.emit_br_if(1, 0); // last != '0' → break
             lg(c, RAW);
             ci(c, 0);
             lg(c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
-            c.emit_op(Op::STR_SLICE, 0);
+            { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
             ls(c, RAW);
             c.emit_br(0, 0);
             c.emit_end(0);
@@ -1253,20 +1247,20 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16) {
             let db = c.emit_block(0);
             lg(c, RAW);
             lg(c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
-            c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+            { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
             ci(c, 46);
             c.emit_op(Op::I32_NE, 0);
             c.emit_br_if(0, 0); // last != '.' → skip
             lg(c, RAW);
             ci(c, 0);
             lg(c, RAW);
-            c.emit_op(Op::STR_LENGTH, 0);
+            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
-            c.emit_op(Op::STR_SLICE, 0);
+            { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
             ls(c, RAW);
             c.emit_end(0);
             c.patch_block(db);
@@ -1431,7 +1425,7 @@ fn ss_skip_ws(c: &mut Chunk) {
     c.emit_br_if(1, 0);
     lg(c, S_INP);
     lg(c, S_I);
-    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
     ls(c, S_IC);
     ss_is_space(c);
     c.emit_op(Op::I32_EQZ, 0);
@@ -1458,10 +1452,10 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
 
     // ilen / flen ; i = j = 0 ; out = []
     lg(&mut c, S_INP);
-    c.emit_op(Op::STR_LENGTH, 0);
+    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
     ls(&mut c, S_ILEN);
     lg(&mut c, S_FMT);
-    c.emit_op(Op::STR_LENGTH, 0);
+    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
     ls(&mut c, S_FLEN);
     c.emit_op(Op::I32_CONST_0, 0);
     ls(&mut c, S_I);
@@ -1479,7 +1473,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
     c.emit_br_if(1, 0);
     lg(&mut c, S_FMT);
     lg(&mut c, S_J);
-    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
     ls(&mut c, S_FC);
 
     // ── conversion specifier: '%' ─────────────────────────────────────────
@@ -1492,7 +1486,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
         inc(&mut c, S_J);
         lg(&mut c, S_FMT);
         lg(&mut c, S_J);
-        c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+        { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
         ls(&mut c, S_CONV);
         inc(&mut c, S_J);
         ss_skip_ws(&mut c);
@@ -1524,7 +1518,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
                 c.emit_br_if(0, 0);
                 lg(&mut c, S_INP);
                 lg(&mut c, S_I);
-                c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+                { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
                 ls(&mut c, S_IC);
                 lg(&mut c, S_IC);
                 ci(&mut c, 45);
@@ -1549,7 +1543,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
                 c.emit_br_if(1, 0);
                 lg(&mut c, S_INP);
                 lg(&mut c, S_I);
-                c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+                { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
                 ls(&mut c, S_IC);
                 lg(&mut c, S_IC);
                 ci(&mut c, 48);
@@ -1580,7 +1574,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
             lg(&mut c, S_INP);
             lg(&mut c, S_START);
             lg(&mut c, S_I);
-            c.emit_op(Op::STR_SLICE, 0);
+            { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
             hc(&mut c, num_num, 1);
             hc(&mut c, arr_push, 2);
             c.emit_op(Op::DROP, 0);
@@ -1607,7 +1601,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
                 c.emit_br_if(1, 0);
                 lg(&mut c, S_INP);
                 lg(&mut c, S_I);
-                c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+                { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
                 ls(&mut c, S_IC);
                 ss_is_space(&mut c);
                 c.emit_br_if(1, 0);
@@ -1622,7 +1616,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
             lg(&mut c, S_INP);
             lg(&mut c, S_START);
             lg(&mut c, S_I);
-            c.emit_op(Op::STR_SLICE, 0);
+            { let idx = c.add_import("ecma:string", "slice"); c.emit_call(idx, 3, 0); }
             hc(&mut c, arr_push, 2);
             c.emit_op(Op::DROP, 0);
             c.emit_br(2, 0); // continue ol
@@ -1640,7 +1634,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
             lg(&mut c, S_OUT);
             lg(&mut c, S_INP);
             lg(&mut c, S_I);
-            c.emit_op(Op::STR_CHAR_AT, 0);
+            { let idx = c.add_import("ecma:string", "charAt"); c.emit_call(idx, 2, 0); }
             hc(&mut c, arr_push, 2);
             c.emit_op(Op::DROP, 0);
             inc(&mut c, S_I);
@@ -1690,7 +1684,7 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
         c.emit_br_if(2, 0); // input exhausted → break
         lg(&mut c, S_INP);
         lg(&mut c, S_I);
-        c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+        { let idx = c.add_import("wasm:js-string", "charCodeAt"); c.emit_call(idx, 2, 0); }
         lg(&mut c, S_FC);
         c.emit_op(Op::I32_NE, 0);
         c.emit_br_if(2, 0); // mismatch → break
