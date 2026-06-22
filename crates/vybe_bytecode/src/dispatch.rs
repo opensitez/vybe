@@ -1670,9 +1670,84 @@ impl VM {
                 }
 
                 // -- Functions --
+                // WASM `call funcidx` — resolves through component model import table.
                 _ if op == Op::CALL => {
+                    let func_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
-                    self.call_value(argc)?;
+                    let chunk_index = self.frame().chunk_index;
+
+                    let target = match self.resolve_chunk_import(chunk_index, func_idx)? {
+                        Some(target) => target,
+                        None => {
+                            if func_idx >= self.import_table.len() {
+                                return Err(VMError::new(format!(
+                                    "Unresolved function index: {}",
+                                    func_idx
+                                )));
+                            }
+                            self.import_table[func_idx].clone()
+                        }
+                    };
+
+                    match target {
+                        ImportTarget::Host(host_idx) => {
+                            let base = self.stack.len() - argc;
+                            let args: Vec<Value> = self.stack[base..].to_vec();
+                            self.stack.truncate(base);
+
+                            let host_fn = self.host_fns[host_idx].clone();
+                            let result = {
+                                let mut ctx = self.make_host_context();
+                                host_fn(&mut ctx, &args)
+                            };
+                            if let Some(exc) = self.last_exception.take() {
+                                self.raise_exception_value(exc)?;
+                                continue;
+                            }
+                            self.push(result)?;
+                        }
+                        ImportTarget::ChunkFn { chunk_index, arity } => {
+                            let func = crate::value::Function {
+                                name: None,
+                                arity,
+                                chunk_index,
+                                upvalues: Vec::new(),
+                            };
+                            let mut obj = crate::value::Object::new();
+                            obj.kind = crate::value::ObjectKind::Function(func);
+                            let func_val = Value::Object(Arc::new(Mutex::new(obj)));
+                            let args_start = self.stack.len() - argc;
+                            self.stack.insert(args_start, func_val);
+                            self.call_value(argc)?;
+                        }
+                        ImportTarget::StdlibRedirect(ref global_name) => {
+                            if let Some(func_val) = self.globals.get(global_name).cloned() {
+                                let args_start = self.stack.len() - argc;
+                                self.stack.insert(args_start, func_val);
+                                self.call_value(argc)?;
+                            } else {
+                                return Err(VMError::new(format!(
+                                    "Stdlib redirect not found: {}",
+                                    global_name
+                                )));
+                            }
+                        }
+                        ImportTarget::JspiSuspend => {
+                            let val = if argc == 0 {
+                                Value::Undefined
+                            } else {
+                                self.pop()
+                            };
+                            for _ in 1..argc {
+                                self.pop();
+                            }
+                            self.do_await(val)?;
+                        }
+                        ImportTarget::StringConst(s) => {
+                            for _ in 0..argc { self.pop(); }
+                            self.push(Value::String(s))?;
+                        }
+                    }
                 }
                 _ if op == Op::CALL_REF => {
                     // Direct call through a function reference — same as call
@@ -1876,6 +1951,10 @@ impl VM {
                                 self.pop();
                             }
                             self.do_await(val)?;
+                        }
+                        ImportTarget::StringConst(s) => {
+                            for _ in 0..argc { self.pop(); }
+                            self.push(Value::String(s))?;
                         }
                     }
                 }

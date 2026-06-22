@@ -122,7 +122,7 @@ pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
 /// Emit the call opcode after function ref + args are on stack.
 /// Stack before: [func_ref, arg1, arg2, ...]  Stack after: [return_value]
 pub fn emit_call(chunk: &mut Chunk, arg_count: u8, line: u32) {
-    chunk.emit_op_u8(Op::CALL, arg_count, line);
+    chunk.emit_op_u8(Op::CALL_REF, arg_count, line);
 }
 
 // ── Async/await (WASM Stack Switching + JSPI) ───────────────────────────

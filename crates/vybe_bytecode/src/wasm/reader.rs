@@ -1250,11 +1250,11 @@ fn translate_wasm_to_chunk(
             0x1A => chunk.emit_op(Op::DROP, 0),
             0x1B => chunk.emit_op(Op::SELECT, 0),
 
-            // call — adjust index (skip imports, offset to our chunk indices)
+            // call funcidx — WASM direct call by function index
             0x10 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u8(Op::CALL, idx as u8, 0);
+                chunk.emit_call(idx as u16, 0, 0);
             }
 
             // local.get — slot 0 is the first argument, matching the VM.

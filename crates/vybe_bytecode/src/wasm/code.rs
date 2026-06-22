@@ -625,9 +625,10 @@ fn emit_core_op(
         } // local.tee
         _ if op == Op::CALL => {
             body.push(op.sub_u8());
-            let argc = chunk.code[*ip];
+            let func_idx = read_u16(&chunk.code, ip);
+            let _argc = chunk.code[*ip];
             *ip += 1;
-            write_leb128_u32(body, argc as u32);
+            write_leb128_u32(body, func_idx as u32);
         }
         _ if op == Op::CALL_REF => {
             let argc = chunk.code[*ip];

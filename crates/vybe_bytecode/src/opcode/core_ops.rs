@@ -259,7 +259,7 @@ opcode_category! {
     [0x0D] br_if => U32Leb, "br_if";
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
-    [0x10] call => U8, "call";
+    [0x10] call => U16_U8, "call";
     [0x11] call_indirect => U8_U8, "call_indirect";
     [0x12] return_call => U8, "return_call";
     [0x13] return_call_indirect => U8, "return_call_indirect";

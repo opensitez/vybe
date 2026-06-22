@@ -413,6 +413,26 @@ impl Chunk {
         self.emit_op_u16(Op::LOCAL_GET, slot, line);
     }
 
+    /// Emit WASM `call funcidx` — direct call to an imported function.
+    /// Currently emits CALL_IMPORT bytes — migration to real CALL in progress.
+    pub fn emit_call(&mut self, func_idx: u16, argc: u8, line: u32) {
+        self.emit_op_u16(Op::CALL_IMPORT, func_idx, line);
+        self.emit(argc, line);
+    }
+
+    /// Emit a js-string-builtins imported string constant.
+    pub fn emit_string_const(&mut self, s: &str, line: u32) {
+        let idx = self.add_import("wasm:string-constants", s);
+        self.emit_call(idx, 0, line);
+    }
+
+    /// Emit a Bool value: `i32.const N` + `call wasm:js-boolean.fromI32`.
+    pub fn emit_bool_const(&mut self, val: bool, line: u32) {
+        self.emit_i32_const(if val { 1 } else { 0 }, line);
+        let idx = self.add_import("wasm:js-boolean", "fromI32");
+        self.emit_call(idx, 1, line);
+    }
+
     pub fn add_constant(&mut self, value: Value) -> u16 {
         self.constants.push(value);
         (self.constants.len() - 1) as u16

@@ -737,7 +737,7 @@ pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str,
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
     chunk.emit_op_u16(Op::STRUCT_GET, name_idx, line); // [method_ref]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
-    chunk.emit_op_u8(Op::CALL, 1, line); // call(1) → [result]
+    chunk.emit_op_u8(Op::CALL_REF, 1, line); // call(1) → [result]
     chunk.emit_op(Op::DROP, line); // []
 }
 

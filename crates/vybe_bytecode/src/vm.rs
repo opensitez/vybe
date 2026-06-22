@@ -368,6 +368,7 @@ pub type HostFn = Arc<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>
 /// - A host function (provided by the embedder)
 /// - A component-exported function (another module's code)
 /// - A stdlib redirect (global function registered at runtime)
+/// - A string constant (js-string-builtins imported string)
 #[derive(Clone)]
 pub enum ImportTarget {
     /// Index into VM::host_fns
@@ -376,6 +377,8 @@ pub enum ImportTarget {
     ChunkFn { chunk_index: usize, arity: u8 },
     /// Runtime global lookup (stdlib functions registered via globals)
     StdlibRedirect(String),
+    /// js-string-builtins imported string constant — returns the string value.
+    StringConst(Arc<str>),
     /// JSPI suspending import (`jspi`.`await`, a `WebAssembly.Suspending`
     /// import). `await x` lowers to a `call` to this import; the VM (acting as
     /// the engine) implements the suspension itself rather than dispatching to a
@@ -1544,6 +1547,9 @@ impl VM {
                 ImportTarget::JspiSuspend => {
                     self.import_table.push(ImportTarget::JspiSuspend);
                 }
+                ImportTarget::StringConst(s) => {
+                    self.import_table.push(ImportTarget::StringConst(s));
+                }
             }
         }
 
@@ -1957,6 +1963,12 @@ impl VM {
 
         if import.module == "jspi" && import.name == "await" {
             return Ok(Some(ImportTarget::JspiSuspend));
+        }
+
+        // js-string-builtins: imported string constants (§ String constants).
+        // The import name IS the string value.
+        if import.module == "wasm:string-constants" {
+            return Ok(Some(ImportTarget::StringConst(Arc::from(import.name.as_str()))));
         }
 
         if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
