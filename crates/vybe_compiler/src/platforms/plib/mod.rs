@@ -1,3 +1,5 @@
-//! Pascal library surfaces.
+//! Pascal library platform package.
+//!
+//! The compiler-side code generation surface lives under [`emitter`].
 
-pub mod gcl;
+pub mod emitter;

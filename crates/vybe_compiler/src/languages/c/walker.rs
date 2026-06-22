@@ -14,9 +14,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CParser, Rule};
 use crate::ast::*;
-use crate::platforms::libc::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND};
-use crate::platforms::libc::{complex_adapter, regex_adapter, time_adapter};
-use crate::platforms::libc::{
+use crate::platforms::libc::emitter::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND};
+use crate::platforms::libc::emitter::{complex_adapter, regex_adapter, time_adapter};
+use crate::platforms::libc::emitter::{
     ctype_adapter, math_adapter, stdio_adapter, string_adapter, wchar_adapter,
 };
 
@@ -38,7 +38,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
     // Prepend runtime helpers and static globals before the rest of the module body.
-    let mut full_body = crate::platforms::libc::c_runtime::prelude();
+    let mut full_body = crate::platforms::libc::emitter::c_runtime::prelude();
     full_body.extend(w.static_globals);
     full_body.extend(body);
     Ok(Module {
@@ -430,13 +430,13 @@ fn expand_object_macros_in_text(line: &str, object_macros: &HashMap<String, Stri
 // (`platforms/libc/build.rs`) so the C walker and the libc adapters construct
 // the runtime from one set of helpers. Imported here so existing call sites
 // (expr/stmt/ident/int_lit/.../function_stmt, CFILE_*) resolve unchanged.
-use crate::platforms::libc::build::{
+use crate::platforms::libc::emitter::build::{
     assign_expr, call_expr, expr, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
     str_lit, var_decl_stmt,
 };
 // Bare math-call constructors used by walker arms (cabs, etc.). The series
 // builders (tgamma/erf/…) are only referenced from the runtime prelude.
-use crate::platforms::libc::math_runtime::{ecma_math_call, ecma_math_call2};
+use crate::platforms::libc::emitter::math_runtime::{ecma_math_call, ecma_math_call2};
 
 fn carray_indexed_access(object: Expression, index: Expression) -> Expression {
     let adjusted = expr(ExprKind::Binary {
@@ -7083,7 +7083,7 @@ impl Walker {
     fn rewrite_scanf_call(&mut self, fmt: &str, targets: Vec<Expression>) -> Expression {
         let id = self.tmp_counter;
         self.tmp_counter += 1;
-        crate::platforms::libc::stdio_adapter::scanf(fmt, targets, id)
+        crate::platforms::libc::emitter::stdio_adapter::scanf(fmt, targets, id)
     }
 
     fn rewrite_strtok_call(&self, source: Expression, delim: Expression) -> Expression {

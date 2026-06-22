@@ -7,7 +7,7 @@
 
 use crate::ast::{Argument, BinOp, ExprKind, Expression, Literal, Statement, StmtKind};
 
-use crate::platforms::libc::build::{expr, ident, stmt};
+use crate::platforms::libc::emitter::build::{expr, ident, stmt};
 
 /// Build a private helper function (`__tgamma`, `__j0`, …) used by the math
 /// prelude. The body is supplied by the caller.

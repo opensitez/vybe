@@ -11,7 +11,7 @@
 //! `__c_bsearch` here is a linear scan returning the matching index or -1.
 
 use crate::ast::{Argument, BinOp, BreakTarget, ExprKind, Expression, Statement, StmtKind};
-use crate::platforms::libc::build::*;
+use crate::platforms::libc::emitter::build::*;
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {

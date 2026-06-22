@@ -7,8 +7,8 @@
 //! any front-end with the same `{real, imag}` representation.
 
 use crate::ast::{BinOp, ExprKind, Expression, ObjectProperty, UnaryOp};
-use crate::platforms::libc::build::{expr, str_lit};
-use crate::platforms::libc::math_runtime::{ecma_math_call, ecma_math_call2};
+use crate::platforms::libc::emitter::build::{expr, str_lit};
+use crate::platforms::libc::emitter::math_runtime::{ecma_math_call, ecma_math_call2};
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {

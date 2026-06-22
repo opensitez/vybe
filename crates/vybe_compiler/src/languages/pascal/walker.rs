@@ -117,7 +117,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => crate::platforms::plib::gcl::is_gcl_unit(path),
+        | ImportKind::Default { path, .. } => crate::platforms::plib::emitter::gcl::is_gcl_unit(path),
     });
     if uses_gcl {
         normalize_pascal_gcl_form_classes(&mut body);
@@ -137,7 +137,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         })
         .collect();
     if uses_gcl {
-        for class in crate::platforms::plib::gcl::gcl_classes() {
+        for class in crate::platforms::plib::emitter::gcl::gcl_classes() {
             class_names.insert(class.name.to_lowercase());
         }
     }
@@ -151,7 +151,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         })
         .collect();
     if uses_gcl {
-        for class in crate::platforms::plib::gcl::gcl_classes() {
+        for class in crate::platforms::plib::emitter::gcl::gcl_classes() {
             class_display_names.push((class.name.to_lowercase(), class.name.to_string()));
         }
     }

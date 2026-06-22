@@ -6,7 +6,7 @@
 //! libc-targeting front-end.
 
 use crate::ast::{BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind};
-use crate::platforms::libc::build::*;
+use crate::platforms::libc::emitter::build::*;
 
 // ── call-site lowerings (walker maps `time(...)` etc. through these) ─────────
 

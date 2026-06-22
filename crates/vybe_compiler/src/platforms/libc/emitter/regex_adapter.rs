@@ -22,7 +22,7 @@
 use crate::ast::{
     Argument, BinOp, CatchClause, ExprKind, Expression, ObjectProperty, Statement, StmtKind,
 };
-use crate::platforms::libc::build::*;
+use crate::platforms::libc::emitter::build::*;
 
 // POSIX error codes (glibc values) used here.
 const REG_NOMATCH: i64 = 1;

@@ -9,8 +9,8 @@ use crate::ast::{
     Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Literal, ObjectProperty, Statement,
     StmtKind, VarDeclKind, VarDeclarator,
 };
-use crate::platforms::libc::build::*;
-use crate::platforms::libc::math_runtime::{
+use crate::platforms::libc::emitter::build::*;
+use crate::platforms::libc::emitter::math_runtime::{
     build_math_helper_fn, ecma_math_call, poly_erf, stirling_approx,
 };
 
@@ -1353,14 +1353,14 @@ pub fn prelude() -> Vec<Statement> {
     // stdin token reader (WASI-backed) — libc surface lives in the libc
     // platform adapter so any libc-targeting language shares it. Under the
     // hood it composes wasi:cli/stdin + wasi:io/streams via intrinsic:readline.
-    out.extend(crate::platforms::libc::stdio_adapter::stdin_runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::stdio_adapter::stdin_runtime_helpers());
     // char[] → string decoder for `%s`/`puts` (string / carray / code-point array).
-    out.push(crate::platforms::libc::stdio_adapter::char_to_str_runtime_helper());
+    out.push(crate::platforms::libc::emitter::stdio_adapter::char_to_str_runtime_helper());
     // wide-char boundary helpers (code-point array ↔ string) for wchar.h.
-    out.extend(crate::platforms::libc::wchar_adapter::runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::wchar_adapter::runtime_helpers());
 
     // math.h domain-error helpers (libc surface) — sqrt sets errno (EDOM).
-    out.extend(crate::platforms::libc::math_adapter::domain_error_helpers());
+    out.extend(crate::platforms::libc::emitter::math_adapter::domain_error_helpers());
 
     // setjmp.h: longjmp throws an exception carrying the buf token + value; the
     // matching setjmp's generated try/catch (see wrap_setjmp_in_block) unwinds
@@ -1619,16 +1619,16 @@ pub fn prelude() -> Vec<Statement> {
 
     // stdlib.h runtime helpers (qsort / bsearch) — libc surface, not the
     // retired cross-language `__stdlib_*` bundle.
-    out.extend(crate::platforms::libc::stdlib_runtime::runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::stdlib_runtime::runtime_helpers());
 
     // regex.h runtime helpers (regcomp/regexec on the ECMA RegExp surface).
-    out.extend(crate::platforms::libc::regex_adapter::runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::regex_adapter::runtime_helpers());
 
     // string.h runtime helpers (strcoll/strxfrm/strpbrk/strspn/strcspn).
-    out.extend(crate::platforms::libc::string_runtime::runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::string_runtime::runtime_helpers());
 
     // time.h runtime helpers live in their own adapter (shared libc surface).
-    out.extend(crate::platforms::libc::time_adapter::runtime_helpers());
+    out.extend(crate::platforms::libc::emitter::time_adapter::runtime_helpers());
 
     out
 }

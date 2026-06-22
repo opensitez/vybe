@@ -115,7 +115,7 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
 
 /// `L"hello"` → flat NUL-terminated code-point array `[104,101,108,108,111,0]`.
 pub fn wide_string_literal(text: &str) -> Expression {
-    crate::platforms::libc::arrays::carray_from_string_literal(text)
+    crate::platforms::libc::emitter::arrays::carray_from_string_literal(text)
 }
 
 // Wide buffers are `int`-typed flat arrays (wchar_t == int on wasm32-wasi), so

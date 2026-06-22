@@ -3,7 +3,7 @@
 use crate::ast::{Argument, ClassMember, ExprKind, Expression, ImportKind, Module, StmtKind};
 use crate::compiler::Compiler;
 use crate::emitter as common;
-use crate::platforms::plib::gcl::{GclClass, GclMethodTarget, builder, gcl_classes, is_gcl_unit};
+use crate::platforms::plib::emitter::gcl::{GclClass, GclMethodTarget, builder, gcl_classes, is_gcl_unit};
 
 pub(crate) fn module_uses_plib_gcl(module: &Module) -> bool {
     module.imports.iter().any(|import| match &import.kind {

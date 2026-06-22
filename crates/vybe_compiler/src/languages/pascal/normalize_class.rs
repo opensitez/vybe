@@ -115,7 +115,7 @@ fn rewrite_implicit_self_members_in_methods(
 }
 
 fn extend_gcl_member_names(member_names: &mut HashSet<String>, parents: &[String]) {
-    let classes = crate::platforms::plib::gcl::gcl_classes();
+    let classes = crate::platforms::plib::emitter::gcl::gcl_classes();
     let mut pending: Vec<String> = parents.to_vec();
     while let Some(class_name) = pending.pop() {
         let Some(class) = classes
@@ -395,7 +395,7 @@ fn rewrite_implicit_self_members_expr(
 }
 
 fn gcl_accessor_property_names(parents: &[String]) -> HashSet<String> {
-    let classes = crate::platforms::plib::gcl::gcl_classes();
+    let classes = crate::platforms::plib::emitter::gcl::gcl_classes();
     let mut names = HashSet::new();
     let mut pending: Vec<String> = parents.to_vec();
     while let Some(class_name) = pending.pop() {

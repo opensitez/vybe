@@ -5,7 +5,7 @@
 //! program prelude.
 
 use crate::ast::{BinOp, ExprKind, Statement, StmtKind};
-use crate::platforms::libc::build::*;
+use crate::platforms::libc::emitter::build::*;
 
 pub fn runtime_helpers() -> Vec<Statement> {
     let mut out: Vec<Statement> = Vec::new();

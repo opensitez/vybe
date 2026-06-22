@@ -188,7 +188,7 @@ pub fn emit_suspend(chunk: &mut Chunk, line: u32) {
 /// Emit Thread.Sleep(ms) — WASI pollable blocking sleep.
 /// Stack before: [ms_value]  Stack after: []
 pub fn emit_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, line: u32) {
-    crate::platforms::dotnet::core::thread_adapter::emit_thread_sleep(
+    crate::platforms::dotnet::emitter::core::thread_adapter::emit_thread_sleep(
         chunk,
         sub_dur_idx,
         block_idx,
@@ -215,7 +215,7 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // returns null. The Task.result field reflects this null on completion.
     let mut worker = create_function_chunk("__task_delay_worker", 1);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    crate::platforms::dotnet::core::thread_adapter::emit_thread_sleep(
+    crate::platforms::dotnet::emitter::core::thread_adapter::emit_thread_sleep(
         &mut worker,
         sub_dur_idx,
         block_idx,
