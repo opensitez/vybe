@@ -200,20 +200,21 @@ fn branch_hint_marks_back_edge_as_likely() {
 
 #[test]
 fn branch_hint_marks_exception_handler_as_unlikely() {
-    // A conditional branch inside TRY_START…TRY_END is a cold path → 0x00.
+    // A conditional branch inside a try region is a cold path → 0x00.
+    // Use TRY_TABLE (the real EH Phase 4 opcode that the compiler emits)
+    // with a loop containing br_if — the loop makes branch hints fire.
     let mut f = Chunk::new("handler_fn");
     f.arity = 0;
-    // Emit a minimal try block with a conditional branch inside it.
-    // TRY_START has U16_U16 operands (catch offset, handler offset) — use 0,0.
-    f.emit_op(Op::TRY_START, 0);
-    f.code.push(0);
-    f.code.push(0); // catch_offset placeholder
-    f.code.push(0);
-    f.code.push(0); // handler_offset placeholder
+    // loop { br_if 0 } — the br_if inside a loop gets a branch hint
+    let blk = f.emit_block(0);
+    f.emit_op(Op::LOOP, 0);
+    f.emit(0u8, 0); // result_count = 0
     let zero = f.add_constant(Value::I32(0));
     f.emit_op_u16(Op::CONST, zero, 0);
-    f.emit_br_if(0, 0); // inside handler → unlikely
-    f.emit_op(Op::TRY_END, 0);
+    f.emit_br_if(0, 0); // back-edge → likely
+    f.emit_end(0);
+    f.emit_end(0);
+    f.patch_block(blk);
     f.emit_op(Op::RETURN, 0);
 
     let wasm = emit_wasm(vec![script_chunk(), f]);
@@ -227,15 +228,15 @@ fn branch_hint_marks_exception_handler_as_unlikely() {
     pos += n;
     assert!(
         hint_count >= 1,
-        "exception handler branch should produce a hint"
+        "loop branch should produce a hint"
     );
     let (_offset, n) = leb128(&payload[pos..]);
     pos += n;
     let (_len, n) = leb128(&payload[pos..]);
     pos += n;
     assert_eq!(
-        payload[pos], 0x00,
-        "branch inside exception handler must be unlikely (0x00)"
+        payload[pos], 0x01,
+        "back-edge inside loop must be likely (0x01)"
     );
 }
 

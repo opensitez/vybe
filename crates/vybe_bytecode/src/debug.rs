@@ -14,24 +14,23 @@ pub fn disassemble(chunk: &Chunk) -> String {
 }
 
 fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
-    if offset + 1 >= chunk.code.len() {
+    if offset + 3 >= chunk.code.len() {
         return ("TRUNCATED".into(), chunk.code.len());
     }
 
-    let prefix = chunk.code[offset];
-    let sub = chunk.code[offset + 1];
-    let op = match Op::decode(prefix, sub as u16) {
+    let group = ((chunk.code[offset] as u16) << 8) | chunk.code[offset + 1] as u16;
+    let sub = ((chunk.code[offset + 2] as u16) << 8) | chunk.code[offset + 3] as u16;
+    let op = match Op::decode(group, sub) {
         Some(op) => op,
         None => {
             return (
-                format!("UNKNOWN(0x{:02X} 0x{:02X})", prefix, sub),
-                offset + 2,
+                format!("UNKNOWN(0x{:04X} 0x{:04X})", group, sub),
+                offset + 4,
             );
         }
     };
 
-    // Operands start at offset + 2 (after the 2-byte opcode)
-    let operand_start = offset + 2;
+    let operand_start = offset + 4;
     let name = op.wasm_name();
 
     match op.operand_format() {

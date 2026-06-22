@@ -1496,31 +1496,31 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    if ip + 1 >= code.len() {
+                    if ip + 3 >= code.len() {
                         break;
                     }
-                    let prefix = code[ip];
-                    let sub = code[ip + 1];
-                    if let Some(op) = Op::decode(prefix, sub as u16) {
+                    let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                    let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                    if let Some(op) = Op::decode(group, sub) {
                         if op == Op::REF_FUNC {
-                            if ip + 4 < code.len() {
-                                let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                            if ip + 5 < code.len() {
+                                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
                                 let new_idx = old_idx + script_idx as u16;
-                                code[ip + 2] = (new_idx >> 8) as u8;
-                                code[ip + 3] = (new_idx & 0xff) as u8;
+                                code[ip + 4] = (new_idx >> 8) as u8;
+                                code[ip + 5] = (new_idx & 0xff) as u8;
                             }
-                            ip += 4 + 1; // 2 opcode + 2 func_idx + 1 uv_count
+                            ip += 4 + 2 + 1; // 4 opcode + 2 func_idx + 1 uv_count
                             if ip - 1 < code.len() {
                                 let uv_count = code[ip - 1] as usize;
                                 ip += uv_count * 2;
                             }
                             continue;
                         }
-                        ip += 2; // all opcodes are 2 bytes
+                        ip += 4;
                         let fmt = op.operand_format();
                         ip += fmt.size_in(code, ip);
                     } else {
-                        ip += 2; // skip unknown 2-byte opcode
+                        ip += 4;
                     }
                 }
             }
@@ -1620,12 +1620,12 @@ impl VM {
                 let code = &mut chunk.code;
                 let mut ip = 0;
                 while ip < code.len() {
-                    if ip + 1 >= code.len() {
+                    if ip + 3 >= code.len() {
                         break;
                     }
-                    let prefix = code[ip];
-                    let sub = code[ip + 1];
-                    if let Some(op) = Op::decode(prefix, sub as u16) {
+                    let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                    let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                    if let Some(op) = Op::decode(group, sub) {
                         if op == Op::REF_FUNC {
                             if ip + 4 < code.len() {
                                 let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
@@ -1957,6 +1957,56 @@ impl VM {
 
     pub(crate) fn read_i16(&mut self) -> i16 {
         self.read_u16() as i16
+    }
+
+    pub(crate) fn read_leb_i32(&mut self) -> i32 {
+        let mut result: u32 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.read_byte();
+            result |= ((byte & 0x7f) as u32) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                if shift < 32 && (byte & 0x40) != 0 {
+                    result |= !0u32 << shift;
+                }
+                break;
+            }
+        }
+        result as i32
+    }
+
+    pub(crate) fn read_leb_i64(&mut self) -> i64 {
+        let mut result: u64 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.read_byte();
+            result |= ((byte & 0x7f) as u64) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                if shift < 64 && (byte & 0x40) != 0 {
+                    result |= !0u64 << shift;
+                }
+                break;
+            }
+        }
+        result as i64
+    }
+
+    pub(crate) fn read_f32(&mut self) -> f32 {
+        let mut bytes = [0u8; 4];
+        for b in &mut bytes {
+            *b = self.read_byte();
+        }
+        f32::from_le_bytes(bytes)
+    }
+
+    pub(crate) fn read_f64(&mut self) -> f64 {
+        let mut bytes = [0u8; 8];
+        for b in &mut bytes {
+            *b = self.read_byte();
+        }
+        f64::from_le_bytes(bytes)
     }
 
     pub(crate) fn get_constant(&self, index: u16) -> Value {

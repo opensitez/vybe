@@ -10,11 +10,13 @@
 //! - `0xFC`: Misc proposal
 //! - `0xFD`: SIMD proposal (including relaxed SIMD at sub 256+)
 //! - `0xFE`: Threads proposal
+//! - `0xF0`: Component Model canonical built-ins (CM3 Binary.md §Canon Definitions)
 //! - `0xFF`: VM-internal (not WASM — being eliminated)
 //!
 //! Opcodes are defined in category files (core.rs, gc.rs, etc.) as `pub const` values.
 //! Adding an opcode = one line in one file.
 
+mod canon;
 mod core_ops;
 mod gc;
 mod misc;
@@ -23,65 +25,53 @@ mod simd;
 mod threads;
 mod vm_internal;
 
-/// A bytecode opcode. Encoded as `(prefix << 16) | sub_opcode`.
-/// Sub-opcode is u16, supporting spec values up to 65535.
+/// A bytecode opcode. Encoded as `(group << 16) | sub_opcode`.
+/// Both group and sub are u16. Bytecode stream: [group_hi, group_lo, sub_hi, sub_lo] = 4 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Op(pub u32);
 
 impl Op {
-    /// Create from prefix + sub-opcode (u16 for full spec range).
+    /// Create from group (u16) + sub-opcode (u16).
     #[inline]
-    pub const fn new(prefix: u8, sub: u16) -> Self {
-        Op(((prefix as u32) << 16) | sub as u32)
+    pub const fn new(group: u16, sub: u16) -> Self {
+        Op(((group as u32) << 16) | sub as u32)
     }
 
-    /// Backward-compat: create from prefix + u8 sub (most opcodes).
+    /// Group (u16). Maps to WASM prefix bytes: 0x00=core, 0xF0=canon, 0xFB=GC, etc.
     #[inline]
-    pub const fn new_u8(prefix: u8, sub: u8) -> Self {
-        Self::new(prefix, sub as u16)
+    pub const fn group(self) -> u16 {
+        (self.0 >> 16) as u16
     }
 
-    /// Prefix byte (0x00=core, 0xFB=GC, 0xFC=misc, 0xFD=SIMD, 0xFE=threads, 0xFF=VM-internal).
-    #[inline]
-    pub const fn prefix(self) -> u8 {
-        (self.0 >> 16) as u8
-    }
-
-    /// Sub-opcode within the prefix group (u16 range).
+    /// Sub-opcode within the group (u16).
     #[inline]
     pub const fn sub(self) -> u16 {
         (self.0 & 0xFFFF) as u16
     }
 
-    /// Sub-opcode as u8 (for opcodes known to fit in u8).
+    /// Encode to 4 bytes: [group_hi, group_lo, sub_hi, sub_lo].
     #[inline]
-    pub const fn sub_u8(self) -> u8 {
-        (self.0 & 0xFF) as u8
+    pub const fn encode(self) -> [u8; 4] {
+        let g = self.group();
+        let s = self.sub();
+        [(g >> 8) as u8, (g & 0xFF) as u8, (s >> 8) as u8, (s & 0xFF) as u8]
     }
 
-    /// Encode to 2 bytes for the internal bytecode stream.
-    /// Core opcodes (prefix 0x00): [0x00, sub]. Prefixed: [prefix, sub].
-    /// For sub > 255, the bytecode stream uses 3+ bytes (handled by emit_op).
-    #[inline]
-    pub const fn encode(self) -> (u8, u8) {
-        (self.prefix(), self.sub_u8())
-    }
-
-    /// Byte length in the internal bytecode stream.
+    /// Byte length in the internal bytecode stream (always 4).
     #[inline]
     pub const fn encoded_len(self) -> usize {
-        if self.sub() > 255 { 4 } else { 2 }
+        4
     }
 
-    /// True if this is a VM-internal opcode (0xFF prefix), not standard WASM.
+    /// True if this is a VM-internal opcode (0xFF group), not standard WASM.
     #[inline]
     pub const fn is_vm_internal(self) -> bool {
-        self.prefix() == 0xFF
+        self.group() == 0xFF
     }
 
-    /// Decode from prefix + u16 sub into a validated opcode.
-    pub fn decode(prefix: u8, sub: u16) -> Option<Op> {
-        let op = Op::new(prefix, sub);
+    /// Decode from group + sub into a validated opcode.
+    pub fn decode(group: u16, sub: u16) -> Option<Op> {
+        let op = Op::new(group as u16, sub as u16);
         if op.wasm_name_opt().is_some() {
             Some(op)
         } else {
@@ -89,20 +79,16 @@ impl Op {
         }
     }
 
-    /// Decode from prefix + u8 sub (backward compat).
-    pub fn decode_u8(prefix: u8, sub: u8) -> Option<Op> {
-        Self::decode(prefix, sub as u16)
-    }
-
     /// Operand format for this opcode.
     pub fn operand_format(self) -> OperandFormat {
-        match self.prefix() {
+        match self.group() {
             0x00 => core_ops::operand_format(self.sub()),
             0xFB => gc::operand_format(self.sub()),
             0xFC => misc::operand_format(self.sub()),
             0xFD if self.sub() >= 256 => relaxed_simd::operand_format(self.sub()),
             0xFD => simd::operand_format(self.sub()),
             0xFE => threads::operand_format(self.sub()),
+            0xF0 => canon::operand_format(self.sub()),
             0xFF => vm_internal::operand_format(self.sub()),
             _ => OperandFormat::None,
         }
@@ -110,13 +96,14 @@ impl Op {
 
     /// WASM disassembly name, or None if not a valid opcode.
     pub fn wasm_name_opt(self) -> Option<&'static str> {
-        match self.prefix() {
+        match self.group() {
             0x00 => core_ops::name(self.sub()),
             0xFB => gc::name(self.sub()),
             0xFC => misc::name(self.sub()),
             0xFD if self.sub() >= 256 => relaxed_simd::name(self.sub()),
             0xFD => simd::name(self.sub()),
             0xFE => threads::name(self.sub()),
+            0xF0 => canon::name(self.sub()),
             0xFF => vm_internal::name(self.sub()),
             _ => None,
         }

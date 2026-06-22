@@ -694,80 +694,80 @@ fn roundtrip_loop_with_br() {
 
 #[test]
 fn core_control_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::UNREACHABLE.sub_u8(), 0x00);
-    assert_eq!(Op::NOP.sub_u8(), 0x01);
-    assert_eq!(Op::BLOCK.sub_u8(), 0x02);
-    assert_eq!(Op::LOOP.sub_u8(), 0x03);
-    assert_eq!(Op::IF.sub_u8(), 0x04);
-    assert_eq!(Op::ELSE.sub_u8(), 0x05);
-    assert_eq!(Op::THROW.sub_u8(), 0x08);
-    assert_eq!(Op::THROW_REF.sub_u8(), 0x0A);
-    assert_eq!(Op::END.sub_u8(), 0x0B);
-    assert_eq!(Op::BR.sub_u8(), 0x0C);
-    assert_eq!(Op::BR_IF.sub_u8(), 0x0D);
-    assert_eq!(Op::BR_TABLE.sub_u8(), 0x0E);
-    assert_eq!(Op::RETURN.sub_u8(), 0x0F);
-    assert_eq!(Op::CALL.sub_u8(), 0x10);
-    assert_eq!(Op::CALL_INDIRECT.sub_u8(), 0x11);
-    assert_eq!(Op::RETURN_CALL.sub_u8(), 0x12);
-    assert_eq!(Op::RETURN_CALL_INDIRECT.sub_u8(), 0x13);
-    assert_eq!(Op::CALL_REF.sub_u8(), 0x14);
-    assert_eq!(Op::RETURN_CALL_REF.sub_u8(), 0x15);
-    assert_eq!(Op::DROP.sub_u8(), 0x1A);
-    assert_eq!(Op::SELECT.sub_u8(), 0x1B);
-    assert_eq!(Op::SELECT_T.sub_u8(), 0x1C);
-    assert_eq!(Op::TRY_TABLE.sub_u8(), 0x1F);
+    assert_eq!(Op::UNREACHABLE.sub(), 0x00);
+    assert_eq!(Op::NOP.sub(), 0x01);
+    assert_eq!(Op::BLOCK.sub(), 0x02);
+    assert_eq!(Op::LOOP.sub(), 0x03);
+    assert_eq!(Op::IF.sub(), 0x04);
+    assert_eq!(Op::ELSE.sub(), 0x05);
+    assert_eq!(Op::THROW.sub(), 0x08);
+    assert_eq!(Op::THROW_REF.sub(), 0x0A);
+    assert_eq!(Op::END.sub(), 0x0B);
+    assert_eq!(Op::BR.sub(), 0x0C);
+    assert_eq!(Op::BR_IF.sub(), 0x0D);
+    assert_eq!(Op::BR_TABLE.sub(), 0x0E);
+    assert_eq!(Op::RETURN.sub(), 0x0F);
+    assert_eq!(Op::CALL.sub(), 0x10);
+    assert_eq!(Op::CALL_INDIRECT.sub(), 0x11);
+    assert_eq!(Op::RETURN_CALL.sub(), 0x12);
+    assert_eq!(Op::RETURN_CALL_INDIRECT.sub(), 0x13);
+    assert_eq!(Op::CALL_REF.sub(), 0x14);
+    assert_eq!(Op::RETURN_CALL_REF.sub(), 0x15);
+    assert_eq!(Op::DROP.sub(), 0x1A);
+    assert_eq!(Op::SELECT.sub(), 0x1B);
+    assert_eq!(Op::SELECT_T.sub(), 0x1C);
+    assert_eq!(Op::TRY_TABLE.sub(), 0x1F);
 }
 
 #[test]
 fn core_variable_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::LOCAL_GET.sub_u8(), 0x20);
-    assert_eq!(Op::LOCAL_SET.sub_u8(), 0x21);
-    assert_eq!(Op::LOCAL_TEE.sub_u8(), 0x22);
-    assert_eq!(Op::GLOBAL_GET.sub_u8(), 0x23);
-    assert_eq!(Op::GLOBAL_SET.sub_u8(), 0x24);
-    assert_eq!(Op::TABLE_GET.sub_u8(), 0x25);
-    assert_eq!(Op::TABLE_SET.sub_u8(), 0x26);
+    assert_eq!(Op::LOCAL_GET.sub(), 0x20);
+    assert_eq!(Op::LOCAL_SET.sub(), 0x21);
+    assert_eq!(Op::LOCAL_TEE.sub(), 0x22);
+    assert_eq!(Op::GLOBAL_GET.sub(), 0x23);
+    assert_eq!(Op::GLOBAL_SET.sub(), 0x24);
+    assert_eq!(Op::TABLE_GET.sub(), 0x25);
+    assert_eq!(Op::TABLE_SET.sub(), 0x26);
 }
 
 #[test]
 fn core_memory_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::I32_LOAD.sub_u8(), 0x28);
-    assert_eq!(Op::I64_LOAD.sub_u8(), 0x29);
-    assert_eq!(Op::F32_LOAD.sub_u8(), 0x2A);
-    assert_eq!(Op::F64_LOAD.sub_u8(), 0x2B);
-    assert_eq!(Op::I32_LOAD8_S.sub_u8(), 0x2C);
-    assert_eq!(Op::I32_LOAD8_U.sub_u8(), 0x2D);
-    assert_eq!(Op::I32_LOAD16_S.sub_u8(), 0x2E);
-    assert_eq!(Op::I32_LOAD16_U.sub_u8(), 0x2F);
-    assert_eq!(Op::I64_LOAD8_S.sub_u8(), 0x30);
-    assert_eq!(Op::I64_LOAD8_U.sub_u8(), 0x31);
-    assert_eq!(Op::I64_LOAD16_S.sub_u8(), 0x32);
-    assert_eq!(Op::I64_LOAD16_U.sub_u8(), 0x33);
-    assert_eq!(Op::I64_LOAD32_S.sub_u8(), 0x34);
-    assert_eq!(Op::I64_LOAD32_U.sub_u8(), 0x35);
-    assert_eq!(Op::I32_STORE.sub_u8(), 0x36);
-    assert_eq!(Op::I64_STORE.sub_u8(), 0x37);
-    assert_eq!(Op::F32_STORE.sub_u8(), 0x38);
-    assert_eq!(Op::F64_STORE.sub_u8(), 0x39);
-    assert_eq!(Op::I32_STORE8.sub_u8(), 0x3A);
-    assert_eq!(Op::I32_STORE16.sub_u8(), 0x3B);
-    assert_eq!(Op::I64_STORE8.sub_u8(), 0x3C);
-    assert_eq!(Op::I64_STORE16.sub_u8(), 0x3D);
-    assert_eq!(Op::I64_STORE32.sub_u8(), 0x3E);
-    assert_eq!(Op::MEMORY_SIZE.sub_u8(), 0x3F);
-    assert_eq!(Op::MEMORY_GROW.sub_u8(), 0x40);
+    assert_eq!(Op::I32_LOAD.sub(), 0x28);
+    assert_eq!(Op::I64_LOAD.sub(), 0x29);
+    assert_eq!(Op::F32_LOAD.sub(), 0x2A);
+    assert_eq!(Op::F64_LOAD.sub(), 0x2B);
+    assert_eq!(Op::I32_LOAD8_S.sub(), 0x2C);
+    assert_eq!(Op::I32_LOAD8_U.sub(), 0x2D);
+    assert_eq!(Op::I32_LOAD16_S.sub(), 0x2E);
+    assert_eq!(Op::I32_LOAD16_U.sub(), 0x2F);
+    assert_eq!(Op::I64_LOAD8_S.sub(), 0x30);
+    assert_eq!(Op::I64_LOAD8_U.sub(), 0x31);
+    assert_eq!(Op::I64_LOAD16_S.sub(), 0x32);
+    assert_eq!(Op::I64_LOAD16_U.sub(), 0x33);
+    assert_eq!(Op::I64_LOAD32_S.sub(), 0x34);
+    assert_eq!(Op::I64_LOAD32_U.sub(), 0x35);
+    assert_eq!(Op::I32_STORE.sub(), 0x36);
+    assert_eq!(Op::I64_STORE.sub(), 0x37);
+    assert_eq!(Op::F32_STORE.sub(), 0x38);
+    assert_eq!(Op::F64_STORE.sub(), 0x39);
+    assert_eq!(Op::I32_STORE8.sub(), 0x3A);
+    assert_eq!(Op::I32_STORE16.sub(), 0x3B);
+    assert_eq!(Op::I64_STORE8.sub(), 0x3C);
+    assert_eq!(Op::I64_STORE16.sub(), 0x3D);
+    assert_eq!(Op::I64_STORE32.sub(), 0x3E);
+    assert_eq!(Op::MEMORY_SIZE.sub(), 0x3F);
+    assert_eq!(Op::MEMORY_GROW.sub(), 0x40);
 }
 
 #[test]
 fn core_reference_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::NULL.sub_u8(), 0xD0);
-    assert_eq!(Op::REF_IS_NULL.sub_u8(), 0xD1);
-    assert_eq!(Op::REF_FUNC.sub_u8(), 0xD2);
-    assert_eq!(Op::REF_EQ.sub_u8(), 0xD3);
-    assert_eq!(Op::REF_AS_NON_NULL.sub_u8(), 0xD4);
-    assert_eq!(Op::BR_ON_NULL.sub_u8(), 0xD5);
-    assert_eq!(Op::BR_ON_NON_NULL.sub_u8(), 0xD6);
+    assert_eq!(Op::NULL.sub(), 0xD0);
+    assert_eq!(Op::REF_IS_NULL.sub(), 0xD1);
+    assert_eq!(Op::REF_FUNC.sub(), 0xD2);
+    assert_eq!(Op::REF_EQ.sub(), 0xD3);
+    assert_eq!(Op::REF_AS_NON_NULL.sub(), 0xD4);
+    assert_eq!(Op::BR_ON_NULL.sub(), 0xD5);
+    assert_eq!(Op::BR_ON_NON_NULL.sub(), 0xD6);
 }
 
 #[test]
@@ -904,7 +904,8 @@ fn reader_preserves_multi_memory_load_memarg() {
 
     let chunks = wasm::read_wasm(&wasm).expect("standard wasm should decode");
     let code = &chunks[1].code;
-    let pattern = [Op::I32_LOAD.prefix(), Op::I32_LOAD.sub_u8(), 0x42, 0x05, 0x01];
+    let enc = Op::I32_LOAD.encode();
+    let pattern: [u8; 7] = [enc[0], enc[1], enc[2], enc[3], 0x42, 0x05, 0x01];
     assert!(
         code.windows(pattern.len()).any(|w| w == pattern),
         "reader must preserve multi-memory load memarg bytes"
@@ -926,34 +927,17 @@ fn reader_preserves_multi_memory_bulk_indices() {
 
     let chunks = wasm::read_wasm(&wasm).expect("standard wasm should decode");
     let code = &chunks[1].code;
-    for pattern in [
-        &[
-            Op::MEMORY_GROW.prefix(),
-            Op::MEMORY_GROW.sub_u8(),
-            0xEE,
-            0x00,
-            0x01,
-        ][..],
-        &[
-            Op::MEMORY_COPY.prefix(),
-            Op::MEMORY_COPY.sub_u8(),
-            0xEE,
-            0x00,
-            0x01,
-            0xEE,
-            0x00,
-            0x02,
-        ][..],
-        &[
-            Op::MEMORY_FILL.prefix(),
-            Op::MEMORY_FILL.sub_u8(),
-            0xEE,
-            0x00,
-            0x01,
-        ][..],
-    ] {
+    let mg = Op::MEMORY_GROW.encode();
+    let mc = Op::MEMORY_COPY.encode();
+    let mf = Op::MEMORY_FILL.encode();
+    let patterns: Vec<Vec<u8>> = vec![
+        vec![mg[0], mg[1], mg[2], mg[3], 0xEE, 0x00, 0x01],
+        vec![mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x01, 0xEE, 0x00, 0x02],
+        vec![mf[0], mf[1], mf[2], mf[3], 0xEE, 0x00, 0x01],
+    ];
+    for pattern in &patterns {
         assert!(
-            code.windows(pattern.len()).any(|w| w == pattern),
+            code.windows(pattern.len()).any(|w| w == pattern.as_slice()),
             "reader must preserve multi-memory bulk pattern {pattern:02x?}"
         );
     }
@@ -987,58 +971,58 @@ fn jspi_suspending_imports_emit_metadata_not_opcode() {
 
 #[test]
 fn core_comparison_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::I32_EQZ.sub_u8(), 0x45);
-    assert_eq!(Op::I32_EQ.sub_u8(), 0x46);
-    assert_eq!(Op::I32_NE.sub_u8(), 0x47);
-    assert_eq!(Op::F32_EQ.sub_u8(), 0x5B);
-    assert_eq!(Op::F32_LT.sub_u8(), 0x5D);
-    assert_eq!(Op::F64_EQ.sub_u8(), 0x61);
-    assert_eq!(Op::F64_LT.sub_u8(), 0x63);
+    assert_eq!(Op::I32_EQZ.sub(), 0x45);
+    assert_eq!(Op::I32_EQ.sub(), 0x46);
+    assert_eq!(Op::I32_NE.sub(), 0x47);
+    assert_eq!(Op::F32_EQ.sub(), 0x5B);
+    assert_eq!(Op::F32_LT.sub(), 0x5D);
+    assert_eq!(Op::F64_EQ.sub(), 0x61);
+    assert_eq!(Op::F64_LT.sub(), 0x63);
 }
 
 #[test]
 fn core_arithmetic_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::I32_ADD.sub_u8(), 0x6A);
-    assert_eq!(Op::I32_SUB.sub_u8(), 0x6B);
-    assert_eq!(Op::I32_MUL.sub_u8(), 0x6C);
-    assert_eq!(Op::I64_ADD.sub_u8(), 0x7C);
-    assert_eq!(Op::F32_ADD.sub_u8(), 0x92);
-    assert_eq!(Op::F64_ADD.sub_u8(), 0xA0);
-    assert_eq!(Op::F64_MUL.sub_u8(), 0xA2);
+    assert_eq!(Op::I32_ADD.sub(), 0x6A);
+    assert_eq!(Op::I32_SUB.sub(), 0x6B);
+    assert_eq!(Op::I32_MUL.sub(), 0x6C);
+    assert_eq!(Op::I64_ADD.sub(), 0x7C);
+    assert_eq!(Op::F32_ADD.sub(), 0x92);
+    assert_eq!(Op::F64_ADD.sub(), 0xA0);
+    assert_eq!(Op::F64_MUL.sub(), 0xA2);
 }
 
 #[test]
 fn core_conversion_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::I32_WRAP_I64.sub_u8(), 0xA7);
-    assert_eq!(Op::I32_TRUNC_F32_S.sub_u8(), 0xA8);
-    assert_eq!(Op::I32_TRUNC_F32_U.sub_u8(), 0xA9);
-    assert_eq!(Op::I32_FROM_F64.sub_u8(), 0xAA); // i32.trunc_f64_s
-    assert_eq!(Op::I32_TRUNC_F64_U.sub_u8(), 0xAB);
-    assert_eq!(Op::I64_EXTEND_I32_S.sub_u8(), 0xAC);
-    assert_eq!(Op::I64_EXTEND_I32_U.sub_u8(), 0xAD);
-    assert_eq!(Op::F32_DEMOTE_F64.sub_u8(), 0xB6);
-    assert_eq!(Op::F64_FROM_I32.sub_u8(), 0xB7); // f64.convert_i32_s
-    assert_eq!(Op::F64_PROMOTE_F32.sub_u8(), 0xBB);
-    assert_eq!(Op::I32_REINTERPRET_F32.sub_u8(), 0xBC);
-    assert_eq!(Op::I64_REINTERPRET_F64.sub_u8(), 0xBD);
-    assert_eq!(Op::F32_REINTERPRET_I32.sub_u8(), 0xBE);
-    assert_eq!(Op::F64_REINTERPRET_I64.sub_u8(), 0xBF);
+    assert_eq!(Op::I32_WRAP_I64.sub(), 0xA7);
+    assert_eq!(Op::I32_TRUNC_F32_S.sub(), 0xA8);
+    assert_eq!(Op::I32_TRUNC_F32_U.sub(), 0xA9);
+    assert_eq!(Op::I32_FROM_F64.sub(), 0xAA); // i32.trunc_f64_s
+    assert_eq!(Op::I32_TRUNC_F64_U.sub(), 0xAB);
+    assert_eq!(Op::I64_EXTEND_I32_S.sub(), 0xAC);
+    assert_eq!(Op::I64_EXTEND_I32_U.sub(), 0xAD);
+    assert_eq!(Op::F32_DEMOTE_F64.sub(), 0xB6);
+    assert_eq!(Op::F64_FROM_I32.sub(), 0xB7); // f64.convert_i32_s
+    assert_eq!(Op::F64_PROMOTE_F32.sub(), 0xBB);
+    assert_eq!(Op::I32_REINTERPRET_F32.sub(), 0xBC);
+    assert_eq!(Op::I64_REINTERPRET_F64.sub(), 0xBD);
+    assert_eq!(Op::F32_REINTERPRET_I32.sub(), 0xBE);
+    assert_eq!(Op::F64_REINTERPRET_I64.sub(), 0xBF);
 }
 
 #[test]
 fn gc_opcodes_have_spec_byte_values() {
-    assert_eq!(Op::STRUCT_NEW.prefix(), 0xFB);
-    assert_eq!(Op::STRUCT_NEW.sub_u8(), 0x00);
-    assert_eq!(Op::ARRAY_NEW.sub_u8(), 0x06);
-    assert_eq!(Op::ARRAY_NEW_FIXED.sub_u8(), 0x08);
-    assert_eq!(Op::ARRAY_GET.sub_u8(), 0x0B);
-    assert_eq!(Op::ARRAY_SET.sub_u8(), 0x0E);
-    assert_eq!(Op::ARRAY_LENGTH.sub_u8(), 0x0F);
-    assert_eq!(Op::REF_TEST.sub_u8(), 0x14);
-    assert_eq!(Op::REF_CAST.sub_u8(), 0x16);
-    assert_eq!(Op::BR_ON_CAST.sub_u8(), 0x18);
-    assert_eq!(Op::I31_NEW.sub_u8(), 0x1C);
-    assert_eq!(Op::I31_GET_S.sub_u8(), 0x1D);
+    assert_eq!(Op::STRUCT_NEW.group(), 0xFB);
+    assert_eq!(Op::STRUCT_NEW.sub(), 0x00);
+    assert_eq!(Op::ARRAY_NEW.sub(), 0x06);
+    assert_eq!(Op::ARRAY_NEW_FIXED.sub(), 0x08);
+    assert_eq!(Op::ARRAY_GET.sub(), 0x0B);
+    assert_eq!(Op::ARRAY_SET.sub(), 0x0E);
+    assert_eq!(Op::ARRAY_LENGTH.sub(), 0x0F);
+    assert_eq!(Op::REF_TEST.sub(), 0x14);
+    assert_eq!(Op::REF_CAST.sub(), 0x16);
+    assert_eq!(Op::BR_ON_CAST.sub(), 0x18);
+    assert_eq!(Op::I31_NEW.sub(), 0x1C);
+    assert_eq!(Op::I31_GET_S.sub(), 0x1D);
 }
 
 #[test]
@@ -1065,16 +1049,16 @@ fn fc_prefixed_proposal_opcodes_have_spec_byte_values() {
     ];
 
     for (op, sub) in cases {
-        assert_eq!(op.prefix(), 0xFC);
-        assert_eq!(op.sub_u8(), sub);
+        assert_eq!(op.group(), 0xFC);
+        assert_eq!(op.sub(), sub);
     }
 }
 
 #[test]
 fn simd_prefix_is_fd() {
-    assert_eq!(Op::V128_CONST.prefix(), 0xFD);
-    assert_eq!(Op::I32X4_ADD.prefix(), 0xFD);
-    assert_eq!(Op::F64X2_SQRT.prefix(), 0xFD);
+    assert_eq!(Op::V128_CONST.group(), 0xFD);
+    assert_eq!(Op::I32X4_ADD.group(), 0xFD);
+    assert_eq!(Op::F64X2_SQRT.group(), 0xFD);
 }
 
 #[test]
@@ -1128,8 +1112,8 @@ fn simd_memory_lane_and_splat_opcodes_have_spec_byte_values() {
     ];
 
     for (op, sub) in cases {
-        assert_eq!(op.prefix(), 0xFD);
-        assert_eq!(op.sub_u8(), sub);
+        assert_eq!(op.group(), 0xFD);
+        assert_eq!(op.sub(), sub);
     }
 }
 
@@ -1188,8 +1172,8 @@ fn simd_comparison_and_bitwise_opcodes_have_spec_byte_values() {
     ];
 
     for (op, sub) in cases {
-        assert_eq!(op.prefix(), 0xFD);
-        assert_eq!(op.sub_u8(), sub);
+        assert_eq!(op.group(), 0xFD);
+        assert_eq!(op.sub(), sub);
     }
 }
 
@@ -1341,18 +1325,18 @@ fn simd_numeric_family_opcodes_have_spec_byte_values() {
     ];
 
     for (op, sub) in cases {
-        assert_eq!(op.prefix(), 0xFD);
-        assert_eq!(op.sub_u8(), sub);
+        assert_eq!(op.group(), 0xFD);
+        assert_eq!(op.sub(), sub);
     }
 }
 
 #[test]
 fn threads_prefix_is_fe() {
-    assert_eq!(Op::ATOMIC_FENCE.prefix(), 0xFE);
-    assert_eq!(Op::MEMORY_ATOMIC_WAIT32.sub_u8(), 0x01);
-    assert_eq!(Op::MEMORY_ATOMIC_WAIT64.sub_u8(), 0x02);
-    assert_eq!(Op::I32_ATOMIC_LOAD.prefix(), 0xFE);
-    assert_eq!(Op::I64_ATOMIC_STORE.prefix(), 0xFE);
+    assert_eq!(Op::ATOMIC_FENCE.group(), 0xFE);
+    assert_eq!(Op::MEMORY_ATOMIC_WAIT32.sub(), 0x01);
+    assert_eq!(Op::MEMORY_ATOMIC_WAIT64.sub(), 0x02);
+    assert_eq!(Op::I32_ATOMIC_LOAD.group(), 0xFE);
+    assert_eq!(Op::I64_ATOMIC_STORE.group(), 0xFE);
 }
 
 #[test]
@@ -1383,8 +1367,8 @@ fn threads_opcodes_have_spec_byte_values() {
     ];
 
     for (op, sub) in cases {
-        assert_eq!(op.prefix(), 0xFE);
-        assert_eq!(op.sub_u8(), sub);
+        assert_eq!(op.group(), 0xFE);
+        assert_eq!(op.sub(), sub);
     }
 }
 

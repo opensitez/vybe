@@ -1329,10 +1329,9 @@ fn round_trip_loop_execution_matches() {
 fn every_opcode_is_two_bytes() {
     // Opcodes are 2 bytes: [prefix, sub].
     // Verify encoding round-trip matches spec.
-    for byte1 in [0x00u8, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF] {
-        for byte2 in 0u8..=0xFF {
-            // Not all combinations are valid opcodes — just check decode doesn't panic
-            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2 as u16);
+    for byte1 in [0x00u16, 0xF0, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF] {
+        for byte2 in 0u16..=0xFF {
+            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2);
         }
     }
 }
@@ -1340,36 +1339,36 @@ fn every_opcode_is_two_bytes() {
 #[test]
 fn core_wasm_opcode_bytes_match_spec() {
     // Verify specific opcodes have the correct WASM byte values
-    assert_eq!(Op::DROP.sub_u8(), 0x1A, "drop should be 0x1A per WASM spec");
-    assert_eq!(Op::I32_ADD.sub_u8(), 0x6A, "i32.add should be 0x6A");
-    assert_eq!(Op::I32_SUB.sub_u8(), 0x6B, "i32.sub should be 0x6B");
-    assert_eq!(Op::F64_ADD.sub_u8(), 0xA0, "f64.add should be 0xA0");
-    assert_eq!(Op::F64_NEG.sub_u8(), 0x9A, "f64.neg should be 0x9A");
-    assert_eq!(Op::LOCAL_GET.sub_u8(), 0x20, "local.get should be 0x20");
-    assert_eq!(Op::LOCAL_SET.sub_u8(), 0x21, "local.set should be 0x21");
-    assert_eq!(Op::CALL.sub_u8(), 0x10, "call should be 0x10");
-    assert_eq!(Op::RETURN.sub_u8(), 0x0F, "return should be 0x0F");
-    assert_eq!(Op::END.sub_u8(), 0x0B, "end should be 0x0B");
-    assert_eq!(Op::BLOCK.sub_u8(), 0x02, "block should be 0x02");
-    assert_eq!(Op::LOOP.sub_u8(), 0x03, "loop should be 0x03");
-    assert_eq!(Op::BR.sub_u8(), 0x0C, "br should be 0x0C");
+    assert_eq!(Op::DROP.sub(), 0x1A, "drop should be 0x1A per WASM spec");
+    assert_eq!(Op::I32_ADD.sub(), 0x6A, "i32.add should be 0x6A");
+    assert_eq!(Op::I32_SUB.sub(), 0x6B, "i32.sub should be 0x6B");
+    assert_eq!(Op::F64_ADD.sub(), 0xA0, "f64.add should be 0xA0");
+    assert_eq!(Op::F64_NEG.sub(), 0x9A, "f64.neg should be 0x9A");
+    assert_eq!(Op::LOCAL_GET.sub(), 0x20, "local.get should be 0x20");
+    assert_eq!(Op::LOCAL_SET.sub(), 0x21, "local.set should be 0x21");
+    assert_eq!(Op::CALL.sub(), 0x10, "call should be 0x10");
+    assert_eq!(Op::RETURN.sub(), 0x0F, "return should be 0x0F");
+    assert_eq!(Op::END.sub(), 0x0B, "end should be 0x0B");
+    assert_eq!(Op::BLOCK.sub(), 0x02, "block should be 0x02");
+    assert_eq!(Op::LOOP.sub(), 0x03, "loop should be 0x03");
+    assert_eq!(Op::BR.sub(), 0x0C, "br should be 0x0C");
 }
 
 #[test]
 fn core_opcodes_have_prefix_0x00() {
-    assert_eq!(Op::DROP.prefix(), 0x00);
-    assert_eq!(Op::I32_ADD.prefix(), 0x00);
-    assert_eq!(Op::F64_ADD.prefix(), 0x00);
-    assert_eq!(Op::LOCAL_GET.prefix(), 0x00);
-    assert_eq!(Op::END.prefix(), 0x00);
+    assert_eq!(Op::DROP.group(), 0x00);
+    assert_eq!(Op::I32_ADD.group(), 0x00);
+    assert_eq!(Op::F64_ADD.group(), 0x00);
+    assert_eq!(Op::LOCAL_GET.group(), 0x00);
+    assert_eq!(Op::END.group(), 0x00);
 }
 
 #[allow(non_snake_case)]
 #[test]
 fn gc_opcodes_have_prefix_0xFB() {
-    assert_eq!(Op::STRUCT_NEW.prefix(), 0xFB);
-    assert_eq!(Op::ARRAY_NEW.prefix(), 0xFB);
-    assert_eq!(Op::ARRAY_GET.prefix(), 0xFB);
+    assert_eq!(Op::STRUCT_NEW.group(), 0xFB);
+    assert_eq!(Op::ARRAY_NEW.group(), 0xFB);
+    assert_eq!(Op::ARRAY_GET.group(), 0xFB);
 }
 
 #[allow(non_snake_case)]
@@ -1380,11 +1379,11 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     // `Op::ARRAY_PUSH` check was removed in Phase E — the 9 `0xFF`
     // ARRAY_* opcodes no longer exist; callers emit
     // `vybe:js-array.*` imports instead.)
-    assert_eq!(Op::CONST.prefix(), 0xFF);
-    assert_eq!(Op::CALL_IMPORT.prefix(), 0xFF);
-    assert_eq!(Op::BR.prefix(), 0x00);
-    assert_eq!(Op::BR.sub_u8(), 0x0C);
-    assert_eq!(Op::STR_CONCAT.prefix(), 0xFF);
+    assert_eq!(Op::CONST.group(), 0xFF);
+    assert_eq!(Op::CALL_IMPORT.group(), 0xFF);
+    assert_eq!(Op::BR.group(), 0x00);
+    assert_eq!(Op::BR.sub(), 0x0C);
+    assert_eq!(Op::STR_CONCAT.group(), 0xFF);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -3150,7 +3149,7 @@ fn exception_type_declared_with_externref_param() {
 /// silently wrong. This test locks down the entire byte table.
 #[test]
 fn gc_opcodes_use_spec_byte_values() {
-    let table: &[(Op, u8, u8, &str)] = &[
+    let table: &[(Op, u16, u8, &str)] = &[
         // Struct ops
         (Op::STRUCT_NEW, 0xFB, 0x00, "struct.new"),
         (Op::STRUCT_NEW_DEFAULT, 0xFB, 0x01, "struct.new_default"),
@@ -3195,11 +3194,11 @@ fn gc_opcodes_use_spec_byte_values() {
     ];
     for (op, prefix, sub, name) in table {
         assert_eq!(
-            op.prefix(),
+            op.group(),
             *prefix,
             "{}: prefix mismatch (got 0x{:02X}, spec 0x{:02X})",
             name,
-            op.prefix(),
+            op.group(),
             *prefix
         );
         assert_eq!(
@@ -3222,17 +3221,17 @@ fn gc_opcodes_use_spec_byte_values() {
 
 #[test]
 fn ref_eq_no_longer_collides_with_array_init_elem() {
-    assert_eq!(Op::REF_EQ.prefix(), 0x00);
-    assert_eq!(Op::REF_EQ.sub_u8(), 0xD3);
-    assert_eq!(Op::ARRAY_INIT_ELEM.prefix(), 0xFB);
-    assert_eq!(Op::ARRAY_INIT_ELEM.sub_u8(), 0x13);
+    assert_eq!(Op::REF_EQ.group(), 0x00);
+    assert_eq!(Op::REF_EQ.sub(), 0xD3);
+    assert_eq!(Op::ARRAY_INIT_ELEM.group(), 0xFB);
+    assert_eq!(Op::ARRAY_INIT_ELEM.sub(), 0x13);
     assert_ne!(Op::REF_EQ.0, Op::ARRAY_INIT_ELEM.0);
 }
 
 #[test]
 fn array_new_fixed_vs_array_new_at_correct_spec_bytes() {
-    assert_eq!(Op::ARRAY_NEW_FIXED.sub_u8(), 0x08);
-    assert_eq!(Op::ARRAY_NEW.sub_u8(), 0x06);
+    assert_eq!(Op::ARRAY_NEW_FIXED.sub(), 0x08);
+    assert_eq!(Op::ARRAY_NEW.sub(), 0x06);
     assert_eq!(Op::ARRAY_NEW_FIXED.wasm_name(), "array.new_fixed");
     assert_eq!(Op::ARRAY_NEW.wasm_name(), "array.new");
 }
@@ -3446,9 +3445,9 @@ fn relaxed_simd_every_opcode_is_named() {
     );
     for (op, expected_name) in all {
         assert_eq!(
-            op.prefix(),
-            0xDD,
-            "relaxed-SIMD op must use internal prefix 0xDD: {}",
+            op.group(),
+            0xFD,
+            "relaxed-SIMD op must use SIMD prefix 0xFD: {}",
             expected_name
         );
         assert_eq!(op.wasm_name(), *expected_name);

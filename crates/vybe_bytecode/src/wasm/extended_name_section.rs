@@ -293,17 +293,17 @@ fn collect_label_names(chunk: &Chunk) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let code = &chunk.code;
     let mut ip = 0usize;
-    while ip + 1 < code.len() {
+    while ip + 3 < code.len() {
         let prefix = code[ip];
         let sub = code[ip + 1];
-        let op = match Op::decode(prefix, sub as u16) {
+        let op = match Op::decode((prefix) as u16, (sub as u16) as u16) {
             Some(op) => op,
             None => {
-                ip += 2;
+                ip += 4;
                 continue;
             }
         };
-        ip += 2;
+        ip += 4;
         // Structured control ops introduce a new label index.
         if op == Op::BLOCK || op == Op::LOOP || op == Op::TRY_TABLE {
             let tag = if op == Op::BLOCK {

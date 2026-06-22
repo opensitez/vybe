@@ -303,8 +303,8 @@ fn decoded_body_contains(bytes: &[u8], op: Op) -> bool {
     let chunks = wasm::read_wasm(bytes).expect("standard module should decode");
     chunks[1]
         .code
-        .windows(2)
-        .any(|w| w == [op.prefix(), op.sub_u8()])
+        .windows(4)
+        .any(|w| w == op.encode())
 }
 
 #[test]
@@ -1200,19 +1200,15 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     assert_eq!(chunks[0].memory_min_pages, vec![1, 1]);
 
     let function = chunks.remove(1);
-    assert!(function.code.windows(5).any(|w| w
-        == [
-            Op::F64_STORE.prefix(),
-            Op::F64_STORE.sub_u8(),
-            0x43,
-            0x00,
-            0x01
-        ]));
+    let fs = Op::F64_STORE.encode();
+    let fl = Op::F64_LOAD.encode();
+    assert!(function.code.windows(7).any(|w| w
+        == [fs[0], fs[1], fs[2], fs[3], 0x43, 0x00, 0x01]));
     assert!(
         function
             .code
-            .windows(5)
-            .any(|w| w == [Op::F64_LOAD.prefix(), Op::F64_LOAD.sub_u8(), 0x43, 0x00, 0x01])
+            .windows(7)
+            .any(|w| w == [fl[0], fl[1], fl[2], fl[3], 0x43, 0x00, 0x01])
     );
 
     let mut vm = VM::new();

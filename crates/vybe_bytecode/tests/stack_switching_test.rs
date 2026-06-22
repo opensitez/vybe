@@ -90,12 +90,20 @@ fn make_promise(id: u64, state: &str, value: Value) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-fn emit_try_table_catch_all(c: &mut Chunk, body_bytes: u16) {
+fn emit_try_table_catch_all_start(c: &mut Chunk) -> usize {
     c.emit_op(Op::TRY_TABLE, 0);
     c.emit(1, 0);
     c.emit(0, 0);
-    c.emit((body_bytes >> 8) as u8, 0);
-    c.emit((body_bytes & 0xFF) as u8, 0);
+    let offset_pos = c.current_offset();
+    c.emit(0, 0);
+    c.emit(0, 0);
+    offset_pos
+}
+
+fn patch_try_table(c: &mut Chunk, offset_pos: usize) {
+    let body_bytes = c.current_offset() - (offset_pos + 2);
+    c.code[offset_pos] = (body_bytes >> 8) as u8;
+    c.code[offset_pos + 1] = (body_bytes & 0xFF) as u8;
 }
 
 fn standard_stack_switching_module(body_ops: &[u8]) -> Vec<u8> {
@@ -972,13 +980,13 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     let mut vm = VM::new();
     vm.label_stack.push(LabelEntry {
         target: 123,
-        is_loop: false,
+        is_loop: false, is_try: false,
         result_arity: 0,
         stack_height: 0,
     });
     vm.label_stack.push(LabelEntry {
         target: 456,
-        is_loop: true,
+        is_loop: true, is_try: false,
         result_arity: 0,
         stack_height: 0,
     });
@@ -998,7 +1006,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     let mut vm = VM::new();
     vm.label_stack.push(LabelEntry {
         target: 42,
-        is_loop: true,
+        is_loop: true, is_try: false,
         result_arity: 0,
         stack_height: 0,
     });
@@ -1129,14 +1137,14 @@ fn jspi_rejected_promise_suspend_enters_wasm_catch_handler() {
     ));
     let handled = chunk.add_constant(Value::I32(91));
 
-    // Try body = CONST(4 bytes) + `jspi.await` CALL_IMPORT(5 bytes) = 9 bytes.
-    emit_try_table_catch_all(&mut chunk, 9);
+    let off = emit_try_table_catch_all_start(&mut chunk);
     chunk.emit_op_u16(Op::CONST, promise, 0);
     {
         let aw = chunk.add_import("jspi", "await");
         chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
         chunk.emit(1, 0);
     }
+    patch_try_table(&mut chunk, off);
 
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, handled, 0);

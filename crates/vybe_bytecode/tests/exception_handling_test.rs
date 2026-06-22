@@ -78,7 +78,7 @@ fn standard_rethrow_must_not_decode_as_noop() {
     ]);
 
     let chunks = wasm::read_wasm(&bytes).expect("rethrow should decode");
-    assert!(chunks[1].code.windows(2).any(|w| w == [0x00, 0x09]));
+    assert!(chunks[1].code.windows(4).any(|w| w == Op::RETHROW.encode()));
 }
 
 #[test]
@@ -88,16 +88,24 @@ fn standard_delegate_must_not_decode_as_noop() {
     ]);
 
     let chunks = wasm::read_wasm(&bytes).expect("delegate should decode");
-    assert!(chunks[1].code.windows(2).any(|w| w == [0x00, 0x18]));
+    assert!(chunks[1].code.windows(4).any(|w| w == Op::DELEGATE.encode()));
 }
 
-/// Emit TRY_TABLE with one catch-all handler pointing `body_bytes` ahead.
-fn emit_try_table_catch_all(c: &mut Chunk, body_bytes: u16) {
-    c.emit_op(Op::TRY_TABLE, 0); // 2 bytes
+/// Emit TRY_TABLE with one catch-all handler. Returns the offset_pos to patch.
+fn emit_try_table_catch_all_start(c: &mut Chunk) -> usize {
+    c.emit_op(Op::TRY_TABLE, 0);
     c.emit(1, 0); // handler_count = 1
     c.emit(0, 0); // tag = 0 (catch-all)
-    c.emit((body_bytes >> 8) as u8, 0); // offset hi
-    c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
+    let offset_pos = c.current_offset();
+    c.emit(0, 0); // offset hi placeholder
+    c.emit(0, 0); // offset lo placeholder
+    offset_pos
+}
+
+fn patch_try_table(c: &mut Chunk, offset_pos: usize) {
+    let body_bytes = c.current_offset() - (offset_pos + 2);
+    c.code[offset_pos] = (body_bytes >> 8) as u8;
+    c.code[offset_pos + 1] = (body_bytes & 0xFF) as u8;
 }
 
 fn emit_rethrow(c: &mut Chunk, depth: u32) {
@@ -138,22 +146,15 @@ fn throw_ref_uncaught_propagates() {
 
 #[test]
 fn try_table_catch_all_intercepts_throw() {
-    // Layout after TRY_TABLE operands (body_bytes = 6):
-    //   [CONST err_str: 4][THROW: 2]  ← 6 bytes
-    // Catch handler:
-    //   [DROP: 2][CONST 99: 4]
-    //   [RETURN: 2] ← added by run()
     let r = run(|c| {
         let err = c.add_constant(Value::String(Arc::from("oops")));
         let ok = c.add_constant(Value::I32(99));
 
-        emit_try_table_catch_all(c, 6); // body is 6 bytes
+        let off = emit_try_table_catch_all_start(c);
+        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_op(Op::THROW, 0);
+        patch_try_table(c, off);
 
-        // body: push + throw (6 bytes)
-        c.emit_op_u16(Op::CONST, err, 0); // 4
-        c.emit_op(Op::THROW, 0); // 2
-
-        // catch handler: drop thrown value, push result
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, ok, 0);
     });
@@ -166,11 +167,13 @@ fn rethrow_in_inner_handler_is_caught_by_outer_handler() {
         let err = c.add_constant(Value::String(Arc::from("nested")));
         let ok = c.add_constant(Value::I32(77));
 
-        emit_try_table_catch_all(c, 15);
-        emit_try_table_catch_all(c, 6);
+        let outer = emit_try_table_catch_all_start(c);
+        let inner = emit_try_table_catch_all_start(c);
         c.emit_op_u16(Op::CONST, err, 0);
         c.emit_op(Op::THROW, 0);
+        patch_try_table(c, inner);
         emit_rethrow(c, 0);
+        patch_try_table(c, outer);
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, ok, 0);
     });
@@ -183,11 +186,13 @@ fn delegate_in_inner_handler_is_caught_by_outer_handler() {
         let err = c.add_constant(Value::String(Arc::from("delegated")));
         let ok = c.add_constant(Value::I32(91));
 
-        emit_try_table_catch_all(c, 15);
-        emit_try_table_catch_all(c, 6);
+        let outer = emit_try_table_catch_all_start(c);
+        let inner = emit_try_table_catch_all_start(c);
         c.emit_op_u16(Op::CONST, err, 0);
         c.emit_op(Op::THROW, 0);
+        patch_try_table(c, inner);
         emit_delegate(c, 0);
+        patch_try_table(c, outer);
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, ok, 0);
     });
@@ -201,15 +206,18 @@ fn delegate_depth_skips_enclosing_handler() {
         let outer = c.add_constant(Value::I32(111));
         let middle = c.add_constant(Value::I32(222));
 
-        emit_try_table_catch_all(c, 27);
-        emit_try_table_catch_all(c, 15);
-        emit_try_table_catch_all(c, 6);
+        let o = emit_try_table_catch_all_start(c);
+        let m = emit_try_table_catch_all_start(c);
+        let i = emit_try_table_catch_all_start(c);
         c.emit_op_u16(Op::CONST, err, 0);
         c.emit_op(Op::THROW, 0);
+        patch_try_table(c, i);
         emit_delegate(c, 1);
+        patch_try_table(c, m);
 
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, middle, 0);
+        patch_try_table(c, o);
 
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, outer, 0);
@@ -219,33 +227,27 @@ fn delegate_depth_skips_enclosing_handler() {
 
 #[test]
 fn try_table_thrown_value_available_in_handler() {
-    // The thrown i32 value lands on the stack in the catch handler.
     let r = run(|c| {
         let thrown = c.add_constant(Value::I32(42));
 
-        emit_try_table_catch_all(c, 6); // body = CONST(4) + THROW(2)
-
+        let off = emit_try_table_catch_all_start(c);
         c.emit_op_u16(Op::CONST, thrown, 0);
         c.emit_op(Op::THROW, 0);
-
-        // handler: thrown value (42) is on stack — return it
+        patch_try_table(c, off);
     });
     assert_eq!(r.as_i32(), 42);
 }
 
 #[test]
 fn try_table_no_throw_falls_through() {
-    // When no throw happens, execution continues normally past the body.
-    // The handler should not run.
     let r = run(|c| {
         let ok = c.add_constant(Value::I32(7));
 
-        // body_bytes = CONST(4) + RETURN(2) = 6
-        // handler never runs (no throw)
-        emit_try_table_catch_all(c, 6);
-
-        c.emit_op_u16(Op::CONST, ok, 0); // 4
-        // run() adds RETURN (2)
+        let off = emit_try_table_catch_all_start(c);
+        c.emit_op_u16(Op::CONST, ok, 0);
+        // run() adds RETURN — no throw, handler never runs
+        // Patch offset to point past the body (even though handler won't run)
+        patch_try_table(c, off);
     });
     assert_eq!(r.as_i32(), 7);
 }
@@ -258,10 +260,10 @@ fn throw_ref_caught_by_try_table() {
         let err = c.add_constant(Value::I32(55));
         let ok = c.add_constant(Value::I32(55));
 
-        emit_try_table_catch_all(c, 6);
-
+        let off = emit_try_table_catch_all_start(c);
         c.emit_op_u16(Op::CONST, err, 0);
         c.emit_op(Op::THROW_REF, 0);
+        patch_try_table(c, off);
 
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, ok, 0);
@@ -275,27 +277,38 @@ fn throw_ref_caught_by_try_table() {
 // String exceptions match when the string starts with or contains the tag.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Emit TRY_TABLE with one typed handler.
-/// `tag_byte` = 0 for catch-all, >0 for typed.
-/// `body_bytes` = byte count of the body following operands.
-fn emit_try_table_typed(c: &mut Chunk, tag_byte: u8, body_bytes: u16) {
+/// Emit TRY_TABLE with one typed handler. Returns offset_pos to patch.
+fn emit_try_table_typed_start(c: &mut Chunk, tag_byte: u8) -> usize {
     c.emit_op(Op::TRY_TABLE, 0);
     c.emit(1, 0); // handler_count
     c.emit(tag_byte, 0); // tag
-    c.emit((body_bytes >> 8) as u8, 0); // offset hi
-    c.emit((body_bytes & 0xFF) as u8, 0); // offset lo
+    let offset_pos = c.current_offset();
+    c.emit(0, 0); // offset hi placeholder
+    c.emit(0, 0); // offset lo placeholder
+    offset_pos
 }
 
-fn emit_try_table_typed_then_catch_all(c: &mut Chunk, tag_byte: u8, body_bytes: u16) {
+fn emit_try_table_typed_then_catch_all_start(c: &mut Chunk, tag_byte: u8) -> (usize, usize) {
     c.emit_op(Op::TRY_TABLE, 0);
-    c.emit(2, 0); // handler_count
-    let first_handler_offset = body_bytes + 3;
-    c.emit(tag_byte, 0);
-    c.emit((first_handler_offset >> 8) as u8, 0);
-    c.emit((first_handler_offset & 0xFF) as u8, 0);
-    c.emit(0, 0); // catch-all fallback
-    c.emit((body_bytes >> 8) as u8, 0);
-    c.emit((body_bytes & 0xFF) as u8, 0);
+    c.emit(2, 0); // handler_count = 2
+    c.emit(tag_byte, 0); // typed handler tag
+    let typed_off_pos = c.current_offset();
+    c.emit(0, 0); // typed handler offset hi placeholder
+    c.emit(0, 0); // typed handler offset lo placeholder
+    c.emit(0, 0); // catch-all tag
+    let catchall_off_pos = c.current_offset();
+    c.emit(0, 0); // catch-all offset hi placeholder
+    c.emit(0, 0); // catch-all offset lo placeholder
+    (typed_off_pos, catchall_off_pos)
+}
+
+fn patch_try_table_two(c: &mut Chunk, typed_off_pos: usize, catchall_off_pos: usize, catch_all_start: usize) {
+    let typed_bytes = catch_all_start - (typed_off_pos + 2);
+    c.code[typed_off_pos] = (typed_bytes >> 8) as u8;
+    c.code[typed_off_pos + 1] = (typed_bytes & 0xFF) as u8;
+    let catchall_bytes = catch_all_start - (catchall_off_pos + 2);
+    c.code[catchall_off_pos] = (catchall_bytes >> 8) as u8;
+    c.code[catchall_off_pos + 1] = (catchall_bytes & 0xFF) as u8;
 }
 
 #[test]
@@ -308,11 +321,10 @@ fn typed_catch_matches_when_exception_type_matches() {
         let caught = c.add_constant(Value::I32(1));
         let missed = c.add_constant(Value::I32(0));
 
-        // body = CONST(err_str)[4] + THROW[2] = 6 bytes
-        emit_try_table_typed(c, tag_idx, 6);
-
+        let off = emit_try_table_typed_start(c, tag_idx);
         c.emit_op_u16(Op::CONST, err_str, 0);
         c.emit_op(Op::THROW, 0);
+        patch_try_table(c, off);
 
         // handler: drop thrown value, push 1
         c.emit_op(Op::DROP, 0);
@@ -332,10 +344,10 @@ fn typed_catch_does_not_match_different_exception_type() {
     let err_str = chunk.add_constant(Value::String(Arc::from("ValueError: wrong")));
     let fallback = chunk.add_constant(Value::I32(0));
 
-    // body = CONST(4) + THROW(2) = 6
-    emit_try_table_typed(&mut chunk, 1, 6);
+    let off = emit_try_table_typed_start(&mut chunk, 1);
     chunk.emit_op_u16(Op::CONST, err_str, 0);
     chunk.emit_op(Op::THROW, 0);
+    patch_try_table(&mut chunk, off);
     // handler (never reached for wrong type)
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, fallback, 0);
@@ -359,19 +371,16 @@ fn typed_catch_with_object_exception_type() {
         let caught = c.add_constant(Value::I32(42));
 
         // Build an object with __exception_type = "RangeError"
-        // body: STRUCT_NEW(4)+LOCAL_SET(4)+DROP(2)+LOCAL_GET(4)+CONST(4)+STRUCT_SET(4)+LOCAL_GET(4)+THROW(2) = 28
-        let body_bytes: u16 = 4 + 4 + 2 + 4 + 4 + 4 + 4 + 2;
-        emit_try_table_typed(c, tag_idx, body_bytes);
-
-        // Build exception object
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0); // [obj]
-        c.emit_op_u16(Op::LOCAL_SET, 0, 0); // store (peek)
-        c.emit_op(Op::DROP, 0); // drop stack copy
+        let off = emit_try_table_typed_start(c, tag_idx);
+        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, type_val, 0);
         c.emit_op_u16(Op::STRUCT_SET, type_key, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op(Op::THROW, 0);
+        patch_try_table(c, off);
 
         // handler: drop, push 42
         c.emit_op(Op::DROP, 0);
@@ -387,9 +396,11 @@ fn typed_catch_falls_through_to_later_catch_all() {
         let err_str = c.add_constant(Value::String(Arc::from("ValueError: wrong")));
         let caught = c.add_constant(Value::I32(77));
 
-        emit_try_table_typed_then_catch_all(c, tag_idx, 6);
+        let (typed_off, catchall_off) = emit_try_table_typed_then_catch_all_start(c, tag_idx);
         c.emit_op_u16(Op::CONST, err_str, 0);
         c.emit_op(Op::THROW, 0);
+        let catch_start = c.current_offset();
+        patch_try_table_two(c, typed_off, catchall_off, catch_start);
 
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, caught, 0);
@@ -404,9 +415,11 @@ fn typed_catch_precedes_later_catch_all_when_it_matches() {
         let err_str = c.add_constant(Value::String(Arc::from("TypeError: bad")));
         let caught = c.add_constant(Value::I32(88));
 
-        emit_try_table_typed_then_catch_all(c, tag_idx, 6);
+        let (typed_off, catchall_off) = emit_try_table_typed_then_catch_all_start(c, tag_idx);
         c.emit_op_u16(Op::CONST, err_str, 0);
         c.emit_op(Op::THROW, 0);
+        let catch_start = c.current_offset();
+        patch_try_table_two(c, typed_off, catchall_off, catch_start);
 
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, caught, 0);

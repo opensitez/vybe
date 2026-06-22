@@ -337,27 +337,29 @@ impl Linker {
                     let code = &mut all_chunks[merged_ci].code;
                     let mut ip = 0;
                     while ip < code.len() {
-                        if ip + 1 >= code.len() {
+                        if ip + 3 >= code.len() {
                             break;
                         }
-                        if let Some(op) = crate::opcode::Op::decode(code[ip], code[ip + 1] as u16) {
+                        let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                        if let Some(op) = crate::opcode::Op::decode(group, sub) {
                             if op == crate::opcode::Op::CALL_IMPORT {
-                                // Remap import index: operand u16 is at ip+2..ip+3
-                                if ip + 3 < code.len() {
+                                // Remap import index: operand u16 is at ip+4..ip+5
+                                if ip + 5 < code.len() {
                                     let old_idx =
-                                        ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                                        ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
                                     if (old_idx as usize) < remap.len() {
                                         let new_idx = remap[old_idx as usize];
-                                        code[ip + 2] = (new_idx >> 8) as u8;
-                                        code[ip + 3] = (new_idx & 0xff) as u8;
+                                        code[ip + 4] = (new_idx >> 8) as u8;
+                                        code[ip + 5] = (new_idx & 0xff) as u8;
                                     }
                                 }
                             }
                             let fmt = op.operand_format();
-                            ip += 2; // 2-byte opcode
+                            ip += 4;
                             ip += fmt.size_in(code, ip);
                         } else {
-                            ip += 2;
+                            ip += 4;
                         }
                     }
                 }

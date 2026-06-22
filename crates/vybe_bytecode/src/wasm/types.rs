@@ -177,15 +177,17 @@ pub fn build_type_context(
     for chunk in chunks {
         let code = &chunk.code;
         let mut bip = 0;
-        while bip + 1 < code.len() {
-            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1] as u16) {
+        while bip + 3 < code.len() {
+            let g = ((code[bip] as u16) << 8) | code[bip + 1] as u16;
+            let s = ((code[bip + 2] as u16) << 8) | code[bip + 3] as u16;
+            if let Some(op) = crate::opcode::Op::decode(g, s) {
                 if op == crate::opcode::Op::BLOCK
                     || op == crate::opcode::Op::LOOP
                     || op == crate::opcode::Op::IF
                 {
-                    // New layout: prefix (1) + sub (1) + result_count (1) = 3 bytes total.
-                    if bip + 2 < code.len() {
-                        let count = code[bip + 2];
+                    // Layout: group (2) + sub (2) + result_count (1) = 5 bytes total.
+                    if bip + 4 < code.len() {
+                        let count = code[bip + 4];
                         if count >= 2 {
                             block_result_counts.insert(count);
                         }
@@ -193,7 +195,7 @@ pub fn build_type_context(
                 }
                 bip += super::code::opcode_size(op, code, bip);
             } else {
-                bip += 2;
+                bip += 4;
             }
         }
     }
@@ -207,8 +209,10 @@ pub fn build_type_context(
     let uses_stack_switching = chunks.iter().any(|chunk| {
         let code = &chunk.code;
         let mut bip = 0;
-        while bip + 1 < code.len() {
-            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1] as u16) {
+        while bip + 3 < code.len() {
+            let g = ((code[bip] as u16) << 8) | code[bip + 1] as u16;
+            let s = ((code[bip + 2] as u16) << 8) | code[bip + 3] as u16;
+            if let Some(op) = crate::opcode::Op::decode(g, s) {
                 if matches!(op,
                     o if o == crate::opcode::Op::CONT_NEW
                       || o == crate::opcode::Op::CONT_NEW_TYPED
@@ -224,7 +228,7 @@ pub fn build_type_context(
                 }
                 bip += super::code::opcode_size(op, code, bip);
             } else {
-                bip += 2;
+                bip += 4;
             }
         }
         false
@@ -381,20 +385,22 @@ pub fn build_type_context(
     for chunk in chunks {
         let mut ip = 0;
         while ip < chunk.code.len() {
-            if ip + 1 >= chunk.code.len() {
+            if ip + 3 >= chunk.code.len() {
                 break;
             }
-            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
+            let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
+            let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+            if let Some(op) = crate::opcode::Op::decode(g, s) {
                 if op == crate::opcode::Op::CALL_IMPORT {
-                    let import_idx = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-                    let argc = chunk.code[ip + 4];
+                    let import_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+                    let argc = chunk.code[ip + 6];
                     if (import_idx as usize) < host_import_count {
                         host_arity[import_idx as usize] = host_arity[import_idx as usize].max(argc);
                     }
                 }
                 ip += super::code::opcode_size(op, &chunk.code, ip);
             } else {
-                ip += 2;
+                ip += 4;
             }
         }
     }

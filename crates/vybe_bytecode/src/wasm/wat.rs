@@ -114,19 +114,21 @@ fn render_body(out: &mut String, chunk: &Chunk, base_indent: usize) {
     let mut ip = 0;
     let mut depth = base_indent;
     while ip < chunk.code.len() {
-        if ip + 1 >= chunk.code.len() {
+        if ip + 3 >= chunk.code.len() {
             break;
         }
-        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) else {
+        let group = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
+        let sub = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+        let Some(op) = Op::decode(group, sub) else {
             let _ = writeln!(
                 out,
-                "{:indent$};; unknown 0x{:02X} 0x{:02X}",
+                "{:indent$};; unknown 0x{:04X} 0x{:04X}",
                 "",
-                chunk.code[ip],
-                chunk.code[ip + 1],
+                group,
+                sub,
                 indent = depth,
             );
-            ip += 2;
+            ip += 4;
             continue;
         };
         // Closing-bracket ops de-indent first.
@@ -150,16 +152,16 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
     match op.operand_format() {
         OperandFormat::None => {}
         OperandFormat::U8 => {
-            let v = chunk.code[ip + 2];
+            let v = chunk.code[ip + 4];
             let _ = write!(out, " {v}");
         }
         OperandFormat::U8_U8 => {
-            let a = chunk.code[ip + 2];
-            let b = chunk.code[ip + 3];
+            let a = chunk.code[ip + 4];
+            let b = chunk.code[ip + 5];
             let _ = write!(out, " {a} {b}");
         }
         OperandFormat::U16 => {
-            let v = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+            let v = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
             // `const` — look up the constant pool value for readability.
             if op == Op::CONST {
                 if let Some(val) = chunk.constants.get(v as usize) {
@@ -172,38 +174,38 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             }
         }
         OperandFormat::I16 => {
-            let raw = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+            let raw = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
             let v = raw as i16;
             let _ = write!(out, " {v}");
         }
         OperandFormat::U16_U8 => {
-            let hi = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            let lo = chunk.code[ip + 4];
+            let hi = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let lo = chunk.code[ip + 6];
             let _ = write!(out, " {hi} {lo}");
         }
         OperandFormat::U16_U16 => {
-            let a = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            let b = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let a = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let b = ((chunk.code[ip + 6] as u16) << 8) | chunk.code[ip + 7] as u16;
             let _ = write!(out, " {a} {b}");
         }
         OperandFormat::U16_I16 => {
-            let a = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            let raw = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let a = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let raw = ((chunk.code[ip + 6] as u16) << 8) | chunk.code[ip + 7] as u16;
             let _ = write!(out, " {a} {}", raw as i16);
         }
         OperandFormat::U32Leb => {
-            let mut operand_ip = ip + 2;
+            let mut operand_ip = ip + 4;
             let value = read_leb_u32(&chunk.code, &mut operand_ip);
             let _ = write!(out, " {value}");
         }
         OperandFormat::U32Leb_U32Leb => {
-            let mut operand_ip = ip + 2;
+            let mut operand_ip = ip + 4;
             let a = read_leb_u32(&chunk.code, &mut operand_ip);
             let b = read_leb_u32(&chunk.code, &mut operand_ip);
             let _ = write!(out, " {a} {b}");
         }
         OperandFormat::MemArg => {
-            let mut operand_ip = ip + 2;
+            let mut operand_ip = ip + 4;
             let align = read_leb_u32(&chunk.code, &mut operand_ip);
             let offset = read_leb_u32(&chunk.code, &mut operand_ip);
             let _ = write!(out, " align={align} offset={offset}");
@@ -213,7 +215,7 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             }
         }
         OperandFormat::MemArg64 => {
-            let mut operand_ip = ip + 2;
+            let mut operand_ip = ip + 4;
             let align = read_leb_u32(&chunk.code, &mut operand_ip);
             let offset = read_leb_u64(&chunk.code, &mut operand_ip);
             let _ = write!(out, " align={align} offset={offset}");
@@ -223,7 +225,7 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             }
         }
         OperandFormat::BrTable => {
-            let mut operand_ip = ip + 2;
+            let mut operand_ip = ip + 4;
             let count = read_leb_u32(&chunk.code, &mut operand_ip);
             for _ in 0..count {
                 let label = read_leb_u32(&chunk.code, &mut operand_ip);

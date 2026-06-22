@@ -65,17 +65,17 @@ struct TryRegion {
 fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryRegion> {
     let mut regions = std::collections::HashMap::new();
     let mut ip = 0;
-    while ip + 1 < chunk.code.len() {
-        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) else {
-            ip += 2;
+    while ip + 3 < chunk.code.len() {
+        let Some(op) = Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) else {
+            ip += 4;
             continue;
         };
         if op == Op::TRY_START {
             let op_pos = ip;
-            // Read i16 catch_offset immediately after the 2-byte opcode.
-            let catch_off = ((chunk.code[ip + 2] as i16) << 8) | (chunk.code[ip + 3] as i16 & 0xFF);
-            // finally_offset at ip+4..ip+6 — reserved, unused for now.
-            let operands_end = ip + 6;
+            // Read i16 catch_offset immediately after the 4-byte opcode.
+            let catch_off = ((chunk.code[ip + 4] as i16) << 8) | (chunk.code[ip + 5] as i16 & 0xFF);
+            // finally_offset at ip+6..ip+8 — reserved, unused for now.
+            let operands_end = ip + 8;
             // catch_ip is relative to the byte *after* the 4 operand
             // bytes (the VM reads both u16s before adding the offset).
             let catch_ip = (operands_end as i64 + catch_off as i64) as usize;
@@ -85,9 +85,9 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
             let mut depth = 1i32;
             let mut try_end_pos: Option<usize> = None;
             let mut scan = ip;
-            while scan + 1 < chunk.code.len() {
-                let Some(inner) = Op::decode(chunk.code[scan], chunk.code[scan + 1] as u16) else {
-                    scan += 2;
+            while scan + 3 < chunk.code.len() {
+                let Some(inner) = Op::decode(((chunk.code[scan] as u16) << 8) | chunk.code[scan+1] as u16, ((chunk.code[scan+2] as u16) << 8) | chunk.code[scan+3] as u16) else {
+                    scan += 4;
                     continue;
                 };
                 if inner == Op::TRY_START {
@@ -109,13 +109,14 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
 
             if let Some(te_pos) = try_end_pos {
                 // Verify the 4 bytes before catch_ip are a BR opcode.
-                if catch_ip >= 4 && catch_ip <= chunk.code.len() {
-                    let br_pos = catch_ip - 4;
-                    let is_br = chunk.code[br_pos] == Op::BR.prefix()
-                        && chunk.code[br_pos + 1] == Op::BR.sub_u8();
+                if catch_ip >= 6 && catch_ip <= chunk.code.len() {
+                    let br_pos = catch_ip - 6;
+                    let br_group = ((chunk.code[br_pos] as u16) << 8) | chunk.code[br_pos + 1] as u16;
+                    let br_sub = ((chunk.code[br_pos + 2] as u16) << 8) | chunk.code[br_pos + 3] as u16;
+                    let is_br = br_group == Op::BR.group() && br_sub == Op::BR.sub();
                     if is_br {
-                        let br_off = ((chunk.code[br_pos + 2] as i16) << 8)
-                            | (chunk.code[br_pos + 3] as i16 & 0xFF);
+                        let br_off = ((chunk.code[br_pos + 4] as i16) << 8)
+                            | (chunk.code[br_pos + 5] as i16 & 0xFF);
                         let after_ip = (catch_ip as i64 + br_off as i64) as usize;
                         regions.insert(
                             op_pos,
@@ -178,10 +179,10 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
     let mut need = 0u32;
     let mut ip = 0;
     while ip < chunk.code.len() {
-        if ip + 1 >= chunk.code.len() {
+        if ip + 3 >= chunk.code.len() {
             break;
         }
-        if let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
+        if let Some(op) = Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) {
             if op == Op::CALL_REF {
                 // call_ref needs argc+1 temps (save args + table idx)
                 let call_argc = chunk.code.get(ip + 2).copied().unwrap_or(0) as u32;
@@ -205,7 +206,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
             // Their call-site temps are no longer needed here either.
             ip += opcode_size(op, &chunk.code, ip);
         } else {
-            ip += 2;
+            ip += 4;
         }
     }
     need
@@ -231,12 +232,15 @@ fn is_binary_typed_op(op: Op) -> bool {
 }
 
 fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
-    ip + 1 < chunk.code.len() && Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16).is_some()
+    if ip + 3 >= chunk.code.len() { return false; }
+    let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
+    let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+    Op::decode(g, s).is_some()
 }
 
 fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
     if chunk.code.get(*ip) == Some(&0xEE) && chunk.code.get(*ip + 1) == Some(&0x00) {
-        *ip += 2;
+        *ip += 4;
         return read_leb_u32(&chunk.code, ip);
     }
     if next_bytes_decode_opcode(chunk, *ip) {
@@ -424,7 +428,7 @@ pub fn encode_code_section(
         for (_pos, region) in &try_regions {
             try_start_events.insert(region.try_start_pos, *region);
             try_end_events.insert(region.try_end_pos);
-            skip_br_events.insert(region.catch_ip - 4);
+            skip_br_events.insert(region.catch_ip - 6);
             catch_ip_events.insert(region.catch_ip);
             *after_ip_events.entry(region.after_ip).or_insert(0) += 1;
         }
@@ -444,13 +448,13 @@ pub fn encode_code_section(
                 }
             }
 
-            if ip + 1 >= chunk.code.len() {
+            if ip + 3 >= chunk.code.len() {
                 break;
             }
-            let op = match Op::decode(chunk.code[ip], chunk.code[ip + 1] as u16) {
+            let op = match Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) {
                 Some(op) => op,
                 None => {
-                    ip += 2;
+                    ip += 4;
                     continue;
                 }
             };
@@ -474,7 +478,7 @@ pub fn encode_code_section(
             // inside $catch, unprotected, between this point and skip_br.
             if op == Op::TRY_END && try_end_events.contains(&ip) {
                 body.push(0x0B); // end (closes try_table)
-                ip += 2;
+                ip += 4;
                 continue;
             }
             // Skip-BR (compiler-emitted BR that jumps over catch on the
@@ -486,9 +490,9 @@ pub fn encode_code_section(
                 continue;
             }
             let op_start = ip;
-            ip += 2;
+            ip += 4;
 
-            if op.prefix() == 0x00 && !op.is_vm_internal() {
+            if op.group() == 0x00 && !op.is_vm_internal() {
                 emit_core_op(
                     &mut body,
                     op,
@@ -502,7 +506,7 @@ pub fn encode_code_section(
                     global_map,
                     host_import_count,
                 );
-            } else if op.prefix() == 0xFB {
+            } else if op.group() == 0xFB {
                 emit_gc_op(
                     &mut body,
                     op,
@@ -512,11 +516,11 @@ pub fn encode_code_section(
                     type_ctx,
                     temp_local_idx,
                 );
-            } else if op.prefix() == 0xFC {
+            } else if op.group() == 0xFC {
                 // 0xFC-prefix ops per the bulk-memory / reference-types spec
                 // need specific trailing immediates that aren't captured by
                 // our `operand_format` in bytecode. Translate each case.
-                body.push(op.prefix());
+                body.push(op.group() as u8);
                 write_leb128_u32(&mut body, op.sub() as u32);
                 match op {
                     Op::MEMORY_INIT => {
@@ -573,9 +577,9 @@ pub fn encode_code_section(
                         ip += op.operand_format().size_in(&chunk.code, ip);
                     }
                 }
-            } else if op.prefix() == 0xFD {
+            } else if op.group() == 0xFD {
                 emit_simd_prefixed_op(&mut body, op, chunk, &mut ip);
-            } else if op.prefix() == 0xFE {
+            } else if op.group() == 0xFE {
                 emit_thread_prefixed_op(&mut body, op, chunk, &mut ip);
             } else {
                 emit_vm_internal_op(
@@ -616,7 +620,7 @@ fn emit_core_op(
 ) {
     match op {
         _ if op == Op::LOCAL_GET => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         }
         _ if op == Op::LOCAL_SET => {
@@ -624,7 +628,7 @@ fn emit_core_op(
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         } // local.tee
         _ if op == Op::CALL => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let func_idx = read_u16(&chunk.code, ip);
             let _argc = chunk.code[*ip];
             *ip += 1;
@@ -718,7 +722,7 @@ fn emit_core_op(
         _ if op == Op::BLOCK || op == Op::LOOP || op == Op::IF => {
             let result_count = chunk.code[*ip];
             *ip += 1;
-            body.push(op.sub_u8()); // 0x02 / 0x03 / 0x04
+            body.push(op.sub() as u8); // 0x02 / 0x03 / 0x04
             match result_count {
                 0 => body.push(TYPE_VOID),
                 1 => body.push(TYPE_EXTERNREF),
@@ -736,18 +740,18 @@ fn emit_core_op(
             body.push(0x05); // else
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
         // Memory load/store with alignment + offset
         _ if op == Op::I32_LOAD || op == Op::F32_LOAD => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD || op == Op::F64_LOAD => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -756,7 +760,7 @@ fn emit_core_op(
             || op == Op::I64_LOAD8_S
             || op == Op::I64_LOAD8_U =>
         {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -765,37 +769,37 @@ fn emit_core_op(
             || op == Op::I64_LOAD16_S
             || op == Op::I64_LOAD16_U =>
         {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_LOAD32_S || op == Op::I64_LOAD32_U => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE || op == Op::F32_STORE => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE || op == Op::F64_STORE => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE8 || op == Op::I64_STORE8 => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I32_STORE16 || op == Op::I64_STORE16 => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         _ if op == Op::I64_STORE32 => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
@@ -942,12 +946,12 @@ fn emit_core_op(
             || op == Op::F64_MAX
             || op == Op::F64_COPYSIGN =>
         {
-            emit_binary_f64_op(body, op.sub_u8(), rt_idx, temp_idx);
+            emit_binary_f64_op(body, op.sub() as u8, rt_idx, temp_idx);
         }
 
         // ── f64 comparisons: unbox both → compare → rebox i32 result ──
         _ if op == Op::F64_LT || op == Op::F64_GT || op == Op::F64_LE || op == Op::F64_GE => {
-            emit_binary_f64_cmp(body, op.sub_u8(), rt_idx, temp_idx);
+            emit_binary_f64_cmp(body, op.sub() as u8, rt_idx, temp_idx);
         }
 
         // ── i32 binary arithmetic: unbox both → i32 op → rebox ──
@@ -967,12 +971,12 @@ fn emit_core_op(
             || op == Op::I32_ROTL
             || op == Op::I32_ROTR =>
         {
-            emit_binary_i32_op(body, op.sub_u8(), rt_idx, temp_idx);
+            emit_binary_i32_op(body, op.sub() as u8, rt_idx, temp_idx);
         }
 
         // ── i32 comparisons (eq, ne): unbox both → compare → rebox ──
         _ if op == Op::EQ || op == Op::NE => {
-            emit_binary_i32_cmp(body, op.sub_u8(), rt_idx, temp_idx);
+            emit_binary_i32_cmp(body, op.sub() as u8, rt_idx, temp_idx);
         }
 
         // ── f64 unary ops: unbox → op → rebox ──
@@ -985,19 +989,19 @@ fn emit_core_op(
             || op == Op::F64_SQRT =>
         {
             emit_unbox_f64(body, rt_idx);
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             emit_box_f64(body, rt_idx);
         }
 
         // ── i32 unary ops ──
         _ if op == Op::I32_EQZ => {
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::I32_CLZ || op == Op::I32_CTZ || op == Op::I32_POPCNT => {
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             emit_box_i32(body, rt_idx);
         }
 
@@ -1005,13 +1009,13 @@ fn emit_core_op(
         _ if op == Op::I32_FROM_F64 => {
             // externref → f64 → i32.trunc_f64_s → externref
             emit_unbox_f64(body, rt_idx);
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::F64_FROM_I32 => {
             // externref → i32 → f64.convert_i32_s → externref
             emit_unbox_i32(body, rt_idx);
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             emit_box_f64(body, rt_idx);
         }
 
@@ -1028,7 +1032,7 @@ fn emit_core_op(
             emit_box_i32(body, rt_idx); // i32 → externref
         }
         _ if op == Op::RETHROW || op == Op::DELEGATE => {
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             let depth = read_leb_u32(&chunk.code, ip);
             write_leb128_u32(body, depth);
         }
@@ -1076,7 +1080,7 @@ fn emit_core_op(
 
         _ => {
             // Other core ops: emit WASM byte directly
-            body.push(op.sub_u8());
+            body.push(op.sub() as u8);
             *ip += op.operand_format().size_in(&chunk.code, *ip);
         }
     }
@@ -2370,12 +2374,12 @@ fn emit_vm_internal_op(
         // Memory64 reuses the standard memory instruction bytes. The i64
         // address shape is carried by the memory type in the binary format.
         _ if op == Op::I64_MEMORY_SIZE => {
-            body.push(Op::MEMORY_SIZE.sub_u8());
+            body.push(Op::MEMORY_SIZE.sub() as u8);
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
         _ if op == Op::I64_MEMORY_GROW => {
-            body.push(Op::MEMORY_GROW.sub_u8());
+            body.push(Op::MEMORY_GROW.sub() as u8);
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
@@ -2393,71 +2397,71 @@ fn emit_vm_internal_op(
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
-        _ if op == Op::I32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub_u8(), 2),
-        _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub_u8(), 3),
-        _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub_u8(), 2),
-        _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub_u8(), 3),
+        _ if op == Op::I32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub() as u8, 2),
+        _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub() as u8, 3),
+        _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub() as u8, 2),
+        _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub() as u8, 3),
         _ if op == Op::I32_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub_u8(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub() as u8, 0)
         }
         _ if op == Op::I32_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub_u8(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub() as u8, 0)
         }
         _ if op == Op::I32_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub() as u8, 1)
         }
         _ if op == Op::I32_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub() as u8, 1)
         }
         _ if op == Op::I64_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub_u8(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub() as u8, 0)
         }
         _ if op == Op::I64_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub_u8(), 0)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub() as u8, 0)
         }
         _ if op == Op::I64_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub() as u8, 1)
         }
         _ if op == Op::I64_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub() as u8, 1)
         }
         _ if op == Op::I64_LOAD32_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub_u8(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub() as u8, 2)
         }
         _ if op == Op::I64_LOAD32_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub_u8(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub() as u8, 2)
         }
-        _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub_u8(), 2),
-        _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub_u8(), 3),
-        _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub_u8(), 2),
-        _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub_u8(), 3),
-        _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub_u8(), 0),
+        _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub() as u8, 2),
+        _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub() as u8, 3),
+        _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub() as u8, 2),
+        _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub() as u8, 3),
+        _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub() as u8, 0),
         _ if op == Op::I32_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub() as u8, 1)
         }
-        _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub_u8(), 0),
+        _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub() as u8, 0),
         _ if op == Op::I64_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub_u8(), 1)
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub() as u8, 1)
         }
         _ if op == Op::I64_STORE32_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub_u8(), 2)
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub() as u8, 2)
         }
-        _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub_u8()),
-        _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub_u8()),
+        _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub() as u8),
+        _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub() as u8),
         _ if op == Op::TABLE_INIT_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub_u8(), true)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub() as u8, true)
         }
         _ if op == Op::TABLE_COPY_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub_u8(), true)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub() as u8, true)
         }
         _ if op == Op::TABLE_GROW_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub_u8(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub() as u8, false)
         }
         _ if op == Op::TABLE_SIZE_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub_u8(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub() as u8, false)
         }
         _ if op == Op::TABLE_FILL_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub_u8(), false)
+            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub() as u8, false)
         }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => {
@@ -2491,6 +2495,6 @@ fn emit_vm_internal_op(
 
 /// Total instruction size: 2-byte opcode + operand bytes.
 pub fn opcode_size(op: Op, code: &[u8], ip: usize) -> usize {
-    let base = 2;
+    let base = 4;
     base + op.operand_format().size_in(code, ip + base)
 }

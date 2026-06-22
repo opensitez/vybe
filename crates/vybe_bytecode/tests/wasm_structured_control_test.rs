@@ -117,20 +117,20 @@ fn reader_preserves_if_else_and_i32_conditions() {
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::IF.prefix(), Op::IF.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::IF.encode())
     );
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::ELSE.prefix(), Op::ELSE.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::ELSE.encode())
     );
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::END.prefix(), Op::END.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::END.encode())
     );
     assert_eq!(run_chunk(chunk).as_i32(), 22);
 }
@@ -167,8 +167,8 @@ fn reader_preserves_br_if_depth() {
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::BR_IF.prefix(), Op::BR_IF.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::BR_IF.encode())
     );
     assert_eq!(run_chunk(chunk).as_i32(), 9);
 }
@@ -190,11 +190,11 @@ fn reader_preserves_br_table_vector_and_default_depths() {
 
     let br_table = chunk
         .code
-        .windows(2)
-        .position(|w| w == [Op::BR_TABLE.prefix(), Op::BR_TABLE.sub_u8()])
+        .windows(4)
+        .position(|w| w == Op::BR_TABLE.encode())
         .expect("br_table should be decoded");
     assert_eq!(
-        &chunk.code[br_table + 2..br_table + 6],
+        &chunk.code[br_table + 4..br_table + 8],
         &[0x02, 0x00, 0x01, 0x01]
     );
     assert_eq!(run_chunk(chunk).as_i32(), 9);
@@ -262,20 +262,20 @@ fn reader_decodes_prefixed_proposal_opcodes() {
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::I31_NEW.prefix(), Op::I31_NEW.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::I31_NEW.encode())
     );
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::V128_CONST.prefix(), Op::V128_CONST.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::V128_CONST.encode())
     );
     assert!(
         chunk
             .code
-            .windows(2)
-            .any(|w| w == [Op::ATOMIC_FENCE.prefix(), Op::ATOMIC_FENCE.sub_u8()])
+            .windows(4)
+            .any(|w| w == Op::ATOMIC_FENCE.encode())
     );
 }
 

@@ -35,7 +35,7 @@ fn relaxed_simd_internal_subopcodes_map_to_spec_range() {
     ];
 
     for (i, op) in ops.into_iter().enumerate() {
-        assert_eq!(op.prefix(), 0xFD);
+        assert_eq!(op.group(), 0xFD);
         assert_eq!(op.sub(), 256 + i as u16);
     }
 }

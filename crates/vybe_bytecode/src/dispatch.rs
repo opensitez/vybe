@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 
 // ── Block table ──────────────────────────────────────────────────────────────
 
-/// Scan `code` once and build a map from every BLOCK/LOOP/IF/TRY_TABLE/ELSE opcode
+/// Scan `code` once and build a map from every BLOCK/LOOP/IF/ELSE opcode
 /// position (first byte) to its jump targets.
 ///
 /// Format (WASM-compliant): every BLOCK/LOOP/IF carries exactly 1 blocktype
-/// byte. TRY_TABLE carries its EH table operands. ELSE and END carry no operands.
+/// byte. ELSE and END carry no operands.
 pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
     let mut table: HashMap<usize, BlockTargets> = HashMap::new();
     // Stack of opcode_starts for open BLOCK/LOOP/IF scopes.
@@ -36,22 +36,21 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
     let mut else_of: HashMap<usize, usize> = HashMap::new();
 
     let mut ip = 0usize;
-    while ip + 1 < code.len() {
+    while ip + 3 < code.len() {
         let opcode_start = ip;
-        let op = match Op::decode(code[ip], code[ip + 1] as u16) {
+        let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+        let op = match Op::decode(group as u16, sub as u16) {
             Some(op) => op,
             None => {
-                ip += 2;
+                ip += 4;
                 continue;
             }
         };
-        ip += 2;
+        ip += 4;
 
         if op == Op::BLOCK || op == Op::LOOP || op == Op::IF {
             ip += 1; // skip result_count byte
-            stack.push(opcode_start);
-        } else if op == Op::TRY_TABLE {
-            ip += op.operand_format().size_in(code, ip);
             stack.push(opcode_start);
         } else if op == Op::ELSE {
             // Associate ELSE with the top-of-stack IF entry.
@@ -71,7 +70,7 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
                 // end_ip = ip PAST the END opcode (2-byte internal encoding).
                 // BR always jumps here, bypassing END. END only fires via
                 // sequential execution, ensuring the label is popped exactly once.
-                let end_ip = opcode_start + 2;
+                let end_ip = opcode_start + 4;
                 table
                     .entry(entry_start)
                     .or_insert(BlockTargets {
@@ -386,7 +385,7 @@ impl VM {
     fn next_bytes_decode_opcode(&self) -> bool {
         let f = self.frame();
         let code = &self.chunks[f.chunk_index].code;
-        f.ip + 1 < code.len() && Op::decode(code[f.ip], code[f.ip + 1] as u16).is_some()
+        f.ip + 3 < code.len() && Op::decode(((code[f.ip] as u16) << 8) | code[f.ip + 1] as u16, ((code[f.ip + 2] as u16) << 8) | code[f.ip + 3] as u16).is_some()
     }
 
     pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
@@ -512,7 +511,8 @@ impl VM {
             let chunk = &self.chunks[f.chunk_index];
 
             if f.ip >= chunk.code.len() {
-                if self.frames.len() <= 1.max(min_depth + 1) && self.cur_fiber_id == entry_fiber_id
+                if self.frames.len() <= 1.max(min_depth + 1)
+                    && self.cur_fiber_id == entry_fiber_id
                 {
                     return Ok(self.stack.pop().unwrap_or(Value::Null));
                 }
@@ -528,14 +528,14 @@ impl VM {
             // Extended proposals use 0xFC/0xFD/0xFE prefix.
             // Vybe custom ops use 0xFF prefix.
             let opcode_start = self.frame().ip;
-            let prefix = self.read_byte();
-            let sub = self.read_byte();
-            let op = match Op::decode(prefix, sub as u16) {
+            let group = self.read_u16();
+            let sub = self.read_u16();
+            let op = match Op::decode(group as u16, sub as u16) {
                 Some(op) => op,
                 None => {
                     return Err(VMError::new(format!(
-                        "Invalid opcode: 0x{:02X} 0x{:02X}",
-                        prefix, sub
+                        "Invalid opcode: 0x{:04X} 0x{:04X}",
+                        group, sub
                     )));
                 }
             };
@@ -1673,84 +1673,9 @@ impl VM {
                 }
 
                 // -- Functions --
-                // WASM `call funcidx` — resolves through component model import table.
                 _ if op == Op::CALL => {
-                    let func_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
-                    let chunk_index = self.frame().chunk_index;
-
-                    let target = match self.resolve_chunk_import(chunk_index, func_idx)? {
-                        Some(target) => target,
-                        None => {
-                            if func_idx >= self.import_table.len() {
-                                return Err(VMError::new(format!(
-                                    "Unresolved function index: {}",
-                                    func_idx
-                                )));
-                            }
-                            self.import_table[func_idx].clone()
-                        }
-                    };
-
-                    match target {
-                        ImportTarget::Host(host_idx) => {
-                            let base = self.stack.len() - argc;
-                            let args: Vec<Value> = self.stack[base..].to_vec();
-                            self.stack.truncate(base);
-
-                            let host_fn = self.host_fns[host_idx].clone();
-                            let result = {
-                                let mut ctx = self.make_host_context();
-                                host_fn(&mut ctx, &args)
-                            };
-                            if let Some(exc) = self.last_exception.take() {
-                                self.raise_exception_value(exc)?;
-                                continue;
-                            }
-                            self.push(result)?;
-                        }
-                        ImportTarget::ChunkFn { chunk_index, arity } => {
-                            let func = crate::value::Function {
-                                name: None,
-                                arity,
-                                chunk_index,
-                                upvalues: Vec::new(),
-                            };
-                            let mut obj = crate::value::Object::new();
-                            obj.kind = crate::value::ObjectKind::Function(func);
-                            let func_val = Value::Object(Arc::new(Mutex::new(obj)));
-                            let args_start = self.stack.len() - argc;
-                            self.stack.insert(args_start, func_val);
-                            self.call_value(argc)?;
-                        }
-                        ImportTarget::StdlibRedirect(ref global_name) => {
-                            if let Some(func_val) = self.globals.get(global_name).cloned() {
-                                let args_start = self.stack.len() - argc;
-                                self.stack.insert(args_start, func_val);
-                                self.call_value(argc)?;
-                            } else {
-                                return Err(VMError::new(format!(
-                                    "Stdlib redirect not found: {}",
-                                    global_name
-                                )));
-                            }
-                        }
-                        ImportTarget::JspiSuspend => {
-                            let val = if argc == 0 {
-                                Value::Undefined
-                            } else {
-                                self.pop()
-                            };
-                            for _ in 1..argc {
-                                self.pop();
-                            }
-                            self.do_await(val)?;
-                        }
-                        ImportTarget::StringConst(s) => {
-                            for _ in 0..argc { self.pop(); }
-                            self.push(Value::String(s))?;
-                        }
-                    }
+                    self.call_value(argc)?;
                 }
                 _ if op == Op::CALL_REF => {
                     // Direct call through a function reference — same as call
@@ -1939,25 +1864,17 @@ impl VM {
                             }
                         }
                         ImportTarget::JspiSuspend => {
-                            // `await x` — JSPI suspending import. The VM (engine)
-                            // implements the suspension itself: fulfilled →
-                            // unwrap, rejected → throw, pending → suspend the
-                            // fiber on the event loop until the Promise settles.
-                            // Takes one operand (the awaited value); drop extras
-                            // defensively (emit_await always passes exactly one).
-                            let val = if argc == 0 {
-                                Value::Undefined
-                            } else {
-                                self.pop()
-                            };
+                            let val = if argc == 0 { Value::Undefined } else { self.pop() };
                             for _ in 1..argc {
                                 self.pop();
                             }
                             self.do_await(val)?;
                         }
-                        ImportTarget::StringConst(s) => {
-                            for _ in 0..argc { self.pop(); }
-                            self.push(Value::String(s))?;
+                        ImportTarget::StringConst(ref s) => {
+                            for _ in 0..argc {
+                                self.pop();
+                            }
+                            self.push(Value::String(s.clone()))?;
                         }
                     }
                 }
@@ -2524,40 +2441,22 @@ impl VM {
                 _ if op == Op::I32_CONST_0 => self.push(Value::I32(0))?,
                 _ if op == Op::I32_CONST_1 => self.push(Value::I32(1))?,
                 _ if op == Op::F64_CONST_0 => self.push(Value::F64(0.0))?,
-                // WASM MVP const opcodes (0x41–0x44)
+
                 _ if op == Op::I32_CONST => {
-                    let f = self.frame();
-                    let ip = f.ip;
-                    let ci = f.chunk_index;
-                    let mut pos = ip;
-                    let val = crate::opcode::read_leb_i32(&self.chunks[ci].code, &mut pos);
-                    self.frame_mut().ip = pos;
-                    self.push(Value::I32(val))?;
+                    let v = self.read_leb_i32();
+                    self.push(Value::I32(v))?;
                 }
                 _ if op == Op::I64_CONST => {
-                    let f = self.frame();
-                    let ip = f.ip;
-                    let ci = f.chunk_index;
-                    let mut pos = ip;
-                    let val = crate::opcode::read_leb_i64(&self.chunks[ci].code, &mut pos);
-                    self.frame_mut().ip = pos;
-                    self.push(Value::I64(val))?;
+                    let v = self.read_leb_i64();
+                    self.push(Value::I64(v))?;
                 }
                 _ if op == Op::F32_CONST => {
-                    let f = self.frame();
-                    let ip = f.ip;
-                    let ci = f.chunk_index;
-                    let bytes: [u8; 4] = self.chunks[ci].code[ip..ip+4].try_into().unwrap_or([0;4]);
-                    self.frame_mut().ip += 4;
-                    self.push(Value::F64(f32::from_le_bytes(bytes) as f64))?;
+                    let v = self.read_f32();
+                    self.push(Value::F64(v as f64))?;
                 }
                 _ if op == Op::F64_CONST => {
-                    let f = self.frame();
-                    let ip = f.ip;
-                    let ci = f.chunk_index;
-                    let bytes: [u8; 8] = self.chunks[ci].code[ip..ip+8].try_into().unwrap_or([0;8]);
-                    self.frame_mut().ip += 8;
-                    self.push(Value::F64(f64::from_le_bytes(bytes)))?;
+                    let v = self.read_f64();
+                    self.push(Value::F64(v))?;
                 }
 
                 // ref.eq (GC proposal) — reference identity equality.
@@ -2870,19 +2769,6 @@ impl VM {
                     for h in handlers.into_iter().rev() {
                         self.exception_handlers.push(h);
                     }
-                    let ci = self.frame().chunk_index;
-                    self.ensure_block_table(ci);
-                    let end_ip = self.block_tables[&ci]
-                        .get(&opcode_start)
-                        .map(|t| t.end_ip)
-                        .unwrap_or(self.frame().ip);
-                    self.label_stack.push(LabelEntry {
-                        target: end_ip,
-                        is_loop: false,
-                        is_try: true,
-                        result_arity: 0,
-                        stack_height: self.stack.len(),
-                    });
                 }
 
                 // -- Tail call --
@@ -3257,7 +3143,7 @@ impl VM {
                             result_arity,
                             stack_height: self.stack.len(),
                         });
-                        self.frame_mut().ip = else_ip + 2; // +2 skips the ELSE opcode bytes
+                        self.frame_mut().ip = else_ip + 4; // +4 skips the ELSE opcode bytes
                     } else {
                         // Condition false, no ELSE — skip the block entirely.
                         // No label push needed; jump past END directly.
@@ -3278,11 +3164,7 @@ impl VM {
                     self.frame_mut().ip = end_ip;
                 }
                 _ if op == Op::END => {
-                    if let Some(label) = self.label_stack.pop() {
-                        if label.is_try {
-                            self.exception_handlers.pop();
-                        }
-                    }
+                    self.label_stack.pop();
                 }
                 _ if op == Op::BR_TABLE => {
                     let ci = self.frame().chunk_index;
@@ -6706,7 +6588,7 @@ impl VM {
                     }
                 }
 
-                _ if op.prefix() == 0xFE && self.execute_threads_op(op)? => {}
+                _ if op.group() == 0xFE && self.execute_threads_op(op)? => {}
 
                 // -- Memory64 --
                 _ if op == Op::I64_MEMORY_SIZE => {
@@ -6912,7 +6794,7 @@ impl VM {
                     self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
                 }
 
-                // -- Relaxed-SIMD proposal (prefix 0xFD, sub 0x100+ in WASM) --
+                // -- Relaxed-SIMD proposal (prefix 0xDD internal, 0xFD 0x100+ in WASM) --
                 //
                 // All 20 ops implemented deterministically. The "relaxed"
                 // semantics give the implementation freedom on edge cases
@@ -7388,7 +7270,7 @@ impl VM {
                     }
                 }
 
-                _ if op == Op::STREAM_CANCEL => {
+                _ if op == Op::STREAM_CANCEL_READ => {
                     use crate::value::ObjectKind;
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
@@ -7647,8 +7529,7 @@ impl VM {
 
                         // Populate __nonenum with non-enumerable field names from TypeDef
                         if let Some(td) = self.type_registry.get(type_id) {
-                            let nonenum_fields: Vec<Value> = td
-                                .field_defs
+                            let nonenum_fields: Vec<Value> = td.field_defs
                                 .iter()
                                 .filter(|f| !f.descriptor.enumerable)
                                 .map(|f| Value::String(Arc::from(f.name.as_str())))

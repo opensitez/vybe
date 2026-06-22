@@ -126,12 +126,12 @@ fn br_on_null_branches_when_null() {
         let zero = c.add_constant(Value::I32(0));
         let one = c.add_constant(Value::I32(1));
 
-        c.emit_op(Op::NULL, 0); // [0-1]
-        c.emit_op_u16(Op::BR_ON_NULL, 6u16, 0); // [2-5] offset=6 → ip(6)+6=12
-        c.emit_op_u16(Op::CONST, zero, 0); // [6-9]  not reached
-        c.emit_op(Op::RETURN, 0); // [10-11] not reached
-        c.emit_op_u16(Op::CONST, one, 0); // [12-15] null path lands here
-        c.emit_op(Op::RETURN, 0); // [16-17]
+        c.emit_op(Op::NULL, 0);
+        c.emit_op_u16(Op::BR_ON_NULL, 10u16, 0); // offset=10: skip CONST(6)+RETURN(4)
+        c.emit_op_u16(Op::CONST, zero, 0); // not reached
+        c.emit_op(Op::RETURN, 0); // not reached
+        c.emit_op_u16(Op::CONST, one, 0); // null path lands here
+        c.emit_op(Op::RETURN, 0);
     });
     assert_eq!(r.as_i32(), 1);
 }

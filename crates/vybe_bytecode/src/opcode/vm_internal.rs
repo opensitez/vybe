@@ -112,9 +112,7 @@ impl Op {
     pub const SHARED_ARRAY_GET: Op = Op::new(0xFF, 0x61);
     pub const SHARED_ARRAY_SET: Op = Op::new(0xFF, 0x62);
     pub const SHARED_STRUCT_CAS: Op = Op::new(0xFF, 0x63);
-    // Component model
-    pub const CANON_LIFT: Op = Op::new(0xFF, 0x64);
-    pub const CANON_LOWER: Op = Op::new(0xFF, 0x65);
+    // Component model (CANON_LIFT/CANON_LOWER moved to canon.rs with real spec values)
     pub const TYPE_IMPORT: Op = Op::new(0xFF, 0x66);
     pub const TYPE_EXPORT: Op = Op::new(0xFF, 0x67);
     // Memory64
@@ -165,59 +163,13 @@ impl Op {
     // 0x87 is retired: the old `GEN_NEXT` (generator iterator-advance) is now
     // lowered to spec `resume` + an `(on yield)` handler. Left undefined so any
     // stale bytecode carrying it fails decode loudly.
-    // CM3 / WASI 0.3 async (Track B — high-level objects, not CM3 binary ABI)
-    /// Await a future: pops a Future object, suspends if pending, pushes resolved value.
-    /// Mirrors PROMISE_SUSPEND but operates on ObjectKind::Future via the EventLoop registry.
+    // All CM3 canon built-ins (stream/future/task/waitable/backpressure/context)
+    // moved to canon.rs with real spec binary values on prefix 0xF0.
+    // STREAM_CANCEL maps to canon stream.cancel-read (0xF0 0x11).
+    // FUTURE_AWAIT has no direct canon equivalent — it's VM-level future resolution.
     pub const FUTURE_AWAIT: Op = Op::new(0xFF, 0x88);
-    /// Read one item from a stream: pops a Stream object, pops item or suspends if empty+open,
-    /// pushes Value::Null on EOF (closed+empty).
-    pub const STREAM_READ: Op = Op::new(0xFF, 0x89);
-    /// Write one item to a stream: pops stream, pops item, pushes to buffer, wakes reader.
-    pub const STREAM_WRITE: Op = Op::new(0xFF, 0x8A);
-    /// Cancel a stream: pops Stream object, marks closed, wakes any waiting reader with EOF.
-    pub const STREAM_CANCEL: Op = Op::new(0xFF, 0x8B);
 
-    // ── Track A — CM3 Canonical ABI (handle table, task system, waitable sets) ──
-    // These opcodes correspond to canon built-ins from Binary.md §Canon Definitions.
-    // Track B occupies 0x88–0x8B. Track A starts at 0x8C.
-
-    /// canon task.return — deliver results and transition task to Returned phase.
-    pub const TASK_RETURN: Op = Op::new(0xFF, 0x8C);
-    /// canon task.cancel — cancel the current task.
-    pub const TASK_CANCEL: Op = Op::new(0xFF, 0x8D);
-    /// canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
-    pub const SUBTASK_CANCEL: Op = Op::new(0xFF, 0x8E);
-    /// canon subtask.drop — pops subtask handle (i32), removes from handle table.
-    pub const SUBTASK_DROP: Op = Op::new(0xFF, 0x8F);
-    /// canon waitable-set.new — pushes new waitable set handle (i32).
-    pub const WAITABLE_SET_NEW: Op = Op::new(0xFF, 0x90);
-    /// canon waitable.join — pops [waitable_handle, set_handle] (i32 each), joins member into set.
-    pub const WAITABLE_JOIN: Op = Op::new(0xFF, 0x91);
-    /// canon waitable-set.wait — pops [set_handle, memory_ptr] (i32 each);
-    /// writes event struct to memory, pushes event_code (i32). Suspends if nothing ready.
-    pub const WAITABLE_SET_WAIT: Op = Op::new(0xFF, 0x92);
-    /// canon waitable-set.poll — like WAITABLE_SET_WAIT but non-blocking; pushes 0 if nothing ready.
-    pub const WAITABLE_SET_POLL: Op = Op::new(0xFF, 0x93);
-    /// canon stream.new — creates a stream, pushes [readable_handle, writable_handle] (i32 each).
-    pub const STREAM_NEW: Op = Op::new(0xFF, 0x94);
-    /// canon stream.drop-readable — pops readable stream handle (i32), removes from handle table.
-    pub const STREAM_DROP_RD: Op = Op::new(0xFF, 0x95);
-    /// canon stream.drop-writable — pops writable stream handle (i32), removes from handle table.
-    pub const STREAM_DROP_WR: Op = Op::new(0xFF, 0x96);
-    /// canon future.new — creates a future, pushes [readable_handle, writable_handle] (i32 each).
-    pub const FUTURE_NEW: Op = Op::new(0xFF, 0x97);
-    /// canon future.drop-readable — pops readable future handle (i32), removes from handle table.
-    pub const FUTURE_DROP_RD: Op = Op::new(0xFF, 0x98);
-    /// canon future.drop-writable — pops writable future handle (i32), removes from handle table.
-    pub const FUTURE_DROP_WR: Op = Op::new(0xFF, 0x99);
-    /// canon backpressure.set — pops enabled_i32, sets backpressure on active task.
-    pub const BACKPRESSURE_SET: Op = Op::new(0xFF, 0x9A);
-    /// canon context.get i — pops index_i32, pushes context slot value.
-    pub const CONTEXT_GET: Op = Op::new(0xFF, 0x9B);
-    /// canon context.set i — pops [value, index_i32], sets context slot.
-    pub const CONTEXT_SET: Op = Op::new(0xFF, 0x9C);
-    /// VM-internal compatibility helper: allocate a new extra linear memory.
-    /// This is not the WASM bulk-memory `memory.init` instruction.
+    /// VM-internal: allocate a new extra linear memory.
     pub const MEMORY_NEW: Op = Op::new(0xFF, 0x9D);
     pub const F32_LOAD_64: Op = Op::new(0xFF, 0x9E);
     pub const I32_LOAD8_S_64: Op = Op::new(0xFF, 0x9F);
@@ -261,29 +213,9 @@ opcode_category! {
     [0x83] null_any => None, "ref.null_any";
     [0x84] null_none => None, "ref.null_none";
     [0x87] gen_next => None, "gen.next";
-    // CM3 / WASI 0.3 async — Track B
+    // CM3 / WASI 0.3 async — FUTURE_AWAIT only (no direct canon equivalent)
     [0x88] future_await => None, "future.await";
-    [0x89] stream_read => None, "stream.read";
-    [0x8A] stream_write => None, "stream.write";
-    [0x8B] stream_cancel => None, "stream.cancel";
-    // CM3 Canonical ABI — Track A (handle table, task system, waitable sets)
-    [0x8C] task_return => None, "task.return";
-    [0x8D] task_cancel => None, "task.cancel";
-    [0x8E] subtask_cancel => None, "subtask.cancel";
-    [0x8F] subtask_drop => None, "subtask.drop";
-    [0x90] waitable_set_new => None, "waitable-set.new";
-    [0x91] waitable_join => None, "waitable.join";
-    [0x92] waitable_set_wait => None, "waitable-set.wait";
-    [0x93] waitable_set_poll => None, "waitable-set.poll";
-    [0x94] stream_new => None, "stream.new";
-    [0x95] stream_drop_rd => None, "stream.drop-readable";
-    [0x96] stream_drop_wr => None, "stream.drop-writable";
-    [0x97] future_new => None, "future.new";
-    [0x98] future_drop_rd => None, "future.drop-readable";
-    [0x99] future_drop_wr => None, "future.drop-writable";
-    [0x9A] backpressure_set => None, "backpressure.set";
-    [0x9B] context_get => None, "context.get";
-    [0x9C] context_set => None, "context.set";
+    // 0x89–0x9C: moved to canon.rs (prefix 0xF0) with real spec binary values.
     // Immediate values
     [0x09] r#true => None, "true";
     [0x0A] r#false => None, "false";
@@ -373,9 +305,7 @@ opcode_category! {
     [0x61] shared_array_get => None, "shared.array_get";
     [0x62] shared_array_set => None, "shared.array_set";
     [0x63] shared_struct_cas => U16, "shared.struct_cas";
-    // Component model
-    [0x64] canon_lift => U16, "canon.lift";
-    [0x65] canon_lower => U16, "canon.lower";
+    // Component model (canon_lift/canon_lower moved to canon.rs)
     [0x66] type_import => U16, "type.import";
     [0x67] type_export => U16, "type.export";
     // Memory64

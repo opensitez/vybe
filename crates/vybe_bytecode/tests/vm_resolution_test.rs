@@ -452,17 +452,20 @@ fn single_byte_opcode_encodes_correctly() {
     // Uniform (prefix, sub) encoding: core WASM ops live under prefix 0x00,
     // with `sub` holding the WASM opcode byte. Op::NULL = 0xD0 (ref.null).
     let op = Op::NULL;
-    let (prefix, sub) = op.encode();
-    assert_eq!(prefix, 0x00, "Core spec ops use prefix 0x00");
+    let bytes = op.encode();
+    let group = ((bytes[0] as u16) << 8) | bytes[1] as u16;
+    let sub = ((bytes[2] as u16) << 8) | bytes[3] as u16;
+    assert_eq!(group, 0x00, "Core spec ops use group 0x00");
     assert_eq!(sub, 0xD0, "ref.null opcode byte is 0xD0");
 }
 
 #[test]
 fn opcode_encoding_consistency() {
-    // Verify that decode(encode()) roundtrips for a standard WASM opcode
     let op = Op::F64_ADD;
-    let (prefix, sub) = op.encode();
-    let decoded = Op::decode(prefix, sub as u16);
+    let bytes = op.encode();
+    let group = ((bytes[0] as u16) << 8) | bytes[1] as u16;
+    let sub = ((bytes[2] as u16) << 8) | bytes[3] as u16;
+    let decoded = Op::decode(group, sub);
     assert!(decoded.is_some());
     assert_eq!(decoded.unwrap(), op);
 }

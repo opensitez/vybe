@@ -147,8 +147,6 @@ pub struct Chunk {
     pub name: String,
     pub arity: u8,
     pub local_count: u16,
-    /// Scratch local for `emit_dup` (WASM `local.tee` + `local.get`).
-    pub dup_slot: Option<u16>,
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
@@ -215,6 +213,8 @@ pub struct Chunk {
     /// C# `yield return`, Ruby `Enumerator::new`, Dart `sync*`. Lowers
     /// to WASM stack-switching `cont.new` at emit time.
     pub is_generator: bool,
+    /// Shared scratch local for emit_dup (local.tee + local.get).
+    pub dup_slot: Option<u16>,
 }
 
 impl Chunk {
@@ -308,9 +308,10 @@ impl Chunk {
     }
 
     pub fn emit_op(&mut self, op: Op, line: u32) {
-        let (prefix, sub) = op.encode();
-        self.emit(prefix, line);
-        self.emit(sub, line);
+        let bytes = op.encode();
+        for b in bytes {
+            self.emit(b, line);
+        }
     }
 
     pub fn emit_op_u16(&mut self, op: Op, operand: u16, line: u32) {
@@ -345,11 +346,12 @@ impl Chunk {
     }
 
     pub fn emit_leb_i32(&mut self, value: i32, line: u32) {
-        let mut v = value;
+        let mut v = value as u32;
         loop {
             let mut byte = (v & 0x7f) as u8;
             v >>= 7;
-            if (v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0) {
+            let sign_bit = (byte & 0x40) != 0;
+            if (v == 0 && !sign_bit) || (v == 0xFFFF_FFFF >> 6 && sign_bit) {
                 self.emit(byte, line);
                 break;
             }
@@ -359,78 +361,18 @@ impl Chunk {
     }
 
     pub fn emit_leb_i64(&mut self, value: i64, line: u32) {
-        let mut v = value;
+        let mut v = value as u64;
         loop {
             let mut byte = (v & 0x7f) as u8;
             v >>= 7;
-            if (v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0) {
+            let sign_bit = (byte & 0x40) != 0;
+            if (v == 0 && !sign_bit) || (v == u64::MAX >> 6 && sign_bit) {
                 self.emit(byte, line);
                 break;
             }
             byte |= 0x80;
             self.emit(byte, line);
         }
-    }
-
-    /// Emit WASM `i32.const` (0x41) with signed LEB128 immediate.
-    pub fn emit_i32_const(&mut self, value: i32, line: u32) {
-        self.emit_op(Op::I32_CONST, line);
-        self.emit_leb_i32(value, line);
-    }
-
-    /// Emit WASM `i64.const` (0x42) with signed LEB128 immediate.
-    pub fn emit_i64_const(&mut self, value: i64, line: u32) {
-        self.emit_op(Op::I64_CONST, line);
-        self.emit_leb_i64(value, line);
-    }
-
-    /// Emit WASM `f64.const` (0x44) with 8 raw bytes.
-    pub fn emit_f64_const(&mut self, value: f64, line: u32) {
-        self.emit_op(Op::F64_CONST, line);
-        for b in value.to_le_bytes() {
-            self.emit(b, line);
-        }
-    }
-
-    /// Emit WASM `f32.const` (0x43) with 4 raw bytes.
-    pub fn emit_f32_const(&mut self, value: f32, line: u32) {
-        self.emit_op(Op::F32_CONST, line);
-        for b in value.to_le_bytes() {
-            self.emit(b, line);
-        }
-    }
-
-    /// Duplicate top of stack using `local.tee` + `local.get` (WASM-compliant DUP).
-    /// Reuses a single scratch local to avoid unbounded local growth.
-    pub fn emit_dup(&mut self, line: u32) {
-        if self.dup_slot.is_none() {
-            let slot = self.local_count;
-            self.local_count = slot + 1;
-            self.dup_slot = Some(slot);
-        }
-        let slot = self.dup_slot.unwrap();
-        self.emit_op_u16(Op::LOCAL_TEE, slot, line);
-        self.emit_op_u16(Op::LOCAL_GET, slot, line);
-    }
-
-    /// Emit WASM `call funcidx` — direct call to an imported function.
-    /// Currently emits CALL_IMPORT bytes — migration to real CALL in progress.
-    pub fn emit_call(&mut self, func_idx: u16, argc: u8, line: u32) {
-        self.emit_op_u16(Op::CALL_IMPORT, func_idx, line);
-        self.emit(argc, line);
-    }
-
-    /// Emit a js-string-builtins imported string constant.
-    pub fn emit_string_const(&mut self, s: &str, line: u32) {
-        let idx = self.add_import("wasm:string-constants", s);
-        self.emit_call(idx, 0, line);
-    }
-
-    /// Emit a Bool value: `i32.const N` + `call wasm:js-boolean.fromI32`.
-    pub fn emit_bool_const(&mut self, val: bool, line: u32) {
-        self.emit_i32_const(if val { 1 } else { 0 }, line);
-        let idx = self.add_import("wasm:js-boolean", "fromI32");
-        self.emit_call(idx, 1, line);
     }
 
     pub fn add_constant(&mut self, value: Value) -> u16 {
@@ -569,5 +511,69 @@ impl Chunk {
 
     pub fn read_i16(&self, offset: usize) -> i16 {
         self.read_u16(offset) as i16
+    }
+
+    /// Emit CALL_IMPORT: [op, import_idx_hi, import_idx_lo, argc].
+    pub fn emit_call(&mut self, import_idx: u16, argc: u8, line: u32) {
+        self.emit_op(Op::CALL_IMPORT, line);
+        self.emit((import_idx >> 8) as u8, line);
+        self.emit((import_idx & 0xff) as u8, line);
+        self.emit(argc, line);
+    }
+
+    /// Emit DUP via local.tee + local.get with a shared scratch local.
+    pub fn emit_dup(&mut self, line: u32) {
+        let slot = match self.dup_slot {
+            Some(s) => s,
+            None => {
+                let s = self.local_count;
+                self.local_count += 1;
+                self.dup_slot = Some(s);
+                s
+            }
+        };
+        self.emit_op_u16(Op::LOCAL_TEE, slot, line);
+        self.emit_op_u16(Op::LOCAL_GET, slot, line);
+    }
+
+    /// Emit i32.const via signed LEB128.
+    pub fn emit_i32_const(&mut self, value: i32, line: u32) {
+        self.emit_op(Op::I32_CONST, line);
+        self.emit_leb_i32(value, line);
+    }
+
+    /// Emit i64.const via signed LEB128.
+    pub fn emit_i64_const(&mut self, value: i64, line: u32) {
+        self.emit_op(Op::I64_CONST, line);
+        self.emit_leb_i64(value, line);
+    }
+
+    /// Emit f32.const (4 raw LE bytes).
+    pub fn emit_f32_const(&mut self, value: f32, line: u32) {
+        self.emit_op(Op::F32_CONST, line);
+        for b in value.to_le_bytes() {
+            self.emit(b, line);
+        }
+    }
+
+    /// Emit f64.const (8 raw LE bytes).
+    pub fn emit_f64_const(&mut self, value: f64, line: u32) {
+        self.emit_op(Op::F64_CONST, line);
+        for b in value.to_le_bytes() {
+            self.emit(b, line);
+        }
+    }
+
+    /// Emit a string constant via wasm:string-constants import.
+    pub fn emit_string_const(&mut self, s: &str, line: u32) {
+        let idx = self.add_import("wasm:string-constants", s);
+        self.emit_call(idx, 0, line);
+    }
+
+    /// Emit a boolean constant: i32.const N + call wasm:js-boolean.fromI32.
+    pub fn emit_bool_const(&mut self, value: bool, line: u32) {
+        self.emit_i32_const(if value { 1 } else { 0 }, line);
+        let idx = self.add_import("wasm:js-boolean", "fromI32");
+        self.emit_call(idx, 1, line);
     }
 }
