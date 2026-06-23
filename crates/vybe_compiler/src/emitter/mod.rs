@@ -44,6 +44,7 @@ pub use crate::languages::cobol::emitter as cobol;
 pub use crate::languages::dart::emitter as dart;
 pub use crate::languages::fortran::emitter as fortran;
 pub use crate::languages::js::emitter as js;
+pub use crate::languages::lua::emitter as lua;
 pub use crate::languages::php::emitter as php;
 pub use crate::languages::python::emitter as python;
 pub use crate::languages::ruby::emitter as ruby;

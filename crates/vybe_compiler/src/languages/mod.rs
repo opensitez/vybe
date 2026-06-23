@@ -6,6 +6,7 @@ pub mod form_modules;
 pub mod fortran;
 pub mod go;
 pub mod js;
+pub mod lua;
 pub mod pascal;
 pub mod php;
 pub mod python;
@@ -63,6 +64,12 @@ pub fn all() -> Vec<Language> {
             parse: js::parse,
             profile_source: js::profile_source,
             emit_dispatch: Some(js::emitter::dispatch::dispatch),
+        },
+        Language {
+            name: "lua",
+            parse: lua::parse,
+            profile_source: lua::profile_source,
+            emit_dispatch: Some(lua::emitter::dispatch::dispatch),
         },
         Language {
             name: "pascal",
