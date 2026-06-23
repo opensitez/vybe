@@ -590,47 +590,19 @@ fn lua_tonumber(expr: Expression) -> Expression {
 }
 
 fn desugar_lua_and(left: Expression, right: Expression) -> ExprKind {
-    let slot = "__lua_lhs";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(slot.to_string()),
-                type_hint: None,
-                init: Some(left),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_is_falsy(Expression::new(ExprKind::Ident(slot.to_string()))),
-            then_body: vec![lua_return(Expression::new(ExprKind::Ident(slot.to_string())))],
-            elifs: Vec::new(),
-            else_body: Some(vec![lua_return(right)]),
-        }),
-    ])
+    ExprKind::Ternary {
+        cond: Box::new(lua_is_falsy(left.clone())),
+        then: Box::new(left),
+        else_: Box::new(right),
+    }
 }
 
 fn desugar_lua_or(left: Expression, right: Expression) -> ExprKind {
-    let slot = "__lua_lhs";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(slot.to_string()),
-                type_hint: None,
-                init: Some(left),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_is_truthy(Expression::new(ExprKind::Ident(slot.to_string()))),
-            then_body: vec![lua_return(Expression::new(ExprKind::Ident(slot.to_string())))],
-            elifs: Vec::new(),
-            else_body: Some(vec![lua_return(right)]),
-        }),
-    ])
+    ExprKind::Ternary {
+        cond: Box::new(lua_is_truthy(left.clone())),
+        then: Box::new(left),
+        else_: Box::new(right),
+    }
 }
 
 fn desugar_lua_mod(left: Expression, right: Expression) -> ExprKind {
@@ -660,200 +632,19 @@ fn desugar_lua_mod(left: Expression, right: Expression) -> ExprKind {
 }
 
 fn desugar_lua_eq(left: Expression, right: Expression) -> ExprKind {
-    let a = "__lua_a";
-    let b = "__lua_b";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(a.to_string()),
-                    type_hint: None,
-                    init: Some(left),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(b.to_string()),
-                    type_hint: None,
-                    init: Some(right),
-                    array_bounds: None,
-                    with_events: false,
-                },
-            ],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_same_metatable(a, b),
-            then_body: vec![Statement::new(StmtKind::If {
-                cond: lua_type_is_function(lua_mm_lookup(a, "__eq")),
-                then_body: vec![lua_return(lua_mm_call(
-                    lua_mm_lookup(a, "__eq"),
-                    Expression::new(ExprKind::Ident(a.to_string())),
-                    Expression::new(ExprKind::Ident(b.to_string())),
-                ))],
-                elifs: Vec::new(),
-                else_body: None,
-            })],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: Expression::new(ExprKind::Binary {
-                op: BinOp::NotEq,
-                left: Box::new(lua_typeof(Expression::new(ExprKind::Ident(a.to_string())))),
-                right: Box::new(lua_typeof(Expression::new(ExprKind::Ident(b.to_string())))),
-            }),
-            then_body: vec![lua_return(lit_bool(false))],
-            elifs: Vec::new(),
-            else_body: Some(vec![lua_return(Expression::new(ExprKind::Binary {
-                op: BinOp::Eq,
-                left: Box::new(Expression::new(ExprKind::Ident(a.to_string()))),
-                right: Box::new(Expression::new(ExprKind::Ident(b.to_string()))),
-            }))]),
-        }),
-    ])
+    ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
 }
 
 fn desugar_lua_rel(op: BinOp, left: Expression, right: Expression) -> ExprKind {
-    let a = "__lua_a";
-    let b = "__lua_b";
-    let cmp = |lhs: Expression, rhs: Expression| -> Expression {
-        Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(lhs),
-            right: Box::new(rhs),
-        })
-    };
-    let both_numbers = Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(a.to_string())),
-            "number",
-        )),
-        right: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(b.to_string())),
-            "number",
-        )),
-    });
-    let both_strings = Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(a.to_string())),
-            "string",
-        )),
-        right: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(b.to_string())),
-            "string",
-        )),
-    });
-    let num_str = Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(a.to_string())),
-            "number",
-        )),
-        right: Box::new(lua_type_is(
-            Expression::new(ExprKind::Ident(b.to_string())),
-            "string",
-        )),
-    });
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(a.to_string()),
-                    type_hint: None,
-                    init: Some(left),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(b.to_string()),
-                    type_hint: None,
-                    init: Some(right),
-                    array_bounds: None,
-                    with_events: false,
-                },
-            ],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(lua_mm_lookup(
-                a,
-                match op {
-                    BinOp::Lt | BinOp::Gt => "__lt",
-                    BinOp::LtEq | BinOp::GtEq => "__le",
-                    _ => "__lt",
-                },
-            )),
-            then_body: vec![lua_return(lua_mm_call(
-                lua_mm_lookup(
-                    a,
-                    match op {
-                        BinOp::Lt | BinOp::Gt => "__lt",
-                        BinOp::LtEq | BinOp::GtEq => "__le",
-                        _ => "__lt",
-                    },
-                ),
-                Expression::new(ExprKind::Ident(a.to_string())),
-                Expression::new(ExprKind::Ident(b.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(lua_mm_lookup(
-                b,
-                match op {
-                    BinOp::Lt | BinOp::Gt => "__lt",
-                    BinOp::LtEq | BinOp::GtEq => "__le",
-                    _ => "__lt",
-                },
-            )),
-            then_body: vec![lua_return(lua_mm_call(
-                lua_mm_lookup(
-                    b,
-                    match op {
-                        BinOp::Lt | BinOp::Gt => "__lt",
-                        BinOp::LtEq | BinOp::GtEq => "__le",
-                        _ => "__lt",
-                    },
-                ),
-                Expression::new(ExprKind::Ident(b.to_string())),
-                Expression::new(ExprKind::Ident(a.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: both_numbers,
-            then_body: vec![lua_return(cmp(
-                Expression::new(ExprKind::Ident(a.to_string())),
-                Expression::new(ExprKind::Ident(b.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: both_strings,
-            then_body: vec![lua_return(cmp(
-                Expression::new(ExprKind::Ident(a.to_string())),
-                Expression::new(ExprKind::Ident(b.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: num_str,
-            then_body: vec![lua_return(cmp(
-                Expression::new(ExprKind::Ident(a.to_string())),
-                lua_tonumber(Expression::new(ExprKind::Ident(b.to_string()))),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        lua_return(lit_bool(false)),
-    ])
+    ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
 }
 
 fn expr_is_lit_str(expr: &Expression, value: &str) -> bool {
@@ -1047,13 +838,13 @@ fn desugar_lua_mm_binop(
 }
 
 fn try_desugar_lua_index_assign(target: Expression, value: &mut Expression) -> Option<ExprKind> {
-    normalize_expr(value);
     match target.kind {
         ExprKind::Member { object, field, .. } => {
             let object = Expression::new(normalize_expr_kind(object.kind, LuaExprCtx::Read));
             if is_lua_profile_namespace(&object) {
                 return None;
             }
+            normalize_expr(value);
             Some(wrap_lua_proto_set(
                 object,
                 lit_str(&field),
@@ -1065,6 +856,7 @@ fn try_desugar_lua_index_assign(target: Expression, value: &mut Expression) -> O
             if is_lua_profile_namespace(&object) {
                 return None;
             }
+            normalize_expr(value);
             let index = lua_one_based_index(Expression::new(normalize_expr_kind(
                 index.kind,
                 LuaExprCtx::Read,
@@ -1104,43 +896,11 @@ fn is_lua_global_builtin(name: &str) -> bool {
     )
 }
 
-fn desugar_lua_unary_mm(expr: Expression, mm: &str, fallback: ExprKind) -> ExprKind {
-    let v = "__lua_v";
-    let f = "__lua_mm_fn";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(v.to_string()),
-                type_hint: None,
-                init: Some(expr),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(lua_mm_lookup(v, mm)),
-            then_body: vec![
-                Statement::new(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(f.to_string()),
-                        type_hint: None,
-                        init: Some(lua_mm_lookup(v, mm)),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                }),
-                lua_return(lua_mm_call1(
-                    Expression::new(ExprKind::Ident(f.to_string())),
-                    Expression::new(ExprKind::Ident(v.to_string())),
-                )),
-            ],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        lua_return(Expression::new(fallback)),
-    ])
+fn desugar_lua_unary_mm(expr: Expression, _mm: &str, fallback_op: UnaryOp) -> ExprKind {
+    ExprKind::Unary {
+        op: fallback_op,
+        expr: Box::new(expr),
+    }
 }
 
 fn desugar_lua_len_call(args: Vec<Argument>) -> ExprKind {
@@ -1149,17 +909,11 @@ fn desugar_lua_len_call(args: Vec<Argument>) -> ExprKind {
         .next()
         .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)))
         .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
-    desugar_lua_unary_mm(
-        obj,
-        "__len",
-        ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Ident("__lua_len".to_string()))),
-            args: vec![Argument::positional(Expression::new(ExprKind::Ident(
-                "__lua_v".to_string(),
-            )))],
-            optional: false,
-        },
-    )
+    ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__lua_len".to_string()))),
+        args: vec![Argument::positional(obj)],
+        optional: false,
+    }
 }
 
 fn desugar_lua_tostring(args: Vec<Argument>) -> ExprKind {
@@ -1168,30 +922,7 @@ fn desugar_lua_tostring(args: Vec<Argument>) -> ExprKind {
         .next()
         .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)))
         .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
-    let v = "__lua_ts_v";
-    let f = "__lua_ts_fn";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(v.to_string()),
-                type_hint: None,
-                init: Some(obj),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(lua_mm_lookup(v, "__tostring")),
-            then_body: vec![lua_return(lua_mm_call1(
-                lua_mm_lookup(v, "__tostring"),
-                Expression::new(ExprKind::Ident(v.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        lua_return(call_ident("tostring", vec![Expression::new(ExprKind::Ident(v.to_string()))])),
-    ])
+    call_ident("tostring", vec![obj]).kind
 }
 
 fn desugar_pcall(args: Vec<Argument>) -> ExprKind {
@@ -1674,111 +1405,14 @@ fn lua_same_metatable(a: &str, b: &str) -> Expression {
 }
 
 fn wrap_lua_proto_set(object: Expression, index: Expression, value: Expression) -> ExprKind {
-    let o = "__lua_ni_o";
-    let k = "__lua_ni_k";
-    let v = "__lua_ni_v";
-    let store = "__lua_ni_store";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(o.to_string()),
-                    type_hint: None,
-                    init: Some(object),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(k.to_string()),
-                    type_hint: None,
-                    init: Some(index),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(v.to_string()),
-                    type_hint: None,
-                    init: Some(value),
-                    array_bounds: None,
-                    with_events: false,
-                },
-            ],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_key_is_present(o, k),
-            then_body: vec![
-                Statement::new(StmtKind::Assign {
-                    targets: vec![lua_raw_index(
-                        Expression::new(ExprKind::Ident(o.to_string())),
-                        Expression::new(ExprKind::Ident(k.to_string())),
-                    )],
-                    value: Expression::new(ExprKind::Ident(v.to_string())),
-                }),
-                lua_return(Expression::new(ExprKind::Ident(v.to_string()))),
-            ],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(lua_mm_lookup(o, "__newindex")),
-            then_body: vec![
-                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-                    callee: Box::new(lua_mm_lookup(o, "__newindex")),
-                    args: vec![
-                        Argument::positional(Expression::new(ExprKind::Ident(o.to_string()))),
-                        Argument::positional(Expression::new(ExprKind::Ident(k.to_string()))),
-                        Argument::positional(Expression::new(ExprKind::Ident(v.to_string()))),
-                    ],
-                    optional: false,
-                }))),
-                lua_return(Expression::new(ExprKind::Ident(v.to_string()))),
-            ],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(store.to_string()),
-                type_hint: None,
-                init: Some(lua_mm_lookup(o, "__newindex")),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: Expression::new(ExprKind::Binary {
-                op: BinOp::And,
-                left: Box::new(lua_is_truthy(Expression::new(ExprKind::Ident(
-                    store.to_string(),
-                )))),
-                right: Box::new(Expression::new(ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(lua_type_is_function(Expression::new(ExprKind::Ident(
-                        store.to_string(),
-                    )))),
-                })),
-            }),
-            then_body: vec![Statement::new(StmtKind::Assign {
-                targets: vec![lua_raw_index(
-                    Expression::new(ExprKind::Ident(store.to_string())),
-                    Expression::new(ExprKind::Ident(k.to_string())),
-                )],
-                value: Expression::new(ExprKind::Ident(v.to_string())),
-            })],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::Assign {
-            targets: vec![lua_raw_index(
-                Expression::new(ExprKind::Ident(o.to_string())),
-                Expression::new(ExprKind::Ident(k.to_string())),
-            )],
-            value: Expression::new(ExprKind::Ident(v.to_string())),
-        }),
-        lua_return(Expression::new(ExprKind::Ident(v.to_string()))),
-    ])
+    ExprKind::Assign {
+        target: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(object),
+            index: Box::new(index),
+            null_safe: false,
+        })),
+        value: Box::new(value),
+    }
 }
 
 /// Colon method dispatch — own function slot, then `__lua_proto` (flat stmts, no nested IIFE callee).
@@ -1994,164 +1628,11 @@ fn lua_key_is_present(object: &str, key: &str) -> Expression {
 
 /// Lua `__index` / field read — data in `__lua_data`, methods on table (JS prototype split).
 fn wrap_lua_proto_get(object: Expression, index: Expression) -> ExprKind {
-    let o = "__lua_ix_o";
-    let k = "__lua_ix_k";
-    let p = "__lua_ix_p";
-    let data = "__lua_ix_data";
-    let idx_fn = "__lua_ix_fn";
-    lua_iife(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(o.to_string()),
-                    type_hint: None,
-                    init: Some(object),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(k.to_string()),
-                    type_hint: None,
-                    init: Some(index),
-                    array_bounds: None,
-                    with_events: false,
-                },
-            ],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_key_is_present(o, k),
-            then_body: vec![lua_return(lua_raw_index(
-                Expression::new(ExprKind::Ident(o.to_string())),
-                Expression::new(ExprKind::Ident(k.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(data.to_string()),
-                type_hint: None,
-                init: Some(lua_raw_index(
-                    Expression::new(ExprKind::Ident(o.to_string())),
-                    lit_str("__lua_data"),
-                )),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: Expression::new(ExprKind::Binary {
-                op: BinOp::And,
-                left: Box::new(lua_is_truthy(Expression::new(ExprKind::Ident(data.to_string())))),
-                right: Box::new(lua_key_is_present(data, k)),
-            }),
-            then_body: vec![lua_return(lua_raw_index(
-                Expression::new(ExprKind::Ident(data.to_string())),
-                Expression::new(ExprKind::Ident(k.to_string())),
-            ))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(idx_fn.to_string()),
-                type_hint: None,
-                init: Some(lua_raw_index(lua_obj_mt(o), lit_str("__index"))),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::If {
-            cond: lua_type_is_function(Expression::new(ExprKind::Ident(idx_fn.to_string()))),
-            then_body: vec![lua_return(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Ident(idx_fn.to_string()))),
-                args: vec![
-                    Argument::positional(Expression::new(ExprKind::Ident(o.to_string()))),
-                    Argument::positional(Expression::new(ExprKind::Ident(k.to_string()))),
-                ],
-                optional: false,
-            }))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(p.to_string()),
-                type_hint: None,
-                init: Some(lua_raw_index(
-                    Expression::new(ExprKind::Ident(o.to_string())),
-                    lit_str("__lua_proto"),
-                )),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }),
-        Statement::new(StmtKind::While {
-            cond: lua_is_truthy(Expression::new(ExprKind::Ident(p.to_string()))),
-            body: vec![
-                Statement::new(StmtKind::If {
-                    cond: Expression::new(ExprKind::Binary {
-                        op: BinOp::And,
-                        left: Box::new(lua_key_is_present(p, k)),
-                        right: Box::new(Expression::new(ExprKind::Unary {
-                            op: UnaryOp::Not,
-                            expr: Box::new(lua_type_is_function(lua_raw_index(
-                                Expression::new(ExprKind::Ident(p.to_string())),
-                                Expression::new(ExprKind::Ident(k.to_string())),
-                            ))),
-                        })),
-                    }),
-                    then_body: vec![lua_return(lua_raw_index(
-                        Expression::new(ExprKind::Ident(p.to_string())),
-                        Expression::new(ExprKind::Ident(k.to_string())),
-                    ))],
-                    elifs: Vec::new(),
-                    else_body: None,
-                }),
-                Statement::new(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(data.to_string()),
-                        type_hint: None,
-                        init: Some(lua_raw_index(
-                            Expression::new(ExprKind::Ident(p.to_string())),
-                            lit_str("__lua_data"),
-                        )),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                }),
-                Statement::new(StmtKind::If {
-                    cond: Expression::new(ExprKind::Binary {
-                        op: BinOp::And,
-                        left: Box::new(lua_is_truthy(Expression::new(ExprKind::Ident(
-                            data.to_string(),
-                        )))),
-                        right: Box::new(lua_key_is_present(data, k)),
-                    }),
-                    then_body: vec![lua_return(lua_raw_index(
-                        Expression::new(ExprKind::Ident(data.to_string())),
-                        Expression::new(ExprKind::Ident(k.to_string())),
-                    ))],
-                    elifs: Vec::new(),
-                    else_body: None,
-                }),
-                Statement::new(StmtKind::Assign {
-                    targets: vec![Expression::new(ExprKind::Ident(p.to_string()))],
-                    value: lua_raw_index(
-                        Expression::new(ExprKind::Ident(p.to_string())),
-                        lit_str("__lua_proto"),
-                    ),
-                }),
-            ],
-            else_body: None,
-        }),
-        lua_return(Expression::new(ExprKind::Lit(Literal::Null))),
-    ])
+    ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(index),
+        null_safe: false,
+    }
 }
 
 /// `string.byte(s [, i [, j]])` → `s.charCodeAt(i - 1)` (Lua default index 1).
@@ -2271,22 +1752,8 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
             let expr = Expression::new(normalize_expr_kind(expr.kind, read));
             return match op {
                 UnaryOp::Not => lua_is_falsy(expr).kind,
-                UnaryOp::Neg => desugar_lua_unary_mm(
-                    expr,
-                    "__unm",
-                    ExprKind::Unary {
-                        op: UnaryOp::Neg,
-                        expr: Box::new(Expression::new(ExprKind::Ident("__lua_v".to_string()))),
-                    },
-                ),
-                UnaryOp::BitNot => desugar_lua_unary_mm(
-                    expr,
-                    "__bnot",
-                    ExprKind::Unary {
-                        op: UnaryOp::BitNot,
-                        expr: Box::new(Expression::new(ExprKind::Ident("__lua_v".to_string()))),
-                    },
-                ),
+                UnaryOp::Neg => desugar_lua_unary_mm(expr, "__unm", UnaryOp::Neg),
+                UnaryOp::BitNot => desugar_lua_unary_mm(expr, "__bnot", UnaryOp::BitNot),
                 other => ExprKind::Unary {
                     op: other,
                     expr: Box::new(expr),
@@ -2308,18 +1775,6 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 BinOp::Gt => desugar_lua_rel(BinOp::Lt, right, left),
                 BinOp::GtEq => desugar_lua_rel(BinOp::LtEq, right, left),
                 BinOp::Lt | BinOp::LtEq => desugar_lua_rel(op, left, right),
-                BinOp::Add => desugar_lua_mm_binop(left, right, "__add", BinOp::Add, true),
-                BinOp::Sub => desugar_lua_mm_binop(left, right, "__sub", BinOp::Sub, false),
-                BinOp::Mul => desugar_lua_mm_binop(left, right, "__mul", BinOp::Mul, true),
-                BinOp::Div => desugar_lua_mm_binop(left, right, "__div", BinOp::Div, false),
-                BinOp::Pow => desugar_lua_mm_binop(left, right, "__pow", BinOp::Pow, false),
-                BinOp::FloorDiv => desugar_lua_mm_binop(left, right, "__idiv", BinOp::FloorDiv, false),
-                BinOp::BitAnd => desugar_lua_mm_binop(left, right, "__band", BinOp::BitAnd, true),
-                BinOp::BitOr => desugar_lua_mm_binop(left, right, "__bor", BinOp::BitOr, true),
-                BinOp::BitXor => desugar_lua_mm_binop(left, right, "__bxor", BinOp::BitXor, true),
-                BinOp::Shl => desugar_lua_mm_binop(left, right, "__shl", BinOp::Shl, false),
-                BinOp::Shr => desugar_lua_mm_binop(left, right, "__shr", BinOp::Shr, false),
-                BinOp::Concat => desugar_lua_mm_binop(left, right, "__concat", BinOp::Concat, true),
                 _ => ExprKind::Binary {
                     op,
                     left: Box::new(left),
@@ -2436,15 +1891,6 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                         expr: Box::new(args.into_iter().next().unwrap().value),
                     };
                 }
-                if !is_lua_global_builtin(name) {
-                    return desugar_lua_value_call(callee_expr, args);
-                }
-            }
-            if matches!(
-                callee_expr.kind,
-                ExprKind::Index { .. } | ExprKind::Member { .. }
-            ) {
-                return desugar_lua_value_call(callee_expr, args);
             }
             ExprKind::Call {
                 callee: Box::new(callee_expr),
