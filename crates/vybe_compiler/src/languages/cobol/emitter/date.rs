@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use crate::emitter::instructions::host;
 
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 use super::support::stash_args;
 
@@ -25,7 +25,9 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_yyyymmdd_slice(chunks, current, date_str_slot, 4.0, 6.0, line);
     emit_string_const(chunks, current, "-", line);
     emit_yyyymmdd_slice(chunks, current, date_str_slot, 6.0, 8.0, line);
-    chunks[current].emit_op_u8(Op::STR_CONCAT_N, 5, line);
+    for _ in 0..4 {
+        host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
+    }
 
     chunks[current].emit_op_u16(Op::CALL_IMPORT, parse_idx, line);
     chunks[current].emit(1, line);
@@ -45,15 +47,13 @@ fn emit_yyyymmdd_slice(
     chunks[current].emit_op_u16(Op::LOCAL_GET, date_str_slot, line);
     emit_f64_const(chunks, current, start, line);
     emit_f64_const(chunks, current, end, line);
-    chunks[current].emit_op(Op::STR_SUBSTRING, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "substring", 3, line);
 }
 
 fn emit_string_const(chunks: &mut [Chunk], current: usize, text: &str, line: u32) {
-    let idx = chunks[current].add_constant(Value::String(Arc::from(text)));
-    chunks[current].emit_op_u16(Op::CONST, idx, line);
+    chunks[current].emit_string_const(text, line);
 }
 
 fn emit_f64_const(chunks: &mut [Chunk], current: usize, value: f64, line: u32) {
-    let idx = chunks[current].add_constant(Value::F64(value));
-    chunks[current].emit_op_u16(Op::CONST, idx, line);
+    chunks[current].emit_f64_const(value, line);
 }

@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -8,8 +9,12 @@ use crate::emitter::collections;
 const ENV_OVERRIDES_GLOBAL: &str = "__dotnet_environment_overrides";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -24,7 +29,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     let object_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let create_block = chunk.emit_block(line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -35,7 +40,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
     chunk.emit(0, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, global, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);

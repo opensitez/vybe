@@ -11,6 +11,7 @@
 //!
 //! All languages (Python, Dart, JS, VB, C#) use this same structure.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -234,7 +235,7 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     chunks[current].emit_if(line);
 

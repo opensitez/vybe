@@ -18,13 +18,18 @@
 //! packs `arg0..` into an array local, then walks the format string emitting
 //! literal chars or `String(args[idx])` substitutions.
 
+use crate::emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn emit_dotnet_format_value_call(
@@ -90,13 +95,13 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op(Op::DROP, line);
 
     // i = 0
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     // len = STR_LENGTH(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -106,8 +111,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op(Op::DROP, line);
 
     // Constants reused inside the loop.
-    let open_brace = chunk.add_constant(Value::I32(b'{' as i32));
-    let close_brace = chunk.add_constant(Value::I32(b'}' as i32));
 
     let outer_block = chunk.emit_block(line);
     let (loop_p, _) = chunk.emit_loop_s(line);
@@ -122,7 +125,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // ch_code = fmt.charCodeAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
 
     // Branch: open_brace? close_brace? literal?
     // Using DUP + compare cascade; SELECT not used because we need different actions per branch.
@@ -137,7 +140,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // -- '{' branch --
     let open_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ch_slot, line);
-    chunk.emit_op_u16(Op::CONST, open_brace, line);
+    chunk.emit_i32_const(b'{' as i32, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // skip past open-brace handler if not '{'
@@ -149,8 +152,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         len_slot,
         out_slot,
         args_slot,
-        open_brace,
-        close_brace,
         line,
     );
     // br(1) = continue loop (depth 0 = open_block, 1 = loop, 2 = outer)
@@ -161,7 +162,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // -- '}' branch (escape `}}` → `}`) --
     let close_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ch_slot, line);
-    chunk.emit_op_u16(Op::CONST, close_brace, line);
+    chunk.emit_i32_const(b'}' as i32, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
@@ -173,7 +174,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         i_slot,
         len_slot,
         out_slot,
-        close_brace,
         line,
     );
     chunk.emit_br(1, line);
@@ -185,16 +185,16 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line); // start
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line); // end (about to add 1)
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     // i = i + 1
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -212,7 +212,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// Handle `{` at fmt[i]: either the `{{` escape or a `{N[,W][:fmt]}` placeholder.
 /// On entry `i` points at `{`. Advances `i` past the consumed segment and
 /// appends the formatted result to `out`.
-#[allow(clippy::too_many_arguments)]
 fn emit_handle_open_brace(
     chunk: &mut Chunk,
     fmt_slot: u16,
@@ -220,15 +219,13 @@ fn emit_handle_open_brace(
     len_slot: u16,
     out_slot: u16,
     args_slot: u16,
-    open_brace: u16,
-    close_brace: u16,
     line: u32,
 ) {
     // Check if next char is also '{' → escape
     // peek = (i+1 < len) && fmt.charCodeAt(i+1) == '{'
     let escape_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -237,10 +234,10 @@ fn emit_handle_open_brace(
 
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    chunk.emit_op_u16(Op::CONST, open_brace, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_i32_const(b'{' as i32, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // not '{{' → not escape
@@ -252,8 +249,7 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    let two = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, two, line);
+    chunk.emit_i32_const(2, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -268,7 +264,7 @@ fn emit_handle_open_brace(
     let end_slot = chunk.local_count;
     chunk.local_count = end_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -284,14 +280,14 @@ fn emit_handle_open_brace(
     // if fmt[end] == '}': break
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    chunk.emit_op_u16(Op::CONST, close_brace, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_i32_const(b'}' as i32, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line);
 
     // end += 1
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -306,17 +302,17 @@ fn emit_handle_open_brace(
     chunk.local_count = inner_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     let inner_len_slot = chunk.local_count;
     chunk.local_count = inner_len_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -338,42 +334,37 @@ fn emit_handle_open_brace(
     let width_slot = format_slot + 1;
     chunk.local_count = width_slot + 1;
 
-    let comma_const = chunk.add_constant(Value::String(Arc::from(",")));
-    let colon_const = chunk.add_constant(Value::String(Arc::from(":")));
-    let empty_str = chunk.add_constant(Value::String(Arc::from("")));
-    let zero_num = chunk.add_constant(Value::F64(0.0));
-
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
-    chunk.emit_op_u16(Op::CONST, comma_const, line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
+    chunk.emit_string_const(",", line);
+    host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, comma_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
-    chunk.emit_op_u16(Op::CONST, colon_const, line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
+    chunk.emit_string_const(":", line);
+    host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, colon_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op_u16(Op::CONST, empty_str, line);
+    chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op_u16(Op::CONST, zero_num, line);
+    chunk.emit_f64_const(0.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     let no_format_spec = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
@@ -381,7 +372,7 @@ fn emit_handle_open_brace(
 
     let no_width_spec = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, comma_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     let width_end_slot = chunk.local_count;
@@ -391,7 +382,7 @@ fn emit_handle_open_brace(
     chunk.emit_op(Op::DROP, line);
     let no_colon_after_width = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
@@ -401,10 +392,10 @@ fn emit_handle_open_brace(
     chunk.patch_block(no_colon_after_width);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, comma_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, width_end_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
@@ -421,7 +412,7 @@ fn emit_handle_open_brace(
 
     // i = end + 1 (skip past the closing '}')
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -435,12 +426,11 @@ fn emit_handle_close_brace(
     i_slot: u16,
     len_slot: u16,
     out_slot: u16,
-    close_brace: u16,
     line: u32,
 ) {
     let escape_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -449,10 +439,10 @@ fn emit_handle_close_brace(
 
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    chunk.emit_op_u16(Op::CONST, close_brace, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_i32_const(b'}' as i32, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
@@ -464,8 +454,7 @@ fn emit_handle_close_brace(
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    let two = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, two, line);
+    chunk.emit_i32_const(2, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -477,7 +466,7 @@ fn emit_handle_close_brace(
 
     // Stray `}` — just skip it.
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);

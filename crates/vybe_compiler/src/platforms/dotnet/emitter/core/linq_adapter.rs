@@ -16,6 +16,7 @@
 //! emitters wherever possible so semantics stay aligned with the
 //! rest of the standard library.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -47,7 +48,7 @@ fn emit_import_call(
 
 /// `arr.First()` — returns `arr[0]`. Stack: [arr] → [first].
 pub fn emit_linq_first(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
 }
 
@@ -60,8 +61,7 @@ pub fn emit_linq_last(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
-    let one = chunks[current].add_constant(Value::I32(1));
-    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     collections::emit_get(chunks, current, line);
 }
@@ -92,7 +92,7 @@ pub fn emit_linq_take(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
     collections::emit_slice(chunks, current, line);
 }
@@ -127,14 +127,14 @@ pub fn emit_linq_first_or_default(chunks: &mut [Chunk], current: usize, line: u3
     // Test arr.length == 0
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_end(line);
 }
@@ -173,7 +173,7 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_index_of(chunks, current, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line); // skip push if duplicate (>= 0)
@@ -213,7 +213,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op(Op::TRUE, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -229,14 +229,14 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     let done = chunks[current].emit_block(line);
     let lengths_match = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
-    chunks[current].emit_op(Op::FALSE, line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(1, line);
 
     chunks[current].emit_end(line);
     chunks[current].patch_block(lengths_match);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -262,7 +262,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
-    chunks[current].emit_op(Op::FALSE, line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(2, line);
@@ -271,8 +271,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].patch_block(equal_values);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    let one = chunks[current].add_constant(Value::I32(1));
-    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_i32_const(1, line);
     crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -315,7 +314,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -337,8 +336,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(0, line); // skip increment if false
     // count++
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    let one = chunks[current].add_constant(Value::I32(1));
-    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_i32_const(1, line);
     crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -544,10 +542,6 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    let key_name = chunks[current].add_constant(Value::String(Arc::from("Key")));
-    let count_name = chunks[current].add_constant(Value::String(Arc::from("Count")));
-    let items_name = chunks[current].add_constant(Value::String(Arc::from("Items")));
-
     // if !groupMap.has(key) { create group object, initialize fields, save map, out.push(group) }
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
@@ -562,7 +556,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // group["Key"] = key
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    chunks[current].emit_op_u16(Op::CONST, key_name, line);
+    chunks[current].emit_string_const("Key", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -572,15 +566,15 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    chunks[current].emit_op_u16(Op::CONST, items_name, line);
+    chunks[current].emit_string_const("Items", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // group["Count"] = 0
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    chunks[current].emit_op_u16(Op::CONST, count_name, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_string_const("Count", line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -609,7 +603,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // items = group["Items"]
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    chunks[current].emit_op_u16(Op::CONST, items_name, line);
+    chunks[current].emit_string_const("Items", line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -622,7 +616,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // group["Count"] = items.length
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    chunks[current].emit_op_u16(Op::CONST, count_name, line);
+    chunks[current].emit_string_const("Count", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
     collections::emit_len(chunks, current, line);
     collections::emit_set(chunks, current, line);

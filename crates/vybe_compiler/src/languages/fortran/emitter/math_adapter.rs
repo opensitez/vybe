@@ -4,6 +4,7 @@
 //! intrinsics. Composes pure WASM `f64.max` / `f64.min` opcodes —
 //! no host calls.
 
+use crate::emitter::instructions::host;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
@@ -13,9 +14,13 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     slot
 }
 
-fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
-    let idx = chunk.add_constant(value);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -133,7 +138,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, k_slot, line);
     emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
     lget(chunk, right_first_slot, line);
-    chunk.emit_op(Op::REF_IS_ARRAY, line);
+    host::emit(chunk, "ecma:array", "isArray", 1, line);
     lset(chunk, right_is_matrix_slot, line);
 
     lget(chunk, right_is_matrix_slot, line);

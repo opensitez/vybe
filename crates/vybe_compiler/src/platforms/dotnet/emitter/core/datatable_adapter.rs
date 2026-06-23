@@ -7,25 +7,24 @@
 //!
 //! Pattern: `emitter/dotnet/core/datetime_adapter.rs`.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(s)));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_string_const(s, line);
 }
 
 fn push_f64(chunk: &mut Chunk, v: f64, line: u32) {
-    let idx = chunk.add_constant(Value::F64(v));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_f64_const(v, line);
 }
 
 /// `DUP → push value → STRUCT_SET key → DROP`
 /// Leaves the original object on the stack.
 fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32), line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     val_fn(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunk.emit_op(Op::DROP, line);

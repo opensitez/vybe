@@ -33,3 +33,21 @@ pub fn null(c: &mut Chunk, line: u32) {
 pub fn string_const(c: &mut Chunk, line: u32, s: &str) {
     c.emit_string_const(s, line);
 }
+
+pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
+    match val {
+        Value::I32(v) => c.emit_i32_const(*v, line),
+        Value::I64(v) => c.emit_i64_const(*v, line),
+        Value::F64(v) => c.emit_f64_const(*v, line),
+        Value::Bool(v) => c.emit_bool_const(*v, line),
+        Value::Null => c.emit_op(Op::NULL, line),
+        Value::Undefined => undefined(c, line),
+        Value::String(s) => c.emit_string_const(s, line),
+        Value::BigInt(v) => c.emit_i64_const(*v, line),
+        Value::V128(v) => {
+            c.emit_op(Op::V128_CONST, line);
+            for b in v { c.emit(*b, line); }
+        }
+        other => panic!("emit_value: no WASM-compliant encoding for {:?}", other),
+    }
+}

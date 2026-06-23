@@ -20,13 +20,15 @@ macro_rules! inst {
 
 macro_rules! fn_call {
     ($self:expr, $module:literal, $name:literal, $argc:expr) => {{
-        crate::emitter::instructions::host::emit(
-            &mut $self.chunks[$self.current],
-            $module,
-            $name,
-            $argc,
-            $self.line,
-        )
+        crate::emitter::instructions::host::CapabilityContext::get()
+            .functions
+            .emit(
+                &mut $self.chunks[$self.current],
+                $module,
+                $name,
+                $argc,
+                $self.line,
+            )
     }};
 }
 
@@ -4126,9 +4128,7 @@ impl Compiler {
                 }
             }
             other => {
-                debug_assert!(false, "emit_const called with non-primitive value: {:?}", other);
-                let idx = c.add_constant(other);
-                c.emit_op_u16(Op::CONST, idx, l);
+                panic!("emit_const: no WASM-compliant encoding for {:?}", other);
             }
         }
     }
@@ -6716,10 +6716,10 @@ impl Compiler {
                 return;
             }
         }
-        // Upvalue (closure capture)
         if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                self.emit_u8(Op::UPVALUE_GET, uv);
+                let slot = self.capture_local_slot(uv);
+                self.emit_u16(Op::LOCAL_GET, slot);
                 return;
             }
         }
@@ -7047,10 +7047,10 @@ impl Compiler {
                 return;
             }
         }
-        // Upvalue (closure capture)
         if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                self.emit_u8(Op::UPVALUE_SET, uv);
+                let slot = self.capture_local_slot(uv);
+                self.emit_u16(Op::LOCAL_SET, slot);
                 self.emit(Op::DROP);
                 return;
             }
@@ -7173,8 +7173,22 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    /// Walk up the scope chain to find a variable in a parent scope.
-    /// Returns the upvalue index in the current scope if found.
+    fn capture_local_slot(&mut self, uv_idx: u8) -> u16 {
+        if let Some(&slot) = self.capture_locals.get(&uv_idx) {
+            return slot;
+        }
+        let slot = self.define_local(&format!("__capture_{}", uv_idx));
+        self.capture_locals.insert(uv_idx, slot);
+        let c = &mut self.chunks[self.current];
+        if c.capture_count <= uv_idx {
+            c.capture_count = uv_idx + 1;
+        }
+        if c.capture_base == 0 || slot < c.capture_base {
+            c.capture_base = slot;
+        }
+        slot
+    }
+
     fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
         if scope_idx == 0 {
             return None;
@@ -7387,7 +7401,8 @@ impl Compiler {
         }
         if self.scopes.len() > 1 {
             if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &self_kw) {
-                self.emit_u8(Op::UPVALUE_GET, uv);
+                let slot = self.capture_local_slot(uv);
+                self.emit_u16(Op::LOCAL_GET, slot);
                 return true;
             }
         }

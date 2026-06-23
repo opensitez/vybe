@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -1328,7 +1329,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_if_value(line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, base_len_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_else(line);
     push_str(chunk, "\x1F", line);
@@ -1340,7 +1341,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lget(chunk, base_len_slot, line);
     lget(chunk, extra_len_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);

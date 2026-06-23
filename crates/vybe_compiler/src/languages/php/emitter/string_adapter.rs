@@ -7,6 +7,7 @@
 //! decodeURIComponent}` / `ecma:number.toFixed`. No PHP-specific
 //! host fns; no JS polyfills.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -5689,15 +5690,15 @@ pub fn emit_strtok_init(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); } // first char of delim
     { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
     chunk.emit_op_u16(Op::GLOBAL_SET, 0, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
     // Return first token
     chunk.emit_op_u16(Op::GLOBAL_GET, 0, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op(Op::ARRAY_GET, line);
     let tok_slot = alloc_local(chunk);
     lset(chunk, tok_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
     lget(chunk, tok_slot, line);
 }

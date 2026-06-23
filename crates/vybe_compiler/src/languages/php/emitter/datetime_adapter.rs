@@ -12,6 +12,7 @@
 //! `__type` distinguishes `DateTime` / `DateTimeImmutable` /
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -414,7 +415,7 @@ fn emit_code_arm(
     body(chunks, current);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op(Op::I32_CONST_1, line);
+        core_wasm::i32_const(chunk, line, 1);
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
@@ -442,7 +443,7 @@ fn emit_format_code_dispatch(
     let matched_slot = {
         let chunk = &mut chunks[current];
         let slot = alloc_local(chunk);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         chunk.emit_op(Op::DROP, line);
         slot

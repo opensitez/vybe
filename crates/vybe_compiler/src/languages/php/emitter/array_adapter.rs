@@ -7,6 +7,7 @@
 //! polyfills. PHP `array` ≡ JS `Map` (assoc) or `Array` (sequential)
 //! per the cross-language type model.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -2661,7 +2662,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let chunk = &mut chunks[current];
         lget(chunk, cur_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if(line);
 
@@ -2677,7 +2678,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let chunk = &mut chunks[current];
         lget(chunk, over_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if(line);
 

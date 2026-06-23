@@ -4,6 +4,7 @@
 //! provider can be swapped in one place. No raw opcode emits where a
 //! `common::*` helper exists.
 
+use crate::emitter::instructions::{core_wasm, host};
 use crate::emitter::{collections, strings};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
@@ -11,14 +12,14 @@ use vybe_bytecode::opcode::Op;
 /// Dart `s.isEmpty` — true iff length == 0. Stack: [s] → [bool].
 pub fn emit_dart_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 /// Dart `s.isNotEmpty` — true iff length != 0. Stack: [s] → [bool].
 pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
 }
 
@@ -61,11 +62,11 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     use std::sync::Arc;
     use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::REF_IS_ARRAY, line);
+    core_wasm::dup(chunk, line);
+    host::emit(chunk, "ecma:array", "isArray", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
     // Not an array — read the `first` field via STRUCT_GET.
@@ -80,13 +81,13 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
     use std::sync::Arc;
     use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::REF_IS_ARRAY, line);
+    core_wasm::dup(chunk, line);
+    host::emit(chunk, "ecma:array", "isArray", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunks[current].emit_op(Op::DUP, line);
+    core_wasm::dup(&mut chunks[current], line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_SUB, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
@@ -102,14 +103,14 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
 /// the property count (Dart `Map.length` semantics).
 pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     use vybe_bytecode::Op as VOp;
-    chunks[current].emit_op(Op::DUP, line);
-    chunks[current].emit_op(Op::REF_IS_STRING, line);
+    core_wasm::dup(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::DUP, line);
-    chunks[current].emit_op(Op::REF_IS_ARRAY, line);
+    core_wasm::dup(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     collections::emit_len(chunks, current, line);

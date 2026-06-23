@@ -1,9 +1,9 @@
 //! Go runtime-surface helpers routed via `common:go.*`.
 
+use crate::emitter::instructions::host;
 use crate::emitter::collections;
-use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 pub fn emit_helper(
     name: &str,
@@ -46,10 +46,10 @@ fn emit_fmt_joined(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, se
     for offset in 1..argc as u16 {
         if !sep.is_empty() {
             emit_string(chunks, current, sep, line);
-            chunks[current].emit_op(Op::STR_CONCAT, line);
+            host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
         }
         emit_formatted_local(chunks, current, base + offset, line);
-        chunks[current].emit_op(Op::STR_CONCAT, line);
+        host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
     }
 
     emit_log(chunks, current, line);
@@ -74,8 +74,7 @@ fn emit_log(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn emit_string(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {
-    let idx = chunks[current].add_constant(Value::String(Arc::from(value)));
-    chunks[current].emit_op_u16(Op::CONST, idx, line);
+    chunks[current].emit_string_const(value, line);
 }
 
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {

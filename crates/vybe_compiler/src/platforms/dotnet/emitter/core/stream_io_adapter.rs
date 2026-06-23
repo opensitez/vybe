@@ -23,6 +23,7 @@
 //!   * Receiver-shape is a plain `Object` with `__type` stamped to
 //!     `"StreamReader"` or `"StreamWriter"` plus the per-class fields.
 
+use crate::emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -37,8 +38,12 @@ const READER_TYPE: &str = "StreamReader";
 const WRITER_TYPE: &str = "StreamWriter";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -73,20 +78,20 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
     // __type = "StreamReader"
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(READER_TYPE)), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __content = content
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, content_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __pos = 0
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::dup(chunk, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 }
@@ -125,7 +130,7 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 
     // len = STR_LENGTH(content)
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -159,14 +164,13 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    let nl = chunk.add_constant(Value::I32(10)); // '\n'
-    chunk.emit_op_u16(Op::CONST, nl, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_i32_const(10, line); // '\n'
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line); // newline → exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -180,14 +184,14 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     // reader.__pos = end + 1 (skip past `\n`); clamp to len.
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -231,13 +235,13 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
     // reader.__pos = STR_LENGTH(content) — fully consumed.
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 }
@@ -259,7 +263,7 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     // len
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     // pos < len → DYN_NOT → at-end
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
@@ -280,19 +284,19 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
     // __type = "StreamWriter"
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __path = path
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, path_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __buf = ""
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -307,7 +311,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     chunk.emit_op(Op::DROP, line);
     // [writer] → DUP → [writer, writer] → STRUCT_GET __buf → [writer, buf]
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
@@ -325,7 +329,7 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
 
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);

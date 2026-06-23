@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -32,8 +33,7 @@ pub fn build_setter_chunk(
         chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
         let control_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
         chunk.emit_op_u16(Op::STRUCT_GET, control_key, line);
-        let event_const = chunk.add_constant(Value::String(Arc::from(event_name)));
-        chunk.emit_op_u16(Op::CONST, event_const, line);
+        chunk.emit_string_const(event_name, line);
         chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, set_import_idx, line);
         chunk.emit(3, line);
@@ -46,8 +46,7 @@ pub fn build_setter_chunk(
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     let host_name = host_property_name(property_name);
-    let prop_const = chunk.add_constant(Value::String(Arc::from(host_name)));
-    chunk.emit_op_u16(Op::CONST, prop_const, line);
+    chunk.emit_string_const(host_name, line);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, set_import_idx, line);
     chunk.emit(3, line);
@@ -72,8 +71,7 @@ pub fn build_getter_chunk(class_name: &str, property_name: &str, get_import_idx:
     let line = 0u32;
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     let host_name = host_property_name(property_name);
-    let prop_const = chunk.add_constant(Value::String(Arc::from(host_name)));
-    chunk.emit_op_u16(Op::CONST, prop_const, line);
+    chunk.emit_string_const(host_name, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, get_import_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::RETURN, line);
@@ -132,8 +130,7 @@ pub fn build_constructor_chunk(
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let type_const = chunk.add_constant(Value::String(Arc::from(class.name)));
-    chunk.emit_op_u16(Op::CONST, type_const, line);
+    chunk.emit_string_const(class.name, line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -331,8 +328,7 @@ pub fn build_show_message_chunk(msg_box_idx: u16) -> Chunk {
     let mut chunk = create_function_chunk("ShowMessage", 1);
     let line = 0u32;
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let title = chunk.add_constant(Value::String(Arc::from("Message")));
-    chunk.emit_op_u16(Op::CONST, title, line);
+    chunk.emit_string_const("Message", line);
     chunk.emit_op_u16(Op::CALL_IMPORT, msg_box_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::RETURN, line);
@@ -344,8 +340,7 @@ pub fn build_message_dlg_chunk(msg_box_idx: u16) -> Chunk {
     let mut chunk = create_function_chunk("MessageDlg", 4);
     let line = 0u32;
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let title = chunk.add_constant(Value::String(Arc::from("Message")));
-    chunk.emit_op_u16(Op::CONST, title, line);
+    chunk.emit_string_const("Message", line);
     chunk.emit_op_u16(Op::CALL_IMPORT, msg_box_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::RETURN, line);
@@ -386,42 +381,42 @@ pub fn emit_install_application_global(
 ) {
     script_chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     script_chunk.emit_op_u16(Op::REF_FUNC, run_chunk_idx as u16, line);
     script_chunk.emit(0, line);
     let run_key = script_chunk.add_constant(Value::String(Arc::from("run")));
     script_chunk.emit_op_u16(Op::STRUCT_SET, run_key, line);
     script_chunk.emit_op(Op::DROP, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     script_chunk.emit_op_u16(Op::REF_FUNC, exit_chunk_idx as u16, line);
     script_chunk.emit(0, line);
     let exit_key = script_chunk.add_constant(Value::String(Arc::from("exit")));
     script_chunk.emit_op_u16(Op::STRUCT_SET, exit_key, line);
     script_chunk.emit_op(Op::DROP, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     script_chunk.emit_op_u16(Op::REF_FUNC, initialize_chunk_idx as u16, line);
     script_chunk.emit(0, line);
     let initialize_key = script_chunk.add_constant(Value::String(Arc::from("initialize")));
     script_chunk.emit_op_u16(Op::STRUCT_SET, initialize_key, line);
     script_chunk.emit_op(Op::DROP, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     script_chunk.emit_op_u16(Op::REF_FUNC, title_setter_idx as u16, line);
     script_chunk.emit(0, line);
     let set_title_key = script_chunk.add_constant(Value::String(Arc::from("__set_title")));
     script_chunk.emit_op_u16(Op::STRUCT_SET, set_title_key, line);
     script_chunk.emit_op(Op::DROP, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     script_chunk.emit_op_u16(Op::REF_FUNC, title_getter_idx as u16, line);
     script_chunk.emit(0, line);
     let get_title_key = script_chunk.add_constant(Value::String(Arc::from("__get_title")));
     script_chunk.emit_op_u16(Op::STRUCT_SET, get_title_key, line);
     script_chunk.emit_op(Op::DROP, line);
 
-    script_chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(script_chunk, line);
     let app_name = script_chunk.add_constant(Value::String(Arc::from("Application")));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, app_name, line);
     script_chunk.emit_op(Op::DROP, line);
@@ -435,7 +430,7 @@ fn bind_ref(chunk: &mut Chunk, this_slot: u16, key: &str, chunk_idx: usize, line
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
     chunk.emit(0, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
     chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);

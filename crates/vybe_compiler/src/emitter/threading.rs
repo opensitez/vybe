@@ -12,6 +12,7 @@
 //!
 //! The VM implements these with real Rust atomics on shared memory.
 
+use crate::emitter::instructions::core_wasm;
 use crate::emitter::functions::create_function_chunk;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
@@ -91,7 +92,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_ATOMIC_RMW_XCHG, line);
     // If old value was 0, we acquired the lock
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line);
     // Not acquired — wait and retry
@@ -113,7 +114,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
 pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     // Store 0 (unlocked)
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op(Op::I32_ATOMIC_STORE, line);
     // Notify one waiter
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);

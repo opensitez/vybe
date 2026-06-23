@@ -26,6 +26,7 @@
 //! matches how `compiler_common::gui::emit_*` already works and how the VM
 //! resolves `call_import` indices through the script chunk's import table.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -73,8 +74,7 @@ pub fn build_setter_chunk(
     // [this]
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     // [this, "PropName"]
-    let prop_const = chunk.add_constant(Value::String(Arc::from(prop_pascal)));
-    chunk.emit_op_u16(Op::CONST, prop_const, line);
+    chunk.emit_string_const(prop_pascal, line);
     // [this, "PropName", value]
     chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
     // [this, "PropName", value] → call_import controlSetProperty(3) → [result]
@@ -100,8 +100,7 @@ pub fn build_getter_chunk(
     let line = 0u32;
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let prop_const = chunk.add_constant(Value::String(Arc::from(prop_pascal)));
-    chunk.emit_op_u16(Op::CONST, prop_const, line);
+    chunk.emit_string_const(prop_pascal, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, get_property_import_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::RETURN, line);
@@ -268,22 +267,19 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                 chunk.emit_op_u16(Op::STRUCT_GET, k2, line);
             }
             MethodOp::PushConstInt(v) => {
-                let c = chunk.add_constant(Value::F64(v as f64));
-                chunk.emit_op_u16(Op::CONST, c, line);
+                chunk.emit_f64_const(v as f64, line);
             }
             MethodOp::PushConstFloat(v) => {
-                let c = chunk.add_constant(Value::F64(v));
-                chunk.emit_op_u16(Op::CONST, c, line);
+                chunk.emit_f64_const(v, line);
             }
             MethodOp::PushConstStr(s) => {
-                let c = chunk.add_constant(Value::String(Arc::from(s)));
-                chunk.emit_op_u16(Op::CONST, c, line);
+                chunk.emit_string_const(s, line);
             }
             MethodOp::PushConstBool(b) => {
                 if b {
-                    chunk.emit_op(Op::TRUE, line);
+                    core_wasm::bool_const(chunk, line, true);
                 } else {
-                    chunk.emit_op(Op::FALSE, line);
+                    core_wasm::bool_const(chunk, line, false);
                 }
             }
             MethodOp::PushConstNull => {
@@ -368,7 +364,7 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                 chunk.emit_op(Op::DROP, line);
             }
             MethodOp::Dup => {
-                chunk.emit_op(Op::DUP, line);
+                core_wasm::dup(chunk, line);
             }
             MethodOp::Return => {
                 chunk.emit_op(Op::RETURN, line);
@@ -522,8 +518,7 @@ pub fn build_constructor_chunk(
     // ── Step 2: re-stamp __type with this class's name ──────────────────────
     {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        let type_str = chunk.add_constant(Value::String(Arc::from(class.name)));
-        chunk.emit_op_u16(Op::CONST, type_str, line);
+        chunk.emit_string_const(class.name, line);
         let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
         chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
         chunk.emit_op(Op::DROP, line);

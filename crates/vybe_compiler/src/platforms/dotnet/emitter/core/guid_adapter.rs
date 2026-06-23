@@ -5,6 +5,7 @@
 //! shared .NET dispatch layer can preserve value-type semantics without host
 //! changes.
 
+use crate::emitter::instructions::core_wasm;
 use crate::emitter::classes::emit_bind_method_with_aliases;
 use crate::emitter::functions::create_function_chunk;
 use std::sync::Arc;
@@ -20,8 +21,12 @@ const FORMAT_EXCEPTION_MSG: &str =
     "Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -31,8 +36,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {
-    let msg = chunk.add_constant(Value::String(Arc::from(FORMAT_EXCEPTION_MSG)));
-    chunk.emit_op_u16(Op::CONST, msg, line);
+    chunk.emit_string_const(FORMAT_EXCEPTION_MSG, line);
     crate::emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
     crate::emitter::errors::emit_throw(chunk, line);
 }
@@ -66,11 +70,11 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
     chunk.emit_op(Op::DROP, line);

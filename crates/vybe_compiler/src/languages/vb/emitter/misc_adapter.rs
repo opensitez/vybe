@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -14,9 +15,13 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     slot
 }
 
-fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
-    let idx = chunk.add_constant(value);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -48,7 +53,7 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     {
         let chunk = &mut chunks[current];
         gget(chunk, name, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
@@ -60,7 +65,7 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     crate::emitter::collections::emit_map_new(chunks, current, line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         gset(chunk, name, line);
     }
     chunks[current].emit_else(line);
@@ -122,7 +127,7 @@ pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, lin
         lget(chunk, path_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, stat, line);
         chunk.emit(1, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
@@ -158,7 +163,7 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lget(chunk, path_map_slot, line);
         lget(chunk, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
@@ -174,7 +179,7 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::CALL_IMPORT, stat, line);
         chunk.emit(1, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
@@ -235,7 +240,7 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lget(chunk, eof_map_slot, line);
         lget(chunk, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
     chunks[current].emit_if(line);
@@ -258,7 +263,7 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lget(chunk, eof_map_slot, line);
         lget(chunk, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
     chunks[current].emit_if(line);
@@ -308,7 +313,7 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op_u16(Op::CALL_IMPORT, spawn_sync, line);
         chunk.emit(2, line);
         chunk.emit_op_u16(Op::STRUCT_GET, pid_key, line);
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 

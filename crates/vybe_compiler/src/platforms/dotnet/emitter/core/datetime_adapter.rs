@@ -13,6 +13,7 @@
 //! the .NET surface looks .NET-shaped while the bytecode is
 //! standardized.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -23,8 +24,12 @@ const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
@@ -191,11 +196,11 @@ fn emit_wrap_ms_internal(
 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("DateTime")), line);
     struct_set_named_field(chunk, TYPE_KEY, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_named_field(chunk, TIME_KEY, line);
 
@@ -207,17 +212,17 @@ fn emit_wrap_ms_internal(
         ("Minute", minute_slot),
         ("Second", second_slot),
     ] {
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         struct_set_named_field(chunk, field, line);
     }
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     emit_day_of_week_string(chunk, dow_slot, line);
     struct_set_named_field(chunk, "DayOfWeek", line);
 
     if include_composites {
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         emit_utc_from_slots(
             chunks, current, year_slot, month_slot, day_slot, None, None, None, line,
         );
@@ -225,7 +230,7 @@ fn emit_wrap_ms_internal(
         struct_set_named_field(&mut chunks[current], "Date", line);
 
         let chunk = &mut chunks[current];
-        chunk.emit_op(Op::DUP, line);
+        core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
         push_const(chunk, Value::F64(3_600_000.0), line);
         chunk.emit_op(Op::F64_MUL, line);

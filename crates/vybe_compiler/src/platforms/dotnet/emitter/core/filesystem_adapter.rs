@@ -1,3 +1,4 @@
+use crate::emitter::instructions::host;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -6,8 +7,12 @@ use vybe_bytecode::{Chunk, Value};
 use crate::emitter::{collections, loops};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -29,7 +34,7 @@ pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::CALL_IMPORT, read_idx, line);
     chunk.emit(2, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    host::emit(chunk, "ecma:string", "split", 2, line);
 }
 
 fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_directories: bool) {

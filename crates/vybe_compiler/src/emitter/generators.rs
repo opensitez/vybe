@@ -5,6 +5,7 @@
 //! the single compiler-side surface for WebAssembly stack-switching generator
 //! opcodes.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::chunk::StackSwitchHandler;
 use vybe_bytecode::opcode::Op;
@@ -102,7 +103,7 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if already done
     let done_if = chunk.emit_if(line); // if already done {
     chunk.emit_op(Op::NULL, line);
-    chunk.emit_op(Op::I32_CONST_0, line); // [null, 0]
+    core_wasm::i32_const(chunk, line, 0); // [null, 0]
     chunk.emit_br(1, line); //   br $block → exit with (undefined, done)
     chunk.emit_end(line); // }
     chunk.patch_block(done_if);
@@ -115,14 +116,14 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     // continuation done so the next call hits the guard above instead of the
     // `resume`-on-completed trap.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [retval, cont]
-    chunk.emit_op(Op::I32_CONST_1, line); // [retval, cont, 1]
+    core_wasm::i32_const(chunk, line, 1); // [retval, cont, 1]
     chunk.emit_op_u16(Op::STRUCT_SET, done_key, line); // [retval, 1]
     chunk.emit_op(Op::DROP, line); // [retval]
-    chunk.emit_op(Op::I32_CONST_0, line); // has_more = 0 → [retval, 0]
+    core_wasm::i32_const(chunk, line, 0); // has_more = 0 → [retval, 0]
     chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
     // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]
     let handler_ip = chunk.code.len();
-    chunk.emit_op(Op::I32_CONST_1, line); // has_more = 1 → [yieldval, 1]
+    core_wasm::i32_const(chunk, line, 1); // has_more = 1 → [yieldval, 1]
     chunk.emit_end(line); // end $block → [value, has_more]
     chunk.patch_block(block_p);
 
@@ -272,7 +273,7 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -304,7 +305,7 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -355,7 +356,7 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -413,7 +414,7 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].patch_block(inner_block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunks[current].emit_op(Op::DROP, line);

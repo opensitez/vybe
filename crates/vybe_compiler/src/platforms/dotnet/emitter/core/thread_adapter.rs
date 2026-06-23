@@ -7,7 +7,7 @@
 //!
 //! Both functions are WASI 0.2 spec and already registered in vybe_host.
 
-use vybe_bytecode::{Chunk, Value, opcode::Op};
+use vybe_bytecode::{Chunk, opcode::Op};
 
 /// Emit Thread.Sleep(ms) — blocking WASI pollable sleep.
 ///
@@ -17,8 +17,7 @@ use vybe_bytecode::{Chunk, Value, opcode::Op};
 /// Stack before: [ms: f64]  Stack after: []
 pub fn emit_thread_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, line: u32) {
     // ms × 1_000_000 = nanoseconds
-    let ns_mul = chunk.add_constant(Value::F64(1_000_000.0));
-    chunk.emit_op_u16(Op::CONST, ns_mul, line);
+    chunk.emit_f64_const(1_000_000.0, line);
     chunk.emit_op(Op::F64_MUL, line);
     // subscribe-duration(ns) → pollable
     chunk.emit_op_u16(Op::CALL_IMPORT, sub_dur_idx, line);

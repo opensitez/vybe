@@ -7,14 +7,19 @@
 //! The adapters keep Node-shaped JS call signatures while lowering to the
 //! real `wasi:sockets/*` surface. No `dotnet:*` host module is involved.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 /// `net.createConnection(port[, host])` / `net.connect(port[, host])`
@@ -25,7 +30,7 @@ pub fn emit_net_create_connection(chunks: &mut Vec<Chunk>, current: usize, argc:
     match argc {
         0 => {
             push_const(chunk, Value::String(Arc::from("127.0.0.1")), line);
-            chunk.emit_op(Op::I32_CONST_0, line);
+            core_wasm::i32_const(chunk, line, 0);
         }
         1 => {
             let port_slot = chunk.local_count;
@@ -61,7 +66,7 @@ pub fn emit_net_create_server(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         chunk.emit_op_u16(Op::LOCAL_SET, listener_slot, line);
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     super::sockets_adapter::emit_tcp_listener_new(chunks, current, line);
 }
 
@@ -76,6 +81,6 @@ pub fn emit_dgram_create_socket(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunk.emit_op_u16(Op::LOCAL_SET, kind_slot, line);
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     super::sockets_adapter::emit_udp_client_new(chunks, current, line);
 }

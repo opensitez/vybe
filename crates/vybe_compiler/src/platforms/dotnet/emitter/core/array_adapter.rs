@@ -11,8 +11,9 @@
 //!
 //! Pure WASM, zero `vybe:types` involvement.
 
+use crate::emitter::instructions::{core_wasm, host};
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 /// `Array.Clear(arr, idx, count)` — reset `count` elements starting at
 /// `idx` to a .NET-style default. Until the runtime carries per-array
@@ -42,7 +43,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     // i = 0
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -71,16 +72,16 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op(Op::REF_IS_BOOL, line);
+    host::emit(chunk, "wasm:js-boolean", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::FALSE, line);
+    core_wasm::bool_const(chunk, line, false);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op(Op::REF_IS_NUMBER, line);
+    host::emit(chunk, "wasm:js-number", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     chunk.emit_else(line);
     chunk.emit_op(Op::NULL, line);
     chunk.emit_end(line);
@@ -90,8 +91,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, line);
+    chunk.emit_i32_const(1, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -241,7 +241,7 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
     // The result is on the stack as an array — take element 0.
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::collections::emit_get(chunks, current, line);
 }
 

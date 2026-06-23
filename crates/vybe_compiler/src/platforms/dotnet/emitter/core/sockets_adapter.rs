@@ -25,8 +25,12 @@ use vybe_bytecode::{Chunk, Value};
 /// this directly the way the compiler's `emit_const` helper does,
 /// so we inline the two-step (add_constant + emit_op_u16) pattern.
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 /// Build a `"host:port"` IP-socket-address string on the stack.

@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -17,8 +18,12 @@ const VALUE_KEY: &str = "value";
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -42,7 +47,7 @@ fn call_import(
 
 fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, value, line);
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunk.emit_op(Op::DROP, line);
@@ -50,7 +55,7 @@ fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
 
 fn set_local_prop(chunk: &mut Chunk, key: &str, local: u16, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunk.emit_op(Op::DROP, line);
@@ -119,7 +124,7 @@ fn emit_reader_to_adodb_recordset(
         chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
@@ -419,7 +424,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         set_object_local_prop(chunk, rs_slot, RECORD_COUNT_KEY, count_slot, line);
         let slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         chunk.emit_op(Op::DROP, line);
@@ -448,7 +453,7 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
         get_prop_to_local(chunk, rs_slot, POS_KEY, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_op(Op::I32_FROM_F64, line);
-        chunk.emit_op(Op::I32_CONST_1, line);
+        core_wasm::i32_const(chunk, line, 1);
         chunk.emit_op(Op::I32_ADD, line);
         chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
         chunk.emit_op(Op::DROP, line);
@@ -496,7 +501,7 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
         chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);

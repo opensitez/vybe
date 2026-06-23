@@ -1,5 +1,6 @@
 //! .NET `System.Version` adapter — bytecode-only.
 
+use crate::emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -11,8 +12,12 @@ const BUILD_KEY: &str = "Build";
 const REVISION_KEY: &str = "Revision";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -59,7 +64,7 @@ fn emit_store_optional_array_part_as_number(
     chunk.emit_op(Op::DROP, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::F64(default_value), line);
@@ -90,27 +95,27 @@ fn emit_build_version_from_slots(
     let revision_key = chunk.add_constant(Value::String(Arc::from(REVISION_KEY)));
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, major_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, major_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minor_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, minor_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, build_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, build_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, revision_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -249,7 +254,7 @@ pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    host::emit(chunk, "ecma:string", "split", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
     chunk.emit_op(Op::DROP, line);
 

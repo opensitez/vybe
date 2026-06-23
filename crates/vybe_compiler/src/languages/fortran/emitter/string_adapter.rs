@@ -8,6 +8,7 @@
 //!   (stub: trimStart for now; full adjustl needs declared length).
 //! - `adjustr(s)` — symmetric.
 
+use crate::emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
@@ -17,8 +18,8 @@ use vybe_bytecode::opcode::Op;
 /// Stack on entry: `[s]`. Stack on exit: `[length_i32]`.
 pub fn emit_fortran_len_trim(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::STR_TRIM_END, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "ecma:string", "trimEnd", 1, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
 }
 
 /// Fortran `adjustl(s)` — left-justify by moving leading blanks to
@@ -26,5 +27,5 @@ pub fn emit_fortran_len_trim(chunks: &mut [Chunk], current: usize, line: u32) {
 /// to declared length — that's a fixed-len-string concern).
 pub fn emit_fortran_adjustl(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::STR_TRIM_START, line);
+    host::emit(chunk, "ecma:string", "trimStart", 1, line);
 }

@@ -13,6 +13,7 @@
 //! seconds }` matching the existing `vybe:types/timeSpan*` host
 //! impls so callers continue to work.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -20,8 +21,12 @@ use vybe_bytecode::{Chunk, Value};
 use crate::emitter::math;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
@@ -114,79 +119,79 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);
     struct_set_field(chunk, type_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_field(chunk, total_ms_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_named_field(chunk, "TotalMilliseconds", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_sec_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_named_field(chunk, "TotalSeconds", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(60_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_min_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(60_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_named_field(chunk, "TotalMinutes", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(3_600_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_hr_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(3_600_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_named_field(chunk, "TotalHours", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_day_key, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_named_field(chunk, "TotalDays", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, days_slot, line);
     struct_set_named_field(chunk, "Days", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
     struct_set_named_field(chunk, "Hours", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
     struct_set_named_field(chunk, "Minutes", line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
     struct_set_named_field(chunk, "Seconds", line);
 }

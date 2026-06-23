@@ -156,3 +156,78 @@ end.
     );
     assert!(chunk_named(&chunks, "Count").is_generator);
 }
+#[test]
+fn debug_gen_imports() {
+    let src = r#"
+function* gen() {
+    yield 1;
+    yield 2;
+    yield 3;
+}
+let g = gen();
+console.log(g.next().value);
+"#;
+    let module = vybe_compiler::languages::js::parse(src).expect("JS parse failed");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::js::profile_source())
+            .expect("Failed to parse JS profile");
+    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+        .compile(&module)
+        .expect("JS compile failed");
+    // After normalize_import_table: chunks[0] has all imports, others cleared
+    // Verify gen chunk import indices map correctly to chunks[0]
+    let ci_bytes = vybe_bytecode::opcode::Op::CALL_IMPORT.encode();
+    let gen_chunk = &chunks[1];
+    let code = &gen_chunk.code;
+    let mut first_3_calls: Vec<(usize, u16, u8)> = Vec::new();
+    let mut pos = 0;
+    while pos + 6 < code.len() && first_3_calls.len() < 6 {
+        if code[pos] == ci_bytes[0] && code[pos+1] == ci_bytes[1]
+           && code[pos+2] == ci_bytes[2] && code[pos+3] == ci_bytes[3] {
+            let idx = ((code[pos+4] as u16) << 8) | code[pos+5] as u16;
+            let argc = code[pos+6];
+            first_3_calls.push((pos, idx, argc));
+            pos += 7;
+        } else {
+            pos += 1;
+        }
+    }
+    eprintln!("chunks[0] has {} imports", chunks[0].imports.len());
+    for (offset, idx, argc) in &first_3_calls {
+        let import_name = if (*idx as usize) < chunks[0].imports.len() {
+            let imp = &chunks[0].imports[*idx as usize];
+            format!("{}.{}", imp.module, imp.name)
+        } else {
+            format!("OUT OF RANGE ({})", idx)
+        };
+        eprintln!("  gen @{:04}: call_import idx={} argc={} => {}", offset, idx, argc, import_name);
+    }
+    // Check header bytes
+    eprintln!("gen chunk first 8 bytes: {:?}", &code[..8.min(code.len())]);
+    // Check what's at the failing offset (around 1642-1656)
+    let mut all_calls: Vec<(usize, u16, u8)> = Vec::new();
+    let mut pos2 = 0;
+    while pos2 + 6 < code.len() {
+        if code[pos2] == ci_bytes[0] && code[pos2+1] == ci_bytes[1]
+           && code[pos2+2] == ci_bytes[2] && code[pos2+3] == ci_bytes[3] {
+            let idx = ((code[pos2+4] as u16) << 8) | code[pos2+5] as u16;
+            let argc = code[pos2+6];
+            all_calls.push((pos2, idx, argc));
+            pos2 += 7;
+        } else {
+            pos2 += 1;
+        }
+    }
+    eprintln!("\n--- Calls near offset 1640-1660 ---");
+    for (offset, idx, argc) in &all_calls {
+        if *offset >= 1630 && *offset <= 1670 {
+            let import_name = if (*idx as usize) < chunks[0].imports.len() {
+                let imp = &chunks[0].imports[*idx as usize];
+                format!("{}.{}", imp.module, imp.name)
+            } else {
+                format!("OUT OF RANGE ({})", idx)
+            };
+            eprintln!("  gen @{:04}: call_import idx={} argc={} => {}", offset, idx, argc, import_name);
+        }
+    }
+}

@@ -7,6 +7,7 @@
 //! section.
 
 #[allow(unused_imports)]
+use crate::emitter::instructions::core_wasm;
 use crate::emitter::Target;
 use std::sync::Arc;
 use vybe_bytecode::Chunk;
@@ -108,7 +109,7 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
 /// incrementally. Each count>0 call site is a Phase E breadcrumb.
 pub fn emit_array_new(chunks: &mut [Chunk], current: usize, count: u16, line: u32) {
     if count == 0 {
-        chunks[current].emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
         emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
     } else {
         chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
@@ -173,7 +174,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // map_len != 0: ecma:map.size returns I32 — use I32_NE directly.
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op(Op::I32_NE, line);
     chunks[current].emit_if_value(line);
 
@@ -397,7 +398,7 @@ pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Array removeAt (splice). Stack: [array, index] → [null].
 /// splice(arr, index, 1) — deletes 1 element at index.
 pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
@@ -448,7 +449,7 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Clone (full copy). Stack: [array] → [new_array].
 /// Pushes 0 and i32::MAX as start/end, then slice.
 pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_i32_const(i32::MAX, line);
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
@@ -479,7 +480,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     lset(&mut chunks[current], idx_slot, line);
 
     let outer_block = chunks[current].emit_block(line);
@@ -564,7 +565,7 @@ pub fn emit_insert_at(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Clear array. Stack: [array] → [null].
 /// splice(arr, 0, MAX_INT) removes all elements.
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_i32_const(i32::MAX, line);
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -645,7 +646,7 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v1, line);
@@ -668,7 +669,7 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Import registers on `imports`.
 pub fn emit_array_new_into(imports: &mut Chunk, code: &mut Chunk, count: u16, line: u32) {
     if count == 0 {
-        code.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(code, line, 0);
         emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
     } else {
         code.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
@@ -791,7 +792,7 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op_u16(Op::LOCAL_SET, v1, line);
     code.emit_op(Op::DROP, line);
     // arr = ecma:array.newWithLength(0)
-    code.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(code, line, 0);
     emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
     // arr.push(v1)
     code.emit_dup(line);
@@ -838,7 +839,7 @@ pub fn emit_range_targeted(
             chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
             chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
             chunk.emit_op(Op::DROP, line);
-            chunk.emit_op(Op::I32_CONST_0, line);
+            core_wasm::i32_const(chunk, line, 0);
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
             chunk.emit_op(Op::DROP, line);
 
@@ -858,7 +859,7 @@ pub fn emit_range_targeted(
             chunk.emit_op(Op::DROP, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            chunk.emit_op(Op::I32_CONST_1, line);
+            core_wasm::i32_const(chunk, line, 1);
             chunk.emit_op(Op::I32_ADD, line);
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
             chunk.emit_op(Op::DROP, line);

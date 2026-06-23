@@ -11,6 +11,7 @@
 //! 2. Storing the function/array values into those slots BEFORE calling these helpers
 //! 3. The helpers only emit the loop body — not the argument evaluation
 
+use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
@@ -145,7 +146,7 @@ pub fn emit_for_in_start(
     line: u32,
 ) -> LoopState {
     // i = 0
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     // LOCAL_SET leaves the assigned value on the stack in Vybe bytecode;
     // drop it here so every iteration starts with a clean stack.
@@ -199,7 +200,7 @@ pub fn emit_for_in_end(
 
     // i += 1 (increment — runs after continue)
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     // LOCAL_SET peeks (Vybe convention) — drop the residue so the
@@ -378,7 +379,7 @@ pub fn emit_reduce(
 
     // i += 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 

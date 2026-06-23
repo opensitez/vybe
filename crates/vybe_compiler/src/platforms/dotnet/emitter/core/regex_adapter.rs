@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -8,8 +9,12 @@ const VALUE_KEY: &str = "value";
 const COUNT_KEY: &str = "count";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -24,7 +29,7 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     match argc {
         0 => {
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-            chunk.emit_op(Op::DUP, line);
+            core_wasm::dup(chunk, line);
             push_const(chunk, Value::String(Arc::from("")), line);
             chunk.emit_op_u16(Op::STRUCT_SET, pattern_key, line);
             chunk.emit_op(Op::DROP, line);
@@ -37,7 +42,7 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
             chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
             chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-            chunk.emit_op(Op::DUP, line);
+            core_wasm::dup(chunk, line);
             chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
             chunk.emit_op_u16(Op::STRUCT_SET, pattern_key, line);
             chunk.emit_op(Op::DROP, line);
@@ -133,7 +138,7 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
@@ -176,7 +181,7 @@ pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, count_key, line);
     chunk.emit_op(Op::DROP, line);

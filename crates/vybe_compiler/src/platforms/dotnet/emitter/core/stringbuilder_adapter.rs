@@ -14,6 +14,7 @@
 //! handles both shapes — the .NET wrapper exposes one `ConstructorDef`
 //! and the emit decides at compile time which body to lay out.
 
+use crate::emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -21,8 +22,12 @@ use vybe_bytecode::{Chunk, Value};
 const BUFFER_KEY: &str = "__buffer";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 /// Stack-based scratch slot — bumps `local_count` and returns the new slot.
@@ -45,7 +50,7 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             // [] → STRUCT_NEW → [obj]
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             // [obj] → DUP → [obj, obj] → push "" → [obj, obj, ""]
-            chunk.emit_op(Op::DUP, line);
+            core_wasm::dup(chunk, line);
             push_const(chunk, Value::String(Arc::from("")), line);
             // STRUCT_SET pops [obj, val] and pushes [val]; we then drop val.
             chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
@@ -63,7 +68,7 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             chunk.emit_op(Op::DROP, line);
             // [] → STRUCT_NEW → [obj] → DUP → [obj, obj] → load initial → [obj, obj, initial]
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-            chunk.emit_op(Op::DUP, line);
+            core_wasm::dup(chunk, line);
             chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
             chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
             chunk.emit_op(Op::DROP, line);
@@ -85,7 +90,7 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     chunk.emit_op(Op::DROP, line);
     // [sb] → DUP → [sb, sb] → STRUCT_GET __buffer → [sb, buffer]
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     // [sb, buffer] → push s → [sb, buffer, s] → DYN_ADD → [sb, buffer+s]
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -106,7 +111,7 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
@@ -145,7 +150,7 @@ pub fn emit_sb_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
 }
 
 /// `sb.Insert(idx, text)` — splice `text` into `sb.__buffer` at `idx`.
@@ -169,7 +174,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     // Read sb.__buffer once and stash.
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -179,7 +184,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     push_const(chunk, Value::I32(0), line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     // Stack: [sb, before]
 
     // before + text
@@ -191,8 +196,8 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
     // Stack: [sb, before+text, after]
 
     // (before + text) + after
@@ -220,7 +225,7 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -228,15 +233,15 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     push_const(chunk, Value::I32(0), line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
@@ -266,7 +271,7 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, line: u32) {
     // Stack: [sb]
 
     // [sb, sb, buf, old, new] — buffer + replace args
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, old_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);

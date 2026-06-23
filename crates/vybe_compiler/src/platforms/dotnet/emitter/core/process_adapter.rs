@@ -7,6 +7,7 @@
 //! No `vybe:types` involvement — pure compile-time adapter, runtime
 //! work happens in `node:child_process.spawnSync` etc.
 
+use crate::emitter::instructions::{core_wasm, host};
 use crate::emitter::classes::emit_bind_method;
 use crate::emitter::functions::create_function_chunk;
 use std::sync::Arc;
@@ -18,8 +19,12 @@ const ARGUMENTS_KEY: &str = "arguments";
 const TYPE_KEY: &str = "__type";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    let idx = chunk.add_constant(val);
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    match &val {
+        Value::String(s) => chunk.emit_string_const(s, line),
+        Value::F64(f) => chunk.emit_f64_const(*f, line),
+        Value::I32(i) => chunk.emit_i32_const(*i, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -94,11 +99,11 @@ pub fn emit_process_start_info_new(chunks: &mut [Chunk], current: usize, argc: u
 
     // Build the record: {filename: cmd_slot, arguments: args_slot}
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cmd_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, filename_key, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, args_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -116,7 +121,7 @@ pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -149,7 +154,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Resolve filename: arg.filename if Object; else arg itself.
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, filename_key, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let filename_fallback = chunk.emit_block(line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -164,7 +169,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, args_key, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let args_fallback = chunk.emit_block(line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -180,8 +185,8 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // adapter surface, split on spaces into the argv array that the
     // Node bridge expects. Keep [] for the empty-string default.
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
+    core_wasm::dup(chunk, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
     push_const(chunk, Value::I32(0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunks[current].emit_if(line);
@@ -190,7 +195,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_else(line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::String(Arc::from(" ")), line);
-    chunk.emit_op(Op::STR_SPLIT, line);
+    host::emit(chunk, "ecma:string", "split", 2, line);
     chunk.emit_end(line);
     // Stack: [filename_str, argv_array]
 
@@ -214,22 +219,22 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
     // __type = "Process"
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // HasExited = true (spawnSync is synchronous; process is always done)
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op_u16(Op::STRUCT_SET, he_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // ExitCode = raw_result.status ?? 0
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, status_key, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let status_fallback = chunk.emit_block(line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -263,11 +268,11 @@ pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DUP, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, pid_idx, line);
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::STRUCT_SET, pid_key, line);

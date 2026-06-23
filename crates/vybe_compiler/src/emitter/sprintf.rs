@@ -8,6 +8,7 @@
 //! emits a direct call-by-name to it. This keeps the implementation in
 //! Rust bytecode (no JS polyfill) and in the proper emitter path.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -223,7 +224,7 @@ fn hc(c: &mut Chunk, i: u16, a: u8) {
 }
 fn inc(c: &mut Chunk, s: u16) {
     lg(c, s);
-    c.emit_op(Op::I32_CONST_1, 0);
+    core_wasm::i32_const(c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     ls(c, s);
 }
@@ -261,9 +262,9 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     ls(&mut c, FLEN);
     cs(&mut c, "");
     ls(&mut c, OUT);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, I);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, AIDX);
 
     // outer: block $ob, loop $ol
@@ -385,7 +386,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         let pos_block = c.emit_block(0);
         lg(&mut c, I);
         ls(&mut c, SAVEI);
-        c.emit_op(Op::I32_CONST_0, 0);
+        core_wasm::i32_const(&mut c, 0, 0);
         ls(&mut c, POS);
         // scan digits into POS
         {
@@ -449,19 +450,19 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     }
 
     // reset flags
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FLEFT);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FSIGN);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FZERO);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FSPACE);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FALT);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, WIDTH);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, FPAD);
     cs(&mut c, "");
     ls(&mut c, CUSTPAD);
@@ -560,7 +561,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_op(Op::I32_NE, 0);
         c.emit_br_if(0, 0);
         inc(&mut c, I);
-        c.emit_op(Op::I32_CONST_0, 0);
+        core_wasm::i32_const(&mut c, 0, 0);
         ls(&mut c, PREC);
         let pl = c.emit_block(0);
         let (plp, _) = c.emit_loop_s(0);
@@ -737,7 +738,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     {
         let pad = c.emit_block(0);
         lg(&mut c, WIDTH);
-        c.emit_op(Op::I32_CONST_0, 0);
+        core_wasm::i32_const(&mut c, 0, 0);
         c.emit_op(Op::I32_LE_S, 0);
         c.emit_br_if(0, 0);
         {
@@ -1457,11 +1458,11 @@ pub fn build_sscanf(_imports: &mut Chunk) -> Chunk {
     lg(&mut c, S_FMT);
     { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
     ls(&mut c, S_FLEN);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, S_I);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     ls(&mut c, S_J);
-    c.emit_op(Op::I32_CONST_0, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
     hc(&mut c, arr_new, 1);
     ls(&mut c, S_OUT);
 

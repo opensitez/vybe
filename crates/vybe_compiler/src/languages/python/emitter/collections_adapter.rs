@@ -1,3 +1,4 @@
+use crate::emitter::instructions::{core_wasm, host};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
@@ -32,7 +33,7 @@ pub fn emit_extend(chunks: &mut [Chunk], current: usize, line: u32) {
     let src = base + 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op(Op::DUP, line);
+    core_wasm::dup(&mut chunks[current], line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     collections::emit_insert_range(chunks, current, line);
@@ -47,7 +48,7 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
     dict::emit_get(chunks, current, line);
 
-    chunks[current].emit_op(Op::DUP, line);
+    core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);
@@ -66,7 +67,7 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let needle = base + 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op(Op::REF_IS_STRING, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -95,7 +96,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_len(chunks, current, line);
     collections::emit_remove_range(chunks, current, line);
@@ -126,7 +127,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
@@ -164,12 +165,12 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_len(chunks, current, line);
     collections::emit_slice(chunks, current, line);
@@ -253,7 +254,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         collections::emit_len(chunks, current, line);
-        chunks[current].emit_op(Op::I32_CONST_1, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
         chunks[current].emit_op(Op::I32_SUB, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
         chunks[current].emit_op(Op::DROP, line);
@@ -329,7 +330,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op(Op::REF_IS_STRING, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
@@ -340,13 +341,13 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
-    chunks[current].emit_op(Op::DUP, line);
+    core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
@@ -357,7 +358,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
-    chunks[current].emit_op(Op::DUP, line);
+    core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);

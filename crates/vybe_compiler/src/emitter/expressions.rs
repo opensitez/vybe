@@ -4,6 +4,7 @@
 //! across all languages. Helpers emit structured WASM control constructs so
 //! callers can compile language-specific sub-expressions in between.
 
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -380,7 +381,7 @@ pub fn emit_rich_compare_locals(
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
         chunk.emit_op_u8(Op::CALL_REF, 2, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         fallback_fn(chunk, line);
         chunk.emit_br(1, line);
         chunk.emit_end(line);

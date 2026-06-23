@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
@@ -8,7 +9,7 @@ pub fn emit_round_away_from_zero(chunks: &mut [Chunk], current: usize, line: u32
     let value_slot = base;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op(Op::F64_CONST_0, line);
+    core_wasm::f64_const(&mut chunks[current], line, 0.0);
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);

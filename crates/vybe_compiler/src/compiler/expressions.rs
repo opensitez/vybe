@@ -275,22 +275,25 @@ impl Compiler {
         self.emit(Op::DROP);
 
         let line = self.line;
-        let marker_slot = self.define_local("__yield_resume_is_control");
+        // Check if resume value is a control packet (has __vybe_generator_control)
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        inst!(self, recipes::is_object);
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit_u16(Op::LOCAL_SET, marker_slot);
-        self.emit(Op::DROP);
+        self.chunk().emit_if(line);
 
-        self.emit_u16(Op::LOCAL_GET, marker_slot);
+        // Control packet: check op
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
         fn_call!(self, "wasm:js-string", "equals", 2);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_AND);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -298,21 +301,19 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, value_key);
         self.emit(Op::THROW);
 
-        self.chunk().emit_else(line);
         self.chunk().emit_end(line);
-        self.emit_u16(Op::LOCAL_GET, marker_slot);
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
         fn_call!(self, "wasm:js-string", "equals", 2);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.emit(Op::I32_AND);
         self.chunk().emit_if(line);
 
         self.emit_generator_return_from_resume_slot(resume_slot)?;
 
-        self.chunk().emit_else(line);
         self.chunk().emit_end(line);
+        self.chunk().emit_end(line); // end marker check
+        self.chunk().emit_end(line); // end is_object check
         self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
     }
@@ -657,10 +658,12 @@ impl Compiler {
                     // Arrow function: capture `this` from enclosing scope via upvalue
                     let kw = self.profile.self_keyword.clone();
                     if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
-                        self.emit_u8(Op::UPVALUE_GET, uv);
+                        let slot = self.capture_local_slot(uv);
+                        self.emit_u16(Op::LOCAL_GET, slot);
                     } else if self.is_js_profile() {
                         if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this") {
-                            self.emit_u8(Op::UPVALUE_GET, uv);
+                            let slot = self.capture_local_slot(uv);
+                            self.emit_u16(Op::LOCAL_GET, slot);
                         } else {
                             let idx = self.str_const("__js_this");
                             self.emit_u16(Op::GLOBAL_GET, idx);

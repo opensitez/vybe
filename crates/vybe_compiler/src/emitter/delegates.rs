@@ -4,6 +4,7 @@
 //! - combine: [current, handler] -> [delegate]
 //! - remove:  [current, handler] -> [delegate]
 
+use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
@@ -106,7 +107,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::F64_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -114,7 +115,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -138,7 +139,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::F64_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -149,7 +150,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(block_patch);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -167,7 +168,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
@@ -175,12 +176,12 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);

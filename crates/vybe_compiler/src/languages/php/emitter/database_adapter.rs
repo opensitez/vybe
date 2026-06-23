@@ -1,3 +1,4 @@
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
@@ -764,7 +765,7 @@ fn emit_mark_queryish_prefix(
     push_str(chunk, prefix, line);
     { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_call(idx, 2, line); }
     chunk.emit_if(line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     lset(chunk, is_query_slot, line);
     chunk.emit_end(line);
 }
@@ -955,7 +956,7 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
     lget(chunk, params_slot, line);
     lget(chunk, param_slot, line);
     convert::emit_to_int(chunk, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_SUB, line);
     lget(chunk, value_slot, line);
     collections::emit_set(chunks, current, line);
@@ -1055,7 +1056,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
 
     let is_query_slot = {
         let chunk = &mut chunks[current];
-        chunk.emit_op(Op::I32_CONST_0, line);
+        core_wasm::i32_const(chunk, line, 0);
         let slot = alloc_local(chunk);
         lset(chunk, slot, line);
         emit_mark_queryish_prefix(chunk, sql_slot, slot, "select", line);
@@ -1520,7 +1521,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let normalized_sql_slot = alloc_local(chunk);
     lset(chunk, normalized_sql_slot, line);
 
-    chunk.emit_op(Op::I32_CONST_0, line);
+    core_wasm::i32_const(chunk, line, 0);
     let is_query_slot = alloc_local(chunk);
     lset(chunk, is_query_slot, line);
     emit_mark_queryish_prefix(chunk, normalized_sql_slot, is_query_slot, "select", line);

@@ -1,6 +1,7 @@
 //! Auto-extracted `dotnet.*` dispatch (language-specific routing lives in the
 //! language module; the common dispatcher delegates here).
 
+use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::Chunk;
 
 use vybe_bytecode::opcode::Op;
@@ -21,7 +22,7 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_SUB, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunk.emit_op(Op::DROP, line);

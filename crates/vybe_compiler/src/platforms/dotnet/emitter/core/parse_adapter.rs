@@ -8,9 +8,9 @@
 //!
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
-use std::sync::Arc;
+use crate::emitter::instructions::{core_wasm, host};
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let s = chunk.local_count;
@@ -38,11 +38,8 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_br_if(0, line);
     // NaN — throw FormatException-shaped object so `e.Message` works.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
-    let msg = chunk.add_constant(Value::String(Arc::from(
-        "Input string was not in a correct format.",
-    )));
-    chunk.emit_op_u16(Op::CONST, msg, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("Input string was not in a correct format.", line);
     crate::emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
     crate::emitter::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
@@ -68,10 +65,7 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
-    let msg = chunk.add_constant(Value::String(Arc::from(
-        "Input string was not in a correct format.",
-    )));
-    chunk.emit_op_u16(Op::CONST, msg, line);
+    chunk.emit_string_const("Input string was not in a correct format.", line);
     crate::emitter::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
@@ -95,39 +89,33 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DROP, line);
 
     // If lc === "true" → push true and return.
-    let true_str = chunk.add_constant(Value::String(Arc::from("true")));
-    let false_str = chunk.add_constant(Value::String(Arc::from("false")));
-
     let outer = chunk.emit_block(line);
     // Branch 1: true
     let not_true = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
-    chunk.emit_op_u16(Op::CONST, true_str, line);
+    chunk.emit_string_const("true", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
-    chunk.emit_op(Op::TRUE, line);
+    core_wasm::bool_const(chunk, line, true);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(not_true);
     // Branch 2: false
     let not_false = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
-    chunk.emit_op_u16(Op::CONST, false_str, line);
+    chunk.emit_string_const("false", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
-    chunk.emit_op(Op::FALSE, line);
+    core_wasm::bool_const(chunk, line, false);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(not_false);
     // Neither — throw FormatException-shape object.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
-    let msg = chunk.add_constant(Value::String(Arc::from(
-        "String was not recognized as a valid Boolean.",
-    )));
-    chunk.emit_op_u16(Op::CONST, msg, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("String was not recognized as a valid Boolean.", line);
     crate::emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
     crate::emitter::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
@@ -143,17 +131,14 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
 
     let ok_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::I32_CONST_1, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    core_wasm::i32_const(chunk, line, 1);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op(Op::DUP, line);
-    let msg = chunk.add_constant(Value::String(Arc::from(
-        "String must be exactly one character long.",
-    )));
-    chunk.emit_op_u16(Op::CONST, msg, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("String must be exactly one character long.", line);
     crate::emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
     crate::emitter::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
