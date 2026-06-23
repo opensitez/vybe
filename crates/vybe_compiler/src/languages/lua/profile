@@ -12,7 +12,7 @@ self_keyword = "self"
 constructor_name = "constructor"
 case_sensitive = true
 string_indexing = "zero_based"
-array_indexing = "zero_based"
+array_indexing = "one_based"
 lexical_block_scope = true
 materialize_bool_results = true
 coerces_value_to_type_hint = false
@@ -52,6 +52,8 @@ table.insert = { emit = "common:collections.push", min_args = 2, max_args = 3 }
 table.remove = { emit = "common:collections.pop", min_args = 1, max_args = 2 }
 table.concat = { emit = "host:ecma:array:join", min_args = 1, max_args = 3 }
 table.sort = { emit = "common:collections.sort", min_args = 1, max_args = 2 }
+
+__lua_len = { emit = "common:collections.length", min_args = 1, max_args = 1 }
 
 os.time = { emit = "host:ecma:date:now", min_args = 0, max_args = 1 }
 
