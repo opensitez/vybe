@@ -39,6 +39,7 @@ pub enum Lang {
     Cobol,
     Fortran,
     Go,
+    Lua,
     Unknown,
 }
 

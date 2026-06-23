@@ -1,9 +1,8 @@
 use super::{LuaParser, Rule};
 use crate::ast::*;
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 
-// Helper function to convert pest span to our Span
 fn to_span(pair: &Pair<Rule>) -> Span {
     let (start_line, start_col) = pair.as_span().start_pos().line_col();
     let (end_line, end_col) = pair.as_span().end_pos().line_col();
@@ -15,135 +14,108 @@ fn to_span(pair: &Pair<Rule>) -> Span {
     }
 }
 
-// Main parse function
 pub fn parse(source: &str) -> Result<Module, String> {
-    let pairs = LuaParser::parse(Rule::chunk, source)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    
+    let pairs = LuaParser::parse(Rule::chunk, source).map_err(|e| format!("Parse error: {e}"))?;
     let mut body = Vec::new();
-    let imports = Vec::new(); // Lua doesn't have imports like JS
-    
     for pair in pairs {
-        match pair.as_rule() {
-            Rule::chunk => {
-                for inner in pair.into_inner() {
-                    match inner.as_rule() {
-                        Rule::block => {
-                            for stmt in inner.into_inner() {
-                                if stmt.as_rule() == Rule::statement {
-                                    body.push(walk_statement(stmt)?);
-                                }
-                            }
-                        }
-                        _ => {}
+        if pair.as_rule() == Rule::chunk {
+            for inner in pair.into_inner() {
+                if inner.as_rule() == Rule::block {
+                    for stmt in inner.into_inner() {
+                        body.push(walk_statement(stmt)?);
                     }
                 }
             }
-            _ => {}
         }
     }
-    
-    Ok(Module {
+    let mut module = Module {
         name: "main".to_string(),
         language: Lang::Lua,
         body,
-        imports,
-    })
+        imports: Vec::new(),
+    };
+    super::normalize::normalize_module(&mut module);
+    Ok(module)
 }
 
-// Walk a statement
 fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+    // Pest may still emit a `statement` wrapper depending on call site.
+    let pair = if pair.as_rule() == Rule::statement {
+        pair.into_inner()
+            .next()
+            .ok_or("empty statement wrapper")?
+    } else {
+        pair
+    };
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
         Rule::local_var => walk_local_var(pair)?,
         Rule::function_decl => walk_function_decl(pair)?,
-        Rule::local_function => walk_local_function(pair)?,
         Rule::if_statement => walk_if_statement(pair)?,
         Rule::while_statement => walk_while_statement(pair)?,
         Rule::repeat_statement => walk_repeat_statement(pair)?,
-        Rule::for_statement => walk_for_statement(pair)?,
-        Rule::for_in_statement => walk_for_in_statement(pair)?,
         Rule::return_statement => walk_return_statement(pair)?,
-        Rule::break_statement => walk_break_statement(pair)?,
-        Rule::do_statement => walk_do_statement(pair)?,
-        Rule::assignment => walk_assignment(pair)?,
-        Rule::functioncall => {
-            // Function call as a statement (expression statement)
-            let expr = walk_expression(pair)?;
-            StmtKind::Expr(expr)
-        }
-        _ => return Err(format!("Unhandled statement rule: {:?}", pair.as_rule())),
+        Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
+        Rule::assign_stmt => walk_assign_stmt(pair)?,
+        Rule::expr => StmtKind::Expr(walk_expression(pair)?),
+        other => return Err(format!("Unhandled statement rule: {other:?}")),
     };
-    
     Ok(Statement::with_span(kind, span))
 }
 
-// Walk local variable declaration
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "local" keyword
-    inner.next();
-    
+    inner.next(); // local
     let mut declarations = Vec::new();
     let mut values = Vec::new();
-    
-    // Collect variable names
-    while let Some(pair) = inner.next() {
-        match pair.as_rule() {
+    let mut in_values = false;
+    for p in inner {
+        match p.as_rule() {
             Rule::name => {
+                if in_values {
+                    return Err("unexpected name in local initializer".into());
+                }
                 declarations.push(VarDeclarator {
-                    pattern: BindingPattern::Ident(pair.as_str().to_string()),
+                    pattern: BindingPattern::Ident(p.as_str().to_string()),
                     type_hint: None,
+                    init: None,
                     array_bounds: None,
-                    with_events: None,
+                    with_events: false,
                 });
             }
-            Rule::EQUAL => {
-                // Start collecting values
-                while let Some(value_pair) = inner.next() {
-                    if value_pair.as_rule() == Rule::expr {
-                        values.push(walk_expression(value_pair)?);
-                    }
-                }
-                break;
-            }
+            Rule::assign => in_values = true,
+            Rule::expr => values.push(walk_expression(p)?),
             _ => {}
         }
     }
-    
-    // Assign values to declarations
     for (i, decl) in declarations.iter_mut().enumerate() {
-        if i < values.len() {
-            // TODO: Handle initialization
+        if let Some(val) = values.get(i) {
+            decl.init = Some(val.clone());
         }
     }
-    
     Ok(StmtKind::VarDecl {
         declarations,
-        kind: VarDeclKind::Var, // Lua local is like JS var
+        kind: VarDeclKind::Let,
     })
 }
 
-// Walk function declaration
 fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "function" keyword
-    inner.next();
-    
-    let name_pair = inner.next().ok_or("Missing function name")?;
-    let name = name_pair.as_str().to_string();
-    
-    // Skip "("
-    inner.next();
-    
+    inner.next(); // function
+    let name = inner
+        .next()
+        .ok_or("missing function name")?
+        .as_str()
+        .to_string();
     let mut params = Vec::new();
-    // Parse parameters
-    while let Some(param_pair) = inner.next() {
-        match param_pair.as_rule() {
+    let mut body = Vec::new();
+    for p in inner {
+        match p.as_rule() {
             Rule::name => {
                 params.push(Param {
+                    name: p.as_str().to_string(),
+                    type_hint: None,
+                    default: None,
                     pass_by: PassBy::Value,
                     is_rest: false,
                     is_kwargs: false,
@@ -151,23 +123,12 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     is_nullable: false,
                 });
             }
-            Rule::rparen => break,
+            Rule::func_body | Rule::body_block | Rule::block => {
+                body = walk_block(p)?;
+            }
             _ => {}
         }
     }
-    
-    // Parse body
-    let mut body = Vec::new();
-    while let Some(stmt_pair) = inner.next() {
-        if stmt_pair.as_rule() == Rule::block {
-            for stmt in stmt_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    body.push(walk_statement(stmt)?);
-                }
-            }
-        }
-    }
-    
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -181,451 +142,406 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-// Walk if statement
+fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+    let mut body = Vec::new();
+    for p in pair.into_inner() {
+        let stmt_pair = match p.as_rule() {
+            Rule::stmt_not_else | Rule::stmt_not_end => p
+                .into_inner()
+                .next()
+                .ok_or("empty guarded statement")?,
+            Rule::statement => p,
+            other => return Err(format!("unexpected block item: {other:?}")),
+        };
+        body.push(walk_statement(stmt_pair)?);
+    }
+    Ok(body)
+}
+
 fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "if"
-    inner.next();
-    
-    let cond = walk_expression(inner.next().ok_or("Missing if condition")?)?;
-    
-    // Skip "then"
-    inner.next();
-    
+    let mut cond = None;
     let mut then_body = Vec::new();
     let mut elifs = Vec::new();
     let mut else_body = None;
-    
-    // Parse then block
-    while let Some(stmt_pair) = inner.next() {
-        if stmt_pair.as_rule() == Rule::block {
-            for stmt in stmt_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    then_body.push(walk_statement(stmt)?);
+    let mut pending_elif_cond = None;
+    for p in inner {
+        match p.as_rule() {
+            Rule::expr => {
+                let e = walk_expression(p)?;
+                if cond.is_none() {
+                    cond = Some(e);
+                } else {
+                    pending_elif_cond = Some(e);
                 }
             }
-        } else if stmt_pair.as_rule() == Rule::"elseif" {
-            let cond = walk_expression(inner.next().ok_or("Missing elseif condition")?)?;
-            // Skip "then"
-            inner.next();
-            
-            let mut elif_body = Vec::new();
-            if let Some(block_pair) = inner.next() {
-                if block_pair.as_rule() == Rule::block {
-                    for stmt in block_pair.into_inner() {
-                        if stmt.as_rule() == Rule::statement {
-                            elif_body.push(walk_statement(stmt)?);
-                        }
-                    }
+            Rule::then_block | Rule::else_block | Rule::block => {
+                let stmts = walk_block(p)?;
+                if then_body.is_empty() && pending_elif_cond.is_none() {
+                    then_body = stmts;
+                } else if let Some(elif_cond) = pending_elif_cond.take() {
+                    elifs.push((elif_cond, stmts));
+                } else {
+                    else_body = Some(stmts);
                 }
             }
-            
-            elifs.push((cond, elif_body));
-        } else if stmt_pair.as_rule() == Rule::"else" {
-            if let Some(block_pair) = inner.next() {
-                if block_pair.as_rule() == Rule::block {
-                    let mut body = Vec::new();
-                    for stmt in block_pair.into_inner() {
-                        if stmt.as_rule() == Rule::statement {
-                            body.push(walk_statement(stmt)?);
-                        }
-                    }
-                    else_body = Some(body);
-                }
-            }
+            _ => {}
         }
     }
-    
     Ok(StmtKind::If {
-        cond: Box::new(cond),
+        cond: cond.ok_or("missing if condition")?,
         then_body,
         elifs,
         else_body,
     })
 }
 
-// Walk while statement
 fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "while"
-    inner.next();
-    
-    let cond = walk_expression(inner.next().ok_or("Missing while condition")?)?;
-    
-    // Skip "do"
-    inner.next();
-    
+    let mut cond = None;
     let mut body = Vec::new();
-    if let Some(block_pair) = inner.next() {
-        if block_pair.as_rule() == Rule::block {
-            for stmt in block_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    body.push(walk_statement(stmt)?);
-                }
+    for p in inner {
+        match p.as_rule() {
+            Rule::expr => cond = Some(walk_expression(p)?),
+            Rule::body_block | Rule::block => {
+                body = walk_block(p)?;
             }
+            _ => {}
         }
     }
-    
     Ok(StmtKind::While {
-        cond: Box::new(cond),
+        cond: cond.ok_or("missing while condition")?,
         body,
         else_body: None,
     })
 }
 
-// Walk repeat statement (repeat-until loop)
 fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "repeat"
-    inner.next();
-    
     let mut body = Vec::new();
-    if let Some(block_pair) = inner.next() {
-        if block_pair.as_rule() == Rule::block {
-            for stmt in block_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    body.push(walk_statement(stmt)?);
-                }
+    let mut cond = None;
+    for p in inner {
+        match p.as_rule() {
+            Rule::body_block | Rule::block => {
+                body = walk_block(p)?;
             }
+            Rule::expr => cond = Some(walk_expression(p)?),
+            _ => {}
         }
     }
-    
-    // Skip "until"
-    inner.next();
-    
-    let cond = walk_expression(inner.next().ok_or("Missing until condition")?)?;
-    
     Ok(StmtKind::DoWhile {
         body,
-        cond: Box::new(cond),
-        until: true, // Lua repeat-until loops test at the end
+        cond: cond.ok_or("missing until condition")?,
+        until: true,
     })
 }
 
-// Walk for statement (numeric for)
-fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    // For now, implement as a simple while loop
-    // TODO: Implement proper numeric for semantics
-    walk_while_statement(pair)
-}
-
-// Walk for-in statement (generic for)
-fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
-    
-    // Skip "for"
-    inner.next();
-    
-    let var_name = inner.next().ok_or("Missing for variable name")?.as_str().to_string();
-    
-    // Skip "in"
-    inner.next();
-    
-    let iter = walk_expression(inner.next().ok_or("Missing iterator expression")?)?;
-    
-    // Skip "do"
-    inner.next();
-    
-    let mut body = Vec::new();
-    if let Some(block_pair) = inner.next() {
-        if block_pair.as_rule() == Rule::block {
-            for stmt in block_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    body.push(walk_statement(stmt)?);
-                }
-            }
-        }
-    }
-    
-    Ok(StmtKind::ForIn {
-        var: var_name,
-        key: None,
-        iter: Box::new(iter),
-        body,
-        of: true, // Lua's for-in iterates values
-        else_body: None,
-        is_async: false,
-    })
-}
-
-// Walk return statement
 fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
-    
-    // Skip "return"
-    inner.next();
-    
     let mut values = Vec::new();
-    while let Some(expr_pair) = inner.next() {
-        if expr_pair.as_rule() == Rule::expr {
-            values.push(walk_expression(expr_pair)?);
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::expr {
+            values.push(walk_expression(p)?);
         }
     }
-    
-    Ok(StmtKind::Return(if !values.is_empty() { Some(Box::new(values[0].clone())) } else { None }))
+    Ok(StmtKind::Return(values.into_iter().next()))
 }
 
-// Walk break statement
-fn walk_break_statement(_pair: Pair<Rule>) -> Result<StmtKind, String> {
-    Ok(StmtKind::Break(BreakTarget::Implicit))
-}
-
-// Walk do statement
-fn walk_do_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    
-    // Skip "do"
-    inner.next();
-    
-    let mut body = Vec::new();
-    if let Some(block_pair) = inner.next() {
-        if block_pair.as_rule() == Rule::block {
-            for stmt in block_pair.into_inner() {
-                if stmt.as_rule() == Rule::statement {
-                    body.push(walk_statement(stmt)?);
-                }
-            }
-        }
-    }
-    
-    Ok(StmtKind::Block(body))
+    let target = walk_expression(inner.next().ok_or("missing assignment target")?)?;
+    inner.next(); // =
+    let value = walk_expression(inner.next().ok_or("missing assignment value")?)?;
+    Ok(StmtKind::Assign {
+        targets: vec![target],
+        value,
+    })
 }
 
-// Walk assignment statement
-fn walk_assignment(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    // Simplified assignment - just treat as expression statement for now
-    let expr = walk_expression(pair)?;
-    Ok(StmtKind::Expr(expr))
-}
-
-// Walk local function (same as function_decl but local)
-fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    walk_function_decl(pair)
-}
-
-// Walk expression
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    let kind = match pair.as_rule() {
-        Rule::expr => {
-            let inner = pair.into_inner().next().ok_or("Empty expression")?;
-            return walk_expression(inner);
-        }
-        Rule::exp => walk_binary_expr(pair)?,
-        Rule::term => walk_term(pair)?,
-        Rule::primary => walk_primary(pair)?,
-        Rule::functioncall => walk_function_call(pair)?,
-        Rule::table_constructor => walk_table_constructor(pair)?,
-        Rule::var => walk_var(pair)?,
-        _ => return Err(format!("Unhandled expression rule: {:?}", pair.as_rule())),
-    };
-    
+    let kind = walk_expr_kind(pair)?;
     Ok(Expression::with_span(kind, span))
 }
 
-// Walk binary expression
-fn walk_binary_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let mut inner = pair.into_inner();
-    
-    let mut current = walk_term(inner.next().ok_or("Missing term in expression")?)?;
-    
-    while let Some(op_pair) = inner.next() {
-        let op_str = op_pair.as_str();
-        let op = match op_str {
-            "and" => BinOp::And,
-            "or" => BinOp::Or,
-            "<" => BinOp::Lt,
-            ">" => BinOp::Gt,
-            "<=" => BinOp::LtEq,
-            ">=" => BinOp::GtEq,
-            "~=" => BinOp::NotEq,
-            "==" => BinOp::Eq,
-            ".." => BinOp::Concat,
-            "+" => BinOp::Add,
-            "-" => BinOp::Sub,
-            "*" => BinOp::Mul,
-            "/" => BinOp::Div,
-            "//" => BinOp::FloorDiv,
-            "%" => BinOp::Mod,
-            "^" => BinOp::Pow,
-            "&" => BinOp::BitAnd,
-            "|" => BinOp::BitOr,
-            "<<" => BinOp::Shl,
-            ">>" => BinOp::Shr,
-            _ => return Err(format!("Unknown binary operator: {}", op_str)),
-        };
-        
-        let right = walk_term(inner.next().ok_or("Missing right operand")?)?;
-        
-        current = ExprKind::Binary {
-            op,
-            left: Box::new(Expression::with_span(current, to_span(&op_pair))),
-            right: Box::new(right),
-        };
+fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    match pair.as_rule() {
+        Rule::call_expression => return walk_call_expression(pair),
+        Rule::primary => return walk_primary(pair),
+        Rule::postfix => {
+            let inner = pair
+                .into_inner()
+                .next()
+                .ok_or("empty postfix")?;
+            return walk_call_expression(inner);
+        }
+        _ => {}
     }
-    
-    Ok(current)
+
+    let rule = pair.as_rule();
+    let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+    if inner.len() == 1 {
+        return walk_expression(inner.remove(0)).map(|e| e.kind);
+    }
+    match rule {
+        Rule::or_expr => walk_binary_chain(inner, |_| BinOp::Or),
+        Rule::and_expr => walk_binary_chain(inner, |_| BinOp::And),
+        Rule::compare_expr => walk_compare_chain(inner),
+        Rule::concat_expr => walk_binary_chain(inner, |_| BinOp::Concat),
+        Rule::additive | Rule::multiplicative | Rule::pow_expr => walk_binary_chain_with_ops(inner),
+        Rule::unary => walk_unary_from_inner(inner),
+        Rule::expr => walk_expression(inner.remove(0)).map(|e| e.kind),
+        other => Err(format!("Unhandled expression rule: {other:?}")),
+    }
 }
 
-// Walk term (unary expression or primary)
-fn walk_term(pair: Pair<Rule>) -> Result<Expression, String> {
-    let mut inner = pair.into_inner();
-    
-    if let Some(unop_pair) = inner.next() {
-        if unop_pair.as_rule() == Rule::unop {
-            let op_str = unop_pair.as_str();
-            let op = match op_str {
-                "not" => UnaryOp::Not,
-                "#" => UnaryOp::Neg, // TODO: Lua length operator
-                "-" => UnaryOp::Neg,
-                "~" => UnaryOp::BitNot,
-                _ => return Err(format!("Unknown unary operator: {}", op_str)),
-            };
-            
-            let expr = walk_expression(inner.next().ok_or("Missing unary operand")?)?;
-            
-            return Ok(Expression::with_span(
-                ExprKind::Unary {
+fn walk_binary_chain(
+    mut items: Vec<Pair<Rule>>,
+    op_fn: impl Fn(&str) -> BinOp,
+) -> Result<ExprKind, String> {
+    let mut left = walk_expression(items.remove(0))?;
+    for item in items {
+        if is_lua_expr_rule(item.as_rule()) {
+            let right = walk_expression(item)?;
+            left = Expression::new(ExprKind::Binary {
+                op: op_fn(""),
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
+    }
+    Ok(left.kind)
+}
+
+fn walk_compare_chain(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(items.remove(0))?;
+    let mut i = 0;
+    while i < items.len() {
+        if items[i].as_rule() == Rule::compare_op {
+            let op = parse_binop(items[i].as_str().trim())?;
+            i += 1;
+            if i < items.len() {
+                let right = walk_expression(items[i].clone())?;
+                i += 1;
+                left = Expression::new(ExprKind::Binary {
                     op,
-                    expr: Box::new(expr),
-                },
-                to_span(&unop_pair),
-            ));
-        } else {
-            // It's a postfix expression
-            return walk_expression(unop_pair);
-        }
-    }
-    
-    Err("Empty term".to_string())
-}
-
-// Walk primary expression
-fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let inner = pair.into_inner().next().ok_or("Empty primary")?;
-    
-    match inner.as_rule() {
-        Rule::name => Ok(ExprKind::Ident(inner.as_str().to_string())),
-        Rule::literal => walk_literal(inner),
-        Rule::table_constructor => walk_table_constructor(inner),
-        Rule::"(" => {
-            let expr = inner.into_inner().next().ok_or("Empty parentheses")?;
-            walk_expression(expr).map(|e| e.kind)
-        }
-        _ => Err(format!("Unhandled primary rule: {:?}", inner.as_rule())),
-    }
-}
-
-// Walk literal
-fn walk_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let inner = pair.into_inner().next().ok_or("Empty literal")?;
-    
-    match inner.as_rule() {
-        Rule::nil_literal => Ok(ExprKind::Lit(Literal::Null)),
-        Rule::boolean => {
-            let value = inner.as_str() == "true";
-            Ok(ExprKind::Lit(Literal::Bool(value)))
-        }
-        Rule::number => {
-            let num_str = inner.as_str();
-            if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-                Ok(ExprKind::Lit(Literal::Float(num_str.parse().unwrap_or(0.0))))
-            } else {
-                Ok(ExprKind::Lit(Literal::Int(num_str.parse().unwrap_or(0))))
+                    left: Box::new(left),
+                    right: Box::new(right),
+                });
             }
+        } else {
+            i += 1;
         }
-        Rule::string => {
-            let content = inner.as_str();
-            // Remove quotes
-            let content = if content.starts_with('"') && content.ends_with('"') {
-                &content[1..content.len()-1]
-            } else {
-                content
-            };
-            Ok(ExprKind::Lit(Literal::String(content.to_string())))
+    }
+    Ok(left.kind)
+}
+
+fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(items.remove(0))?;
+    let mut i = 0;
+    while i < items.len() {
+        let p = &items[i];
+        if is_lua_op_rule(p.as_rule()) {
+            let op = parse_binop(p.as_str().trim())?;
+            i += 1;
+            if i < items.len() {
+                let right = walk_expression(items[i].clone())?;
+                i += 1;
+                left = Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                });
+            }
+        } else if is_lua_expr_rule(p.as_rule()) {
+            let right = walk_expression(items[i].clone())?;
+            i += 1;
+            left = Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        } else {
+            i += 1;
         }
-        _ => Err(format!("Unhandled literal rule: {:?}", inner.as_rule())),
     }
+    Ok(left.kind)
 }
 
-// Walk table constructor
-fn walk_table_constructor(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    // For now, return a simple object literal
-    // TODO: Implement proper table constructor
-    Ok(ExprKind::Lit(Literal::Object(Vec::new())))
+fn is_lua_expr_rule(rule: Rule) -> bool {
+    matches!(
+        rule,
+        Rule::or_expr
+            | Rule::and_expr
+            | Rule::compare_expr
+            | Rule::concat_expr
+            | Rule::additive
+            | Rule::multiplicative
+            | Rule::pow_expr
+            | Rule::unary
+            | Rule::postfix
+            | Rule::call_expression
+            | Rule::primary
+            | Rule::expr
+    )
 }
 
-// Walk var (variable access)
-fn walk_var(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let inner = pair.into_inner().next().ok_or("Empty var")?;
-    
-    match inner.as_rule() {
-        Rule::name => Ok(ExprKind::Ident(inner.as_str().to_string())),
-        Rule::member_access => walk_member_access(inner),
-        Rule::index_access => walk_index_access(inner),
-        _ => Err(format!("Unhandled var rule: {:?}", inner.as_rule())),
+fn is_lua_op_rule(rule: Rule) -> bool {
+    matches!(
+        rule,
+        Rule::additive_op
+            | Rule::mul_op
+            | Rule::pow_op
+            | Rule::compare_op
+            | Rule::PLUS
+            | Rule::MINUS
+            | Rule::STAR
+            | Rule::SLASH
+            | Rule::DOUBLESLASH
+            | Rule::PERCENT
+            | Rule::CARET
+            | Rule::CONCAT
+            | Rule::EQ
+            | Rule::NE
+            | Rule::LT
+            | Rule::GT
+            | Rule::LE
+            | Rule::GE
+    )
+}
+
+fn walk_unary_from_inner(mut inner: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let first = inner.remove(0);
+    if first.as_rule() == Rule::unop {
+        let op_str = first.as_str();
+        let operand = walk_expression(inner.remove(0))?;
+        if op_str == "#" {
+            return Ok(ExprKind::Member {
+                object: Box::new(operand),
+                field: "length".to_string(),
+                null_safe: false,
+            });
+        }
+        let op = parse_unop(op_str)?;
+        return Ok(ExprKind::Unary {
+            op,
+            expr: Box::new(operand),
+        });
     }
+    walk_expression(first).map(|e| e.kind)
 }
 
-// Walk member access
-fn walk_member_access(pair: Pair<Rule>) -> Result<ExprKind, String> {
+/// Walk `primary ~ call_chain*` — same shape as JS `walk_call_chain`.
+fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner = pair.into_inner();
-    
-    let object = walk_expression(inner.next().ok_or("Missing object in member access")?)?;
-    // Skip "."
-    inner.next();
-    let property = inner.next().ok_or("Missing property name")?.as_str().to_string();
-    
-    Ok(ExprKind::Member {
-        object: Box::new(object),
-        field: property,
-        null_safe: false,
-    })
-}
+    let first = inner.next().ok_or("empty call_expression")?;
+    let mut expr = walk_expression(first)?;
 
-// Walk index access
-fn walk_index_access(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let mut inner = pair.into_inner();
-    
-    let object = walk_expression(inner.next().ok_or("Missing object in index access")?)?;
-    // Skip "["
-    inner.next();
-    let index = walk_expression(inner.next().ok_or("Missing index in index access")?)?;
-    
-    Ok(ExprKind::Index {
-        object: Box::new(object),
-        index: Box::new(index),
-        null_safe: false,
-    })
-}
+    for chain in inner {
+        if chain.as_rule() != Rule::call_chain {
+            continue;
+        }
+        let chain_src = chain.as_str().trim_start();
+        let chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
 
-// Walk function call
-fn walk_function_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let mut inner = pair.into_inner();
-    
-    let callee = walk_expression(inner.next().ok_or("Missing callee in function call")?)?;
-    
-    let mut args = Vec::new();
-    if let Some(args_pair) = inner.next() {
-        if args_pair.as_rule() == Rule::args {
-            for arg_pair in args_pair.into_inner() {
-                if arg_pair.as_rule() == Rule::expr {
-                    let expr = walk_expression(arg_pair)?;
-                    args.push(Argument {
-                        kind: ArgKind::Positional(expr),
-                        spread: false,
-                    });
+        if chain_src.starts_with('(') {
+            let mut args = Vec::new();
+            for arg in chain_inner {
+                if arg.as_rule() == Rule::expr {
+                    args.push(Argument::positional(walk_expression(arg)?));
                 }
             }
+            expr = Expression::new(ExprKind::Call {
+                callee: Box::new(expr),
+                args,
+                optional: false,
+            });
+        } else if chain_src.starts_with('.') {
+            let field = chain_inner
+                .iter()
+                .find(|p| p.as_rule() == Rule::name)
+                .ok_or("missing member name")?
+                .as_str()
+                .to_string();
+            expr = Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field,
+                null_safe: false,
+            });
+        } else if chain_src.starts_with('[') {
+            let index = chain_inner
+                .iter()
+                .find(|p| p.as_rule() == Rule::expr)
+                .map(|p| walk_expression(p.clone()))
+                .transpose()?
+                .ok_or("missing index")?;
+            expr = Expression::new(ExprKind::Index {
+                object: Box::new(expr),
+                index: Box::new(index),
+                null_safe: false,
+            });
         }
     }
-    
-    Ok(ExprKind::Call {
-        callee: Box::new(callee),
-        args,
-        optional: false,
+    Ok(expr.kind)
+}
+
+fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let mut inner = pair.into_inner();
+    let first = inner.next().ok_or("empty primary")?;
+    match first.as_rule() {
+        Rule::KW_TRUE => Ok(ExprKind::Lit(Literal::Bool(true))),
+        Rule::KW_FALSE => Ok(ExprKind::Lit(Literal::Bool(false))),
+        Rule::KW_NIL => Ok(ExprKind::Lit(Literal::Null)),
+        Rule::number => {
+            let v: f64 = first.as_str().parse().unwrap_or(0.0);
+            Ok(ExprKind::Lit(Literal::Float(v)))
+        }
+        Rule::string => {
+            let raw = first.as_str();
+            let content = if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+                &raw[1..raw.len() - 1]
+            } else {
+                raw
+            };
+            Ok(ExprKind::Lit(Literal::Str(content.to_string())))
+        }
+        Rule::name => Ok(ExprKind::Ident(first.as_str().to_string())),
+        Rule::lparen => {
+            let expr = inner
+                .find(|p| p.as_rule() == Rule::expr)
+                .ok_or("empty parentheses")?;
+            walk_expression(expr).map(|e| e.kind)
+        }
+        other => Err(format!("Unhandled primary: {other:?}")),
+    }
+}
+
+fn parse_binop(s: &str) -> Result<BinOp, String> {
+    Ok(match s {
+        "and" => BinOp::And,
+        "or" => BinOp::Or,
+        "<" => BinOp::Lt,
+        ">" => BinOp::Gt,
+        "<=" => BinOp::LtEq,
+        ">=" => BinOp::GtEq,
+        "~=" => BinOp::NotEq,
+        "==" => BinOp::Eq,
+        ".." => BinOp::Concat,
+        "+" => BinOp::Add,
+        "-" => BinOp::Sub,
+        "*" => BinOp::Mul,
+        "/" => BinOp::Div,
+        "//" => BinOp::FloorDiv,
+        "%" => BinOp::Mod,
+        "^" => BinOp::Pow,
+        _ => return Err(format!("unknown binop: {s}")),
+    })
+}
+
+fn parse_unop(s: &str) -> Result<UnaryOp, String> {
+    Ok(match s {
+        "not" => UnaryOp::Not,
+        "-" => UnaryOp::Neg,
+        "~" => UnaryOp::BitNot,
+        _ => return Err(format!("unknown unop: {s}")),
     })
 }

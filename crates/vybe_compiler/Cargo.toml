@@ -80,5 +80,9 @@ name = "c"
 path = "tests/c/main.rs"
 
 [[test]]
+name = "lua"
+path = "tests/lua/main.rs"
+
+[[test]]
 name = "emitter"
 path = "tests/emitter/main.rs"

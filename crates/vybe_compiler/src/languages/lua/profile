@@ -1,125 +1,59 @@
-# Lua Compiler Profile
-# ─────────────────────────────
-# Lua over JavaScript - leverages JS infrastructure where possible
+# Lua over ECMA/WASM — walker emits JS-shaped AST; compiler lowers via
+# crates/vybe_compiler/src/emitter/ (loops, expressions, strings, io, …).
+# Profile builtins use the same emit keys as JS where semantics align.
 
 [info]
 name = "lua"
 extensions = ["lua"]
 
 [compiler]
-# Lua functions use explicit return statements
 function_return = "explicit"
-# Lua uses "self" as the implicit first parameter in method calls
 self_keyword = "self"
-# Lua doesn't have classes like JS, but uses tables with metatables
-# We'll use JS-like constructor pattern for table-based "classes"
-constructor_name = "new"
-# Lua is case-sensitive
+constructor_name = "constructor"
 case_sensitive = true
-# Lua strings are 1-based indexing (but we'll normalize to 0-based in walker)
-string_indexing = "one_based"
-# Lua doesn't have block scope for local variables (they're function-scoped)
-lexical_block_scope = false
-# Lua is dynamically typed like JS
+string_indexing = "zero_based"
+array_indexing = "zero_based"
+lexical_block_scope = true
+materialize_bool_results = true
 coerces_value_to_type_hint = false
-# Lua method calls pass self as first parameter
 ambient_this_binding = false
-# Lua allows trailing commas in table constructors
+dynamic_add = true
+dynamic_numeric_dispatch = true
 allow_trailing_comma = true
-# Lua supports multiple return values
-multiple_returns = true
-# Lua uses 1-based arrays by default (but we'll normalize in walker)
-array_indexing = "one_based"
 
-# Lua built-in functions that map to JS/ECMA equivalents
 [builtins]
 
-# Basic I/O (map to JS console/alert)
 print = { emit = "print", min_args = 0, max_args = 255 }
-type = { emit = "host:ecma:global:typeof", min_args = 1, max_args = 1 }
-tostring = { emit = "host:ecma:string:toString", min_args = 1, max_args = 1 }
 tonumber = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }
+tostring = { emit = "invoke:toString", min_args = 1, max_args = 1 }
 
-# Math functions (map to JS Math)
 math.abs = { emit = "opcode:f64_abs", min_args = 1, max_args = 1 }
 math.floor = { emit = "opcode:f64_floor", min_args = 1, max_args = 1 }
 math.ceil = { emit = "opcode:f64_ceil", min_args = 1, max_args = 1 }
 math.sqrt = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
-math.sin = { emit = "opcode:f64_sin", min_args = 1, max_args = 1 }
-math.cos = { emit = "opcode:f64_cos", min_args = 1, max_args = 1 }
-math.tan = { emit = "opcode:f64_tan", min_args = 1, max_args = 1 }
-math.log = { emit = "opcode:f64_log", min_args = 1, max_args = 1 }
-math.exp = { emit = "opcode:f64_exp", min_args = 1, max_args = 1 }
+math.sin = { emit = "host:ecma:math:sin", min_args = 1, max_args = 1 }
+math.cos = { emit = "host:ecma:math:cos", min_args = 1, max_args = 1 }
+math.tan = { emit = "host:ecma:math:tan", min_args = 1, max_args = 1 }
+math.log = { emit = "host:ecma:math:log", min_args = 1, max_args = 1 }
+math.exp = { emit = "host:ecma:math:exp", min_args = 1, max_args = 1 }
+math.pow = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+math.max = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
+math.min = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
 math.pi = { emit = "intrinsic:math_pi", min_args = 0, max_args = 0 }
-math.max = { emit = "intrinsic:math_max", min_args = 2, max_args = 255 }
-math.min = { emit = "intrinsic:math_min", min_args = 2, max_args = 255 }
 
-# String functions (map to JS String methods)
 string.len = { emit = "host:ecma:string:length", min_args = 1, max_args = 1 }
 string.sub = { emit = "host:ecma:string:slice", min_args = 2, max_args = 3 }
 string.upper = { emit = "host:ecma:string:toUpperCase", min_args = 1, max_args = 1 }
 string.lower = { emit = "host:ecma:string:toLowerCase", min_args = 1, max_args = 1 }
 string.find = { emit = "host:ecma:string:indexOf", min_args = 2, max_args = 4 }
 string.gsub = { emit = "host:ecma:string:replace", min_args = 3, max_args = 4 }
-string.format = { emit = "host:ecma:string:format", min_args = 1, max_args = 255 }
 
-# Table functions (map to JS Array/Object methods)
 table.insert = { emit = "common:collections.push", min_args = 2, max_args = 3 }
 table.remove = { emit = "common:collections.pop", min_args = 1, max_args = 2 }
 table.concat = { emit = "host:ecma:array:join", min_args = 1, max_args = 3 }
 table.sort = { emit = "common:collections.sort", min_args = 1, max_args = 2 }
 
-# OS functions (map to WASI equivalents)
-os.date = { emit = "host:ecma:date:toLocaleString", min_args = 0, max_args = 2 }
 os.time = { emit = "host:ecma:date:now", min_args = 0, max_args = 1 }
-os.difftime = { emit = "intrinsic:time_diff", min_args = 2, max_args = 2 }
 
-# Lua-specific value methods (operators on values)
-[value_methods]
-
-# Length operator (#)
-"#" = { emit = "host:ecma:string:length", on = "string" }
-"#" = { emit = "common:collections.length", on = "array" }
-
-# Concatenation (..)
-".." = { emit = "host:ecma:string:concat", on = "string" }
-
-# Metatable methods (will be handled by Lua-specific emitter)
-__index = { emit = "common:lua.metatable_index", on = "table" }
-__newindex = { emit = "common:lua.metatable_newindex", on = "table" }
-__call = { emit = "common:lua.metatable_call", on = "table" }
-__add = { emit = "common:lua.metatable_add", on = "table" }
-__sub = { emit = "common:lua.metatable_sub", on = "table" }
-__mul = { emit = "common:lua.metatable_mul", on = "table" }
-__div = { emit = "common:lua.metatable_div", on = "table" }
-__mod = { emit = "common:lua.metatable_mod", on = "table" }
-__pow = { emit = "common:lua.metatable_pow", on = "table" }
-__unm = { emit = "common:lua.metatable_unm", on = "table" }
-__concat = { emit = "common:lua.metatable_concat", on = "table" }
-__eq = { emit = "common:lua.metatable_eq", on = "table" }
-__lt = { emit = "common:lua.metatable_lt", on = "table" }
-__le = { emit = "common:lua.metatable_le", on = "table" }
-__len = { emit = "common:lua.metatable_len", on = "table" }
-
-# Array methods for Lua tables used as arrays
-[array_methods]
-# Lua doesn't have built-in array methods like JS, but we can provide similar functionality
-# These will be handled by the Lua emitter to work with Lua tables
-
-# Intrinsics for compile-time constants
 [intrinsics]
 math_pi = { emit = "opcode:f64_const", value = "3.141592653589793" }
-math_max = { template = "call_import", module = "ecma", func = "math:max" }
-math_min = { template = "call_import", module = "ecma", func = "math:min" }
-time_diff = { template = "call_import", module = "ecma", func = "date:diff" }
-
-# Module aliases for Lua standard libraries
-[module_aliases]
-io = "common:lua.io"
-os = "common:lua.os"
-string = "common:lua.string"
-table = "common:lua.table"
-math = "common:lua.math"
-debug = "common:lua.debug"
-package = "common:lua.package"
-coroutine = "common:lua.coroutine"

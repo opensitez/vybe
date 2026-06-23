@@ -1,58 +1,53 @@
-// Simple Lua grammar for vybe_compiler
-// Based on Lua 5.4 syntax - simplified version
+// Lua 5.x grammar (subset) for vybe_compiler — grow incrementally with tests.
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }
-COMMENT = _{ ("--" ~ (!"\n" ~ ANY)*) }
+COMMENT = _{ "--" ~ (!"\n" ~ ANY)* }
 
-ident = @{ ASCII_ALPHANUMERIC+ }
+// Identifiers — keywords are reserved (Python-style `!keyword` guard).
+keyword = _{
+    ("and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for" | "function"
+    | "if" | "in" | "local" | "nil" | "not" | "or" | "repeat" | "return" | "then"
+    | "true" | "until" | "while")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+name = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
-// Keywords - using individual rules like JavaScript does
-KW_AND = { "and" }
-KW_BREAK = { "break" }
-KW_DO = { "do" }
-KW_ELSE = { "else" }
-KW_ELSEIF = { "elseif" }
-KW_END = { "end" }
-KW_FALSE = { "false" }
-KW_FOR = { "for" }
-KW_FUNCTION = { "function" }
-KW_GOTO = { "goto" }
-KW_IF = { "if" }
-KW_IN = { "in" }
-KW_LOCAL = { "local" }
-KW_NIL = { "nil" }
-KW_NOT = { "not" }
-KW_OR = { "or" }
-KW_REPEAT = { "repeat" }
-KW_RETURN = { "return" }
-KW_THEN = { "then" }
-KW_TRUE = { "true" }
-KW_UNTIL = { "until" }
-KW_WHILE = { "while" }
+KW_AND = @{ "and" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_BREAK = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_DO = @{ "do" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_ELSE = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_ELSEIF = @{ "elseif" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_END = @{ "end" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FALSE = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FOR = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FUNCTION = @{ "function" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_IF = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_IN = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_LOCAL = @{ "local" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_NIL = @{ "nil" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_NOT = @{ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_OR = @{ "or" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_REPEAT = @{ "repeat" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_RETURN = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_THEN = @{ "then" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_TRUE = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_UNTIL = @{ "until" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_WHILE = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
 
-keyword = { KW_AND | KW_BREAK | KW_DO | KW_ELSE | KW_ELSEIF | KW_END | KW_FALSE | KW_FOR | KW_FUNCTION | KW_GOTO | KW_IF | KW_IN | KW_LOCAL | KW_NIL | KW_NOT | KW_OR | KW_REPEAT | KW_RETURN | KW_THEN | KW_TRUE | KW_UNTIL | KW_WHILE }
-
-name = { !keyword ~ ident }
-
-// Literals
 nil_literal = { KW_NIL }
 boolean = { KW_TRUE | KW_FALSE }
-number = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
 string_content = { (!("\"" | "\\") ~ ANY)* }
 string = { "\"" ~ string_content ~ "\"" }
-literal = { nil_literal | boolean | number | string }
 
-// Basic expressions
-primary = { name | literal | parens_expr }
-parens_expr = { "(" ~ expr ~ ")" }
+lparen = { "(" }
+rparen = { ")" }
+lbracket = { "[" }
+rbracket = { "]" }
+comma = { "," }
+assign = { "=" }
+dot = { "." }
 
-expr = { term ~ (binop ~ term)* }
-term = { unary | primary }
-unary = { (unop ~ term) }
-unop = { KW_NOT | HASH | MINUS | TILDE }
-binop = { KW_AND | KW_OR | LT | GT | LE | GE | NE | EQ | CONCAT | PLUS | MINUS | STAR | SLASH | DOUBLESLASH | PERCENT | CARET | AMPERSAND | PIPE | LSHIFT | RSHIFT }
-
-// Operators
 HASH = { "#" }
 MINUS = { "-" }
 TILDE = { "~" }
@@ -69,43 +64,73 @@ SLASH = { "/" }
 DOUBLESLASH = { "//" }
 PERCENT = { "%" }
 CARET = { "^" }
-AMPERSAND = { "&" }
-PIPE = { "|" }
-LSHIFT = { "<<" }
-RSHIFT = { ">>" }
 
-// Punctuation
-assign = { "=" }
-comma = { "," }
-lparen = { "(" }
-rparen = { ")" }
+unop = { KW_NOT | HASH | MINUS | TILDE }
 
-// Statements
-statement = { 
-    local_var |
-    function_decl |
-    if_statement |
-    while_statement |
-    repeat_statement |
-    return_statement |
-    break_statement |
-    expr
+// JS-shaped precedence chain (see languages/js/grammar.pest).
+primary = {
+    KW_TRUE | KW_FALSE | KW_NIL
+    | number | string
+    | name
+    | lparen ~ expr ~ rparen
+}
+
+postfix = { call_expression }
+call_expression = { primary ~ call_chain* }
+call_chain = {
+    "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
+    | "." ~ name
+    | "[" ~ expr ~ "]"
+}
+
+unary = { unop ~ unary | postfix }
+
+pow_expr = { unary ~ (pow_op ~ unary)* }
+pow_op = { CARET }
+multiplicative = { pow_expr ~ (mul_op ~ pow_expr)* }
+mul_op = { DOUBLESLASH | STAR | SLASH | PERCENT }
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op = { PLUS | MINUS }
+concat_expr = { additive ~ (CONCAT ~ additive)* }
+compare_expr = { concat_expr ~ (compare_op ~ concat_expr)* }
+compare_op = { LE | GE | NE | EQ | LT | GT }
+and_expr = { compare_expr ~ (KW_AND ~ compare_expr)* }
+or_expr = { and_expr ~ (KW_OR ~ and_expr)* }
+expr = { or_expr }
+
+assign_stmt = { postfix ~ assign ~ expr }
+
+stmt_not_else = { !(KW_ELSEIF | KW_ELSE | KW_END) ~ statement }
+stmt_not_end = { !KW_END ~ statement }
+then_block = { stmt_not_else* }
+else_block = { stmt_not_end* }
+
+statement = _{
+    local_var
+    | function_decl
+    | if_statement
+    | while_statement
+    | repeat_statement
+    | return_statement
+    | break_statement
+    | assign_stmt
+    | expr
 }
 
 local_var = { KW_LOCAL ~ name ~ (comma ~ name)* ~ (assign ~ expr ~ (comma ~ expr)*)? }
-
-function_decl = { KW_FUNCTION ~ name ~ lparen ~ (name ~ (comma ~ name)*)? ~ rparen ~ block ~ KW_END }
-
-if_statement = { KW_IF ~ expr ~ KW_THEN ~ block ~ (KW_ELSEIF ~ expr ~ KW_THEN ~ block)* ~ (KW_ELSE ~ block)? ~ KW_END }
-
-while_statement = { KW_WHILE ~ expr ~ KW_DO ~ block ~ KW_END }
-
-repeat_statement = { KW_REPEAT ~ block ~ KW_UNTIL ~ expr }
-
-return_statement = { KW_RETURN ~ (expr ~ ("," ~ expr)*)? }
-
+function_decl = { KW_FUNCTION ~ name ~ lparen ~ (name ~ (comma ~ name)*)? ~ rparen ~ func_body ~ KW_END }
+func_body = { stmt_not_end* }
+if_statement = {
+    KW_IF ~ expr ~ KW_THEN ~ then_block
+    ~ (KW_ELSEIF ~ expr ~ KW_THEN ~ then_block)*
+    ~ (KW_ELSE ~ else_block)?
+    ~ KW_END
+}
+while_statement = { KW_WHILE ~ expr ~ KW_DO ~ body_block ~ KW_END }
+body_block = { stmt_not_end* }
+repeat_statement = { KW_REPEAT ~ body_block ~ KW_UNTIL ~ expr }
+return_statement = { KW_RETURN ~ (expr ~ (comma ~ expr)*)? }
 break_statement = { KW_BREAK }
 
 block = { statement* }
-
 chunk = { SOI ~ block ~ EOI }
