@@ -46,8 +46,8 @@ int             = { emit = "intrinsic:cint",        min_args = 1, max_args = 2 }
 parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
 str             = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
-bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
-chr             = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
+bool            = { emit = "common:dyn_to_bool",            min_args = 1, max_args = 1 }
+chr             = { emit = "common:str_from_char_code",     min_args = 1, max_args = 1 }
 ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
 hex             = { emit = "common:python.hex",                  min_args = 1, max_args = 1 }
 oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
@@ -122,7 +122,7 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 
 # ── Type checking ────────────────────────────────────────────────────────────
 
-type            = { emit = "opcode:ref_typeof",              min_args = 1, max_args = 1 }
+type            = { emit = "common:ref_typeof",              min_args = 1, max_args = 1 }
 isinstance      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
 issubclass      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
 callable        = { emit = "common:python.callable",                min_args = 1, max_args = 1 }
@@ -210,25 +210,25 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 upper           = { emit = "common:strings.to_upper",         min_args = 0, max_args = 0 }
 lower           = { emit = "common:strings.to_lower",         min_args = 0, max_args = 0 }
 strip           = { emit = "common:strings.trim",             min_args = 0, max_args = 1 }
-lstrip          = { emit = "opcode:str_trim_start",           min_args = 0, max_args = 1 }
-rstrip          = { emit = "opcode:str_trim_end",             min_args = 0, max_args = 1 }
+lstrip          = { emit = "common:str_trim_start",           min_args = 0, max_args = 1 }
+rstrip          = { emit = "common:str_trim_end",             min_args = 0, max_args = 1 }
 split           = { emit = "common:strings.split",            min_args = 0, max_args = 2 }
 rsplit          = { emit = "common:strings.split",            min_args = 0, max_args = 2 }
 join            = { emit = "common:collections.join",          min_args = 1, max_args = 1 }
 replace         = { emit = "common:strings.replace",          min_args = 2, max_args = 3 }
 find            = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
-rfind           = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
+rfind           = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
 index           = { emit = "common:python.index",             min_args = 1, max_args = 3 }
-rindex          = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
+rindex          = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
 count           = { emit = "intrinsic:count",          min_args = 1, max_args = 3 }
-startswith      = { emit = "opcode:str_starts_with",          min_args = 1, max_args = 3 }
-endswith        = { emit = "opcode:str_ends_with",            min_args = 1, max_args = 3 }
+startswith      = { emit = "common:str_starts_with",          min_args = 1, max_args = 3 }
+endswith        = { emit = "common:str_ends_with",            min_args = 1, max_args = 3 }
 capitalize      = { emit = "intrinsic:capitalize",     min_args = 0, max_args = 0 }
 title           = { emit = "host:ecma:string:title",          min_args = 0, max_args = 0 }
 swapcase        = { emit = "host:ecma:string:swapcase",       min_args = 0, max_args = 0 }
 center          = { emit = "intrinsic:center",         min_args = 1, max_args = 2 }
-ljust           = { emit = "opcode:str_pad_end",              min_args = 1, max_args = 2 }
-rjust           = { emit = "opcode:str_pad_start",            min_args = 1, max_args = 2 }
+ljust           = { emit = "common:str_pad_end",              min_args = 1, max_args = 2 }
+rjust           = { emit = "common:str_pad_start",            min_args = 1, max_args = 2 }
 zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
 encode          = { emit = "common:python.bytes",       min_args = 0, max_args = 1 }
 isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }

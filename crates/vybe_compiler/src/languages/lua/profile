@@ -1,6 +1,7 @@
-# Lua over ECMA/WASM — walker emits JS-shaped AST; compiler lowers via
-# crates/vybe_compiler/src/emitter/ (loops, expressions, strings, io, …).
-# Profile builtins use the same emit keys as JS where semantics align.
+# Lua over ECMA/WASM — walker emits JS-shaped AST; compiler lowers via the
+# same profile emits / host imports as JavaScript (Lua is JS with different names).
+#
+# Dotted names MUST be quoted — bare `string.len` is TOML nested-table syntax.
 
 [info]
 name = "lua"
@@ -25,37 +26,120 @@ allow_trailing_comma = true
 
 print = { emit = "print", min_args = 0, max_args = 255 }
 tonumber = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 2 }
-tostring = { emit = "invoke:toString", min_args = 1, max_args = 1 }
+tostring = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 
-math.abs = { emit = "opcode:f64_abs", min_args = 1, max_args = 1 }
-math.floor = { emit = "opcode:f64_floor", min_args = 1, max_args = 1 }
-math.ceil = { emit = "opcode:f64_ceil", min_args = 1, max_args = 1 }
-math.sqrt = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
-math.sin = { emit = "host:ecma:math:sin", min_args = 1, max_args = 1 }
-math.cos = { emit = "host:ecma:math:cos", min_args = 1, max_args = 1 }
-math.tan = { emit = "host:ecma:math:tan", min_args = 1, max_args = 1 }
-math.log = { emit = "host:ecma:math:log", min_args = 1, max_args = 1 }
-math.exp = { emit = "host:ecma:math:exp", min_args = 1, max_args = 1 }
-math.pow = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
-math.max = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
-math.min = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
-math.pi = { emit = "intrinsic:math_pi", min_args = 0, max_args = 0 }
+# Prototype inheritance (normalize desugars `setmetatable(t, {__index=p})` → Object.create/assign)
+"Object.create" = { emit = "host:ecma:object:create", min_args = 1, max_args = 2 }
+"Object.assign" = { emit = "host:ecma:object:assign", min_args = 2, max_args = 255 }
 
-string.len = { emit = "host:ecma:string:length", min_args = 1, max_args = 1 }
-string.sub = { emit = "host:ecma:string:slice", min_args = 2, max_args = 3 }
-string.upper = { emit = "host:ecma:string:toUpperCase", min_args = 1, max_args = 1 }
-string.lower = { emit = "host:ecma:string:toLowerCase", min_args = 1, max_args = 1 }
-string.find = { emit = "host:ecma:string:indexOf", min_args = 2, max_args = 4 }
-string.gsub = { emit = "host:ecma:string:replace", min_args = 3, max_args = 4 }
+"math.abs" = { emit = "opcode:f64_abs", min_args = 1, max_args = 1 }
+"math.floor" = { emit = "opcode:f64_floor", min_args = 1, max_args = 1 }
+"math.ceil" = { emit = "opcode:f64_ceil", min_args = 1, max_args = 1 }
+"math.sqrt" = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
+"math.sin" = { emit = "host:ecma:math:sin", min_args = 1, max_args = 1 }
+"math.cos" = { emit = "host:ecma:math:cos", min_args = 1, max_args = 1 }
+"math.tan" = { emit = "host:ecma:math:tan", min_args = 1, max_args = 1 }
+"math.log" = { emit = "host:ecma:math:log", min_args = 1, max_args = 2 }
+"math.exp" = { emit = "host:ecma:math:exp", min_args = 1, max_args = 1 }
+"math.pow" = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+"math.max" = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
+"math.min" = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
+"math.pi" = { emit = "intrinsic:math_pi", min_args = 0, max_args = 0 }
+"math.asin" = { emit = "host:ecma:math:asin", min_args = 1, max_args = 1 }
+"math.acos" = { emit = "host:ecma:math:acos", min_args = 1, max_args = 1 }
+"math.atan" = { emit = "host:ecma:math:atan", min_args = 1, max_args = 1 }
+"math.atan2" = { emit = "host:ecma:math:atan2", min_args = 2, max_args = 2 }
+"math.sinh" = { emit = "host:ecma:math:sinh", min_args = 1, max_args = 1 }
+"math.cosh" = { emit = "host:ecma:math:cosh", min_args = 1, max_args = 1 }
+"math.tanh" = { emit = "host:ecma:math:tanh", min_args = 1, max_args = 1 }
+"math.log10" = { emit = "host:ecma:math:log10", min_args = 1, max_args = 1 }
+"math.fmod" = { emit = "common:expressions.f64_mod", min_args = 2, max_args = 2 }
+"math.huge" = { emit = "intrinsic:math_huge", min_args = 0, max_args = 0 }
+"math.maxinteger" = { emit = "intrinsic:math_maxinteger", min_args = 0, max_args = 0 }
+"math.mininteger" = { emit = "intrinsic:math_mininteger", min_args = 0, max_args = 0 }
 
-table.insert = { emit = "common:collections.push", min_args = 2, max_args = 3 }
-table.remove = { emit = "common:collections.pop", min_args = 1, max_args = 2 }
-table.concat = { emit = "host:ecma:array:join", min_args = 1, max_args = 3 }
-table.sort = { emit = "common:collections.sort", min_args = 1, max_args = 2 }
+# ── string library — same emits as JS String / String.prototype ─────────────
+# string.len(s)     ↔ s.length          (str_length → wasm:js-string:length)
+# string.upper(s)   ↔ s.toUpperCase()   (opcode:str_to_upper)
+# string.lower(s)   ↔ s.toLowerCase()   (opcode:str_to_lower)
+# string.sub(s,…)   ↔ s.substring(…)    (opcode:str_substring)
+# string.rep(s,n)   ↔ s.repeat(n)       (opcode:str_repeat)
+# string.reverse(s) ↔ (str_reverse opcode)
+# string.char(…)    ↔ String.fromCharCode(…)
+# string.byte(s,i)  ↔ s.charCodeAt(i)   (opcode:str_char_code_at)
+# string.find(…)    ↔ s.indexOf(…)      (opcode:str_index_of)
+# string.gsub(…)    ↔ s.replaceAll(…)   (common:strings.replace → replaceAll)
+# string.match(…)   ↔ s.match(…)        (host:ecma:regexp:match)
+# string.format(…)  ↔ (sprintf — no JS twin)
+
+"string.len" = { emit = "str_length", min_args = 1, max_args = 1 }
+"string.upper" = { emit = "common:str_to_upper", min_args = 1, max_args = 1 }
+"string.lower" = { emit = "common:str_to_lower", min_args = 1, max_args = 1 }
+"string.sub" = { emit = "common:str_substring", min_args = 2, max_args = 3 }
+"string.rep" = { emit = "common:str_repeat", min_args = 2, max_args = 2 }
+"string.reverse" = { emit = "common:str_reverse", min_args = 1, max_args = 1 }
+"string.char" = { emit = "common:str_from_char_code", min_args = 1, max_args = 255 }
+"string.byte" = { emit = "common:str_char_code_at", min_args = 1, max_args = 3 }
+"string.format" = { emit = "common:sprintf.format", min_args = 1, max_args = 255 }
+"string.find" = { emit = "common:str_index_of", min_args = 2, max_args = 4 }
+"string.gsub" = { emit = "common:strings.replace", min_args = 3, max_args = 4 }
+"string.match" = { emit = "host:ecma:regexp:match", min_args = 2, max_args = 2 }
+
+# ── table library — same emits as JS Array.prototype ───────────────────────
+"table.insert" = { emit = "common:collections.push", min_args = 2, max_args = 3 }
+"table.remove" = { emit = "common:collections.pop", min_args = 1, max_args = 2 }
+"table.concat" = { emit = "common:collections.join", min_args = 1, max_args = 3 }
+"table.sort" = { emit = "common:collections.sort", min_args = 1, max_args = 2 }
 
 __lua_len = { emit = "common:collections.length", min_args = 1, max_args = 1 }
 
-os.time = { emit = "host:ecma:date:now", min_args = 0, max_args = 1 }
+# os.* — wall clock via ecma:date + PHP strftime/getdate (see normalize.rs desugar)
+"os.time" = { emit = "host:ecma:date:nowSeconds", min_args = 0, max_args = 1 }
+"__lua_strftime" = { emit = "common:php.strftime", min_args = 1, max_args = 2 }
+"__lua_getdate" = { emit = "common:php.getdate", min_args = 0, max_args = 1 }
+"__lua_monotonic_now" = { emit = "host:wasi:clocks/monotonic-clock:now", min_args = 0, max_args = 0 }
+
+# ── value methods — copied from JS (invoke:* / host:* / collections:*) ────────
+
+[value_methods]
+
+toUpperCase = { emit = "invoke:toUpperCase", min_args = 0, max_args = 0 }
+toLowerCase = { emit = "invoke:toLowerCase", min_args = 0, max_args = 0 }
+trim = { emit = "invoke:trim", min_args = 0, max_args = 0 }
+trimStart = { emit = "invoke:trimStart", min_args = 0, max_args = 0 }
+trimEnd = { emit = "invoke:trimEnd", min_args = 0, max_args = 0 }
+startsWith = { emit = "invoke:startsWith", min_args = 1, max_args = 2 }
+endsWith = { emit = "invoke:endsWith", min_args = 1, max_args = 2 }
+charAt = { emit = "invoke:charAt", min_args = 1, max_args = 1 }
+charCodeAt = { emit = "invoke:charCodeAt", min_args = 1, max_args = 1 }
+substring = { emit = "invoke:substring", min_args = 1, max_args = 2 }
+split = { emit = "invoke:split", min_args = 1, max_args = 2 }
+replace = { emit = "invoke:replace", min_args = 2, max_args = 2 }
+replaceAll = { emit = "invoke:replaceAll", min_args = 2, max_args = 2 }
+repeat = { emit = "invoke:repeat", min_args = 1, max_args = 1 }
+padStart = { emit = "invoke:padStart", min_args = 1, max_args = 2 }
+padEnd = { emit = "invoke:padEnd", min_args = 1, max_args = 2 }
+indexOf = { emit = "invoke:indexOf", min_args = 1, max_args = 2 }
+lastIndexOf = { emit = "invoke:lastIndexOf", min_args = 1, max_args = 2 }
+includes = { emit = "invoke:includes", min_args = 1, max_args = 2 }
+slice = { emit = "invoke:slice", min_args = 0, max_args = 2 }
+at = { emit = "invoke:at", min_args = 1, max_args = 1 }
+concat = { emit = "invoke:concat", min_args = 1, max_args = 255 }
+match = { emit = "host:ecma:regexp:match", min_args = 1, max_args = 1 }
+search = { emit = "host:ecma:regexp:search", min_args = 1, max_args = 1 }
+toString = { emit = "invoke:toString", min_args = 0, max_args = 1 }
+
+push = { emit = "common:collections.push", min_args = 1, max_args = 255 }
+pop = { emit = "common:collections.pop", min_args = 0, max_args = 0 }
+shift = { emit = "common:collections.shift", min_args = 0, max_args = 0 }
+reverse = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
+join = { emit = "common:collections.join", min_args = 0, max_args = 1 }
+fill = { emit = "host:ecma:array:fill", min_args = 1, max_args = 3 }
+unshift = { emit = "host:ecma:array:unshift", min_args = 1, max_args = 255 }
+splice = { emit = "host:ecma:array:splice", min_args = 1, max_args = 255 }
 
 [intrinsics]
 math_pi = { emit = "opcode:f64_const", value = "3.141592653589793" }
+math_huge = { emit = "opcode:f64_const", value = "1.7976931348623157e+308" }
+math_maxinteger = { emit = "opcode:f64_const", value = "9007199254740991" }
+math_mininteger = { emit = "opcode:f64_const", value = "-9007199254740991" }

@@ -1357,6 +1357,23 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_op(Op::DROP, 0);
 
+    // Symbol-keyed [Symbol.iterator] methods are stored as "Symbol(@@iterator)"
+    // by ecma:array.set. Try getMethodForCall with that key when "iterator" fails.
+    let try_sym = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_string_const("Symbol(@@iterator)", 0);
+    crate::emitter::collections::emit_import_call_into(
+        imports, &mut c, "ecma:value", "getMethodForCall", 2, 0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.patch_block(try_sym);
+
     let try_alt = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);

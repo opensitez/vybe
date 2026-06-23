@@ -128,3 +128,16 @@ pub fn emit_repeat(chunk: &mut Chunk, line: u32) {
 pub fn emit_str_concat(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line);
 }
+
+/// Reverse string. Stack: [string] → [reversed]
+/// Composed: split("") → reverse() → join("")
+pub fn emit_str_reverse(chunk: &mut Chunk, line: u32) {
+    chunk.emit_string_const("", line);
+    let split = chunk.add_import("ecma:string", "split");
+    chunk.emit_call(split, 2, line);
+    let reverse = chunk.add_import("ecma:array", "reverse");
+    chunk.emit_call(reverse, 1, line);
+    chunk.emit_string_const("", line);
+    let join = chunk.add_import("ecma:array", "join");
+    chunk.emit_call(join, 2, line);
+}

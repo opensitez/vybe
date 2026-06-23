@@ -86,15 +86,15 @@ caller          = { emit = "noop",                           min_args = 0, max_a
 
 [value_methods]
 
-# ── String instance methods (common:strings.* / opcode:str_*) ────────────────
+# ── String instance methods (common:strings.* / common:str_*) ────────────────
 
 length          = { emit = "str_length",                    min_args = 0, max_args = 0 }
 size            = { emit = "str_length",                    min_args = 0, max_args = 0 }
 upcase          = { emit = "common:strings.to_upper",       min_args = 0, max_args = 0 }
 downcase        = { emit = "common:strings.to_lower",       min_args = 0, max_args = 0 }
 strip           = { emit = "common:strings.trim",           min_args = 0, max_args = 0 }
-lstrip          = { emit = "opcode:str_trim_start",         min_args = 0, max_args = 0 }
-rstrip          = { emit = "opcode:str_trim_end",           min_args = 0, max_args = 0 }
+lstrip          = { emit = "common:str_trim_start",         min_args = 0, max_args = 0 }
+rstrip          = { emit = "common:str_trim_end",           min_args = 0, max_args = 0 }
 chomp           = { emit = "common:strings.trim",           min_args = 0, max_args = 1 }
 chop            = { emit = "intrinsic:chop",         min_args = 0, max_args = 0 }
 split           = { emit = "common:strings.split",          min_args = 0, max_args = 2 }
@@ -103,17 +103,17 @@ replace         = { emit = "common:strings.replace",        min_args = 1, max_ar
 gsub            = { emit = "common:strings.replace",        min_args = 2, max_args = 2 }
 sub             = { emit = "host:ecma:string:replace", min_args = 2, max_args = 2 }
 index           = { emit = "common:strings.index_of",       min_args = 1, max_args = 2 }
-rindex          = { emit = "opcode:str_last_index_of",      min_args = 1, max_args = 2 }
-"include?"      = { emit = "opcode:str_includes",           min_args = 1, max_args = 1 }
-"start_with?"   = { emit = "opcode:str_starts_with",        min_args = 1, max_args = 1 }
-"end_with?"     = { emit = "opcode:str_ends_with",          min_args = 1, max_args = 1 }
+rindex          = { emit = "common:str_last_index_of",      min_args = 1, max_args = 2 }
+"include?"      = { emit = "common:str_includes",           min_args = 1, max_args = 1 }
+"start_with?"   = { emit = "common:str_starts_with",        min_args = 1, max_args = 1 }
+"end_with?"     = { emit = "common:str_ends_with",          min_args = 1, max_args = 1 }
 capitalize      = { emit = "intrinsic:capitalize",   min_args = 0, max_args = 0 }
-reverse         = { emit = "opcode:str_reverse",            min_args = 0, max_args = 0 }
+reverse         = { emit = "common:str_reverse",            min_args = 0, max_args = 0 }
 chars           = { emit = "intrinsic:chars",        min_args = 0, max_args = 0 }
 bytes           = { emit = "common:ruby.bytes",     min_args = 0, max_args = 0 }
 center          = { emit = "intrinsic:center",       min_args = 1, max_args = 2 }
-ljust           = { emit = "opcode:str_pad_end",            min_args = 1, max_args = 2 }
-rjust           = { emit = "opcode:str_pad_start",          min_args = 1, max_args = 2 }
+ljust           = { emit = "common:str_pad_end",            min_args = 1, max_args = 2 }
+rjust           = { emit = "common:str_pad_start",          min_args = 1, max_args = 2 }
 to_s            = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
 to_str          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
 to_i            = { emit = "intrinsic:cint",        min_args = 0, max_args = 0 }
@@ -127,12 +127,12 @@ dup             = { emit = "host:ecma:array:slice",          min_args = 0, max_a
 clone           = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 "nil?"          = { emit = "opcode:ref_is_null",            min_args = 0, max_args = 0 }
 "is_a?"         = { emit = "common:ruby.instanceof",             min_args = 1, max_args = 1 }
-class           = { emit = "opcode:ref_typeof",             min_args = 0, max_args = 0 }
+class           = { emit = "common:ref_typeof",             min_args = 0, max_args = 0 }
 "respond_to?"   = { emit = "host:ecma:object:hasOwn",       min_args = 1, max_args = 1 }
 send            = { emit = "host:ecma:value:invokeMethod", min_args = 1, max_args = 255 }
 tap             = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
-"eql?"          = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
-"equal?"        = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
+"eql?"          = { emit = "common:dyn_eq",                 min_args = 1, max_args = 1 }
+"equal?"        = { emit = "common:dyn_eq",                 min_args = 1, max_args = 1 }
 hash            = { emit = "common:ruby.hash",        min_args = 0, max_args = 0 }
 object_id       = { emit = "common:ruby.id",          min_args = 0, max_args = 0 }
 encoding        = { emit = "common:ruby.encoding",              min_args = 0, max_args = 0 }
@@ -142,12 +142,12 @@ tr              = { emit = "host:ecma:string:tr",           min_args = 2, max_ar
 scan            = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
 "match"         = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
 "match?"        = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
-chr             = { emit = "opcode:str_from_char_code",     min_args = 0, max_args = 0 }
+chr             = { emit = "common:str_from_char_code",     min_args = 0, max_args = 0 }
 ord             = { emit = "intrinsic:asc",                 min_args = 0, max_args = 0 }
 hex             = { emit = "common:ruby.hex",                  min_args = 0, max_args = 0 }
-casecmp         = { emit = "opcode:str_compare",            min_args = 1, max_args = 1 }
+casecmp         = { emit = "common:str_compare",            min_args = 1, max_args = 1 }
 
-# ── Array instance methods (common:collections.* / opcode:array_*) ───────────
+# ── Array instance methods (common:collections.* / common:array_*) ───────────
 
 push            = { emit = "common:collections.push",       min_args = 1, max_args = 255 }
 append          = { emit = "common:collections.push",       min_args = 1, max_args = 255 }

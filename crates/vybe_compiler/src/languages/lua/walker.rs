@@ -183,26 +183,36 @@ fn lua_step_is_negative(step: &Expression) -> bool {
 fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let mut names = Vec::new();
-    let mut iter = None;
+    let mut expl = Vec::new();
     let mut body = Vec::new();
     for p in inner {
         match p.as_rule() {
             Rule::for_varlist => {
-                names = p.into_inner().filter(|c| c.as_rule() == Rule::name).map(|c| c.as_str().to_string()).collect();
+                names = p
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::name)
+                    .map(|c| c.as_str().to_string())
+                    .collect();
             }
-            Rule::expr if iter.is_none() => {
-                iter = Some(walk_expression(p)?);
-            }
+            Rule::expr => expl.push(walk_expression(p)?),
             Rule::body_block | Rule::block => {
                 body = walk_block(p)?;
             }
             _ => {}
         }
     }
+    if expl.is_empty() {
+        return Err("missing generic for iterator expression".to_string());
+    }
+    let iter = if expl.len() == 1 {
+        expl.into_iter().next().unwrap()
+    } else {
+        Expression::new(ExprKind::Sequence(expl))
+    };
     Ok(StmtKind::ForIn {
         var: names.first().cloned().unwrap_or_default(),
         key: names.get(1).cloned(),
-        iter: iter.ok_or("missing generic for iterator expression")?,
+        iter,
         body: lua_scoped_body(body),
         of: true,
         else_body: None,
@@ -349,23 +359,184 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     inner.next(); // function
-    let name = inner
+    let func_name = inner
         .next()
         .ok_or("missing function name")?
-        .as_str()
-        .to_string();
-    let (params, body) = walk_function_parts(inner.collect())?;
-    Ok(StmtKind::FunctionDecl {
-        name,
+        .into_inner()
+        .collect::<Vec<_>>();
+    let (mut params, body) = walk_function_parts(inner.collect())?;
+    if func_name.len() == 1 {
+        let global = func_name[0].as_str().to_string();
+        return Ok(StmtKind::FunctionDecl {
+            name: global,
+            params,
+            body,
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            handles: Vec::new(),
+            return_type: None,
+        });
+    }
+
+    let (target, colon_method) = walk_qualified_func_name(&func_name)?;
+    if colon_method {
+        lua_ensure_self_param(&mut params);
+    }
+
+    let lambda = Expression::new(ExprKind::Lambda {
         params,
-        body,
-        modifiers: Modifiers::default(),
+        body: LambdaBody::Block(body),
         is_async: false,
-        is_generator: false,
-        is_sub: false,
-        handles: Vec::new(),
-        return_type: None,
+        captures: Vec::new(),
+    });
+
+    if colon_method {
+        if let Some((table, field)) = split_method_table_field(&target) {
+            return Ok(StmtKind::Block(vec![
+                walk_preserve_data_field(table, &field),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![target],
+                    value: lambda,
+                }),
+            ]));
+        }
+    }
+
+    Ok(StmtKind::Assign {
+        targets: vec![target],
+        value: lambda,
     })
+}
+
+fn split_method_table_field(target: &Expression) -> Option<(Expression, String)> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+        return None;
+    };
+    Some((object.as_ref().clone(), field.clone()))
+}
+
+/// JS-style: keep data fields when `function T:method()` would clobber `T.method`.
+fn walk_preserve_data_field(table: Expression, field: &str) -> Statement {
+    let field_key = Expression::new(ExprKind::Lit(Literal::Str(field.to_string())));
+    let slot_val = Expression::new(ExprKind::Index {
+        object: Box::new(table.clone()),
+        index: Box::new(field_key.clone()),
+        null_safe: false,
+    });
+    let data_key = Expression::new(ExprKind::Lit(Literal::Str("__lua_data".to_string())));
+    let data_table = Expression::new(ExprKind::Index {
+        object: Box::new(table.clone()),
+        index: Box::new(data_key.clone()),
+        null_safe: false,
+    });
+    let data_slot = Expression::new(ExprKind::Index {
+        object: Box::new(data_table.clone()),
+        index: Box::new(field_key),
+        null_safe: false,
+    });
+    let is_function = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Typeof,
+            expr: Box::new(slot_val.clone()),
+        })),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "function".to_string(),
+        )))),
+    });
+    let cond = Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(is_function),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(slot_val.clone()),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
+    });
+    Statement::new(StmtKind::If {
+        cond,
+        then_body: vec![
+            Statement::new(StmtKind::If {
+                cond: Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(data_table.clone()),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                }),
+                then_body: vec![Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::new(ExprKind::Index {
+                        object: Box::new(table.clone()),
+                        index: Box::new(data_key),
+                        null_safe: false,
+                    })],
+                    value: Expression::new(ExprKind::Array(Vec::new())),
+                })],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![data_slot],
+                value: slot_val,
+            }),
+        ],
+        elifs: Vec::new(),
+        else_body: None,
+    })
+}
+
+/// `name`, `dot`/`colon`, `name`, … → lvalue `a.b.c` for `function a.b.c()`.
+fn walk_qualified_func_name(parts: &[Pair<Rule>]) -> Result<(Expression, bool), String> {
+    let mut iter = parts.iter();
+    let base = iter
+        .next()
+        .ok_or("missing qualified function base name")?
+        .as_str();
+    let mut target = Expression::new(ExprKind::Ident(base.to_string()));
+    let mut colon_method = false;
+    while let Some(suffix) = iter.next() {
+        if suffix.as_str().trim_start().starts_with(':') {
+            colon_method = true;
+        }
+        let field = suffix
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::name)
+            .ok_or("missing qualified function field")?
+            .as_str()
+            .to_string();
+        target = Expression::new(ExprKind::Index {
+            object: Box::new(target),
+            index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(field)))),
+            null_safe: false,
+        });
+    }
+    Ok((target, colon_method))
+}
+
+fn lua_ensure_self_param(params: &mut Vec<Param>) {
+    if params.first().is_some_and(|p| p.name == "self") {
+        return;
+    }
+    params.insert(
+        0,
+        Param {
+            name: "self".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+    );
 }
 
 fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -541,7 +712,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::band_expr => walk_binary_chain_with_ops(inner),
         Rule::shift_expr => walk_binary_chain_with_ops(inner),
         Rule::concat_expr => walk_binary_chain(inner, |_| BinOp::Concat),
-        Rule::additive | Rule::multiplicative | Rule::pow_expr => walk_binary_chain_with_ops(inner),
+        Rule::additive | Rule::multiplicative => walk_binary_chain_with_ops(inner),
+        Rule::pow_expr => walk_pow_expr(inner),
         Rule::unary => walk_unary_from_inner(inner),
         Rule::expr => walk_expression(inner.remove(0)).map(|e| e.kind),
         other => Err(format!("Unhandled expression rule: {other:?}")),
@@ -587,6 +759,37 @@ fn walk_compare_chain(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
         }
     }
     Ok(left.kind)
+}
+
+/// Lua `^` is right-associative: `2 ^ 3 ^ 2` → `2 ^ (3 ^ 2)`.
+fn walk_pow_expr(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut operands = Vec::new();
+    operands.push(walk_expression(items.remove(0))?);
+    let mut i = 1;
+    while i < items.len() {
+        let p = &items[i];
+        if is_lua_op_rule(p.as_rule()) || p.as_rule() == Rule::CARET {
+            i += 1;
+            if i < items.len() {
+                operands.push(walk_expression(items[i].clone())?);
+                i += 1;
+            }
+        } else if is_lua_expr_rule(p.as_rule()) {
+            operands.push(walk_expression(items[i].clone())?);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    let mut acc = operands.pop().unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+    while let Some(left) = operands.pop() {
+        acc = Expression::new(ExprKind::Binary {
+            op: BinOp::Pow,
+            left: Box::new(left),
+            right: Box::new(acc),
+        });
+    }
+    Ok(acc.kind)
 }
 
 fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
@@ -748,7 +951,7 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field,
-                    null_safe: false,
+                    null_safe: true,
                 })),
                 args,
                 optional: false,
@@ -779,12 +982,16 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::KW_NIL => Ok(ExprKind::Lit(Literal::Null)),
         Rule::number => {
             let raw = first.as_str();
-            let v: f64 = if raw.starts_with("0x") || raw.starts_with("0X") {
-                i64::from_str_radix(&raw[2..], 16).map(|n| n as f64).unwrap_or(0.0)
+            if raw.starts_with("0x") || raw.starts_with("0X") {
+                let v = i64::from_str_radix(&raw[2..], 16).unwrap_or(0);
+                return Ok(ExprKind::Lit(Literal::Int(v)));
+            }
+            let is_float = raw.contains('.') || raw.contains('e') || raw.contains('E');
+            if is_float {
+                Ok(ExprKind::Lit(Literal::Float(raw.parse().unwrap_or(0.0))))
             } else {
-                raw.parse().unwrap_or(0.0)
-            };
-            Ok(ExprKind::Lit(Literal::Float(v)))
+                Ok(ExprKind::Lit(Literal::Int(raw.parse().unwrap_or(0))))
+            }
         }
         Rule::string => {
             let raw = first.as_str();

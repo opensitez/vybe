@@ -344,6 +344,12 @@ pub struct Compiler {
     with_targets: Vec<u16>,
     capture_by_value_vars: Vec<String>,
     capture_locals: HashMap<u8, u16>,
+    closure_env_names: Vec<String>,
+    /// Shared env array for the current outer function: holds locals that
+    /// are captured by inner closures. All reads/writes of these locals
+    /// go through array.get/array.set so mutations are visible to closures.
+    shared_env_slot: Option<u16>,
+    shared_env_names: Vec<String>,
     pointer_cell_bindings: HashMap<usize, HashSet<String>>,
 
     /// Names of locals/params in the function currently being compiled whose
@@ -353,6 +359,7 @@ pub struct Compiler {
     /// first `&v` use — taking the address inside a loop would otherwise
     /// re-wrap the cell every iteration and orphan prior mutations.
     current_addr_taken_locals: HashSet<String>,
+    current_closure_captured_locals: HashSet<String>,
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
     /// of the same arity. Populated by a pre-pass before any function is
@@ -708,6 +715,277 @@ fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::Cast { expr, .. } => collect_addr_taken_in_expr(expr, out),
         ExprKind::RefLoad(inner) => collect_addr_taken_in_expr(inner, out),
+        _ => {}
+    }
+}
+
+/// Pre-scan: collect identifiers referenced inside nested function/lambda
+/// bodies. These are potential closure captures — the declaring function
+/// wraps them in a cell object so mutations propagate through shared refs.
+fn collect_closure_captured_idents(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        collect_closure_captured_in_stmt(stmt, out);
+    }
+}
+
+fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { body, .. } => {
+            collect_all_idents_in_stmts(body, out);
+        }
+        StmtKind::Expr(e) => collect_closure_captured_in_expr(e, out),
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_closure_captured_in_expr(e, out);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &d.init {
+                    collect_closure_captured_in_expr(e, out);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for t in targets {
+                collect_closure_captured_in_expr(t, out);
+            }
+            collect_closure_captured_in_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_closure_captured_in_expr(target, out);
+            collect_closure_captured_in_expr(value, out);
+        }
+        StmtKind::Block(stmts) => collect_closure_captured_idents(stmts, out),
+        StmtKind::If { cond, then_body, elifs, else_body, } => {
+            collect_closure_captured_in_expr(cond, out);
+            collect_closure_captured_idents(then_body, out);
+            for (c, b) in elifs {
+                collect_closure_captured_in_expr(c, out);
+                collect_closure_captured_idents(b, out);
+            }
+            if let Some(b) = else_body {
+                collect_closure_captured_idents(b, out);
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            collect_closure_captured_in_expr(cond, out);
+            collect_closure_captured_idents(body, out);
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            if let Some(i) = init { collect_closure_captured_in_stmt(i, out); }
+            if let Some(c) = cond { collect_closure_captured_in_expr(c, out); }
+            if let Some(u) = update { collect_closure_captured_in_expr(u, out); }
+            collect_closure_captured_idents(body, out);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            collect_closure_captured_in_expr(iter, out);
+            collect_closure_captured_idents(body, out);
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            collect_closure_captured_idents(body, out);
+            for c in catches { collect_closure_captured_idents(&c.body, out); }
+            if let Some(b) = else_body { collect_closure_captured_idents(b, out); }
+            if let Some(b) = finally { collect_closure_captured_idents(b, out); }
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            collect_closure_captured_in_expr(expr, out);
+            for case in cases { collect_closure_captured_idents(&case.body, out); }
+            if let Some(b) = default { collect_closure_captured_idents(b, out); }
+        }
+        StmtKind::Labeled { body, .. } => collect_closure_captured_in_stmt(body, out),
+        StmtKind::Throw { expr, .. } => {
+            if let Some(e) = expr { collect_closure_captured_in_expr(e, out); }
+        }
+        _ => {}
+    }
+}
+
+fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Lambda { body, .. } => {
+            match body {
+                LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
+                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out),
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => {
+            if let StmtKind::FunctionDecl { body, .. } = &stmt.kind {
+                collect_all_idents_in_stmts(body, out);
+            }
+        }
+        ExprKind::Unary { expr, .. } => collect_closure_captured_in_expr(expr, out),
+        ExprKind::Binary { left, right, .. } => {
+            collect_closure_captured_in_expr(left, out);
+            collect_closure_captured_in_expr(right, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_closure_captured_in_expr(callee, out);
+            for a in args { collect_closure_captured_in_expr(&a.value, out); }
+        }
+        ExprKind::Member { object, .. } => collect_closure_captured_in_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_closure_captured_in_expr(object, out);
+            collect_closure_captured_in_expr(index, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_closure_captured_in_expr(cond, out);
+            collect_closure_captured_in_expr(then, out);
+            collect_closure_captured_in_expr(else_, out);
+        }
+        ExprKind::Assign { target, value } => {
+            collect_closure_captured_in_expr(target, out);
+            collect_closure_captured_in_expr(value, out);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems { collect_closure_captured_in_expr(&e.value, out); }
+        }
+        ExprKind::Object(props) => {
+            for p in props {
+                match p {
+                    ObjectProperty::KeyValue { value, .. } => collect_closure_captured_in_expr(value, out),
+                    ObjectProperty::Computed { key, value } => {
+                        collect_closure_captured_in_expr(key, out);
+                        collect_closure_captured_in_expr(value, out);
+                    }
+                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                        if let StmtKind::FunctionDecl { body, .. } = &value.kind {
+                            collect_all_idents_in_stmts(body, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Sequence(exprs) => {
+            for e in exprs { collect_closure_captured_in_expr(e, out); }
+        }
+        _ => {}
+    }
+}
+
+fn collect_all_idents_in_stmts(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        collect_all_idents_in_stmt(stmt, out);
+    }
+}
+
+fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(e) => collect_all_idents_in_expr(e, out),
+        StmtKind::Return(opt) => { if let Some(e) = opt { collect_all_idents_in_expr(e, out); } }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &d.init { collect_all_idents_in_expr(e, out); }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for t in targets { collect_all_idents_in_expr(t, out); }
+            collect_all_idents_in_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_all_idents_in_expr(target, out);
+            collect_all_idents_in_expr(value, out);
+        }
+        StmtKind::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            collect_all_idents_in_expr(cond, out);
+            collect_all_idents_in_stmts(then_body, out);
+            for (c, b) in elifs { collect_all_idents_in_expr(c, out); collect_all_idents_in_stmts(b, out); }
+            if let Some(b) = else_body { collect_all_idents_in_stmts(b, out); }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            collect_all_idents_in_expr(cond, out);
+            collect_all_idents_in_stmts(body, out);
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            if let Some(i) = init { collect_all_idents_in_stmt(i, out); }
+            if let Some(c) = cond { collect_all_idents_in_expr(c, out); }
+            if let Some(u) = update { collect_all_idents_in_expr(u, out); }
+            collect_all_idents_in_stmts(body, out);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            collect_all_idents_in_expr(iter, out);
+            collect_all_idents_in_stmts(body, out);
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            collect_all_idents_in_stmts(body, out);
+            for c in catches { collect_all_idents_in_stmts(&c.body, out); }
+            if let Some(b) = else_body { collect_all_idents_in_stmts(b, out); }
+            if let Some(b) = finally { collect_all_idents_in_stmts(b, out); }
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            collect_all_idents_in_expr(expr, out);
+            for case in cases { collect_all_idents_in_stmts(&case.body, out); }
+            if let Some(b) = default { collect_all_idents_in_stmts(b, out); }
+        }
+        StmtKind::FunctionDecl { body, .. } => collect_all_idents_in_stmts(body, out),
+        StmtKind::Labeled { body, .. } => collect_all_idents_in_stmt(body, out),
+        StmtKind::Throw { expr, .. } => { if let Some(e) = expr { collect_all_idents_in_expr(e, out); } }
+        _ => {}
+    }
+}
+
+fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Ident(name) => { out.insert(name.clone()); }
+        ExprKind::Unary { expr, .. } => collect_all_idents_in_expr(expr, out),
+        ExprKind::Binary { left, right, .. } => {
+            collect_all_idents_in_expr(left, out);
+            collect_all_idents_in_expr(right, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_all_idents_in_expr(callee, out);
+            for a in args { collect_all_idents_in_expr(&a.value, out); }
+        }
+        ExprKind::Member { object, .. } => collect_all_idents_in_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_all_idents_in_expr(object, out);
+            collect_all_idents_in_expr(index, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_all_idents_in_expr(cond, out);
+            collect_all_idents_in_expr(then, out);
+            collect_all_idents_in_expr(else_, out);
+        }
+        ExprKind::Assign { target, value } => {
+            collect_all_idents_in_expr(target, out);
+            collect_all_idents_in_expr(value, out);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems { collect_all_idents_in_expr(&e.value, out); }
+        }
+        ExprKind::Object(props) => {
+            for p in props {
+                match p {
+                    ObjectProperty::KeyValue { value, .. } => collect_all_idents_in_expr(value, out),
+                    ObjectProperty::Computed { key, value } => {
+                        collect_all_idents_in_expr(key, out);
+                        collect_all_idents_in_expr(value, out);
+                    }
+                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                        if let StmtKind::FunctionDecl { body, .. } = &value.kind {
+                            collect_all_idents_in_stmts(body, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Sequence(exprs) => {
+            for e in exprs { collect_all_idents_in_expr(e, out); }
+        }
+        ExprKind::Lambda { body, .. } => {
+            match body {
+                LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
+                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out),
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => {
+            if let StmtKind::FunctionDecl { body, .. } = &stmt.kind {
+                collect_all_idents_in_stmts(body, out);
+            }
+        }
         _ => {}
     }
 }
@@ -1152,8 +1430,12 @@ impl Compiler {
             with_targets: Vec::new(),
             capture_by_value_vars: Vec::new(),
             capture_locals: HashMap::new(),
+            closure_env_names: Vec::new(),
+            shared_env_slot: None,
+            shared_env_names: Vec::new(),
             pointer_cell_bindings: HashMap::new(),
             current_addr_taken_locals: HashSet::new(),
+            current_closure_captured_locals: HashSet::new(),
 
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
@@ -6699,6 +6981,15 @@ impl Compiler {
     }
 
     pub(crate) fn emit_var_get(&mut self, name: &str) {
+        // Shared env: locals captured by inner closures live in a shared
+        // array so mutations are visible across all closures.
+        if let Some(idx) = self.shared_env_index(name) {
+            if let Some(env_slot) = self.shared_env_slot {
+                let l = self.line;
+                crate::emitter::closures::emit_env_get(self.chunk(), env_slot, idx, l);
+                return;
+            }
+        }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
@@ -6717,9 +7008,11 @@ impl Compiler {
             }
         }
         if self.scopes.len() > 1 {
-            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                let slot = self.capture_local_slot(uv);
-                self.emit_u16(Op::LOCAL_GET, slot);
+            if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                let env = self.closure_env_slot();
+                let idx = self.closure_env_index(name);
+                let l = self.line;
+                crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
                 return;
             }
         }
@@ -6982,6 +7275,14 @@ impl Compiler {
                 return;
             }
         }
+        // Shared env: locals captured by inner closures
+        if let Some(idx) = self.shared_env_index(name) {
+            if let Some(env_slot) = self.shared_env_slot {
+                let l = self.line;
+                crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                return;
+            }
+        }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             if self.binding_uses_pointer_cell(name) {
@@ -7048,10 +7349,11 @@ impl Compiler {
             }
         }
         if self.scopes.len() > 1 {
-            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
-                let slot = self.capture_local_slot(uv);
-                self.emit_u16(Op::LOCAL_SET, slot);
-                self.emit(Op::DROP);
+            if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
+                let env = self.closure_env_slot();
+                let idx = self.closure_env_index(name);
+                let l = self.line;
+                crate::emitter::closures::emit_env_set(self.chunk(), env, idx, l);
                 return;
             }
         }
@@ -7187,6 +7489,28 @@ impl Compiler {
             c.capture_base = slot;
         }
         slot
+    }
+
+    /// Get or allocate the closure environment slot for the current function.
+    /// The env is a GC array holding all captured variables by index.
+    /// It arrives as upvalue[0] and is copied to this local by call_function_inner.
+    fn closure_env_slot(&mut self) -> u16 {
+        self.capture_local_slot(0)
+    }
+
+    /// Get or register a captured variable's index in the closure env array.
+    fn closure_env_index(&mut self, name: &str) -> u16 {
+        if let Some(idx) = self.closure_env_names.iter().position(|n| n == name) {
+            return idx as u16;
+        }
+        let idx = self.closure_env_names.len();
+        self.closure_env_names.push(name.to_string());
+        idx as u16
+    }
+
+    /// Check if a name is in the current function's shared env.
+    fn shared_env_index(&self, name: &str) -> Option<u16> {
+        self.shared_env_names.iter().position(|n| n == name).map(|i| i as u16)
     }
 
     fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
@@ -7400,9 +7724,11 @@ impl Compiler {
             return true;
         }
         if self.scopes.len() > 1 {
-            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &self_kw) {
-                let slot = self.capture_local_slot(uv);
-                self.emit_u16(Op::LOCAL_GET, slot);
+            if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, &self_kw) {
+                let env = self.closure_env_slot();
+                let idx = self.closure_env_index(&self_kw);
+                let l = self.line;
+                crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
                 return true;
             }
         }
@@ -8383,6 +8709,8 @@ impl Compiler {
                         // Only fire for user-defined bytecode iterators, not host-backed ones
                         // (Map/Set store HostFunction objects for "iterator"; REF_IS_FUNC is false
                         // for those). Arrays/Strings also fall through since they use host paths.
+                        // Symbol-keyed properties are stored as "Symbol(<desc>)" strings by
+                        // ecma:array.set, so look up "Symbol(iterator)" not plain "iterator".
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
@@ -11585,6 +11913,14 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
+                    // If this local is captured by inner closures, also store
+                    // the initial value in the shared env array so closures
+                    // see the same value.
+                    if let (Some(env_slot), Some(idx)) = (self.shared_env_slot, self.shared_env_index(name)) {
+                        let l = self.line;
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                    }
                     // If this local's address is taken anywhere in the function,
                     // box it in a pointer cell now (once), so a `&name` inside a
                     // loop reuses this cell rather than re-wrapping every
@@ -15301,7 +15637,7 @@ impl Compiler {
             "str_trim" => fn_call!(self, "ecma:string", "trim", 1),
             "str_trim_start" => fn_call!(self, "ecma:string", "trimStart", 1),
             "str_trim_end" => fn_call!(self, "ecma:string", "trimEnd", 1),
-            "str_reverse" => inst!(self, recipes::string_reverse),
+            "str_reverse" => { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l) },
             "str_from_char_code" => fn_call!(self, "wasm:js-string", "fromCharCode", 1),
             "str_char_at" => fn_call!(self, "ecma:string", "charAt", 2),
             "str_char_code_at" => fn_call!(self, "wasm:js-string", "charCodeAt", 2),
@@ -15748,7 +16084,7 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                inst!(self, recipes::string_reverse);
+                { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l) };
             }
             // SIMD v128 ops — args may be absent in plain WAT form
             "i8x16_splat" => {

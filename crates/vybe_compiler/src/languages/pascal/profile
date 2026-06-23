@@ -82,8 +82,8 @@ upcase        = { emit = "common:strings.to_upper",        min_args = 1, max_arg
 uppercase     = { emit = "common:strings.to_upper",        min_args = 1, max_args = 1 }
 lowercase     = { emit = "common:strings.to_lower",        min_args = 1, max_args = 1 }
 trim          = { emit = "common:strings.trim",            min_args = 1, max_args = 1 }
-trimleft      = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
-trimright     = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
+trimleft      = { emit = "common:str_trim_start",          min_args = 1, max_args = 1 }
+trimright     = { emit = "common:str_trim_end",            min_args = 1, max_args = 1 }
 
 # ── String functions — intrinsics (multi-opcode) ────────────────────────────
 
@@ -97,7 +97,7 @@ chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_arg
 ord           = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
-stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
+stringofchar  = { emit = "common:str_repeat",              min_args = 2, max_args = 2 }
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
 comparestr    = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
@@ -113,7 +113,7 @@ strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args
 strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 2 }
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
 booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
-strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
+strtobool     = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
 
 # ── Date/time ───────────────────────────────────────────────────────────────
 

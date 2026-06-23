@@ -5,7 +5,7 @@
 //! the single compiler-side surface for WebAssembly stack-switching generator
 //! opcodes.
 
-use crate::emitter::instructions::core_wasm;
+use crate::emitter::instructions::{core_wasm, host, recipes};
 use std::sync::Arc;
 use vybe_bytecode::chunk::StackSwitchHandler;
 use vybe_bytecode::opcode::Op;
@@ -426,4 +426,120 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].patch_block(outer_block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// Generator entry control dispatch — checks if the control parameter is a
+/// generator control packet (`{__vybe_generator_control: true, op: "throw"|"return", value}`).
+///
+/// Emitted once at the start of every generator body. `emit_return` callback
+/// lets the Compiler inject finally handling for the return path.
+pub fn emit_entry_control(
+    chunk: &mut Chunk,
+    control_slot: u16,
+    line: u32,
+    emit_return: &mut dyn FnMut(&mut Chunk, u32),
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    recipes::is_object(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_control")));
+    chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    let op_key = chunk.add_constant(Value::String(Arc::from("op")));
+    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_string_const("throw", line);
+    host::emit(chunk, "wasm:js-string", "equals", 2, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    let value_key = chunk.add_constant(Value::String(Arc::from("value")));
+    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_op(Op::THROW, line);
+
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_string_const("return", line);
+    host::emit(chunk, "wasm:js-string", "equals", 2, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    emit_return(chunk, line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// Generator resume value dispatch — at each yield resume point, checks if
+/// the resume value is a control packet and handles throw/return.
+///
+/// Returns (resume_slot, result_slot) for the caller.
+pub fn emit_resume_dispatch(
+    chunk: &mut Chunk,
+    line: u32,
+    emit_return: &mut dyn FnMut(&mut Chunk, u32),
+) -> (u16, u16) {
+    let resume_slot = chunk.local_count;
+    chunk.local_count += 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, resume_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let result_slot = chunk.local_count;
+    chunk.local_count += 1;
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    recipes::is_object(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_control")));
+    chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    let op_key = chunk.add_constant(Value::String(Arc::from("op")));
+    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_string_const("throw", line);
+    host::emit(chunk, "wasm:js-string", "equals", 2, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    let value_key = chunk.add_constant(Value::String(Arc::from("value")));
+    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_op(Op::THROW, line);
+
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_string_const("return", line);
+    host::emit(chunk, "wasm:js-string", "equals", 2, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    emit_return(chunk, line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+
+    (resume_slot, result_slot)
 }

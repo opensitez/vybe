@@ -27,8 +27,8 @@ materialize_bool_results = true
 [builtins]
 
 "__go_spawn"    = { emit = "common:threading.task_run",      min_args = 1, max_args = 1 }
-"__go_to_int"   = { emit = "opcode:to_int",                  min_args = 1, max_args = 1 }
-"__go_str_from_char_code" = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
+"__go_to_int"   = { emit = "common:to_int",                  min_args = 1, max_args = 1 }
+"__go_str_from_char_code" = { emit = "common:str_from_char_code", min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ materialize_bool_results = true
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-"strconv.Atoi"    = { emit = "opcode:to_int",                    min_args = 1, max_args = 1 }
+"strconv.Atoi"    = { emit = "common:to_int",                    min_args = 1, max_args = 1 }
 "strconv.Itoa"    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 "strconv.ParseFloat" = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 
@@ -48,14 +48,14 @@ materialize_bool_results = true
 "strings.ToLower" = { emit = "common:strings.to_lower",         min_args = 1, max_args = 1 }
 "strings.Trim"    = { emit = "common:strings.trim",             min_args = 1, max_args = 1 }
 "strings.TrimSpace" = { emit = "common:strings.trim",           min_args = 1, max_args = 1 }
-"strings.Contains" = { emit = "opcode:str_contains",            min_args = 2, max_args = 2 }
-"strings.HasPrefix" = { emit = "opcode:str_starts_with",        min_args = 2, max_args = 2 }
-"strings.HasSuffix" = { emit = "opcode:str_ends_with",          min_args = 2, max_args = 2 }
+"strings.Contains" = { emit = "common:str_contains",            min_args = 2, max_args = 2 }
+"strings.HasPrefix" = { emit = "common:str_starts_with",        min_args = 2, max_args = 2 }
+"strings.HasSuffix" = { emit = "common:str_ends_with",          min_args = 2, max_args = 2 }
 "strings.Index"   = { emit = "common:strings.index_of",         min_args = 2, max_args = 2 }
 "strings.Replace" = { emit = "common:strings.replace",          min_args = 3, max_args = 4 }
 "strings.Count"   = { emit = "intrinsic:count",                min_args = 2, max_args = 2 }
-"strings.Repeat"  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
-"strings.Compare" = { emit = "opcode:str_compare",             min_args = 2, max_args = 2 }
+"strings.Repeat"  = { emit = "common:str_repeat",              min_args = 2, max_args = 2 }
+"strings.Compare" = { emit = "common:str_compare",             min_args = 2, max_args = 2 }
 "strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
 "strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
 "__go_regex_split_pat_first" = { emit = "common:go.regex_split_pat_first", min_args = 2, max_args = 2 }
@@ -128,15 +128,15 @@ materialize_bool_results = true
 [value_methods]
 
 # String methods
-ToUpper      = { emit = "opcode:str_to_upper",      min_args = 0, max_args = 0 }
-ToLower      = { emit = "opcode:str_to_lower",      min_args = 0, max_args = 0 }
-Trim         = { emit = "opcode:str_trim",          min_args = 0, max_args = 0 }
-TrimSpace    = { emit = "opcode:str_trim",          min_args = 0, max_args = 0 }
-Contains     = { emit = "opcode:str_contains",      min_args = 1, max_args = 1 }
-HasPrefix    = { emit = "opcode:str_starts_with",   min_args = 1, max_args = 1 }
-HasSuffix    = { emit = "opcode:str_ends_with",     min_args = 1, max_args = 1 }
+ToUpper      = { emit = "common:str_to_upper",      min_args = 0, max_args = 0 }
+ToLower      = { emit = "common:str_to_lower",      min_args = 0, max_args = 0 }
+Trim         = { emit = "common:str_trim",          min_args = 0, max_args = 0 }
+TrimSpace    = { emit = "common:str_trim",          min_args = 0, max_args = 0 }
+Contains     = { emit = "common:str_contains",      min_args = 1, max_args = 1 }
+HasPrefix    = { emit = "common:str_starts_with",   min_args = 1, max_args = 1 }
+HasSuffix    = { emit = "common:str_ends_with",     min_args = 1, max_args = 1 }
 Index        = { emit = "common:strings.index_of",  min_args = 1, max_args = 2 }
-LastIndex    = { emit = "opcode:str_last_index_of", min_args = 1, max_args = 2 }
+LastIndex    = { emit = "common:str_last_index_of", min_args = 1, max_args = 2 }
 Replace      = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
 ReplaceAll   = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
 Split        = { emit = "common:strings.split",     min_args = 1, max_args = 1 }

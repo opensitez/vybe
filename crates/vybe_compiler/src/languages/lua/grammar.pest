@@ -111,9 +111,10 @@ primary = {
 
 postfix = { call_expression }
 call_expression = { primary ~ call_chain* }
+colon = { ":" }
 call_chain = {
     "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
-    | ":" ~ name ~ "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
+    | colon ~ name ~ "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
     | "." ~ name
     | "[" ~ expr ~ "]"
 }
@@ -167,8 +168,11 @@ local_function = {
     KW_LOCAL ~ KW_FUNCTION ~ name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
 }
 local_var = { KW_LOCAL ~ name ~ (comma ~ name)* ~ (assign ~ expr ~ (comma ~ expr)*)? }
+// `function t.add()` / `function Dog:speak()` — Lua method / namespace declarations.
+func_name_suffix = { (colon ~ name) | (dot ~ name) }
+func_name = { name ~ func_name_suffix* }
 function_decl = {
-    KW_FUNCTION ~ name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
+    KW_FUNCTION ~ func_name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
 }
 if_statement = {
     KW_IF ~ expr ~ KW_THEN ~ then_block

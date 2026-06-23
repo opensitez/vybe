@@ -10835,19 +10835,45 @@ impl Compiler {
         // Collect upvalues AFTER body compilation — the body may have referenced
         // outer-scope variables, registering them as factory upvalues.
         let uvs = self.scopes.last().unwrap().upvalues.clone();
+        let inner_scope_idx = self.scopes.len() - 1;
+        let uv_names: Vec<Option<String>> = (0..uvs.len())
+            .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
+            .collect();
         self.scopes.pop();
         self.current = saved;
 
         let line = self.line;
-        common::functions::emit_ref_func(
-            &mut self.chunks[self.current],
-            factory_idx,
-            uvs.len() as u8,
-            line,
-        );
-        for uv in &uvs {
-            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
-            self.chunks[self.current].emit(uv.index, line);
+        if uvs.is_empty() {
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current], factory_idx, 0, line,
+            );
+        } else {
+            let mut env_slots: Vec<u16> = Vec::new();
+            for (i, uv) in uvs.iter().enumerate() {
+                if let Some(name) = uv_names[i].clone() {
+                    let slot = if uv.is_local {
+                        uv.index as u16
+                    } else {
+                        let parent_env = self.closure_env_slot();
+                        let parent_idx = self.closure_env_index(&name);
+                        let tmp = self.define_local(&format!("__nested_cap_{}", name));
+                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
+                        self.emit(Op::DROP);
+                        tmp
+                    };
+                    env_slots.push(slot);
+                }
+            }
+            crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
+            let env_slot = self.define_local(&format!("__closure_env_factory_{}", factory_idx));
+            self.emit_u16(Op::LOCAL_SET, env_slot);
+            self.emit(Op::DROP);
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current], factory_idx, 1, line,
+            );
+            self.chunks[self.current].emit(1, line);
+            self.chunks[self.current].emit(env_slot as u8, line);
         }
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
@@ -10875,6 +10901,9 @@ impl Compiler {
             self.rest_fixed_arities
                 .insert(params.len().saturating_sub(1) as u8);
         }
+        // Capture parent's shared env info before switching scope
+        let parent_shared_env_slot = self.shared_env_slot;
+        let parent_shared_env_names = self.shared_env_names.clone();
         let arity = params.len() as u8;
         let ci = self.chunks.len();
         let chunk = common::functions::create_function_chunk("<lambda>", arity);
@@ -10885,15 +10914,26 @@ impl Compiler {
         let saved = self.current;
         self.current = ci;
         let saved_fn = self.current_func_name.replace("<lambda>".into());
+        let saved_env_names = std::mem::take(&mut self.closure_env_names);
+        let saved_capture_locals = std::mem::take(&mut self.capture_locals);
+        let saved_shared_env_slot = self.shared_env_slot.take();
+        let saved_shared_env_names = std::mem::take(&mut self.shared_env_names);
+        // If parent has a shared env, pre-seed the inner function's
+        // closure_env_names so upvalue indices match the shared env layout.
+        if !parent_shared_env_names.is_empty() {
+            self.closure_env_names = parent_shared_env_names.clone();
+        }
         // ECMA-262 §11.2.2: strict mode is inherited by nested functions and
         // additionally turned on by a `"use strict"` directive prologue in
         // this function's own block body. Arrow expression bodies cannot carry
         // a prologue, so they only inherit.
         let saved_strict = self.in_strict;
+        let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
         if let LambdaBody::Block(stmts) = body {
             if Self::stmts_have_use_strict_directive(stmts) {
                 self.in_strict = true;
             }
+            crate::compiler::collect_closure_captured_idents(stmts, &mut self.current_closure_captured_locals);
         }
         for p in params {
             self.define_local_typed(&p.name, p.type_hint.clone());
@@ -10987,49 +11027,80 @@ impl Compiler {
         let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
         self.chunks[ci].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
+        // Resolve upvalue names BEFORE popping the inner scope
+        let inner_scope_idx = self.scopes.len() - 1;
+        let uv_names: Vec<Option<String>> = (0..uvs.len())
+            .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
+            .collect();
         self.scopes.pop();
         self.current = saved;
+        self.current_closure_captured_locals = saved_closure_captured;
+        self.closure_env_names = saved_env_names;
+        self.capture_locals = saved_capture_locals;
+        self.shared_env_slot = saved_shared_env_slot;
+        self.shared_env_names = saved_shared_env_names;
         let parent_locals = self.scope().locals.clone();
-        let mut emitted_uvs = Vec::with_capacity(uvs.len());
-        for uv in &uvs {
-            let mut emitted = uv.clone();
-            if uv.is_local {
-                if let Some(local) = parent_locals
-                    .iter()
-                    .find(|local| local.slot == uv.index as u16)
-                {
-                    let local_name = self.canon(&local.name);
-                    if self
-                        .capture_by_value_vars
-                        .iter()
-                        .any(|name| name == &local_name)
-                    {
-                        self.emit_u16(Op::LOCAL_GET, local.slot);
-                        let snapshot_slot = self.define_local_typed(
-                            &format!("__capture_{}_{}", local.name, ci),
-                            local.type_hint.clone(),
-                        );
-                        self.emit_u16(Op::LOCAL_SET, snapshot_slot);
+        let line = self.line;
+        if uvs.is_empty() {
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                ci, 0, line,
+            );
+        } else if let Some(shared_slot) = parent_shared_env_slot {
+            // Parent has a shared env — pass it directly as the upvalue.
+            // The inner function's closure_env_names was pre-seeded from
+            // parent_shared_env_names, so indices match.
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                ci, 1, line,
+            );
+            self.chunks[self.current].emit(1, line); // is_local = true
+            self.chunks[self.current].emit(shared_slot as u8, line);
+        } else {
+            // No shared env — build a per-closure env (original path).
+            let mut env_slots: Vec<u16> = Vec::new();
+            let mut env_names: Vec<String> = Vec::new();
+            for (i, uv) in uvs.iter().enumerate() {
+                if let Some(name) = uv_names[i].clone() {
+                    let slot = if uv.is_local {
+                        let by_value = parent_locals
+                            .iter()
+                            .find(|l| l.slot == uv.index as u16)
+                            .map(|l| self.capture_by_value_vars.iter().any(|n| *n == self.canon(&l.name)))
+                            .unwrap_or(false);
+                        if by_value {
+                            let orig_slot = uv.index as u16;
+                            self.emit_u16(Op::LOCAL_GET, orig_slot);
+                            let snap = self.define_local(&format!("__snap_{}_{}", name, ci));
+                            self.emit_u16(Op::LOCAL_SET, snap);
+                            self.emit(Op::DROP);
+                            snap
+                        } else {
+                            uv.index as u16
+                        }
+                    } else {
+                        let parent_env = self.closure_env_slot();
+                        let parent_idx = self.closure_env_index(&name);
+                        let tmp = self.define_local(&format!("__nested_cap_{}", name));
+                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
                         self.emit(Op::DROP);
-                        emitted = UpvalueDesc {
-                            index: snapshot_slot as u8,
-                            is_local: true,
-                        };
-                    }
+                        tmp
+                    };
+                    env_names.push(name);
+                    env_slots.push(slot);
                 }
             }
-            emitted_uvs.push(emitted);
-        }
-        let line = self.line;
-        common::functions::emit_ref_func(
-            &mut self.chunks[self.current],
-            ci,
-            emitted_uvs.len() as u8,
-            line,
-        );
-        for uv in &emitted_uvs {
-            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
-            self.chunks[self.current].emit(uv.index, line);
+            crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
+            let env_slot = self.define_local(&format!("__closure_env_{}", ci));
+            self.emit_u16(Op::LOCAL_SET, env_slot);
+            self.emit(Op::DROP);
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                ci, 1, line,
+            );
+            self.chunks[self.current].emit(1, line); // is_local = true
+            self.chunks[self.current].emit(env_slot as u8, line);
         }
         if self.is_js_profile() {
             let length = params

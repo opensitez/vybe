@@ -89,7 +89,7 @@ multi_value_tuple_returns = true
 "Convert.ToInt32"    = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 "Convert.ToDouble"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 "Convert.ToString"   = { emit = "common:dotnet.tostring",        min_args = 1, max_args = 1 }
-"Convert.ToBoolean"  = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
+"Convert.ToBoolean"  = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
 "Convert.ToChar"     = { emit = "common:dotnet.cchar",            min_args = 1, max_args = 1 }
 "Convert.ToByte"     = { emit = "intrinsic:cbyte",                min_args = 1, max_args = 1 }
 "Convert.ToInt64"    = { emit = "intrinsic:clng",         min_args = 1, max_args = 1 }
@@ -125,8 +125,8 @@ multi_value_tuple_returns = true
 "String.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
 "String.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
-"String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
-"str_repeat"          = { emit = "opcode:str_repeat",             min_args = 2, max_args = 2 }
+"String.Concat"       = { emit = "common:str_concat",             min_args = 2, max_args = 255 }
+"str_repeat"          = { emit = "common:str_repeat",             min_args = 2, max_args = 2 }
 "string.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
 "string.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
@@ -150,8 +150,8 @@ multi_value_tuple_returns = true
 
 # ── Object static methods ───────────────────────────────────────────────────
 
-"Object.Equals"       = { emit = "opcode:dyn_eq",                 min_args = 2, max_args = 2 }
-"Object.ReferenceEquals" = { emit = "opcode:ref_eq",              min_args = 2, max_args = 2 }
+"Object.Equals"       = { emit = "common:dyn_eq",                 min_args = 2, max_args = 2 }
+"Object.ReferenceEquals" = { emit = "common:ref_eq",              min_args = 2, max_args = 2 }
 
 # ── JSON ─────────────────────────────────────────────────────────────────────
 
@@ -195,20 +195,20 @@ multi_value_tuple_returns = true
 ToUpper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
 ToLower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
 Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
-TrimStart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
-TrimEnd       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
-StartsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
-EndsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
-Contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+TrimStart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 0 }
+TrimEnd       = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
+StartsWith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
+EndsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
+Contains      = { emit = "common:str_includes",        min_args = 1, max_args = 1 }
 Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
 Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
 Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
 IndexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
-LastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
-PadLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
-PadRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+LastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
+PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
+PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
 ToString      = { emit = "common:dotnet.tostring",     min_args = 0, max_args = 0 }
-ToCharArray   = { emit = "opcode:str_split",           min_args = 0, max_args = 0 }
+ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
 Insert        = { emit = "common:dotnet.str_insert",   min_args = 2, max_args = 2 }
 Remove        = [
     { emit = "common:dotnet.str_remove_start", min_args = 1, max_args = 1 },
@@ -242,8 +242,8 @@ Count         = [
 ]
 ToArray       = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
 ToList        = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
-GetType       = { emit = "opcode:ref_typeof",          min_args = 0, max_args = 0 }
-Equals        = { emit = "opcode:dyn_eq",              min_args = 1, max_args = 1 }
+GetType       = { emit = "common:ref_typeof",          min_args = 0, max_args = 0 }
+Equals        = { emit = "common:dyn_eq",              min_args = 1, max_args = 1 }
 
 # LINQ surface — composed bytecode lives in `emitter/dotnet/core/linq_adapter.rs`
 # so VB and C# share one implementation. New entries: add an emit_linq_* fn,

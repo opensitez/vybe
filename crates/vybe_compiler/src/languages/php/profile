@@ -68,11 +68,11 @@ __php_intdiv        = { emit = "common:php.intdiv",          min_args = 2, max_a
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-strlen              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
-strtolower          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
-strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
-strcmp              = { emit = "opcode:str_compare",         min_args = 2, max_args = 2 }
-strcoll             = { emit = "opcode:str_compare",         min_args = 2, max_args = 2 }
+strlen              = { emit = "common:str_length",          min_args = 1, max_args = 1 }
+strtolower          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
+strtoupper          = { emit = "common:str_to_upper",        min_args = 1, max_args = 1 }
+strcmp              = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
+strcoll             = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
 rtrim               = { emit = "common:php.rtrim",           min_args = 1, max_args = 2 }
@@ -80,9 +80,9 @@ iconv               = { emit = "common:php.iconv",           min_args = 3, max_a
 str_contains        = { emit = "intrinsic:php_str_contains",        min_args = 2, max_args = 2 }
 str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2, max_args = 2 }
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
-str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
+str_repeat          = { emit = "common:str_repeat",          min_args = 2, max_args = 2 }
 base64_decode       = { emit = "common:php.base64_decode",   min_args = 1, max_args = 2 }
-chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+chr                 = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 # PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
 # arg is an offset rather than JS's direct `indexOf` shape.
@@ -106,14 +106,14 @@ ctype_xdigit        = { emit = "common:php.ctype_xdigit",    min_args = 1, max_a
 ctype_punct         = { emit = "common:php.ctype_punct",     min_args = 1, max_args = 1 }
 ctype_print         = { emit = "common:php.ctype_print",     min_args = 1, max_args = 1 }
 ctype_cntrl         = { emit = "common:php.ctype_cntrl",     min_args = 1, max_args = 1 }
-mb_strlen           = { emit = "opcode:str_length",          min_args = 1, max_args = 2 }
-mb_strtolower       = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 2 }
-mb_strtoupper       = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 2 }
+mb_strlen           = { emit = "common:str_length",          min_args = 1, max_args = 2 }
+mb_strtolower       = { emit = "common:str_to_lower",        min_args = 1, max_args = 2 }
+mb_strtoupper       = { emit = "common:str_to_upper",        min_args = 1, max_args = 2 }
 # `mb_substr` walker-rewritten alongside `substr` (Vybe stores strings
 # as Rust UTF-8 — code-point indexing matches mb_substr semantics).
-strrev              = { emit = "opcode:str_reverse",         min_args = 1, max_args = 1 }
-strrpos             = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
-strriios            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+strrev              = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
+strrpos             = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
+strriios            = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
 strripos            = { emit = "common:php.strripos",         min_args = 2, max_args = 3 }
 strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
 md5                 = { emit = "common:php.md5",             min_args = 1, max_args = 1 }
@@ -348,10 +348,10 @@ is_object           = { emit = "intrinsic:php_is_object",        min_args = 1, m
 
 count               = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
-array_push          = { emit = "opcode:array_push",                min_args = 2, max_args = 255 }
-array_pop           = { emit = "opcode:array_pop",                 min_args = 1, max_args = 1 }
+array_push          = { emit = "common:array_push",                min_args = 2, max_args = 255 }
+array_pop           = { emit = "common:array_pop",                 min_args = 1, max_args = 1 }
 end                 = { emit = "common:php.end",                  min_args = 1, max_args = 1 }
-array_shift         = { emit = "opcode:array_shift",               min_args = 1, max_args = 1 }
+array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
 array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
 array_reverse       = { emit = "common:php.array_reverse",         min_args = 1, max_args = 2 }
 in_array            = { emit = "common:php.in_array",              min_args = 2, max_args = 3 }
@@ -368,7 +368,7 @@ array_fill_keys     = { emit = "common:php.array_fill_keys",       min_args = 2,
 array_intersect_assoc = { emit = "common:php.array_intersect_assoc", min_args = 2, max_args = 2 }
 array_replace_recursive = { emit = "common:php.array_replace_recursive", min_args = 2, max_args = 2 }
 iterator_to_array   = { emit = "common:php.iterator_to_array",     min_args = 1, max_args = 2 }
-# These stay on `opcode:array_*` because they dispatch through
+# These stay on `common:array_*` because they dispatch through
 # `emit_builtin_opcode` which has the variadic-aware per-arg logic
 # (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
 # `emit_builtin_opcode`'s array_* arms route to `common::collections::*`

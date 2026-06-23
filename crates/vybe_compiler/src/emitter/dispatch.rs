@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{channels, collections, dict, strings, threading};
+use crate::emitter::{channels, collections, dict, ops, strings, threading};
 use crate::platforms::dotnet::emitter::core::thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
@@ -198,6 +198,102 @@ pub fn emit_common(
         "threading.atomic_cmpxchg" => threading::emit_atomic_cmpxchg(&mut chunks[current], line),
         "threading.atomic_fence" => threading::emit_atomic_fence(&mut chunks[current], line),
         "threading.suspend" => threading::emit_suspend(&mut chunks[current], line),
+
+        // ── String ops (profile common:str_*) ──
+        "str_reverse" => strings::emit_str_reverse(&mut chunks[current], line),
+        "str_length" => strings::emit_length(&mut chunks[current], line),
+        "str_to_upper" => strings::emit_to_upper(&mut chunks[current], line),
+        "str_to_lower" => strings::emit_to_lower(&mut chunks[current], line),
+        "str_trim" => strings::emit_trim(&mut chunks[current], line),
+        "str_trim_start" => strings::emit_trim_start(&mut chunks[current], line),
+        "str_trim_end" => strings::emit_trim_end(&mut chunks[current], line),
+        "str_substring" => strings::emit_substring(&mut chunks[current], line),
+        "str_split" => strings::emit_split(&mut chunks[current], line),
+        "str_replace" => strings::emit_replace(&mut chunks[current], line),
+        "str_repeat" => strings::emit_repeat(&mut chunks[current], line),
+        "str_index_of" => strings::emit_index_of(&mut chunks[current], line),
+        "str_last_index_of" => strings::emit_last_index_of(&mut chunks[current], line),
+        "str_concat" => strings::emit_str_concat(&mut chunks[current], line),
+        "str_from_char_code" => {
+            let idx = chunks[current].add_import("wasm:js-string", "fromCharCode");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "str_char_code_at" => {
+            let idx = chunks[current].add_import("wasm:js-string", "charCodeAt");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_char_at" => {
+            let idx = chunks[current].add_import("ecma:string", "charAt");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_starts_with" => {
+            let idx = chunks[current].add_import("ecma:string", "startsWith");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_ends_with" => {
+            let idx = chunks[current].add_import("ecma:string", "endsWith");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_contains" => {
+            let idx = chunks[current].add_import("ecma:string", "includes");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_includes" => {
+            let idx = chunks[current].add_import("ecma:string", "indexOf");
+            chunks[current].emit_call(idx, 2, line);
+            crate::emitter::instructions::core_wasm::i32_const(&mut chunks[current], line, 0);
+            ops::emit_dyn_ge(&mut chunks[current], line);
+        }
+        "str_compare" => {
+            let idx = chunks[current].add_import("wasm:js-string", "compare");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "str_pad_start" => {
+            let idx = chunks[current].add_import("ecma:string", "padStart");
+            chunks[current].emit_call(idx, 3, line);
+        }
+        "str_pad_end" => {
+            let idx = chunks[current].add_import("ecma:string", "padEnd");
+            chunks[current].emit_call(idx, 3, line);
+        }
+
+        // ── Dynamic ops (profile common:dyn_*) ──
+        "dyn_eq" => ops::emit_dyn_eq(&mut chunks[current], line),
+        "dyn_to_bool" => ops::emit_dyn_to_bool(&mut chunks[current], line),
+
+        // ── Ref ops (profile common:ref_*) ──
+        "ref_is_array" => {
+            let idx = chunks[current].add_import("ecma:array", "isArray");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "ref_typeof" => {
+            let idx = chunks[current].add_import("ecma:value", "typeof");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "ref_eq" => {
+            chunks[current].emit_op(Op::REF_EQ, line);
+        }
+
+        // ── Array ops (profile common:array_*) ──
+        "array_push" => collections::emit_push(chunks, current, line),
+        "array_pop" => collections::emit_pop(chunks, current, line),
+        "array_shift" => collections::emit_shift(chunks, current, line),
+        "array_length" => collections::emit_len(chunks, current, line),
+        "array_reverse" => collections::emit_reverse(chunks, current, line),
+
+        // ── Misc ──
+        "to_int" => {
+            let idx = chunks[current].add_import("ecma:number", "parseInt");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "round" => {
+            let idx = chunks[current].add_import("ecma:math", "round");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "set_timer" => {
+            let idx = chunks[current].add_import("web:timers", "setTimeout");
+            chunks[current].emit_call(idx, 2, line);
+        }
 
         _ => return false,
     }

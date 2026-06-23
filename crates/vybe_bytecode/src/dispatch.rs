@@ -2224,20 +2224,27 @@ impl VM {
                 // Our VM already treats null as assignable to externref,
                 // so these short-circuit to true / pass-through on null.
                 _ if op == Op::REF_TEST_NULL => {
-                    let _typeidx = self.read_u16();
+                    let typeidx = self.read_u16();
                     let val = self.pop();
-                    let matches = matches!(
-                        val,
-                        Value::Null | Value::Object(_) | Value::Symbol(_) | Value::String(_)
-                    );
-                    self.push(Value::I32(if matches { 1 } else { 0 }))?;
+                    let result = if matches!(val, Value::Null) {
+                        true
+                    } else {
+                        let target_name = self.constant_str(typeidx);
+                        self.test_type(&val, &target_name)
+                    };
+                    self.push(Value::I32(if result { 1 } else { 0 }))?;
                 }
                 _ if op == Op::REF_CAST_NULL => {
-                    let _typeidx = self.read_u16();
-                    // cast_null succeeds for null — pass the value through.
-                    // Our VM is already dynamically typed so this is always
-                    // a pass-through (validation happens at the engine level
-                    // once we emit spec-correct bytes).
+                    let typeidx = self.read_u16();
+                    let val = self.peek(0).clone();
+                    if !matches!(val, Value::Null) {
+                        let target_name = self.constant_str(typeidx);
+                        if !self.test_type(&val, &target_name) {
+                            return Err(VMError::new(&format!(
+                                "ref.cast_null failed: value is not {}", target_name
+                            )));
+                        }
+                    }
                 }
                 // `any.convert_extern` / `extern.convert_any` — identity at
                 // runtime for us: our value ABI is a universal externref.

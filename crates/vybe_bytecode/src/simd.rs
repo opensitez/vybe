@@ -260,6 +260,70 @@ impl VM {
     /// Supports: WASM GC type_id lookup, __type string matching, __types array
     /// (JS class inheritance chain), and __control_type for GUI controls.
     pub(crate) fn test_type(&self, val: &Value, target_name: &str) -> bool {
+        // ── WASM GC abstract heap types (spec §6.2) ───────────────
+        // Bottom types: always false for any non-null value.
+        if matches!(target_name, "none" | "nofunc" | "noextern") {
+            return matches!(val, Value::Null);
+        }
+        // `any`: top of internal hierarchy — true for every non-null value.
+        if target_name == "any" {
+            return !matches!(val, Value::Null | Value::Undefined);
+        }
+        // `extern`: external references (all JS values are externref in Vybe).
+        if target_name == "extern" {
+            return !matches!(val, Value::Null);
+        }
+        // `eq`: types on which ref.eq is allowed — i31 + struct + array.
+        if target_name == "eq" {
+            return match val {
+                Value::I32(_) => true,
+                Value::Object(o) => {
+                    let ob = o.lock().unwrap();
+                    !matches!(ob.kind, crate::value::ObjectKind::Function(_)
+                        | crate::value::ObjectKind::HostFunction(_))
+                }
+                _ => false,
+            };
+        }
+        // `i31`: unboxed 31-bit integers.
+        if target_name == "i31" {
+            return matches!(val, Value::I32(_));
+        }
+        // `func`: top of function hierarchy — funcref.
+        if target_name == "func" || target_name == "function" {
+            return match val {
+                Value::Object(o) => {
+                    let ob = o.lock().unwrap();
+                    matches!(ob.kind, crate::value::ObjectKind::Function(_)
+                        | crate::value::ObjectKind::HostFunction(_))
+                }
+                _ => false,
+            };
+        }
+        // `struct`: top of struct hierarchy — all non-array, non-func objects.
+        if target_name == "struct" {
+            return match val {
+                Value::Object(o) => {
+                    let ob = o.lock().unwrap();
+                    !matches!(ob.kind, crate::value::ObjectKind::Array(_)
+                        | crate::value::ObjectKind::Function(_)
+                        | crate::value::ObjectKind::HostFunction(_))
+                }
+                _ => false,
+            };
+        }
+        // `array`: top of array hierarchy.
+        if target_name == "array" {
+            return match val {
+                Value::Object(o) => {
+                    let ob = o.lock().unwrap();
+                    matches!(ob.kind, crate::value::ObjectKind::Array(_))
+                }
+                _ => false,
+            };
+        }
+
+        // ── Named / user-defined types ────────────────────────────
         match val {
             Value::Object(o) => {
                 let ob = o.lock().unwrap();
@@ -271,12 +335,6 @@ impl VM {
                     return false;
                 }
 
-                // Slow path: type_id == 0 — check __type / __control_type
-                // strings. Both the stamped string and the target are
-                // already canonicalised by the compiler/walker (lowercased
-                // for case-insensitive languages, preserved for case-
-                // sensitive). No forced transform here — let collisions
-                // surface as the language semantics dictate.
                 let obj_type = ob
                     .properties
                     .get("__type")
@@ -288,12 +346,10 @@ impl VM {
                     })
                     .unwrap_or_default();
 
-                // Direct name match
                 if obj_type == target_name {
                     return true;
                 }
 
-                // Check via type registry (subtype relationship)
                 if let Some(tid) = self.type_registry.get_id(&obj_type) {
                     if let Some(target_id) = self.type_registry.get_id(target_name) {
                         if self.type_registry.is_subtype(tid, target_id) {
@@ -302,7 +358,6 @@ impl VM {
                     }
                 }
 
-                // Check __types array (JS class inheritance chain)
                 if let Some(Value::Object(types)) = ob.properties.get("__types") {
                     let t = types.lock().unwrap();
                     if let crate::value::ObjectKind::Array(ref elems) = t.kind {
@@ -315,19 +370,15 @@ impl VM {
                     }
                 }
 
-                // Universal: everything is an "object" (cross-language base
-                // type). Both VB ("object") and JS ("Object") canonicalise
-                // upstream — accept either.
                 target_name.eq_ignore_ascii_case("object")
             }
-            Value::String(_) => target_name == "string" || target_name == "object",
+            Value::String(_) => target_name == "string",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => {
                 target_name == "integer"
                     || target_name == "double"
                     || target_name == "number"
-                    || target_name == "object"
             }
-            Value::Bool(_) => target_name == "boolean" || target_name == "object",
+            Value::Bool(_) => target_name == "boolean",
             Value::V128(_) => target_name == "v128",
             Value::WeakRef(weak) => {
                 if let Some(strong) = weak.upgrade() {
@@ -337,8 +388,6 @@ impl VM {
                 }
             }
             Value::Null | Value::Undefined => false,
-            // Symbols and BigInts never participate in GC-type / inheritance
-            // type tests — they're JS primitives.
             Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()),
         }
     }

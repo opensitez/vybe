@@ -157,12 +157,12 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 
 # ── String static methods ────────────────────────────────────────────────────
 
-"String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 255 }
+"String.fromCharCode" = { emit = "common:str_from_char_code",     min_args = 1, max_args = 255 }
 "String.raw"          = { emit = "host:ecma:string:raw",           min_args = 1, max_args = 255 }
 
 # ── Array static methods ─────────────────────────────────────────────────────
 
-"Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
+"Array.isArray"     = { emit = "common:ref_is_array",             min_args = 1, max_args = 1 }
 "Array.from"        = { emit = "host:ecma:array:from",            min_args = 1, max_args = 3 }
 "Array.fromAsync"   = { emit = "host:ecma:array:fromAsync",       min_args = 1, max_args = 2 }
 "Array.of"          = { emit = "host:ecma:array:of",              min_args = 0, max_args = 255 }
@@ -241,8 +241,8 @@ structuredClone      = { emit = "host:ecma:structured-clone:clone", min_args = 1
 # the VM event loop owns the timer queue). The vybe:runtime host module
 # never had matching exports so the old `host:vybe:runtime:*` mapping
 # was a dead route that surfaced as "Unresolved import" at runtime.
-setTimeout           = { emit = "opcode:set_timer",              min_args = 1, max_args = 2 }
-setInterval          = { emit = "opcode:set_timer",              min_args = 1, max_args = 2 }
+setTimeout           = { emit = "common:set_timer",              min_args = 1, max_args = 2 }
+setInterval          = { emit = "common:set_timer",              min_args = 1, max_args = 2 }
 clearTimeout         = { emit = "noop",                          min_args = 1, max_args = 1 }
 clearInterval        = { emit = "noop",                          min_args = 1, max_args = 1 }
 queueMicrotask       = { emit = "noop",                          min_args = 1, max_args = 1 }

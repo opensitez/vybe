@@ -185,6 +185,34 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line); // end null
 }
 
+/// Lua truthiness — only `nil` and `false` are falsy (§3.3.3).
+/// Stack: [v] → [i32: 0 or 1]
+pub fn emit_lua_to_bool(chunk: &mut Chunk, line: u32) {
+    let slots = alloc_locals(chunk, 1);
+    let v = slots;
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+
+    save(chunk, v, line);
+
+    load(chunk, v, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    i32_const(chunk, 0, line);
+    chunk.emit_else(line);
+
+    load(chunk, v, line);
+    call1(chunk, test_bool, line);
+    chunk.emit_if(line);
+    load(chunk, v, line);
+    call1(chunk, cast_bool, line);
+    chunk.emit_else(line);
+    i32_const(chunk, 1, line);
+
+    chunk.emit_end(line); // bool
+    chunk.emit_end(line); // null
+}
+
 // ── emit_dyn_not ──────────────────────────────────────────────────────
 
 pub fn emit_dyn_not(chunk: &mut Chunk, line: u32) {

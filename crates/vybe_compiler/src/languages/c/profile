@@ -34,11 +34,11 @@ uses_normalize_class = false
 # sprintf routes through the inline common emitter helper (no JS polyfill).
 "sprintf"  = { emit = "common:sprintf.format", min_args = 1, max_args = 255 }
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }
-"putchar"  = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
+"putchar"  = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 # Single code point → 1-char string. Used by libc adapters (e.g. decoding a
 # code-point array one element at a time). Spread (`...arr`) is NOT supported by
 # the fixed-arity opcode — decode element-by-element instead.
-"String.fromCharCode" = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
+"String.fromCharCode" = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 
 # Line-read primitive backing the libc stdin token reader (scanf/getchar/fgets).
 # intrinsic:readline → emitter::io::emit_input → wasi:cli/stdin.get-stdin +
@@ -53,15 +53,15 @@ uses_normalize_class = false
 
 # ── string.h ─────────────────────────────────────────────────────────────────
 # strlen/strcmp work directly via opcode/emitter
-"strlen"   = { emit = "common:strings.length",    min_args = 1, max_args = 1 }
-"strcmp"   = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
-"strncmp"  = { emit = "opcode:str_compare",        min_args = 2, max_args = 3 }
+"strlen"   = { emit = "common:c.strlen",    min_args = 1, max_args = 1 }
+"strcmp"   = { emit = "common:c.strcmp",        min_args = 2, max_args = 2 }
+"strncmp"  = { emit = "common:c.strncmp",        min_args = 2, max_args = 3 }
 # strcpy/strncpy/strcat/strncat/memcpy/memmove/memset: walker rewrites to
 # assignment / concat / buffer-copy operations.
 # strchr/strrchr/strstr/memchr: walker rewrites to slice-or-null pointer forms.
-"strupr"   = { emit = "common:strings.to_upper",   min_args = 1, max_args = 1 }
-"strlwr"   = { emit = "common:strings.to_lower",   min_args = 1, max_args = 1 }
-"memcmp"   = { emit = "opcode:str_compare",        min_args = 3, max_args = 3 }
+"strupr"   = { emit = "common:c.strupr",   min_args = 1, max_args = 1 }
+"strlwr"   = { emit = "common:c.strlwr",   min_args = 1, max_args = 1 }
+"memcmp"   = { emit = "common:c.memcmp",        min_args = 3, max_args = 3 }
 
 # ── ctype.h — walker rewrites these to ecma:string calls ─────────────────────
 # isalpha/isdigit/isalnum/isspace/isupper/islower: walker wraps char-code arg
@@ -76,8 +76,8 @@ uses_normalize_class = false
 # iscntrl/isprint/ispunct/toupper/tolower: walker emits arithmetic inline
 
 # ── stdlib.h ─────────────────────────────────────────────────────────────────
-"atoi"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
-"atol"     = { emit = "opcode:to_int",               min_args = 1, max_args = 1 }
+"atoi"     = { emit = "common:c.atoi",               min_args = 1, max_args = 1 }
+"atol"     = { emit = "common:c.atol",               min_args = 1, max_args = 1 }
 "atof"     = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
 "parseInt" = { emit = "host:ecma:number:parseInt",   min_args = 1, max_args = 2 }
 "parseFloat" = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
@@ -88,7 +88,7 @@ uses_normalize_class = false
 "labs"     = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
 "llabs"    = { emit = "opcode:f64_abs",              min_args = 1, max_args = 1 }
 # rand/srand and exit/malloc/calloc/realloc/free/qsort/bsearch: walker/compiler rewrites.
-"qsort"    = { emit = "common:collections.sort",     min_args = 4, max_args = 4 }
+"qsort"    = { emit = "common:c.qsort",     min_args = 4, max_args = 4 }
 
 # ── math.h ───────────────────────────────────────────────────────────────────
 "sqrt"     = { emit = "opcode:f64_sqrt",   min_args = 1, max_args = 1 }

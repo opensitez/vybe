@@ -22,15 +22,15 @@ dynamic_add = true
 
 # ── String ───────────────────────────────────────────────────────────────────
 
-LENGTH              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
-UPPER-CASE          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
-LOWER-CASE          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
-TRIM                = { emit = "opcode:str_trim",            min_args = 1, max_args = 1 }
+LENGTH              = { emit = "common:str_length",          min_args = 1, max_args = 1 }
+UPPER-CASE          = { emit = "common:str_to_upper",        min_args = 1, max_args = 1 }
+LOWER-CASE          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
+TRIM                = { emit = "common:str_trim",            min_args = 1, max_args = 1 }
 REVERSE             = { emit = "common:collections.reverse",       min_args = 1, max_args = 1 }
-CONCATENATE         = { emit = "opcode:str_concat",          min_args = 2, max_args = 255 }
-SUBSTITUTE          = { emit = "opcode:str_replace",         min_args = 3, max_args = 3 }
+CONCATENATE         = { emit = "common:str_concat",          min_args = 2, max_args = 255 }
+SUBSTITUTE          = { emit = "common:str_replace",         min_args = 3, max_args = 3 }
 ORD                 = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
-CHAR                = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+CHAR                = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
 
 # ── Math ─────────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ PRESENT-VALUE       = { emit = "host:ecma:math:presentValue", min_args = 2, max_
 
 __is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
-__refmod            = { emit = "opcode:str_substring",       min_args = 3, max_args = 3 }
+__refmod            = { emit = "common:str_substring",       min_args = 3, max_args = 3 }
 f64_floor           = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
 f64_ceil            = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
 f64_trunc           = { emit = "opcode:f64_trunc",           min_args = 1, max_args = 1 }

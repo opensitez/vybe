@@ -174,7 +174,7 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    fn captured_name_for_upvalue(&self, scope_idx: usize, upvalue_idx: u8) -> Option<String> {
+    pub(super) fn captured_name_for_upvalue(&self, scope_idx: usize, upvalue_idx: u8) -> Option<String> {
         let upvalue = self
             .scopes
             .get(scope_idx)?
@@ -467,6 +467,20 @@ impl Compiler {
         if self.profile.name == "c" {
             crate::compiler::collect_addr_taken_idents(body, &mut self.current_addr_taken_locals);
         }
+        let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
+        let saved_env_names = std::mem::take(&mut self.closure_env_names);
+        let saved_capture_locals = std::mem::take(&mut self.capture_locals);
+        // Capture parent shared env for nested function upvalue resolution
+        let parent_shared_env_slot = self.shared_env_slot;
+        let parent_shared_env_names = self.shared_env_names.clone();
+        let saved_shared_env_slot = self.shared_env_slot.take();
+        let saved_shared_env_names = std::mem::take(&mut self.shared_env_names);
+        crate::compiler::collect_closure_captured_idents(body, &mut self.current_closure_captured_locals);
+        // If parent has a shared env, pre-seed closure_env_names so
+        // upvalue indices match the parent's shared env layout.
+        if !parent_shared_env_names.is_empty() {
+            self.closure_env_names = parent_shared_env_names;
+        }
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
         let saved_strict = self.in_strict;
@@ -669,6 +683,33 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
+        // Shared env: if any locals/params in this function are captured by
+        // inner closures, create one shared array so all closures see the
+        // same mutable state.
+        if !self.current_closure_captured_locals.is_empty() {
+            let mut captured_names: Vec<String> = self.current_closure_captured_locals
+                .iter()
+                .cloned()
+                .collect();
+            captured_names.sort();
+            let env_size = captured_names.len() as u16;
+            let line = self.line;
+            self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+            // Fill with nulls — ARRAY_NEW_FIXED creates with nulls already
+            let env_slot = self.define_local("__shared_env");
+            self.emit_u16(Op::LOCAL_SET, env_slot);
+            self.emit(Op::DROP);
+            self.shared_env_slot = Some(env_slot);
+            self.shared_env_names = captured_names.clone();
+            // Immediately store captured params (they already have values)
+            for (idx, cap_name) in captured_names.iter().enumerate() {
+                if let Some(param_slot) = self.scope().resolve(cap_name) {
+                    self.emit_u16(Op::LOCAL_GET, param_slot);
+                    crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                }
+            }
+        }
+
         if self.profile.name == "fortran" {
             for statement in body {
                 if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
@@ -729,6 +770,11 @@ impl Compiler {
 
         self.current_func_name = saved_fn;
         self.current_addr_taken_locals = saved_addr_taken;
+        self.current_closure_captured_locals = saved_closure_captured;
+        self.closure_env_names = saved_env_names;
+        self.capture_locals = saved_capture_locals;
+        self.shared_env_slot = saved_shared_env_slot;
+        self.shared_env_names = saved_shared_env_names;
         self.in_strict = saved_strict;
         self.current_result_slot = saved_rs;
         self.current_ref_out_params = saved_ref_out;
@@ -739,6 +785,10 @@ impl Compiler {
             .max(self.chunks[func_idx].local_count);
         self.chunks[func_idx].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
+        let inner_scope_idx = self.scopes.len() - 1;
+        let uv_names: Vec<Option<String>> = (0..uvs.len())
+            .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
+            .collect();
         self.js_arguments_bindings.pop();
         self.scopes.pop();
         self.static_local_bindings.pop();
@@ -749,15 +799,53 @@ impl Compiler {
         self.function_label_base = saved_label_base;
 
         let line = self.line;
-        common::functions::emit_ref_func(
-            &mut self.chunks[self.current],
-            func_idx,
-            uvs.len() as u8,
-            line,
-        );
-        for uv in &uvs {
-            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
-            self.chunks[self.current].emit(uv.index, line);
+        if uvs.is_empty() {
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                func_idx,
+                0,
+                line,
+            );
+        } else if let Some(shared_slot) = parent_shared_env_slot {
+            // Parent has a shared env — pass it directly as the upvalue.
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                func_idx,
+                1,
+                line,
+            );
+            self.chunks[self.current].emit(1, line);
+            self.chunks[self.current].emit(shared_slot as u8, line);
+        } else {
+            let mut env_slots: Vec<u16> = Vec::new();
+            for (i, uv) in uvs.iter().enumerate() {
+                if let Some(name) = uv_names[i].clone() {
+                    let slot = if uv.is_local {
+                        uv.index as u16
+                    } else {
+                        let parent_env = self.closure_env_slot();
+                        let parent_idx = self.closure_env_index(&name);
+                        let tmp = self.define_local(&format!("__nested_cap_{}", name));
+                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
+                        self.emit(Op::DROP);
+                        tmp
+                    };
+                    env_slots.push(slot);
+                }
+            }
+            crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
+            let env_slot = self.define_local(&format!("__closure_env_{}", func_idx));
+            self.emit_u16(Op::LOCAL_SET, env_slot);
+            self.emit(Op::DROP);
+            common::functions::emit_ref_func(
+                &mut self.chunks[self.current],
+                func_idx,
+                1,
+                line,
+            );
+            self.chunks[self.current].emit(1, line);
+            self.chunks[self.current].emit(env_slot as u8, line);
         }
         if uses_js_arguments {
             self.emit_stamp_rest_metadata_on_stack(0);
@@ -1228,6 +1316,8 @@ impl Compiler {
             cc.current = ci;
             let saved_fn = cc.current_func_name.take();
             cc.current_func_name = Some(bound_name.clone());
+            let saved_closure_captured = std::mem::take(&mut cc.current_closure_captured_locals);
+            crate::compiler::collect_closure_captured_idents(&m.body, &mut cc.current_closure_captured_locals);
 
             if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
@@ -1362,6 +1452,7 @@ impl Compiler {
             cc.current_result_slot = saved_rs;
             cc.current_ref_out_params = saved_ref_out;
             cc.current_member_is_static = saved_member_static;
+            cc.current_closure_captured_locals = saved_closure_captured;
 
             let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
             cc.chunks[ci].local_count = locals;

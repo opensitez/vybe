@@ -1,4 +1,3 @@
-pub mod emitter;
 mod normalize;
 mod walker;
 

@@ -214,24 +214,26 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
 
     pub(super) fn emit_generator_entry_control(&mut self, control_slot: u16) -> Result<(), String> {
+        // Detection logic lives in emitter/generators.rs; return handling
+        // stays here because it needs Compiler state (finally blocks).
         self.emit_u16(Op::LOCAL_GET, control_slot);
-        inst!(self, recipes::is_object);
+        { let l = self.line; crate::emitter::instructions::recipes::is_object(self.chunk(), l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
-        fn_call!(self, "wasm:js-string", "equals", 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -243,8 +245,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, control_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
-        fn_call!(self, "wasm:js-string", "equals", 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -255,13 +257,6 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         Ok(())
-    }
-
-    fn emit_generator_return_from_resume_slot(&mut self, resume_slot: u16) -> Result<(), String> {
-        self.emit_u16(Op::LOCAL_GET, resume_slot);
-        let value_key = self.str_const("value");
-        self.emit_u16(Op::STRUCT_GET, value_key);
-        self.emit_return_through_finally(1)
     }
 
     pub(super) fn emit_generator_resume_value(&mut self) -> Result<(), String> {
@@ -275,25 +270,23 @@ impl Compiler {
         self.emit(Op::DROP);
 
         let line = self.line;
-        // Check if resume value is a control packet (has __vybe_generator_control)
         self.emit_u16(Op::LOCAL_GET, resume_slot);
-        inst!(self, recipes::is_object);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::instructions::recipes::is_object(self.chunk(), l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
-        // Control packet: check op
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
-        fn_call!(self, "wasm:js-string", "equals", 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -305,15 +298,17 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
-        fn_call!(self, "wasm:js-string", "equals", 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
+        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
         self.chunk().emit_if(line);
 
-        self.emit_generator_return_from_resume_slot(resume_slot)?;
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        self.emit_return_through_finally(1)?;
 
         self.chunk().emit_end(line);
-        self.chunk().emit_end(line); // end marker check
-        self.chunk().emit_end(line); // end is_object check
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
     }
@@ -657,13 +652,17 @@ impl Compiler {
                 } else if self.scopes.len() > 1 {
                     // Arrow function: capture `this` from enclosing scope via upvalue
                     let kw = self.profile.self_keyword.clone();
-                    if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
-                        let slot = self.capture_local_slot(uv);
-                        self.emit_u16(Op::LOCAL_GET, slot);
+                    if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
+                        let env = self.closure_env_slot();
+                        let idx = self.closure_env_index(&kw);
+                        let l = self.line;
+                        crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
                     } else if self.is_js_profile() {
-                        if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this") {
-                            let slot = self.capture_local_slot(uv);
-                            self.emit_u16(Op::LOCAL_GET, slot);
+                        if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this") {
+                            let env = self.closure_env_slot();
+                            let idx = self.closure_env_index("__js_this");
+                            let l = self.line;
+                            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
                         } else {
                             let idx = self.str_const("__js_this");
                             self.emit_u16(Op::GLOBAL_GET, idx);
@@ -973,6 +972,17 @@ impl Compiler {
                     self.compile_expr(right)?;
                     self.emit_common("php.echo_stringify", 1, line);
                     self.compile_binop(op);
+                    return Ok(());
+                }
+
+                // Lua `..` always stringifies operands (numbers, booleans, …).
+                if self.profile.name == "lua" && *op == BinOp::Concat {
+                    let line = self.line;
+                    self.compile_expr(left)?;
+                    common::strings::emit_to_string(self.chunk(), line);
+                    self.compile_expr(right)?;
+                    common::strings::emit_to_string(self.chunk(), line);
+                    common::strings::emit_str_concat(self.chunk(), line);
                     return Ok(());
                 }
 
@@ -2598,7 +2608,7 @@ impl Compiler {
                                 fn_call!(self, "wasm:js-string", "test", 1);
                                 let line = self.line;
                                 self.chunk().emit_if_value(line);
-                                inst!(self, recipes::string_reverse);
+                                { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l); }
                                 self.chunk().emit_else(line);
                                 self.emit(Op::NULL);
                                 self.emit(Op::NULL);
@@ -3605,29 +3615,7 @@ impl Compiler {
                 captures,
                 is_async,
             } => {
-                if self.is_js_profile() {
-                    let mut lexical_captures = captures.clone();
-                    if !lexical_captures
-                        .iter()
-                        .any(|capture| capture == "__js_this" || capture == "&__js_this")
-                    {
-                        lexical_captures.push("__js_this".to_string());
-                    }
-                    if !lexical_captures.iter().any(|capture| {
-                        capture == "__js_new_target" || capture == "&__js_new_target"
-                    }) {
-                        lexical_captures.push("__js_new_target".to_string());
-                    }
-                    self.compile_lambda_with_flags(
-                        params,
-                        body,
-                        &lexical_captures,
-                        *is_async,
-                        false,
-                    )?;
-                } else {
-                    self.compile_lambda_with_flags(params, body, captures, *is_async, false)?;
-                }
+                self.compile_lambda_with_flags(params, body, captures, *is_async, false)?;
             }
 
             // ── Array literal ───────────────────────────────────────────

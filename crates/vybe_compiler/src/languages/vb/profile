@@ -74,7 +74,7 @@ uses_normalize_class = true
 cstr    = { emit = "intrinsic:cstr",               min_args = 1, max_args = 1 }
 cint    = { emit = "intrinsic:cint",               min_args = 1, max_args = 1 }
 cdbl    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
-cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
+cbool   = { emit = "common:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
 cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
@@ -108,7 +108,7 @@ isnull     = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 
 isempty    = { emit = "common:dotnet.isempty",         min_args = 1, max_args = 1 }
 isobject   = { emit = "intrinsic:isobject",            min_args = 1, max_args = 1 }
 isreference = { emit = "intrinsic:isreference",        min_args = 1, max_args = 1 }
-isarray    = { emit = "opcode:ref_is_array",           min_args = 1, max_args = 1 }
+isarray    = { emit = "common:ref_is_array",           min_args = 1, max_args = 1 }
 isdate     = { emit = "common:dotnet.isdate",          min_args = 1, max_args = 1 }
 isdbnull   = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 iserror    = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
@@ -133,9 +133,9 @@ sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
 "system.math.sqrt" = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
 "math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
 "system.math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
-round         = { emit = "opcode:round", min_args = 1, max_args = 2 }
-"math.round"  = { emit = "opcode:round", min_args = 1, max_args = 2 }
-"system.math.round" = { emit = "opcode:round", min_args = 1, max_args = 2 }
+round         = { emit = "common:round", min_args = 1, max_args = 2 }
+"math.round"  = { emit = "common:round", min_args = 1, max_args = 2 }
+"system.math.round" = { emit = "common:round", min_args = 1, max_args = 2 }
 "math.min"    = { emit = "opcode:f64_min",     min_args = 2, max_args = 2 }
 "system.math.min" = { emit = "opcode:f64_min", min_args = 2, max_args = 2 }
 "math.max"    = { emit = "opcode:f64_max",     min_args = 2, max_args = 2 }
@@ -201,21 +201,21 @@ syd   = { emit = "common:vb.syd",   min_args = 4, max_args = 4 }
 
 # ── String functions — WASM string builtins (zero overhead) ──────────────────
 
-len        = { emit = "opcode:str_length",         min_args = 1, max_args = 1 }
-ucase      = { emit = "opcode:str_to_upper",       min_args = 1, max_args = 1 }
-"ucase$"   = { emit = "opcode:str_to_upper",       min_args = 1, max_args = 1 }
-lcase      = { emit = "opcode:str_to_lower",       min_args = 1, max_args = 1 }
-"lcase$"   = { emit = "opcode:str_to_lower",       min_args = 1, max_args = 1 }
-trim       = { emit = "opcode:str_trim",           min_args = 1, max_args = 1 }
-"trim$"    = { emit = "opcode:str_trim",           min_args = 1, max_args = 1 }
-ltrim      = { emit = "opcode:str_trim_start",     min_args = 1, max_args = 1 }
-"ltrim$"   = { emit = "opcode:str_trim_start",     min_args = 1, max_args = 1 }
-rtrim      = { emit = "opcode:str_trim_end",       min_args = 1, max_args = 1 }
-"rtrim$"   = { emit = "opcode:str_trim_end",       min_args = 1, max_args = 1 }
-strreverse = { emit = "opcode:str_reverse",        min_args = 1, max_args = 1 }
-chr        = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
-"chr$"     = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
-chrw       = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
+len        = { emit = "common:str_length",         min_args = 1, max_args = 1 }
+ucase      = { emit = "common:str_to_upper",       min_args = 1, max_args = 1 }
+"ucase$"   = { emit = "common:str_to_upper",       min_args = 1, max_args = 1 }
+lcase      = { emit = "common:str_to_lower",       min_args = 1, max_args = 1 }
+"lcase$"   = { emit = "common:str_to_lower",       min_args = 1, max_args = 1 }
+trim       = { emit = "common:str_trim",           min_args = 1, max_args = 1 }
+"trim$"    = { emit = "common:str_trim",           min_args = 1, max_args = 1 }
+ltrim      = { emit = "common:str_trim_start",     min_args = 1, max_args = 1 }
+"ltrim$"   = { emit = "common:str_trim_start",     min_args = 1, max_args = 1 }
+rtrim      = { emit = "common:str_trim_end",       min_args = 1, max_args = 1 }
+"rtrim$"   = { emit = "common:str_trim_end",       min_args = 1, max_args = 1 }
+strreverse = { emit = "common:str_reverse",        min_args = 1, max_args = 1 }
+chr        = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
+"chr$"     = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
+chrw       = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
 
 # ── String functions — multi-opcode intrinsics ───────────────────────────────
 
@@ -516,17 +516,17 @@ string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), 
 toupper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
 tolower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
 "trim"        = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
-trimstart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
-trimend       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
-startswith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 1 }
-endswith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
+trimstart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 0 }
+trimend       = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
+startswith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
+endswith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
 indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
 lastindexof   = { emit = "host:ecma:array:lastIndexOf",   min_args = 1, max_args = 1 }
-contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+contains      = { emit = "common:str_includes",        min_args = 1, max_args = 1 }
 tostring      = { emit = "common:dotnet.tostring",     min_args = 0, max_args = 0 }
-padleft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
-padright      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
+padleft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
+padright      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
 
 # Collection instance methods (use compiler_common — works for both list and dict)
 # Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)

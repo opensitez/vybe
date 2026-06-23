@@ -51,7 +51,7 @@ pub fn all() -> Vec<Language> {
             name: "c",
             parse: c::parse,
             profile_source: c::profile_source,
-            emit_dispatch: None,
+            emit_dispatch: Some(c::emitter::dispatch::dispatch),
         },
         Language {
             name: "vb",
@@ -69,7 +69,7 @@ pub fn all() -> Vec<Language> {
             name: "lua",
             parse: lua::parse,
             profile_source: lua::profile_source,
-            emit_dispatch: Some(lua::emitter::dispatch::dispatch),
+            emit_dispatch: None,
         },
         Language {
             name: "pascal",
