@@ -1,0 +1,326 @@
+# Java Compiler Profile
+# ──────────────────────
+# Covers java.lang, java.util, java.io, java.math.
+# System.out.println / System.out.print are rewritten by the walker to
+# bare `println` / `print` calls which map to emit = "print".
+
+[info]
+name = "java"
+extensions = ["java"]
+
+[compiler]
+function_return    = "explicit"
+self_keyword       = "this"
+base_keyword       = "super"
+constructor_name   = "__init__"    # walker rewrites Java ctor to __init__
+case_sensitive     = true
+string_indexing    = "zero_based"
+uses_normalize_class = true
+entry_point        = "main"
+# Java + on strings concatenates (auto-coercion via toString())
+dynamic_add        = true
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls (after walker normalisation)
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+# Walker rewrites System.out.println → println, System.out.print → print
+println             = { emit = "print",                          min_args = 0, max_args = 255 }
+print               = { emit = "common:java.print_no_newline",   min_args = 0, max_args = 255 }
+printf              = { emit = "common:java.printf",             min_args = 1, max_args = 255 }
+
+# ── Type parsing / conversion ─────────────────────────────────────────────────
+
+"Integer.parseInt"       = { emit = "intrinsic:cint",            min_args = 1, max_args = 2 }
+"Integer.valueOf"        = { emit = "intrinsic:cint",            min_args = 1, max_args = 1 }
+"Long.parseLong"         = { emit = "intrinsic:cint",            min_args = 1, max_args = 2 }
+"Double.parseDouble"     = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
+"Float.parseFloat"       = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
+"Boolean.parseBoolean"   = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
+"String.valueOf"         = { emit = "intrinsic:tostring",        min_args = 1, max_args = 1 }
+"Integer.toString"       = { emit = "intrinsic:tostring",        min_args = 1, max_args = 2 }
+"Integer.toBinaryString" = { emit = "common:java.to_binary_string",  min_args = 1, max_args = 1 }
+"Integer.toHexString"    = { emit = "common:java.to_hex_string",     min_args = 1, max_args = 1 }
+"Integer.toOctalString"  = { emit = "common:java.to_octal_string",   min_args = 1, max_args = 1 }
+"Integer.MAX_VALUE"      = { emit = "intrinsic:int_max",         min_args = 0, max_args = 0 }
+"Integer.MIN_VALUE"      = { emit = "intrinsic:int_min",         min_args = 0, max_args = 0 }
+"Double.MAX_VALUE"       = { emit = "intrinsic:dbl_max",         min_args = 0, max_args = 0 }
+"Double.isNaN"           = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
+"Double.isInfinite"      = { emit = "common:java.is_infinite",   min_args = 1, max_args = 1 }
+
+# ── Math ─────────────────────────────────────────────────────────────────────
+
+"Math.abs"    = { emit = "opcode:f64_abs",          min_args = 1, max_args = 1 }
+"Math.sqrt"   = { emit = "opcode:f64_sqrt",         min_args = 1, max_args = 1 }
+"Math.floor"  = { emit = "opcode:f64_floor",        min_args = 1, max_args = 1 }
+"Math.ceil"   = { emit = "opcode:f64_ceil",         min_args = 1, max_args = 1 }
+"Math.round"  = { emit = "opcode:f64_nearest",      min_args = 1, max_args = 1 }
+"Math.min"    = { emit = "opcode:f64_min",          min_args = 2, max_args = 2 }
+"Math.max"    = { emit = "opcode:f64_max",          min_args = 2, max_args = 2 }
+"Math.pow"    = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
+"Math.exp"    = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
+"Math.log"    = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
+"Math.log10"  = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
+"Math.sin"    = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
+"Math.cos"    = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
+"Math.tan"    = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
+"Math.asin"   = { emit = "host:ecma:math:asin",     min_args = 1, max_args = 1 }
+"Math.acos"   = { emit = "host:ecma:math:acos",     min_args = 1, max_args = 1 }
+"Math.atan"   = { emit = "host:ecma:math:atan",     min_args = 1, max_args = 1 }
+"Math.atan2"  = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
+"Math.signum" = { emit = "common:java.signum",      min_args = 1, max_args = 1 }
+"Math.random" = { emit = "host:ecma:math:random",   min_args = 0, max_args = 0 }
+"Math.PI"     = { emit = "intrinsic:math_pi",       min_args = 0, max_args = 0 }
+"Math.E"      = { emit = "intrinsic:math_e",        min_args = 0, max_args = 0 }
+"Math.hypot"  = { emit = "host:ecma:math:hypot",    min_args = 2, max_args = 2 }
+"Math.cbrt"   = { emit = "host:ecma:math:cbrt",     min_args = 1, max_args = 1 }
+"Math.floorDiv"   = { emit = "common:java.floor_div", min_args = 2, max_args = 2 }
+"Math.floorMod"   = { emit = "common:java.floor_mod", min_args = 2, max_args = 2 }
+
+# ── Character utilities ───────────────────────────────────────────────────────
+
+"Character.isDigit"       = { emit = "common:java.char_is_digit",     min_args = 1, max_args = 1 }
+"Character.isLetter"      = { emit = "common:java.char_is_letter",    min_args = 1, max_args = 1 }
+"Character.isLetterOrDigit" = { emit = "common:java.char_is_alnum",   min_args = 1, max_args = 1 }
+"Character.isUpperCase"   = { emit = "common:java.char_is_upper",     min_args = 1, max_args = 1 }
+"Character.isLowerCase"   = { emit = "common:java.char_is_lower",     min_args = 1, max_args = 1 }
+"Character.isWhitespace"  = { emit = "common:java.char_is_space",     min_args = 1, max_args = 1 }
+"Character.toUpperCase"   = { emit = "common:java.char_to_upper",     min_args = 1, max_args = 1 }
+"Character.toLowerCase"   = { emit = "common:java.char_to_lower",     min_args = 1, max_args = 1 }
+"Character.getNumericValue" = { emit = "common:java.char_numeric",    min_args = 1, max_args = 1 }
+
+# ── Collections ───────────────────────────────────────────────────────────────
+
+"Collections.sort"        = { emit = "common:java.collections_sort",    min_args = 1, max_args = 2 }
+"Collections.reverse"     = { emit = "common:java.collections_reverse", min_args = 1, max_args = 1 }
+"Collections.shuffle"     = { emit = "common:java.collections_shuffle", min_args = 1, max_args = 2 }
+"Collections.min"         = { emit = "common:java.collections_min",     min_args = 1, max_args = 2 }
+"Collections.max"         = { emit = "common:java.collections_max",     min_args = 1, max_args = 2 }
+"Collections.frequency"   = { emit = "common:java.collections_frequency", min_args = 2, max_args = 2 }
+"Collections.unmodifiableList" = { emit = "noop",                       min_args = 1, max_args = 1 }
+"Collections.singletonList"   = { emit = "common:java.singleton_list", min_args = 1, max_args = 1 }
+"Collections.emptyList"       = { emit = "common:java.empty_list",      min_args = 0, max_args = 0 }
+"Collections.nCopies"         = { emit = "common:java.n_copies",        min_args = 2, max_args = 2 }
+
+# ── Arrays utility ────────────────────────────────────────────────────────────
+
+"Arrays.sort"          = { emit = "common:java.arrays_sort",     min_args = 1, max_args = 3 }
+"Arrays.fill"          = { emit = "common:java.arrays_fill",     min_args = 3, max_args = 4 }
+"Arrays.copyOf"        = { emit = "common:java.arrays_copy_of",  min_args = 2, max_args = 2 }
+"Arrays.copyOfRange"   = { emit = "common:java.arrays_copy_of_range", min_args = 3, max_args = 3 }
+"Arrays.toString"      = { emit = "common:java.arrays_to_string",min_args = 1, max_args = 1 }
+"Arrays.asList"        = { emit = "common:java.arrays_as_list",  min_args = 1, max_args = 255 }
+"Arrays.equals"        = { emit = "common:java.arrays_equals",   min_args = 2, max_args = 2 }
+"Arrays.binarySearch"  = { emit = "common:java.arrays_binary_search", min_args = 2, max_args = 3 }
+"Arrays.stream"        = { emit = "noop",                        min_args = 1, max_args = 1 }
+
+# ── List.of / Map.of / Set.of (Java 9+) ─────────────────────────────────────
+
+"List.of"   = { emit = "common:java.list_of",  min_args = 0, max_args = 255 }
+"Set.of"    = { emit = "common:java.set_of",   min_args = 0, max_args = 255 }
+"Map.of"    = { emit = "common:java.map_of",   min_args = 0, max_args = 255 }
+"Map.entry" = { emit = "common:java.map_entry",min_args = 2, max_args = 2 }
+
+# ── String utilities ──────────────────────────────────────────────────────────
+
+"String.format"  = { emit = "common:java.string_format",  min_args = 1, max_args = 255 }
+"String.join"    = { emit = "common:java.string_join",     min_args = 2, max_args = 255 }
+
+# ── Object / misc ─────────────────────────────────────────────────────────────
+
+"Objects.requireNonNull" = { emit = "common:java.require_non_null", min_args = 1, max_args = 2 }
+"Objects.isNull"         = { emit = "common:java.is_null",          min_args = 1, max_args = 1 }
+"Objects.nonNull"        = { emit = "common:java.non_null",         min_args = 1, max_args = 1 }
+
+# ── Process ───────────────────────────────────────────────────────────────────
+
+__process_exit = { emit = "host:wasi:cli:exit",  min_args = 1, max_args = 1 }
+
+# ── Array helpers ─────────────────────────────────────────────────────────────
+
+__new_array = { emit = "common:java.new_array", min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance method calls on values
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String methods
+length        = { emit = "common:strings.length",       min_args = 0, max_args = 0 }
+toUpperCase   = { emit = "common:strings.to_upper",     min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "common:strings.to_lower",     min_args = 0, max_args = 0 }
+trim          = { emit = "common:strings.trim",          min_args = 0, max_args = 0 }
+strip         = { emit = "common:strings.trim",          min_args = 0, max_args = 0 }
+stripLeading  = { emit = "common:str_trim_start",        min_args = 0, max_args = 0 }
+stripTrailing = { emit = "common:str_trim_end",          min_args = 0, max_args = 0 }
+startsWith    = { emit = "common:str_starts_with",       min_args = 1, max_args = 2 }
+endsWith      = { emit = "common:str_ends_with",         min_args = 1, max_args = 1 }
+contains      = { emit = "common:str_contains",          min_args = 1, max_args = 1 }
+indexOf       = { emit = "common:strings.index_of",      min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "common:str_last_index_of",     min_args = 1, max_args = 2 }
+replace       = [
+    { emit = "common:strings.replace",       min_args = 2, max_args = 2 },
+    { emit = "common:java.map_replace",      min_args = 2, max_args = 3 },
+]
+replaceAll    = { emit = "common:java.replace_regex",    min_args = 2, max_args = 2 }
+replaceFirst  = { emit = "common:java.replace_first_regex", min_args = 2, max_args = 2 }
+split         = { emit = "common:strings.split",         min_args = 1, max_args = 2 }
+substring     = { emit = "common:strings.substring",     min_args = 1, max_args = 2 }
+charAt        = { emit = "common:str_char_at",           min_args = 1, max_args = 1 }
+charCodeAt    = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
+codePointAt   = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
+compareTo     = { emit = "common:str_compare",           min_args = 1, max_args = 1 }
+compareToIgnoreCase = { emit = "common:java.compare_ignore_case", min_args = 1, max_args = 1 }
+equalsIgnoreCase    = { emit = "common:java.equals_ignore_case",  min_args = 1, max_args = 1 }
+matches       = { emit = "common:java.str_matches",      min_args = 1, max_args = 1 }
+isEmpty       = { emit = "common:java.str_is_empty",     min_args = 0, max_args = 0 }
+isBlank       = { emit = "common:java.str_is_blank",     min_args = 0, max_args = 0 }
+repeat        = { emit = "common:strings.repeat",        min_args = 1, max_args = 1 }
+concat        = { emit = "common:strings.concat",        min_args = 1, max_args = 1 }
+intern        = { emit = "noop",                         min_args = 0, max_args = 0 }
+toCharArray   = { emit = "common:java.to_char_array",    min_args = 0, max_args = 0 }
+getBytes      = { emit = "common:java.to_char_array",    min_args = 0, max_args = 1 }
+formatted     = { emit = "common:java.string_format",    min_args = 0, max_args = 255 }
+indent        = { emit = "noop",                         min_args = 1, max_args = 1 }
+lines         = { emit = "common:java.str_lines",        min_args = 0, max_args = 0 }
+
+# String → number
+"Integer.parseInt" = { emit = "intrinsic:cint",  min_args = 1, max_args = 2 }
+
+# toString / hashCode / equals
+toString      = { emit = "intrinsic:tostring",           min_args = 0, max_args = 0 }
+hashCode      = { emit = "common:java.hash_code",        min_args = 0, max_args = 0 }
+equals        = { emit = "common:java.equals",           min_args = 1, max_args = 1 }
+
+# List / ArrayList methods
+add           = { emit = "common:collections.push",      min_args = 1, max_args = 2 }
+addAll        = { emit = "common:java.add_all",          min_args = 1, max_args = 2 }
+remove        = [
+    { emit = "common:java.list_remove",      min_args = 1, max_args = 1 },
+    { emit = "common:java.map_remove",       min_args = 1, max_args = 2 },
+]
+removeAll     = { emit = "common:java.remove_all",       min_args = 1, max_args = 1 }
+retainAll     = { emit = "common:java.retain_all",       min_args = 1, max_args = 1 }
+clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
+get           = { emit = "common:java.list_get",         min_args = 1, max_args = 1 }
+set           = { emit = "common:java.list_set",         min_args = 2, max_args = 2 }
+size          = { emit = "common:java.size",             min_args = 0, max_args = 0 }
+toArray       = { emit = "noop",                         min_args = 0, max_args = 1 }
+subList       = { emit = "common:java.sub_list",         min_args = 2, max_args = 2 }
+sort          = { emit = "common:java.list_sort",        min_args = 0, max_args = 1 }
+iterator      = { emit = "noop",                         min_args = 0, max_args = 0 }
+listIterator  = { emit = "noop",                         min_args = 0, max_args = 1 }
+stream        = { emit = "noop",                         min_args = 0, max_args = 0 }
+forEach       = { emit = "common:java.list_for_each",    min_args = 1, max_args = 1 }
+
+# Map methods
+put           = { emit = "common:java.map_put",          min_args = 2, max_args = 2 }
+putAll        = { emit = "common:java.map_put_all",      min_args = 1, max_args = 1 }
+getOrDefault  = { emit = "common:java.map_get_or_default", min_args = 2, max_args = 2 }
+containsKey   = { emit = "common:java.map_contains_key", min_args = 1, max_args = 1 }
+containsValue = { emit = "common:java.map_contains_value", min_args = 1, max_args = 1 }
+keySet        = { emit = "common:dict.keys",             min_args = 0, max_args = 0 }
+values        = { emit = "common:dict.values",           min_args = 0, max_args = 0 }
+entrySet      = { emit = "common:java.entry_set",        min_args = 0, max_args = 0 }
+putIfAbsent   = { emit = "common:java.put_if_absent",    min_args = 2, max_args = 2 }
+computeIfAbsent = { emit = "common:java.compute_if_absent", min_args = 2, max_args = 2 }
+merge         = { emit = "common:java.map_merge",        min_args = 3, max_args = 3 }
+getKey        = { emit = "common:java.entry_key",        min_args = 0, max_args = 0 }
+getValue      = { emit = "common:java.entry_value",      min_args = 0, max_args = 0 }
+
+# StringBuilder
+append        = { emit = "common:java.sb_append",        min_args = 1, max_args = 1 }
+insert        = { emit = "common:java.sb_insert",        min_args = 2, max_args = 2 }
+delete        = { emit = "common:java.sb_delete",        min_args = 2, max_args = 2 }
+deleteCharAt  = { emit = "common:java.sb_delete_char_at",min_args = 1, max_args = 1 }
+reverse       = { emit = "common:java.sb_reverse",       min_args = 0, max_args = 0 }
+capacity      = { emit = "noop",                         min_args = 0, max_args = 0 }
+
+# Array methods (raw Java arrays mapped to JS arrays)
+clone         = { emit = "common:java.array_clone",      min_args = 0, max_args = 0 }
+
+# Optional
+orElse        = { emit = "common:java.optional_or_else", min_args = 1, max_args = 1 }
+isPresent     = { emit = "common:java.optional_is_present", min_args = 0, max_args = 0 }
+ifPresent     = { emit = "common:java.optional_if_present", min_args = 1, max_args = 1 }
+orElseGet     = { emit = "common:java.optional_or_else_get", min_args = 1, max_args = 1 }
+orElseThrow   = { emit = "common:java.optional_or_else_throw", min_args = 0, max_args = 1 }
+
+# Stack
+push          = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+pop           = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
+peek          = { emit = "invoke:peek",                  min_args = 0, max_args = 0 }
+empty         = { emit = "common:java.is_empty",         min_args = 0, max_args = 0 }
+
+# Queue / Deque
+offer         = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+poll          = { emit = "common:java.queue_poll",       min_args = 0, max_args = 0 }
+addFirst      = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
+addLast       = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+removeFirst   = { emit = "common:java.remove_first",     min_args = 0, max_args = 0 }
+removeLast    = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
+peekFirst     = { emit = "common:java.peek_first",       min_args = 0, max_args = 0 }
+peekLast      = { emit = "common:java.peek_last",        min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY METHODS — higher-order functions
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+forEach   = "__array_forEach"
+stream    = "__array_map"      # approximation: stream().map() → __array_map
+
+# ────────────────────────────────────────────────────────────────────────────
+# INTRINSICS
+# ────────────────────────────────────────────────────────────────────────────
+
+[intrinsics]
+math_pi   = [["push_f64", 3.141592653589793]]
+math_e    = [["push_f64", 2.718281828459045]]
+int_max   = [["push_i64", 2147483647]]
+int_min   = [["push_i64", -2147483648]]
+dbl_max   = [["push_f64", 1.7976931348623157e308]]
+cint      = [["to_int"]]
+cbool     = [["to_bool"]]
+tostring  = [["to_string"]]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"Math.PI"             = 3.141592653589793
+"Math.E"              = 2.718281828459045
+"Integer.MAX_VALUE"   = 2147483647
+"Integer.MIN_VALUE"   = -2147483648
+"Long.MAX_VALUE"      = 9.223372036854776e18
+"Long.MIN_VALUE"      = -9.223372036854776e18
+"Double.MAX_VALUE"    = 1.7976931348623157e308
+"Double.NaN"          = "NaN"
+"Double.POSITIVE_INFINITY" = "Infinity"
+"Double.NEGATIVE_INFINITY" = "-Infinity"
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES — constructor resolution for `new X()`
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+# Common Java collections are constructed as plain JS arrays/objects
+# StringBuilder: mutable string — backed by dotnet stringbuilder_adapter
+StringBuilder = ["common", "dotnet.stringbuilder_new"]
+StringBuffer  = ["common", "dotnet.stringbuilder_new"]
+Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACES
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []

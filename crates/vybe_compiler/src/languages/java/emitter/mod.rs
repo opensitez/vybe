@@ -1,0 +1,11 @@
+//! Java adapter — bytecode-only.
+//!
+//! Java-specific surfaces that aren't a single WASM opcode or single ECMA
+//! host fn are described as `emit_*` opcode-emitter functions composing
+//! pre-existing host fns and core WASM ops.
+//!
+//! No new host fns are registered. The Java profile binds language fns to
+//! `common:java.<name>` emit targets; `emitter::dispatch::emit_common`
+//! routes those names to the `emit_*` functions in this module.
+
+pub mod dispatch;

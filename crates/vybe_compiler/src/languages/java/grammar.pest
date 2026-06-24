@@ -1,0 +1,678 @@
+// Java Grammar for pest parser
+// Covers Java 8–21: classes, interfaces, generics, lambdas, enhanced-for,
+// try-with-resources, switch expressions, records, sealed classes.
+//
+// Java uses ";" terminators — newlines are whitespace (no ASI).
+// Expression precedence is collapsed into a flat binop chain (see Dart
+// grammar note) to keep the stack depth sane for parallel test runs.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ line_comment | block_comment | javadoc_comment }
+line_comment    = _{ "//" ~ (!"\n" ~ ANY)* }
+block_comment   = _{ "/*" ~ !"*" ~ (!"*/" ~ ANY)* ~ "*/" }
+javadoc_comment = _{ "/**" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ── Program ──────────────────────────────────────────────────────────────────
+
+program = { SOI ~ package_declaration? ~ import_declaration* ~ top_level_item* ~ EOI }
+
+// ── Package / Import ─────────────────────────────────────────────────────────
+
+package_declaration = { "package" ~ qualified_name ~ ";" }
+
+import_declaration = {
+    "import" ~ static_kw? ~ qualified_name ~ ("." ~ "*")? ~ ";"
+}
+
+qualified_name = @{ ident_name ~ ("." ~ ident_name)* }
+
+// ── Top-level items ──────────────────────────────────────────────────────────
+
+top_level_item = _{
+    annotation*  ~ (
+        class_declaration
+        | interface_declaration
+        | enum_declaration
+        | record_declaration
+        | annotation_type_declaration
+        | statement
+    )
+}
+
+// ── Annotations ──────────────────────────────────────────────────────────────
+
+annotation = { "@" ~ ident_name ~ ("(" ~ annotation_args? ~ ")")? }
+annotation_args = { annotation_arg ~ ("," ~ annotation_arg)* }
+annotation_arg  = { (ident_name ~ "=")? ~ annotation_value }
+annotation_value = {
+    "{" ~ (annotation_value ~ ("," ~ annotation_value)*)? ~ "}"
+    | annotation
+    | assignment_expression
+}
+
+// ── Class ────────────────────────────────────────────────────────────────────
+
+class_declaration = {
+    modifiers ~ "class" ~ ident_name ~ type_params?
+    ~ ("extends" ~ type_ref)?
+    ~ ("implements" ~ type_ref_list)?
+    ~ ("permits" ~ type_ref_list)?
+    ~ class_body
+}
+
+class_body = { "{" ~ class_member* ~ "}" }
+
+class_member = _{
+    annotation* ~ (
+        static_initializer
+        | instance_initializer
+        | constructor_declaration
+        | method_declaration
+        | field_declaration
+        | class_declaration
+        | interface_declaration
+        | enum_declaration
+        | record_declaration
+    )
+}
+
+static_initializer   = { "static" ~ block_statement }
+instance_initializer = { block_statement }
+
+// ── Interface ────────────────────────────────────────────────────────────────
+
+interface_declaration = {
+    modifiers ~ "interface" ~ ident_name ~ type_params?
+    ~ ("extends" ~ type_ref_list)?
+    ~ interface_body
+}
+
+interface_body = { "{" ~ interface_member* ~ "}" }
+
+interface_member = _{
+    annotation* ~ (
+        default_method_declaration
+        | method_declaration
+        | field_declaration
+        | class_declaration
+        | interface_declaration
+    )
+}
+
+default_method_declaration = {
+    modifiers ~ "default" ~ type_ref ~ ident_name ~ type_params?
+    ~ "(" ~ param_list? ~ ")"
+    ~ throws_clause?
+    ~ function_body
+}
+
+// ── Record ───────────────────────────────────────────────────────────────────
+
+record_declaration = {
+    modifiers ~ "record" ~ ident_name ~ type_params?
+    ~ "(" ~ record_component_list? ~ ")"
+    ~ ("implements" ~ type_ref_list)?
+    ~ class_body
+}
+
+record_component_list = { record_component ~ ("," ~ record_component)* }
+record_component = { annotation* ~ type_ref ~ ident_name }
+
+// ── Enum ─────────────────────────────────────────────────────────────────────
+
+enum_declaration = {
+    modifiers ~ "enum" ~ ident_name
+    ~ ("implements" ~ type_ref_list)?
+    ~ "{" ~ enum_values ~ (";" ~ class_member*)? ~ "}"
+}
+
+enum_values = { (enum_value ~ ("," ~ enum_value)* ~ ","?)? }
+enum_value  = { annotation* ~ ident_name ~ ("(" ~ argument_list? ~ ")")? ~ class_body? }
+
+// ── Annotation type ──────────────────────────────────────────────────────────
+
+annotation_type_declaration = {
+    modifiers ~ "@interface" ~ ident_name ~ "{" ~ annotation_type_member* ~ "}"
+}
+annotation_type_member = _{
+    annotation* ~ (
+        annotation_type_element
+        | field_declaration
+    )
+}
+annotation_type_element = {
+    modifiers ~ type_ref ~ ident_name ~ "(" ~ ")" ~ ("default" ~ annotation_value)? ~ ";"
+}
+
+// ── Constructor ──────────────────────────────────────────────────────────────
+
+constructor_declaration = {
+    modifiers ~ ident_name ~ type_params?
+    ~ "(" ~ param_list? ~ ")"
+    ~ throws_clause?
+    ~ function_body_block
+}
+
+// ── Method ───────────────────────────────────────────────────────────────────
+
+method_declaration = {
+    modifiers ~ type_ref ~ ident_name ~ type_params?
+    ~ "(" ~ param_list? ~ ")"
+    ~ dim_suffix*
+    ~ throws_clause?
+    ~ function_body
+}
+
+throws_clause = { "throws" ~ type_ref ~ ("," ~ type_ref)* }
+
+function_body = {
+    function_body_block
+    | ";"
+}
+
+function_body_block = { "{" ~ statement* ~ "}" }
+
+// ── Field ────────────────────────────────────────────────────────────────────
+
+field_declaration = {
+    modifiers ~ type_ref ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
+}
+
+// ── Modifiers ────────────────────────────────────────────────────────────────
+
+modifiers = { modifier* }
+modifier = {
+    public_kw | private_kw | protected_kw | static_kw | final_kw
+    | abstract_kw | synchronized_kw | native_kw | transient_kw | volatile_kw
+    | strictfp_kw | default_kw | sealed_kw | non_sealed_kw | override_annotation
+}
+
+override_annotation = { "@Override" }
+
+// ── Parameters ───────────────────────────────────────────────────────────────
+
+param_list = { param ~ ("," ~ param)* ~ ","? }
+
+param = {
+    annotation* ~ final_kw? ~ type_ref ~ varargs_marker? ~ ident_name ~ dim_suffix*
+}
+
+varargs_marker = { "..." }
+dim_suffix = { "[" ~ "]" }
+
+// ── Statements ───────────────────────────────────────────────────────────────
+
+statement = _{
+    empty_statement
+    | block_statement
+    | local_class_declaration
+    | local_record_declaration
+    | variable_declaration_statement
+    | if_statement
+    | for_statement
+    | enhanced_for_statement
+    | while_statement
+    | do_while_statement
+    | switch_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | throw_statement
+    | try_statement
+    | try_with_resources_statement
+    | assert_statement
+    | yield_statement
+    | labeled_statement
+    | expression_statement
+}
+
+empty_statement = { ";" }
+block_statement = { "{" ~ statement* ~ "}" }
+
+local_class_declaration  = { annotation* ~ class_declaration }
+local_record_declaration = { annotation* ~ record_declaration }
+
+// ── Variable declaration ──────────────────────────────────────────────────────
+
+variable_declaration_statement = {
+    final_kw? ~ type_ref ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
+    | var_kw ~ var_declarator ~ ";"
+}
+
+var_declarator = { ident_name ~ dim_suffix* ~ ("=" ~ initializer)? }
+
+initializer = {
+    array_initializer
+    | assignment_expression
+}
+
+array_initializer = { "{" ~ (initializer ~ ("," ~ initializer)* ~ ","?)? ~ "}" }
+
+// ── If ───────────────────────────────────────────────────────────────────────
+
+if_statement = {
+    "if" ~ "(" ~ expression ~ ")" ~ statement
+    ~ ("else" ~ statement)?
+}
+
+// ── For ──────────────────────────────────────────────────────────────────────
+
+for_statement = {
+    "for" ~ "(" ~ for_init? ~ ";" ~ expression? ~ ";" ~ for_update? ~ ")" ~ statement
+}
+
+for_init = {
+    final_kw? ~ type_ref ~ var_declarator ~ ("," ~ var_declarator)*
+    | expression ~ ("," ~ expression)*
+}
+
+for_update = { expression ~ ("," ~ expression)* }
+
+enhanced_for_statement = {
+    "for" ~ "(" ~ final_kw? ~ type_ref ~ ident_name ~ ":" ~ expression ~ ")" ~ statement
+}
+
+// ── While / Do-while ─────────────────────────────────────────────────────────
+
+while_statement    = { "while"  ~ "(" ~ expression ~ ")" ~ statement }
+do_while_statement = { "do" ~ statement ~ "while" ~ "(" ~ expression ~ ")" ~ ";" }
+
+// ── Switch ───────────────────────────────────────────────────────────────────
+
+switch_statement = {
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ switch_case* ~ "}"
+}
+
+switch_case = {
+    ("case" ~ switch_label ~ ("," ~ switch_label)* | "default") ~ ":" ~ statement*
+    | ("case" ~ switch_label ~ ("," ~ switch_label)* | "default") ~ "->" ~ switch_rule_body
+}
+
+switch_label = { expression }
+
+switch_rule_body = {
+    block_statement
+    | throw_statement
+    | expression ~ ";"
+}
+
+// ── Jump ─────────────────────────────────────────────────────────────────────
+
+return_statement   = { "return" ~ expression? ~ ";" }
+break_statement    = { "break" ~ ident_name? ~ ";" }
+continue_statement = { "continue" ~ ident_name? ~ ";" }
+throw_statement    = { "throw" ~ expression ~ ";" }
+yield_statement    = { "yield" ~ expression ~ ";" }
+assert_statement   = { "assert" ~ expression ~ (":" ~ expression)? ~ ";" }
+labeled_statement  = { ident_name ~ ":" ~ statement }
+
+// ── Try ──────────────────────────────────────────────────────────────────────
+
+try_statement = {
+    "try" ~ block_statement ~ catch_clause* ~ finally_clause?
+}
+
+try_with_resources_statement = {
+    "try" ~ "(" ~ resource ~ (";" ~ resource)* ~ ";"? ~ ")"
+    ~ block_statement ~ catch_clause* ~ finally_clause?
+}
+
+resource = {
+    final_kw? ~ type_ref ~ ident_name ~ "=" ~ expression
+    | expression
+}
+
+catch_clause = {
+    "catch" ~ "(" ~ final_kw? ~ (type_ref ~ ("|" ~ type_ref)*) ~ ident_name ~ ")" ~ block_statement
+}
+
+finally_clause = { "finally" ~ block_statement }
+
+// ── Expression statement ──────────────────────────────────────────────────────
+
+expression_statement = { expression ~ ";" }
+
+// ── Expressions ──────────────────────────────────────────────────────────────
+
+expression = {
+    assignment_expression ~ ("," ~ assignment_expression)*
+}
+
+assignment_expression = {
+    unary_expression ~ assignment_op ~ assignment_expression
+    | ternary_expression
+}
+
+assignment_op = {
+    ">>>=" | ">>=" | "<<=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    "&=" | "|=" | "^=" |
+    "="
+}
+
+// ── Ternary ──────────────────────────────────────────────────────────────────
+
+ternary_expression = {
+    binop_expression ~ ("?" ~ assignment_expression ~ ":" ~ assignment_expression)?
+}
+
+// ── Binary (flat chain — see Dart grammar note) ───────────────────────────────
+
+binop_expression = {
+    instanceof_expression ~ (binop ~ instanceof_expression)*
+}
+
+binop = {
+    "||" | "&&"
+  | "|" ~ !("|" | "=") | "^" ~ !"=" | "&" ~ !("&" | "=")
+  | "==" | "!="
+  | ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"="
+  | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
+  | "+" ~ !("+" | "=") | "-" ~ !("-" | "=")
+  | "*" ~ !"=" | "/" ~ !"=" | "%" ~ !"="
+}
+
+// ── instanceof ───────────────────────────────────────────────────────────────
+
+instanceof_expression = {
+    unary_expression ~ (instanceof_kw ~ type_ref ~ ident_name?)*
+}
+
+// ── Unary ────────────────────────────────────────────────────────────────────
+
+unary_expression = {
+    unary_op ~ unary_expression
+    | cast_expression
+    | postfix_expression
+}
+
+unary_op = {
+    "++" | "--"
+    | "+" ~ !"+"
+    | "-" ~ !"-"
+    | "!" ~ !"="
+    | "~"
+}
+
+// Cast: `(Type)expr` — only matches when the paren contains a type reference
+// (ident optionally dotted, with optional `[]`), not a regular expression.
+cast_expression = {
+    "(" ~ cast_type ~ ")" ~ unary_expression
+}
+cast_type = { primitive_type | type_ref }
+
+// ── Postfix ──────────────────────────────────────────────────────────────────
+
+postfix_expression = { primary_chain ~ postfix_op? }
+postfix_op = { "++" | "--" }
+
+// ── Call / member / index chain ───────────────────────────────────────────────
+
+primary_chain = {
+    primary_atom ~ chain_suffix*
+}
+
+chain_suffix = {
+    method_call_suffix
+    | call_suffix
+    | member_access_suffix
+    | index_suffix
+}
+
+method_call_suffix  = { "." ~ ident_name ~ type_args? ~ "(" ~ argument_list? ~ ")" }
+call_suffix         = { type_args? ~ "(" ~ argument_list? ~ ")" }
+member_access_suffix = { "." ~ ident_or_keyword }
+index_suffix        = { "[" ~ expression ~ "]" }
+
+// ── Primary atoms ────────────────────────────────────────────────────────────
+
+primary_atom = {
+    new_expression
+    | switch_expression
+    | lambda_expression
+    | paren_expression
+    | array_creation
+    | literal
+    | this_kw
+    | super_method_call
+    | super_kw
+    | class_literal
+    | method_reference
+    | ident_name
+}
+
+paren_expression = { "(" ~ expression ~ ")" }
+
+new_expression = {
+    "new" ~ type_ref ~ type_args?
+    ~ (
+        "(" ~ argument_list? ~ ")" ~ anonymous_class_body?
+        | array_dims
+    )
+}
+
+array_dims = {
+    "[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")*
+    ~ array_initializer?
+}
+
+anonymous_class_body = { "{" ~ class_member* ~ "}" }
+
+array_creation = {
+    "new" ~ primitive_type
+    ~ "[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")*
+    ~ array_initializer?
+}
+
+class_literal = { qualified_name ~ ("[" ~ "]")* ~ "." ~ "class" }
+
+method_reference = {
+    qualified_name ~ "::" ~ (ident_name | "new")
+}
+
+super_method_call = { "super" ~ "." ~ ident_name ~ "(" ~ argument_list? ~ ")" }
+
+// ── Lambda ───────────────────────────────────────────────────────────────────
+
+lambda_expression = {
+    lambda_params ~ "->" ~ lambda_body
+}
+
+lambda_params = {
+    "(" ~ typed_lambda_param_list? ~ ")"
+    | "(" ~ ident_name_list? ~ ")"
+    | ident_name
+}
+
+typed_lambda_param_list = { typed_lambda_param ~ ("," ~ typed_lambda_param)* }
+typed_lambda_param = { final_kw? ~ type_ref ~ ident_name }
+ident_name_list = { ident_name ~ ("," ~ ident_name)* }
+
+lambda_body = {
+    function_body_block
+    | assignment_expression
+}
+
+// ── Switch expression (Java 14+) ──────────────────────────────────────────────
+
+switch_expression = {
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ switch_expr_arm* ~ "}"
+}
+
+switch_expr_arm = {
+    ("case" ~ switch_label ~ ("," ~ switch_label)* | "default")
+    ~ ("->" ~ switch_rule_body | ":" ~ statement*)
+}
+
+// ── Arguments ────────────────────────────────────────────────────────────────
+
+argument_list = { argument ~ ("," ~ argument)* ~ ","? }
+argument = {
+    spread_arg
+    | assignment_expression
+}
+spread_arg = { "..." ~ assignment_expression }
+
+// ── Type references ──────────────────────────────────────────────────────────
+
+type_ref = {
+    primitive_type ~ dim_suffix*
+    | ref_type ~ dim_suffix*
+}
+
+ref_type = {
+    qualified_name ~ type_args?
+}
+
+type_ref_list = { type_ref ~ ("," ~ type_ref)* }
+
+primitive_type = {
+    "boolean" | "byte" | "char" | "double" | "float"
+    | "int" | "long" | "short" | "void"
+}
+
+type_args  = { "<" ~ type_arg ~ ("," ~ type_arg)* ~ ">" }
+type_arg   = { "?" ~ (("extends" | "super") ~ type_ref)? | type_ref }
+type_params = { "<" ~ type_param ~ ("," ~ type_param)* ~ ">" }
+type_param  = { ident_name ~ ("extends" ~ type_ref ~ ("&" ~ type_ref)*)? }
+
+// ── Literals ─────────────────────────────────────────────────────────────────
+
+literal = {
+    float_literal
+    | long_literal
+    | int_literal
+    | char_literal
+    | string_literal
+    | text_block
+    | true_kw
+    | false_kw
+    | null_kw
+}
+
+int_literal = @{
+    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ !(ASCII_ALPHANUMERIC | "_" | "." | "e" | "E" | "l" | "L" | "f" | "F" | "d" | "D")
+}
+
+long_literal = @{
+    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ ("l" | "L")
+    | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ ("l" | "L")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("l" | "L")
+}
+
+float_literal = @{
+    ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")*
+        ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("f" | "F" | "d" | "D")?
+        ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")*
+        ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("f" | "F" | "d" | "D")?
+        ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
+        ~ ("f" | "F" | "d" | "D")? ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("f" | "F" | "d" | "D")
+        ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+char_literal = @{
+    "'" ~ (char_escape | (!"'" ~ ANY)) ~ "'"
+}
+
+string_literal = @{
+    "\"" ~ (string_escape | (!"\"" ~ ANY))* ~ "\""
+}
+
+text_block = @{
+    "\"\"\"" ~ "\n" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
+}
+
+string_escape = _{ "\\" ~ ANY }
+char_escape   = _{ "\\" ~ ANY }
+
+// ── Identifiers ──────────────────────────────────────────────────────────────
+
+ident_name = @{
+    !strict_keyword ~ (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+}
+
+ident_or_keyword = @{
+    (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+}
+
+// ── Keywords ─────────────────────────────────────────────────────────────────
+
+abstract_kw      = @{ "abstract"     ~ !(ASCII_ALPHANUMERIC | "_") }
+assert_kw        = @{ "assert"       ~ !(ASCII_ALPHANUMERIC | "_") }
+boolean_kw       = @{ "boolean"      ~ !(ASCII_ALPHANUMERIC | "_") }
+break_kw         = @{ "break"        ~ !(ASCII_ALPHANUMERIC | "_") }
+byte_kw          = @{ "byte"         ~ !(ASCII_ALPHANUMERIC | "_") }
+case_kw          = @{ "case"         ~ !(ASCII_ALPHANUMERIC | "_") }
+catch_kw         = @{ "catch"        ~ !(ASCII_ALPHANUMERIC | "_") }
+char_kw          = @{ "char"         ~ !(ASCII_ALPHANUMERIC | "_") }
+class_kw         = @{ "class"        ~ !(ASCII_ALPHANUMERIC | "_") }
+const_kw         = @{ "const"        ~ !(ASCII_ALPHANUMERIC | "_") }
+continue_kw      = @{ "continue"     ~ !(ASCII_ALPHANUMERIC | "_") }
+default_kw       = @{ "default"      ~ !(ASCII_ALPHANUMERIC | "_") }
+do_kw            = @{ "do"           ~ !(ASCII_ALPHANUMERIC | "_") }
+double_kw        = @{ "double"       ~ !(ASCII_ALPHANUMERIC | "_") }
+else_kw          = @{ "else"         ~ !(ASCII_ALPHANUMERIC | "_") }
+enum_kw          = @{ "enum"         ~ !(ASCII_ALPHANUMERIC | "_") }
+extends_kw       = @{ "extends"      ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw         = @{ "false"        ~ !(ASCII_ALPHANUMERIC | "_") }
+final_kw         = @{ "final"        ~ !(ASCII_ALPHANUMERIC | "_") }
+finally_kw       = @{ "finally"      ~ !(ASCII_ALPHANUMERIC | "_") }
+float_kw         = @{ "float"        ~ !(ASCII_ALPHANUMERIC | "_") }
+for_kw           = @{ "for"          ~ !(ASCII_ALPHANUMERIC | "_") }
+goto_kw          = @{ "goto"         ~ !(ASCII_ALPHANUMERIC | "_") }
+if_kw            = @{ "if"           ~ !(ASCII_ALPHANUMERIC | "_") }
+implements_kw    = @{ "implements"   ~ !(ASCII_ALPHANUMERIC | "_") }
+import_kw        = @{ "import"       ~ !(ASCII_ALPHANUMERIC | "_") }
+instanceof_kw    = @{ "instanceof"   ~ !(ASCII_ALPHANUMERIC | "_") }
+int_kw           = @{ "int"          ~ !(ASCII_ALPHANUMERIC | "_") }
+interface_kw     = @{ "interface"    ~ !(ASCII_ALPHANUMERIC | "_") }
+long_kw          = @{ "long"         ~ !(ASCII_ALPHANUMERIC | "_") }
+native_kw        = @{ "native"       ~ !(ASCII_ALPHANUMERIC | "_") }
+new_kw           = @{ "new"          ~ !(ASCII_ALPHANUMERIC | "_") }
+non_sealed_kw    = @{ "non-sealed"   ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw          = @{ "null"         ~ !(ASCII_ALPHANUMERIC | "_") }
+package_kw       = @{ "package"      ~ !(ASCII_ALPHANUMERIC | "_") }
+private_kw       = @{ "private"      ~ !(ASCII_ALPHANUMERIC | "_") }
+protected_kw     = @{ "protected"    ~ !(ASCII_ALPHANUMERIC | "_") }
+public_kw        = @{ "public"       ~ !(ASCII_ALPHANUMERIC | "_") }
+record_kw        = @{ "record"       ~ !(ASCII_ALPHANUMERIC | "_") }
+return_kw        = @{ "return"       ~ !(ASCII_ALPHANUMERIC | "_") }
+sealed_kw        = @{ "sealed"       ~ !(ASCII_ALPHANUMERIC | "_") }
+short_kw         = @{ "short"        ~ !(ASCII_ALPHANUMERIC | "_") }
+static_kw        = @{ "static"       ~ !(ASCII_ALPHANUMERIC | "_") }
+strictfp_kw      = @{ "strictfp"     ~ !(ASCII_ALPHANUMERIC | "_") }
+super_kw         = @{ "super"        ~ !(ASCII_ALPHANUMERIC | "_") }
+switch_kw        = @{ "switch"       ~ !(ASCII_ALPHANUMERIC | "_") }
+synchronized_kw  = @{ "synchronized" ~ !(ASCII_ALPHANUMERIC | "_") }
+this_kw          = @{ "this"         ~ !(ASCII_ALPHANUMERIC | "_") }
+throw_kw         = @{ "throw"        ~ !(ASCII_ALPHANUMERIC | "_") }
+throws_kw        = @{ "throws"       ~ !(ASCII_ALPHANUMERIC | "_") }
+transient_kw     = @{ "transient"    ~ !(ASCII_ALPHANUMERIC | "_") }
+true_kw          = @{ "true"         ~ !(ASCII_ALPHANUMERIC | "_") }
+try_kw           = @{ "try"          ~ !(ASCII_ALPHANUMERIC | "_") }
+var_kw           = @{ "var"          ~ !(ASCII_ALPHANUMERIC | "_") }
+void_kw          = @{ "void"         ~ !(ASCII_ALPHANUMERIC | "_") }
+volatile_kw      = @{ "volatile"     ~ !(ASCII_ALPHANUMERIC | "_") }
+while_kw         = @{ "while"        ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_kw         = @{ "yield"        ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Reserved words that CANNOT appear as identifiers.
+strict_keyword = _{
+    ( "abstract" | "assert" | "boolean" | "break" | "byte" | "case"
+    | "catch" | "char" | "class" | "const" | "continue" | "default"
+    | "do" | "double" | "else" | "enum" | "extends" | "final"
+    | "finally" | "float" | "for" | "goto" | "if" | "implements"
+    | "import" | "instanceof" | "int" | "interface" | "long" | "native"
+    | "new" | "package" | "private" | "protected" | "public" | "return"
+    | "short" | "static" | "strictfp" | "super" | "switch" | "synchronized"
+    | "this" | "throw" | "throws" | "transient" | "try" | "void"
+    | "volatile" | "while"
+    | "true" | "false" | "null"
+    )
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
