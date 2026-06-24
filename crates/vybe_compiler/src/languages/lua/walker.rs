@@ -809,14 +809,6 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                     right: Box::new(right),
                 });
             }
-        } else if is_lua_expr_rule(p.as_rule()) {
-            let right = walk_expression(items[i].clone())?;
-            i += 1;
-            left = Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(left),
-                right: Box::new(right),
-            });
         } else {
             i += 1;
         }
@@ -852,6 +844,7 @@ fn is_lua_op_rule(rule: Rule) -> bool {
         Rule::additive_op
             | Rule::mul_op
             | Rule::pow_op
+            | Rule::shift_op
             | Rule::compare_op
             | Rule::PLUS
             | Rule::MINUS
@@ -863,6 +856,7 @@ fn is_lua_op_rule(rule: Rule) -> bool {
             | Rule::CONCAT
             | Rule::AMP
             | Rule::PIPE
+            | Rule::TILDE
             | Rule::LSHIFT
             | Rule::RSHIFT
             | Rule::EQ
