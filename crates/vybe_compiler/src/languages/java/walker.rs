@@ -784,6 +784,39 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             return Ok(None);
         }
 
+        Rule::synchronized_statement => {
+            // synchronized (lock) { body } → just compile the body block
+            let mut inner = pair.into_inner();
+            let _lock = walk_expr_inner(&mut inner)?;
+            let body_pair = inner.next().ok_or("synchronized: missing body")?;
+            StmtKind::Block(walk_block(body_pair)?)
+        }
+
+        Rule::super_constructor_call => {
+            let args: Vec<Argument> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::argument_list)
+                .flat_map(|al| walk_arguments(al).unwrap_or_default())
+                .collect();
+            StmtKind::Expr(Expression::new(ExprKind::SuperCall {
+                method: None,
+                args,
+            }))
+        }
+
+        Rule::this_constructor_call => {
+            let args: Vec<Argument> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::argument_list)
+                .flat_map(|al| walk_arguments(al).unwrap_or_default())
+                .collect();
+            StmtKind::Expr(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::This)),
+                args,
+                optional: false,
+            }))
+        }
+
         Rule::expression_statement => {
             let inner = pair.into_inner().next().ok_or("expr stmt: missing expr")?;
             StmtKind::Expr(walk_expression(inner)?)
@@ -1529,6 +1562,19 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    // Static type method calls: Integer.parseInt("42") → call "Integer.parseInt"
+    // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
+    if let ExprKind::Ident(ref type_name) = receiver.kind {
+        if is_java_type_or_util(type_name) {
+            let dotted = format!("{}.{}", type_name, method);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&dotted)),
+                args,
+                optional: false,
+            });
+        }
+    }
+
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
@@ -1538,6 +1584,16 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         args,
         optional: false,
     })
+}
+
+fn is_java_type_or_util(name: &str) -> bool {
+    matches!(
+        name,
+        "Integer" | "Long" | "Short" | "Byte" | "Float" | "Double"
+        | "Boolean" | "Character" | "String" | "Math" | "Arrays"
+        | "Collections" | "Objects" | "Optional" | "Stream"
+        | "System" | "Thread" | "Runtime" | "Class"
+    )
 }
 
 fn walk_primary_atom(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -1583,6 +1639,10 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     args,
                 }));
             }
+            Rule::array_initializer => {
+                // new Type[] {1, 2, 3} → array literal
+                return walk_initializer_as_array(p);
+            }
             Rule::array_dims => {
                 // new int[5] → __new_array(5)
                 if let Some(size_p) = p.into_inner().next() {
@@ -1613,20 +1673,38 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn walk_array_creation(pair: Pair<Rule>) -> Result<Expression, String> {
-    // new int[n] → __new_array(n)
     let mut inner = pair.into_inner();
     let _prim_type = inner.next();
-    // "[" expression "]"
-    if let Some(sz_p) = inner.next() {
-        if let Ok(sz) = walk_expression(sz_p) {
-            return Ok(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__new_array")),
-                args: vec![Argument::positional(sz)],
-                optional: false,
-            }));
+    for p in inner {
+        match p.as_rule() {
+            Rule::array_initializer => return walk_initializer_as_array(p),
+            Rule::expression => {
+                let sz = walk_expression(p)?;
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__new_array")),
+                    args: vec![Argument::positional(sz)],
+                    optional: false,
+                }));
+            }
+            _ => {}
         }
     }
     Ok(Expression::new(ExprKind::Array(vec![])))
+}
+
+fn walk_initializer_as_array(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut elems = Vec::new();
+    for el in pair.into_inner() {
+        if el.as_rule() == Rule::initializer {
+            elems.push(ArrayElement {
+                key: None,
+                value: walk_initializer(el)?,
+                spread: false,
+                by_ref: false,
+            });
+        }
+    }
+    Ok(Expression::new(ExprKind::Array(elems)))
 }
 
 fn walk_super_call(pair: Pair<Rule>) -> Result<Expression, String> {

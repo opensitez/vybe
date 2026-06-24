@@ -214,6 +214,7 @@ statement = _{
     | while_statement
     | do_while_statement
     | switch_statement
+    | synchronized_statement
     | return_statement
     | break_statement
     | continue_statement
@@ -222,9 +223,13 @@ statement = _{
     | try_with_resources_statement
     | assert_statement
     | yield_statement
+    | super_constructor_call
+    | this_constructor_call
     | labeled_statement
     | expression_statement
 }
+
+synchronized_statement = { "synchronized" ~ "(" ~ expression ~ ")" ~ block_statement }
 
 empty_statement = { ";" }
 block_statement = { "{" ~ statement* ~ "}" }
@@ -263,13 +268,14 @@ for_statement = {
 
 for_init = {
     final_kw? ~ type_ref ~ var_declarator ~ ("," ~ var_declarator)*
+    | var_kw ~ var_declarator ~ ("," ~ var_declarator)*
     | expression ~ ("," ~ expression)*
 }
 
 for_update = { expression ~ ("," ~ expression)* }
 
 enhanced_for_statement = {
-    "for" ~ "(" ~ final_kw? ~ type_ref ~ ident_name ~ ":" ~ expression ~ ")" ~ statement
+    "for" ~ "(" ~ final_kw? ~ (type_ref | var_kw) ~ ident_name ~ ":" ~ expression ~ ")" ~ statement
 }
 
 // ── While / Do-while ─────────────────────────────────────────────────────────
@@ -319,6 +325,7 @@ try_with_resources_statement = {
 
 resource = {
     final_kw? ~ type_ref ~ ident_name ~ "=" ~ expression
+    | final_kw? ~ var_kw ~ ident_name ~ "=" ~ expression
     | expression
 }
 
@@ -447,6 +454,7 @@ new_expression = {
     "new" ~ type_ref ~ type_args?
     ~ (
         "(" ~ argument_list? ~ ")" ~ anonymous_class_body?
+        | "[" ~ "]" ~ array_initializer
         | array_dims
     )
 }
@@ -459,18 +467,21 @@ array_dims = {
 anonymous_class_body = { "{" ~ class_member* ~ "}" }
 
 array_creation = {
-    "new" ~ primitive_type
-    ~ "[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")*
-    ~ array_initializer?
+    "new" ~ primitive_type ~ "[" ~ "]" ~ array_initializer
+    | "new" ~ primitive_type
+      ~ "[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")*
+      ~ array_initializer?
 }
 
 class_literal = { qualified_name ~ ("[" ~ "]")* ~ "." ~ "class" }
 
 method_reference = {
-    qualified_name ~ "::" ~ (ident_name | "new")
+    (qualified_name | this_kw | super_kw) ~ "::" ~ type_args? ~ (ident_name | "new")
 }
 
 super_method_call = { "super" ~ "." ~ ident_name ~ "(" ~ argument_list? ~ ")" }
+super_constructor_call = { "super" ~ "(" ~ argument_list? ~ ")" ~ ";" }
+this_constructor_call  = { "this" ~ "(" ~ argument_list? ~ ")" ~ ";" }
 
 // ── Lambda ───────────────────────────────────────────────────────────────────
 
@@ -531,7 +542,7 @@ primitive_type = {
     | "int" | "long" | "short" | "void"
 }
 
-type_args  = { "<" ~ type_arg ~ ("," ~ type_arg)* ~ ">" }
+type_args  = { "<" ~ ">" | "<" ~ type_arg ~ ("," ~ type_arg)* ~ ">" }
 type_arg   = { "?" ~ (("extends" | "super") ~ type_ref)? | type_ref }
 type_params = { "<" ~ type_param ~ ("," ~ type_param)* ~ ">" }
 type_param  = { ident_name ~ ("extends" ~ type_ref ~ ("&" ~ type_ref)*)? }
@@ -553,6 +564,7 @@ literal = {
 int_literal = @{
     ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
     | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | "0" ~ ASCII_OCT_DIGIT ~ (ASCII_OCT_DIGIT | "_")* ~ !(ASCII_ALPHANUMERIC | "_" | ".")
     | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ !(ASCII_ALPHANUMERIC | "_" | "." | "e" | "E" | "l" | "L" | "f" | "F" | "d" | "D")
 }
 
