@@ -11215,11 +11215,19 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args: args.to_vec(),
             optional: false,
         })),
-        "associated" | "allocated" if args.len() == 1 => Some(Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(args[0].value.clone()),
-            right: Box::new(Expression::null()),
-        })),
+        "associated" | "allocated" if args.len() == 1 => {
+            // Produce a JS boolean (true/false) not an i32 (1/0) so print * formats correctly.
+            let not_null = Expression::new(ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(args[0].value.clone()),
+                right: Box::new(Expression::null()),
+            });
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(not_null),
+                then: Box::new(Expression::bool(true)),
+                else_: Box::new(Expression::bool(false)),
+            }))
+        }
         "len" if args.len() == 1 => Some(Expression::new(ExprKind::Member {
             object: Box::new(args[0].value.clone()),
             field: "length".to_string(),

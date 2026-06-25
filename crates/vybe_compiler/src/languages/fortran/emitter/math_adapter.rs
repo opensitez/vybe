@@ -150,6 +150,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_numeric_zero(chunk, line);
     lset(chunk, i_slot, line);
 
+    // BLOCK+LOOP: br_if 1 exits outer_block (depth 0=LOOP, depth 1=BLOCK)
+    let outer_block = chunk.emit_block(line);
     let (outer_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, left_len_slot, line);
@@ -174,6 +176,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_numeric_zero(chunk, line);
     lset(chunk, j_slot, line);
 
+    // BLOCK+LOOP: br_if 1 exits col_block (depth 0=LOOP, depth 1=BLOCK)
+    let col_block = chunk.emit_block(line);
     let (col_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, j_slot, line);
     lget(chunk, col_count_slot, line);
@@ -186,6 +190,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_numeric_zero(chunk, line);
     lset(chunk, k_slot, line);
 
+    // BLOCK+LOOP: br_if 1 exits dot_block (depth 0=LOOP, depth 1=BLOCK)
+    let dot_block = chunk.emit_block(line);
     let (dot_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
@@ -210,6 +216,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(dot_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(dot_block);
 
     lget(chunk, row_result_slot, line);
     lget(chunk, j_slot, line);
@@ -221,6 +229,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(col_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(col_block);
 
     lget(chunk, result_slot, line);
     lget(chunk, i_slot, line);
@@ -269,6 +279,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(outer_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(outer_block);
 
     lget(chunk, result_slot, line);
 }
