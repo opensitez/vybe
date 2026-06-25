@@ -1738,8 +1738,9 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             })
         }
         Rule::comparison => {
-            // left (comp_op right)*
-            let mut left = walk_expression(inner.remove(0))?;
+            // left (comp_op right)* — Python chains: a < b < c → a < b and b < c
+            let mut operands: Vec<Expression> = vec![walk_expression(inner.remove(0))?];
+            let mut comparisons: Vec<(BinOp, Expression)> = Vec::new();
             let mut i = 0;
             while i < inner.len() {
                 let op_pair = &inner[i];
@@ -1748,20 +1749,46 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     i += 1;
                     op
                 } else {
-                    // Direct expression — shouldn't happen but handle gracefully
                     break;
                 };
                 if i < inner.len() {
                     let right = walk_expression(inner[i].clone())?;
                     i += 1;
+                    operands.push(right.clone());
+                    comparisons.push((op, right));
+                }
+            }
+
+            if comparisons.len() <= 1 {
+                let mut left = operands.remove(0);
+                for (op, right) in comparisons {
                     left = Expression::new(ExprKind::Binary {
                         op,
                         left: Box::new(left),
                         right: Box::new(right),
                     });
                 }
+                Ok(left.kind)
+            } else {
+                let mut result = Expression::new(ExprKind::Binary {
+                    op: comparisons[0].0,
+                    left: Box::new(operands[0].clone()),
+                    right: Box::new(operands[1].clone()),
+                });
+                for j in 1..comparisons.len() {
+                    let pairwise = Expression::new(ExprKind::Binary {
+                        op: comparisons[j].0,
+                        left: Box::new(operands[j].clone()),
+                        right: Box::new(operands[j + 1].clone()),
+                    });
+                    result = Expression::new(ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(result),
+                        right: Box::new(pairwise),
+                    });
+                }
+                Ok(result.kind)
             }
-            Ok(left.kind)
         }
         Rule::bitor_expr => walk_binary_chain(inner, |_| BinOp::BitOr),
         Rule::bitxor_expr => walk_binary_chain(inner, |_| BinOp::BitXor),
