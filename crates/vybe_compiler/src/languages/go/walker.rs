@@ -928,6 +928,7 @@ fn lower_go_defer_statements(
                 state,
                 stack_name,
                 frozen_names,
+                in_loop,
             ));
             has_defer = true;
             continue;
@@ -1186,9 +1187,10 @@ fn go_lower_defer_stmt(
     state: &mut GoNormalizeState,
     stack_name: &str,
     frozen_names: &HashSet<String>,
+    in_loop: bool,
 ) -> Vec<Statement> {
     let mut stmts = Vec::new();
-    let mut captures = Vec::new();
+    let mut loop_snapshot_captures: Vec<String> = Vec::new();
 
     let deferred_expr = match expr.kind {
         ExprKind::Call {
@@ -1218,7 +1220,9 @@ fn go_lower_defer_stmt(
                             receiver_type,
                             object.as_ref().clone(),
                         ));
-                        captures.push(temp_name.clone());
+                        if in_loop {
+                            loop_snapshot_captures.push(temp_name.clone());
+                        }
                         Expression::ident(&temp_name)
                     };
                     Expression::new(ExprKind::Member {
@@ -1236,7 +1240,9 @@ fn go_lower_defer_stmt(
                         go_expr_type_hint(&deferred_value, env, signatures),
                         deferred_value,
                     ));
-                    captures.push(temp_name.clone());
+                    if in_loop {
+                        loop_snapshot_captures.push(temp_name.clone());
+                    }
                     Expression::ident(&temp_name)
                 }
             };
@@ -1251,7 +1257,9 @@ fn go_lower_defer_stmt(
                         go_expr_type_hint(&value, env, signatures),
                         value,
                     ));
-                    captures.push(temp_name.clone());
+                    if in_loop {
+                        loop_snapshot_captures.push(temp_name.clone());
+                    }
                     Argument {
                         value: Expression::ident(&temp_name),
                         name: arg.name,
@@ -1270,12 +1278,64 @@ fn go_lower_defer_stmt(
         _ => expr,
     };
 
-    let closure = Expression::new(ExprKind::Lambda {
+    // Build the zero-arg closure that will be stored on the defer stack.
+    //
+    // Non-loop case: use empty explicit captures so the compiler routes through
+    // the outer function's shared env (parent_shared_env_slot path).  The
+    // __go_defer_arg* / __go_defer_fn* temps are set-once per function call,
+    // so reading them from the shared env at drain time always gives the
+    // value they had at defer-registration time.
+    //
+    // Loop case: the same shared-env slot is OVERWRITTEN on every iteration,
+    // so all closures would see the last iteration's value.  We fix this by
+    // wrapping the inner lambda in an IIFE that takes the loop-iteration
+    // variables as parameters (shadowing the outer slots).  Each IIFE call
+    // gets its own activation record, so the inner lambda closes over a
+    // freshly-snapshotted copy of the values for that iteration.
+    let inner_lambda = Expression::new(ExprKind::Lambda {
         params: Vec::new(),
         body: LambdaBody::Block(vec![Statement::new(StmtKind::Expr(deferred_expr))]),
         is_async: false,
-        captures,
+        captures: Vec::new(),
     });
+
+    let closure = if in_loop && !loop_snapshot_captures.is_empty() {
+        let wrapper_params: Vec<Param> = loop_snapshot_captures
+            .iter()
+            .map(|name| Param {
+                name: name.clone(),
+                type_hint: None,
+                default: None,
+                is_rest: false,
+                pass_by: PassBy::Value,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            })
+            .collect();
+        let wrapper = Expression::new(ExprKind::Lambda {
+            params: wrapper_params,
+            body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(inner_lambda)))]),
+            is_async: false,
+            captures: Vec::new(),
+        });
+        let iife_args: Vec<Argument> = loop_snapshot_captures
+            .iter()
+            .map(|name| Argument {
+                value: Expression::ident(name),
+                name: None,
+                by_ref: false,
+                spread: false,
+            })
+            .collect();
+        Expression::new(ExprKind::Call {
+            callee: Box::new(wrapper),
+            args: iife_args,
+            optional: false,
+        })
+    } else {
+        inner_lambda
+    };
     stmts.push(Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(stack_name)],
         value: Expression::new(ExprKind::Object(vec![
