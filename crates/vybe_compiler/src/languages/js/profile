@@ -373,10 +373,10 @@ toPrecision     = { emit = "host:ecma:number:toPrecision",     min_args = 0, max
 toLocaleString  = { emit = "host:ecma:number:toLocaleString",  min_args = 0, max_args = 2 }
 
 # Array instance methods — mutators only; polymorphic methods go through
-# `invoke:*` above. These are array-only per ECMA-262 so we emit the
-# typed import directly.
-push          = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
-pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
+# `invoke:*` above. push/pop are handled by runtime type dispatch
+# (builtin_types.rs) so they work for arrays AND don't intercept
+# user-defined push()/pop() on plain objects.
+
 shift         = { emit = "common:collections.shift",   min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
@@ -392,8 +392,9 @@ toSorted      = { emit = "host:ecma:array:toSorted",      min_args = 0, max_args
 toSpliced     = { emit = "host:ecma:array:toSpliced",     min_args = 1, max_args = 255 }
 with          = { emit = "host:ecma:array:with",          min_args = 2, max_args = 2 }
 
-# Map/Set size property
-size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }
+# Map/Set size is a PROPERTY (no parens), handled by the runtime type
+# dispatch (ecma:map.size). Do NOT add a profile builtin — it would
+# intercept user-defined size() methods on all objects.
 
 # JS plain-object instance method `obj.hasOwnProperty(k)`. NB: only the
 # `hasOwnProperty` name is wired here — bare `has`/`delete`/`clear` are

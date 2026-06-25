@@ -47,9 +47,7 @@ pub fn emit_write_stdout_with_imports(
     // canon stream.new → [rd, wr]
     chunk.emit_op(Op::STREAM_NEW, line);
     chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // stream.write(wr, contents)
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
     push_contents(chunk);

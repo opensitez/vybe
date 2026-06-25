@@ -64,7 +64,6 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let value_local = alloc_local(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, value_local, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_local, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, set_idx, line);
     chunk.emit(3, line);

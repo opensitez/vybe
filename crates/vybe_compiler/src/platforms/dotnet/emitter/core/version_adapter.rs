@@ -54,14 +54,12 @@ fn emit_store_optional_array_part_as_number(
     emit_array_get_const_index(chunk, array_slot, index, line);
     let text_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     push_const(chunk, Value::F64(default_value), line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
@@ -69,13 +67,11 @@ fn emit_store_optional_array_part_as_number(
     chunk.emit_if(line);
     push_const(chunk, Value::F64(default_value), line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_else(line);
     let _ = chunk;
     emit_parse_number_from_slot(chunks, current, text_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -135,18 +131,14 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
     let right_part_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let done = chunk.emit_block(line);
     for key in [MAJOR_KEY, MINOR_KEY, BUILD_KEY, REVISION_KEY] {
         emit_version_part(chunk, left_slot, key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, left_part_slot, line);
-        chunk.emit_op(Op::DROP, line);
         emit_version_part(chunk, right_slot, key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, right_part_slot, line);
-        chunk.emit_op(Op::DROP, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, left_part_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_part_slot, line);
@@ -180,50 +172,34 @@ pub fn emit_version_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     match argc {
         4 => {
             chunk.emit_op_u16(Op::LOCAL_SET, revision_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, build_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, minor_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, major_slot, line);
-            chunk.emit_op(Op::DROP, line);
         }
         3 => {
             push_const(chunk, Value::F64(-1.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, revision_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, build_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, minor_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, major_slot, line);
-            chunk.emit_op(Op::DROP, line);
         }
         2 => {
             push_const(chunk, Value::F64(-1.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, revision_slot, line);
-            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::F64(-1.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, build_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, minor_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, major_slot, line);
-            chunk.emit_op(Op::DROP, line);
         }
         _ => {
             push_const(chunk, Value::F64(-1.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, revision_slot, line);
-            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::F64(-1.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, build_slot, line);
-            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::F64(0.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, minor_slot, line);
-            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::F64(0.0), line);
             chunk.emit_op_u16(Op::LOCAL_SET, major_slot, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 
@@ -250,13 +226,11 @@ pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
     host::emit(chunk, "ecma:string", "split", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_store_optional_array_part_as_number(
         chunks, current, parts_slot, 0.0, major_slot, 0.0, line,
@@ -295,13 +269,11 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let out_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_version_part(chunk, obj_slot, MAJOR_KEY, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
@@ -311,7 +283,6 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit(1, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     for key in [BUILD_KEY, REVISION_KEY] {
         emit_version_part(chunk, obj_slot, key, line);
@@ -326,7 +297,6 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit(1, line);
         crate::emitter::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
     }
 

@@ -88,7 +88,6 @@ fn helper_reversed() {
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, rev_idx as u16, 0);
     script.emit(0, 0);
@@ -126,7 +125,6 @@ fn helper_sorted() {
     script.emit_op_u16(Op::CONST, v2, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
     script.emit(0, 0);
@@ -160,7 +158,6 @@ fn helper_sorted_preserves_original() {
     script.emit_op_u16(Op::CONST, v1, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     // Call sorted
     script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
@@ -196,7 +193,6 @@ fn helper_min() {
     script.emit_op_u16(Op::CONST, v8, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, min_idx as u16, 0);
     script.emit(0, 0);
@@ -223,7 +219,6 @@ fn helper_max() {
     script.emit_op_u16(Op::CONST, v8, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, max_idx as u16, 0);
     script.emit(0, 0);
@@ -274,7 +269,6 @@ fn helper_enumerate() {
     script.emit_op_u16(Op::CONST, vb, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, enum_idx as u16, 0);
     script.emit(0, 0);
@@ -308,13 +302,11 @@ fn helper_zip() {
     script.emit_op_u16(Op::CONST, v2, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::CONST, v3, 0);
     script.emit_op_u16(Op::CONST, v4, 0);
     script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::REF_FUNC, zip_idx as u16, 0);
     script.emit(0, 0);

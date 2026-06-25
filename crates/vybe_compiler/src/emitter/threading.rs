@@ -160,7 +160,6 @@ fn emit_thread_spawn_no_arg(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     // [func_ref] → stash to scratch slot, drop from stack
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
     // Push null (start_arg), then func_ref back from scratch
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

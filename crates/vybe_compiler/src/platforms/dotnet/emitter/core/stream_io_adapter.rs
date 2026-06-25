@@ -63,7 +63,6 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // content = node:fs.readFileSync(path, "utf8")
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
@@ -72,7 +71,6 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit(2, line);
     let content_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // STRUCT_NEW → [obj]
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -113,31 +111,26 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 
     // reader_slot = pop reader
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // content = reader.__content
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // pos = reader.__pos
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // len = STR_LENGTH(content)
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // result = null (default for end-of-stream)
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let done_block = chunk.emit_block(line);
 
@@ -151,7 +144,6 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     // end = pos
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Scan loop: advance `end` until `\n` or end-of-string.
     let scan_block = chunk.emit_block(line);
@@ -173,7 +165,6 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(scan_loop);
@@ -186,7 +177,6 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // reader.__pos = end + 1 (skip past `\n`); clamp to len.
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
@@ -212,7 +202,6 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
 
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // content = reader.__content
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
@@ -227,9 +216,7 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     let content_slot = reserve_slot(chunk);
     let pos_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // [content, pos, len] for substring
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -255,7 +242,6 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
 
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // pos
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
@@ -279,7 +265,6 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
@@ -309,7 +294,6 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     let s_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // [writer] → DUP → [writer, writer] → STRUCT_GET __buf → [writer, buf]
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
@@ -328,7 +312,6 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     let s_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -350,7 +333,6 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
 
     let writer_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // node:fs.writeFileSync(__path, __buf)
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
@@ -375,7 +357,6 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
 
     let stream_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);

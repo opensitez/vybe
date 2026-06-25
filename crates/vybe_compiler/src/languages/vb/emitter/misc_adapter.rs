@@ -26,7 +26,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -41,7 +40,6 @@ fn gget(chunk: &mut Chunk, name: &str, line: u32) {
 fn gset(chunk: &mut Chunk, name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::GLOBAL_SET, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {

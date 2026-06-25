@@ -177,7 +177,6 @@ fn global_set_then_get_roundtrip() {
     let val = chunk.add_constant(Value::F64(42.0));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
@@ -193,7 +192,6 @@ fn globals_persist_after_run() {
     let val = chunk.add_constant(Value::F64(99.0));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::HALT, 0);
     vm.run(vec![chunk]).unwrap();
@@ -210,7 +208,6 @@ fn globals_persist_across_multiple_runs() {
     let v1 = c1.add_constant(Value::F64(10.0));
     c1.emit_op_u16(Op::CONST, v1, 0);
     c1.emit_op_u16(Op::GLOBAL_SET, n1, 0);
-    c1.emit_op(Op::DROP, 0);
     c1.emit_op(Op::NULL, 0);
     c1.emit_op(Op::HALT, 0);
     vm.run(vec![c1]).unwrap();
@@ -325,7 +322,6 @@ fn invoke_function_defined_in_run() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
-    main.emit_op(Op::DROP, 0);
     main.emit_op(Op::NULL, 0);
     main.emit_op(Op::HALT, 0);
 
@@ -376,11 +372,9 @@ fn invoke_multiple_times_globals_accumulate() {
     let zero = main.add_constant(Value::F64(0.0));
     main.emit_op_u16(Op::CONST, zero, 0);
     main.emit_op_u16(Op::GLOBAL_SET, n, 0);
-    main.emit_op(Op::DROP, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, fn_name, 0);
-    main.emit_op(Op::DROP, 0);
     main.emit_op(Op::NULL, 0);
     main.emit_op(Op::HALT, 0);
 
@@ -420,7 +414,6 @@ fn method_on_object_via_struct_get_call() {
     // obj = {}
     main.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
     // obj.x = 10
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_op_u16(Op::CONST, ten, 0);

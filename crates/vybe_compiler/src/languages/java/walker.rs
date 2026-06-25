@@ -1089,8 +1089,10 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::final_kw) {
         inner.next();
     }
-    // type_ref
-    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref) {
+    // type_ref or var_kw — skip either
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref)
+        || inner.peek().map(|p| p.as_rule()) == Some(Rule::var_kw)
+    {
         inner.next();
     }
 

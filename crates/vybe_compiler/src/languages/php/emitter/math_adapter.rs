@@ -36,7 +36,6 @@ fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -92,7 +91,6 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
     chunk.local_count = base + argc as u16;
     for i in (0..argc).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
-        chunk.emit_op(Op::DROP, line);
     }
     // Special-case: argc == 1 and arg[0] is an array → reduce over it.
     // We can't statically test "is array" here, but `ARRAY_LENGTH` on

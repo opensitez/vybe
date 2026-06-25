@@ -42,7 +42,6 @@ fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
 }
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -128,9 +127,7 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     let t_b = alloc_local(chunk);
     let t_a = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, t_b, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, t_a, line);
-    chunk.emit_op(Op::DROP, line);
 
     maybe_unbox_datetime(chunk, t_a, line);
     maybe_unbox_datetime(chunk, t_b, line);
@@ -172,7 +169,6 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     let obj_dt_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_dt_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // not null
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -202,14 +198,12 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, time_key, line);
     let time_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, time_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, time_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, time_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }

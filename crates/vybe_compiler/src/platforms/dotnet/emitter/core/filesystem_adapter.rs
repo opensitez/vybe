@@ -27,7 +27,6 @@ pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32)
     let path_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     push_const(chunk, Value::String(Arc::from("utf8")), line);
@@ -51,30 +50,25 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     let result_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, root_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, list_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, entries_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let state = loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, entry_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
     chunk.emit(2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, full_path_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, is_dir_idx, line);

@@ -85,5 +85,4 @@ fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
 
 fn local_set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }

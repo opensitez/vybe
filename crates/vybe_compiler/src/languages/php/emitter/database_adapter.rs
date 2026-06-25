@@ -40,7 +40,6 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn call_import(
@@ -69,7 +68,6 @@ fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
 fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn global_get_key(chunk: &mut Chunk, key: &str, line: u32) {
@@ -396,7 +394,6 @@ fn emit_sql_literal_from_slot(
         let obj_test_slot = alloc_local(chunk);
         lget(chunk, value_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, obj_test_slot, line);
-        chunk.emit_op(Op::DROP, line);
         // not null
         lget(chunk, obj_test_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);

@@ -49,7 +49,6 @@ pub fn emit_i32_to_bool(chunk: &mut Chunk, line: u32) {
 
 fn save(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn load(chunk: &mut Chunk, slot: u16, line: u32) {

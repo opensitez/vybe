@@ -23,7 +23,6 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     chunks[current].local_count += argc as u16;
     for offset in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     base
 }
@@ -39,7 +38,6 @@ pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let present_slot = chunks[current].local_count;
     chunks[current].local_count += 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, present_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, present_slot, line);
     chunks[current].emit_if(line);
@@ -67,7 +65,6 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     call_import(chunks, current, "ecma:set", func, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:set", "clear", 1, line);
@@ -76,11 +73,9 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     collections::emit_iter_values(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let block = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
@@ -96,7 +91,6 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -107,7 +101,6 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -130,11 +123,9 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     collections::emit_iter_values(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let block = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
@@ -150,7 +141,6 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -161,7 +151,6 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -184,12 +173,10 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     collections::emit_iter_values(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source_arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_iter_values(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, recv_arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:set", "clear", 1, line);
@@ -197,7 +184,6 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let block = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
@@ -213,7 +199,6 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, source_arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -228,7 +213,6 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -259,16 +243,13 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
     collections::emit_clone(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let outer_block = chunks[current].emit_block(line);
     let (outer_loop, _) = chunks[current].emit_loop_s(line);
@@ -282,13 +263,11 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let inner_block = chunks[current].emit_block(line);
     let (inner_loop, _) = chunks[current].emit_loop_s(line);
@@ -324,7 +303,6 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -344,7 +322,6 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -384,7 +361,6 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);
     collections::emit_index_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -396,7 +372,6 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(&mut chunks[current], line);

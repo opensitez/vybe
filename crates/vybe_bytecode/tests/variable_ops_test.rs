@@ -27,7 +27,6 @@ fn local_get_returns_stored_value() {
     let r = run(|c| {
         push_i32(c, 42);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     });
     assert_eq!(r.as_i32(), 42);
@@ -38,10 +37,8 @@ fn local_set_overwrites_previous() {
     let r = run(|c| {
         push_i32(c, 1);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         push_i32(c, 99);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     });
     assert_eq!(r.as_i32(), 99);
@@ -52,10 +49,8 @@ fn two_distinct_local_slots() {
     let r = run(|c| {
         push_i32(c, 10);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         push_i32(c, 20);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::LOCAL_GET, 1, 0);
         c.emit_op(Op::I32_ADD, 0);
@@ -112,7 +107,6 @@ fn local_tee_stores_and_leaves_on_stack() {
         // init slot 0
         push_i32(c, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         // tee: stores 77, leaves it on stack
         push_i32(c, 77);
         c.emit_op_u16(Op::LOCAL_TEE, 0, 0);
@@ -126,7 +120,6 @@ fn local_tee_slot_holds_value_after_pop() {
     let r = run(|c| {
         push_i32(c, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         push_i32(c, 55);
         c.emit_op_u16(Op::LOCAL_TEE, 0, 0);
         c.emit_op(Op::DROP, 0); // drop the stack copy
@@ -143,7 +136,6 @@ fn global_set_and_get_roundtrip() {
     let name_k = c.add_constant(Value::String(Arc::from("__x")));
     push_i32(&mut c, 42);
     c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
@@ -174,7 +166,6 @@ fn global_set_overwrites_init_value() {
     let name_k = c.add_constant(Value::String(Arc::from("__h")));
     push_i32(&mut c, 100);
     c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
@@ -192,12 +183,76 @@ fn missing_global_get_returns_undefined() {
 }
 
 #[test]
-fn global_set_leaves_assigned_value_on_stack() {
+fn global_set_consumes_value_and_stores() {
+    // WASM §4.4.5.3: global.set pops; verify value is stored correctly.
     let mut c = Chunk::new("<script>");
     let name_k = c.add_constant(Value::String(Arc::from("__stack")));
     push_i32(&mut c, 12);
     c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 12);
+}
+
+// ── WASM spec compliance: stack effects ─────────────────────────────────
+//
+// WASM §4.4.5.4: local.set CONSUMES (pops) the value from the stack.
+// WASM §4.4.5.5: local.tee PEEKS — stores AND leaves the value on stack.
+// WASM §4.4.5.3: global.set CONSUMES the value.
+
+#[test]
+fn wasm_local_set_consumes_value_from_stack() {
+    // WASM §4.4.5.4: local.set pops the value.
+    // push 10 → push 20 → local.set 0 → return
+    // set pops 20, stores in local[0], stack has [10] → returns 10.
+    let r = run(|c| {
+        push_i32(c, 10);
+        push_i32(c, 20);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    });
+    assert_eq!(
+        r.as_i32(), 10,
+        "local.set must pop the value (WASM §4.4.5.4); the underlying 10 should remain"
+    );
+}
+
+#[test]
+fn wasm_local_set_roundtrip_without_drop() {
+    // After local.set, the value is consumed. local.get retrieves it.
+    let r = run(|c| {
+        push_i32(c, 42);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    });
+    assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn wasm_local_tee_keeps_value_on_stack() {
+    // WASM §4.4.5.5: local.tee stores AND leaves the value.
+    let r = run(|c| {
+        push_i32(c, 42);
+        c.emit_op_u16(Op::LOCAL_TEE, 0, 0);
+    });
+    assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn wasm_global_set_consumes_value_from_stack() {
+    // WASM §4.4.5.3: global.set pops the value.
+    // push 10 → push 20 → global.set → return
+    // set pops 20, stack has [10] → returns 10.
+    let mut c = Chunk::new("<script>");
+    c.local_count = 4;
+    let name_k = c.add_constant(Value::String(Arc::from("__g_pop_test")));
+    push_i32(&mut c, 10);
+    push_i32(&mut c, 20);
+    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).expect("run failed");
+    assert_eq!(
+        r.as_i32(), 10,
+        "global.set must pop the value (WASM §4.4.5.3); the underlying 10 should remain"
+    );
 }

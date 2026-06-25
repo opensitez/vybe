@@ -18,7 +18,6 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::CALL_IMPORT, to_string_idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, date_str_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_yyyymmdd_slice(chunks, current, date_str_slot, 0.0, 4.0, line);
     emit_string_const(chunks, current, "-", line);

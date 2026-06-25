@@ -49,7 +49,6 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     }
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
@@ -87,7 +86,6 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
@@ -141,8 +139,7 @@ pub fn emit_datatable_add_row(chunks: &mut [Chunk], current: usize, line: u32) {
     };
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::LOCAL_SET, row_slot, line); // tee: saves row, keeps [table, row]
-        chunk.emit_op(Op::DROP, line); // removes row  → [table]
+        chunk.emit_op_u16(Op::LOCAL_SET, row_slot, line);
         struct_get(chunk, "rows", line); // → [rows_array]
         chunk.emit_op_u16(Op::LOCAL_GET, row_slot, line); // → [rows_array, row]
     }
@@ -167,8 +164,7 @@ pub fn emit_datatable_select(chunks: &mut [Chunk], current: usize, line: u32) {
     };
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line); // drop filter
-    chunk.emit_op_u16(Op::LOCAL_SET, table_slot, line); // tee: saves table, keeps [table]
-    chunk.emit_op(Op::DROP, line); // removes table → []
+    chunk.emit_op_u16(Op::LOCAL_SET, table_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, table_slot, line); // → [table]
     struct_get(chunk, "rows", line); // → [rows_array]
 }

@@ -204,12 +204,10 @@ fn multi_table_routes_by_tableidx() {
     chunk.emit_op_u16(Op::CONST, zero, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0); // tableidx = 0
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::CONST, zero, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 1, 0); // tableidx = 1
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);

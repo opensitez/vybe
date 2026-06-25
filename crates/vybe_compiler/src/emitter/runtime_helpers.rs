@@ -769,11 +769,9 @@ fn build_range(imports: &mut Chunk) -> Chunk {
     // stop = start
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_SET, stop, 0);
-    c.emit_op(Op::DROP, 0);
     // start = 0
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, start, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(stop_is_null);
 
@@ -785,14 +783,12 @@ fn build_range(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(step_is_null);
 
     // result = []
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -812,7 +808,6 @@ fn build_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, step, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, start, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -843,18 +838,15 @@ fn build_sorted(imports: &mut Chunk) -> Chunk {
     c.emit_i32_const(i32::MAX, 0);
     crate::emitter::collections::emit_slice_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = result.length
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Insertion sort: for i = 1 to len-1
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let outer_block_p = c.emit_block(0);
     let (outer_loop_p, _) = c.emit_loop_s(0);
@@ -869,14 +861,12 @@ fn build_sorted(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && result[j] > key
     let inner_block_p = c.emit_block(0);
@@ -912,7 +902,6 @@ fn build_sorted(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue inner loop
     c.emit_end(0);
@@ -934,7 +923,6 @@ fn build_sorted(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue outer loop
     c.emit_end(0);
@@ -970,12 +958,10 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 1
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let outer_block_p = c.emit_block(0);
     let (outer_loop_p, _) = c.emit_loop_s(0);
@@ -990,14 +976,12 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && arr[j] > key
     let inner_block_p = c.emit_block(0);
@@ -1012,7 +996,6 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, lhs, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Use _into variant so imports go to the shared `imports` chunk (chunk[0]),
     // not directly to `c`. Mixing emit_dyn_gt (adds to c.imports) with
@@ -1041,7 +1024,6 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue inner loop
     c.emit_end(0);
@@ -1063,7 +1045,6 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue outer loop
     c.emit_end(0);
@@ -1099,12 +1080,10 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 1
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let outer_block_p = c.emit_block(0);
     let (outer_loop_p, _) = c.emit_loop_s(0);
@@ -1119,14 +1098,12 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && cmp(arr[j], key) > 0
     let inner_block_p = c.emit_block(0);
@@ -1166,7 +1143,6 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue inner loop
     c.emit_end(0);
@@ -1188,7 +1164,6 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue outer loop
     c.emit_end(0);
@@ -1213,7 +1188,6 @@ fn build_reversed(imports: &mut Chunk) -> Chunk {
     // result = []
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = arr.length - 1
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -1221,7 +1195,6 @@ fn build_reversed(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1242,7 +1215,6 @@ fn build_reversed(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1302,7 +1274,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // saved_this = __js_this
     c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
     c.emit_op_u16(Op::LOCAL_SET, saved_this, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Fast path: built-in Array → result = v, exit. Walking the
     // prototype chain for `iterator` would resolve to Array.prototype's
@@ -1314,7 +1285,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // not array → continue past this block
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(arr_step);
@@ -1338,7 +1308,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         0,
     );
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(string_step);
@@ -1355,7 +1324,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         0,
     );
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Symbol-keyed [Symbol.iterator] methods are stored as "Symbol(@@iterator)"
     // by ecma:array.set. Try getMethodForCall with that key when "iterator" fails.
@@ -1370,7 +1338,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         imports, &mut c, "ecma:value", "getMethodForCall", 2, 0,
     );
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(try_sym);
 
@@ -1382,7 +1349,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::STRUCT_GET, iter_alt_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(try_alt);
 
@@ -1394,7 +1360,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::STRUCT_GET, async_iter_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(try_async);
 
@@ -1407,7 +1372,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // is function → skip early-exit
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(has_method);
@@ -1415,17 +1379,14 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // __js_this = v; it = method()
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
     crate::emitter::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
-    c.emit_op(Op::DROP, 0);
 
     // out = []
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
-    c.emit_op(Op::DROP, 0);
 
     // it null/undefined → result = out, exit
     let it_ok = c.emit_block(0);
@@ -1435,7 +1396,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(it_ok);
@@ -1457,10 +1417,8 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, it, 0);
     c.emit_op_u16(Op::LOCAL_SET, v, 0);
-    c.emit_op(Op::DROP, 0);
     crate::emitter::generators::emit_drain_into_array_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
 
@@ -1476,7 +1434,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         0,
     );
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
-    c.emit_op(Op::DROP, 0);
 
     // typeof method !== "function" → result = out, exit
     let next_ok = c.emit_block(0);
@@ -1487,7 +1444,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit
     c.emit_end(0);
     c.patch_block(next_ok);
@@ -1495,7 +1451,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // counter = 0
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, counter, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Drain loop: while (counter < cap) {
     //   __js_this = it; step = method();
@@ -1513,13 +1468,11 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, it, 0);
     c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
     crate::emitter::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, step, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
@@ -1541,7 +1494,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, counter, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1552,7 +1504,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // result = out
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // exit_block end — single function-level RETURN follows.
     c.emit_end(0);
@@ -1563,7 +1514,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // time we hit it — no leaked labels.
     c.emit_op_u16(Op::LOCAL_GET, saved_this, 0);
     c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1584,9 +1534,7 @@ fn build_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
     crate::emitter::generators::emit_next(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     c.emit_dup(0);
@@ -1627,16 +1575,13 @@ fn build_enumerate(imports: &mut Chunk) -> Chunk {
 
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1661,7 +1606,6 @@ fn build_enumerate(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1687,17 +1631,14 @@ fn build_zip(imports: &mut Chunk) -> Chunk {
 
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = min(a.length, b.length) — use a.length for simplicity
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1723,7 +1664,6 @@ fn build_zip(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1748,16 +1688,13 @@ fn build_sum(imports: &mut Chunk) -> Chunk {
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, total, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1773,13 +1710,11 @@ fn build_sum(imports: &mut Chunk) -> Chunk {
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, total, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1817,11 +1752,9 @@ fn build_any_all(imports: &mut Chunk, name: &str, is_any: bool) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1854,7 +1787,6 @@ fn build_any_all(imports: &mut Chunk, name: &str, is_any: bool) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -1887,16 +1819,13 @@ fn build_min(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1920,7 +1849,6 @@ fn build_min(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(skip_block_p);
 
@@ -1928,7 +1856,6 @@ fn build_min(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -1955,16 +1882,13 @@ fn build_max(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -1986,7 +1910,6 @@ fn build_max(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(skip_block_p);
 
@@ -1994,7 +1917,6 @@ fn build_max(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -2020,16 +1942,13 @@ fn build_compact(imports: &mut Chunk) -> Chunk {
 
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2044,7 +1963,6 @@ fn build_compact(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, elem, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if !is_null(elem) → result.push(elem)
     c.emit_op_u16(Op::LOCAL_GET, elem, 0);
@@ -2061,7 +1979,6 @@ fn build_compact(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -2102,14 +2019,12 @@ fn build_minmax(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, min_g, 0);
-    c.emit_op(Op::DROP, 0);
 
     let name_max = c.add_constant(Value::String(Arc::from("__vybe_max")));
     c.emit_op_u16(Op::GLOBAL_GET, name_max, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, max_g, 0);
-    c.emit_op(Op::DROP, 0);
 
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_dup(0);
@@ -2137,16 +2052,13 @@ fn build_uniq(imports: &mut Chunk) -> Chunk {
 
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2161,7 +2073,6 @@ fn build_uniq(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, elem, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if !result.includes(elem) result.push(elem)
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -2181,7 +2092,6 @@ fn build_uniq(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -2257,13 +2167,10 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
-    c.emit_op(Op::DROP, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2285,7 +2192,6 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -2302,7 +2208,6 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, drained, 0);
-    c.emit_op(Op::DROP, 0);
 
     let drained_array = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, drained, 0);
@@ -2357,7 +2262,6 @@ fn build_rand_choice(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // empty? return null
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
@@ -2377,7 +2281,6 @@ fn build_rand_choice(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::F64_MUL, 0);
     c.emit_op(Op::I32_FROM_F64, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx, 0);
@@ -2400,14 +2303,12 @@ fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = len - 1
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2427,14 +2328,12 @@ fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::F64_MUL, 0);
     c.emit_op(Op::I32_FROM_F64, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     // tmp = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, tmp, 0);
-    c.emit_op(Op::DROP, 0);
     // arr[i] = arr[j]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -2455,7 +2354,6 @@ fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -2483,7 +2381,6 @@ fn build_rand_sample(imports: &mut Chunk) -> Chunk {
     let sl_idx = c.add_import("ecma:array", "slice");
     c.emit_call(sl_idx, 3, 0);
     c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    c.emit_op(Op::DROP, 0);
 
     // shuffle copy in place
     let sh_name = c.add_constant(Value::String(Arc::from("__vybe_rand_shuffle")));
@@ -2520,13 +2417,11 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
     c.emit_if(0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, n, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // n_norm = ((n % len) + len) % len  — handles negative n
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
@@ -2549,7 +2444,6 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     c.emit_op(Op::I32_REM_S, 0); // % len → n_norm
     c.emit_op_u16(Op::LOCAL_SET, n_norm, 0);
-    c.emit_op(Op::DROP, 0);
 
     // result = arr.slice(n_norm, len).concat(arr.slice(0, n_norm))
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -2976,7 +2870,6 @@ fn build_pascal_write(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, line);
     c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
-    c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
     c
@@ -3000,7 +2893,6 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
 
     emit_const_index(&mut c, empty_key, line);
     c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
-    c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
     c
@@ -3078,10 +2970,8 @@ fn build_str_count(imports: &mut Chunk) -> Chunk {
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, count, 0);
-    c.emit_op(Op::DROP, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, pos, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -3096,7 +2986,6 @@ fn build_str_count(imports: &mut Chunk) -> Chunk {
     let idx_result = 4u16; // reuse local slot (local_count=4, slot 4 is beyond declared but safe with extra locals)
     c.local_count = 5; // need one more local for idx_result
     c.emit_op_u16(Op::LOCAL_SET, idx_result, 0);
-    c.emit_op(Op::DROP, 0);
     // Check if index < 0
     c.emit_op_u16(Op::LOCAL_GET, idx_result, 0);
     core_wasm::i32_const(&mut c, 0, 0);
@@ -3106,12 +2995,10 @@ fn build_str_count(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, count, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, pos, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, pos, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -3140,18 +3027,15 @@ fn build_splice(imports: &mut Chunk) -> Chunk {
     // result = [] (removed elements)
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Collect removed elements: arr[index..index+deleteCount]
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op_u16(Op::LOCAL_GET, delete_count, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, end, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -3172,7 +3056,6 @@ fn build_splice(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -3215,7 +3098,6 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, num_str, 0);
     emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_br_if(0, 0);
 
@@ -3225,7 +3107,6 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, i32_str, 0);
     emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_br_if(0, 0);
 
@@ -3235,7 +3116,6 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, i64_str, 0);
     emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_br_if(0, 0);
 
@@ -3255,7 +3135,6 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     c.emit_dup(0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(done);
@@ -3284,7 +3163,6 @@ fn build_val(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arg, 0);
     c.emit_call(pf_idx, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if (result == result) skip — only NaN compares unequal to itself.
     let done = c.emit_block(0);
@@ -3297,7 +3175,6 @@ fn build_val(imports: &mut Chunk) -> Chunk {
     let zero = c.add_constant(Value::F64(0.0));
     emit_const_index(&mut c, zero, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(done);
 
@@ -3416,7 +3293,6 @@ fn build_isdate(imports: &mut Chunk) -> Chunk {
     // result = false initially (skip if not an object)
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if typeof(v) == "string" → parseable strings also count as dates.
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -3430,7 +3306,6 @@ fn build_isdate(imports: &mut Chunk) -> Chunk {
     c.emit_dup(0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
 
@@ -3449,7 +3324,6 @@ fn build_isdate(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, dt_str, 0);
     emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(done);
@@ -3501,7 +3375,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     // result = 12 (Variant) — fallthrough default
     emit_const_index(&mut c, v12, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // null / Nothing → Empty (0)
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
@@ -3511,7 +3384,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, v0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(is_null);
@@ -3524,7 +3396,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, v8194, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(is_array);
@@ -3533,7 +3404,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     emit_typeof(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, tag, 0);
-    c.emit_op(Op::DROP, 0);
 
     let done = c.emit_block(0);
 
@@ -3550,7 +3420,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
             // matched: set result and exit outer block
             emit_const_index(&mut c, $v, 0);
             c.emit_op_u16(Op::LOCAL_SET, result, 0);
-            c.emit_op(Op::DROP, 0);
             c.emit_br(2, 0);
             c.emit_end(0);
             c.patch_block(_block);
@@ -3578,14 +3447,12 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, v2, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(2, 0);
     c.emit_end(0);
     c.patch_block(is_integral);
 
     emit_const_index(&mut c, v5, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(is_number);
@@ -3607,7 +3474,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, v7, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // exit outer block
     c.emit_end(0);
     c.patch_block(_is_dt);
@@ -3615,7 +3481,6 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
     // Generic object → 9
     emit_const_index(&mut c, v9, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(done);
@@ -3650,7 +3515,6 @@ fn build_qbcolor(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     crate::emitter::collections::emit_array_new_into(_imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, arr_locals_start, 0);
-    c.emit_op(Op::DROP, 0);
     for &val in palette.iter() {
         let v_const = c.add_constant(Value::I32(val));
         c.emit_op_u16(Op::LOCAL_GET, arr_locals_start, 0);
@@ -3745,18 +3609,15 @@ fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
     // result = []
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = entries.length
     c.emit_op_u16(Op::LOCAL_GET, entries, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 0
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -3783,7 +3644,6 @@ fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -3818,21 +3678,17 @@ fn build_has_value(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
     c.emit_call(entries_idx, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = entries.length
     c.emit_op_u16(Op::LOCAL_GET, entries, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 0; result = false
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_bool_const(false, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -3857,7 +3713,6 @@ fn build_has_value(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_bool_const(true, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(2, 0); // break out to outer block
     c.emit_end(0);
     c.patch_block(_hit);
@@ -3867,7 +3722,6 @@ fn build_has_value(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -3900,21 +3754,17 @@ fn build_invert(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
     c.emit_call(entries_idx, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_call(map_new_idx, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = entries.length
     c.emit_op_u16(Op::LOCAL_GET, entries, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -3946,7 +3796,6 @@ fn build_invert(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -3979,12 +3828,10 @@ fn build_setdefault(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, existing, 0);
-    c.emit_op(Op::DROP, 0);
 
     // result = existing (default to existing; overwrite if missing)
     c.emit_op_u16(Op::LOCAL_GET, existing, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if existing is null/undefined: assign default + use it as result.
     let done_block = c.emit_block(0);
@@ -4001,7 +3848,6 @@ fn build_setdefault(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, default, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(done_block);
@@ -4030,7 +3876,6 @@ fn build_to_bytes(_imports: &mut Chunk) -> Chunk {
 
     c.emit_call(new_idx, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, enc, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, enc, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -4127,10 +3972,8 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let colon_str = c.add_constant(Value::String(Arc::from(":")));
     emit_const_index(&mut c, empty, 0);
     c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_bool_const(false, 0);
     c.emit_op_u16(Op::LOCAL_SET, percent, 0);
-    c.emit_op(Op::DROP, 0);
 
     // If picture is null/empty, return String(value).
     let no_picture_block = c.emit_block(0);
@@ -4166,11 +4009,9 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
     c.emit_call(to_lower, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt_lower, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(to_str, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, val_str, 0);
-    c.emit_op(Op::DROP, 0);
 
     // Short Date → first segment before space, else whole value string.
     let not_short_date = c.emit_block(0);
@@ -4183,7 +4024,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, space_str, 0);
     { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op(Op::DROP, 0);
     let no_date_space = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
     core_wasm::i32_const(&mut c, 0, 0);
@@ -4211,12 +4051,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
     c.emit_call(to_str, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     emit_const_index(&mut c, space_str, 0);
     { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op(Op::DROP, 0);
     let no_prefix = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
     core_wasm::i32_const(&mut c, 0, 0);
@@ -4227,12 +4065,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, slash_str, 0);
     { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
-    c.emit_op(Op::DROP, 0);
     let keep_work = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
     core_wasm::i32_const(&mut c, 0, 0);
@@ -4246,7 +4082,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(keep_work);
     c.emit_end(0);
@@ -4255,13 +4090,11 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, space_str, 0);
     { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
     core_wasm::i32_const(&mut c, 0, 1);
@@ -4270,17 +4103,14 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
     { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
     { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     let already_short_time = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
@@ -4321,7 +4151,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let dollar_str = c.add_constant(Value::String(Arc::from("$")));
     emit_const_index(&mut c, dollar_str, 0);
     c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
-    c.emit_op(Op::DROP, 0);
     // picture = picture.substring(1)
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     core_wasm::i32_const(&mut c, 0, 1);
@@ -4329,7 +4158,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, picture, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(dollar_block);
 
@@ -4354,7 +4182,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_bool_const(true, 0);
     c.emit_op_u16(Op::LOCAL_SET, percent, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
@@ -4363,7 +4190,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_SUB, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, picture, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(percent_block);
 
@@ -4373,7 +4199,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, dot_str, 0);
     { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
     c.emit_op_u16(Op::LOCAL_SET, dot_pos, 0);
-    c.emit_op(Op::DROP, 0);
 
     // If no dot: return prefix + String(parseInt(value))
     let no_decimals_block = c.emit_block(0);
@@ -4392,11 +4217,9 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, hundred, 0);
     c.emit_op(Op::F64_MUL, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.emit_end(0);
     c.patch_block(no_pct_int);
@@ -4447,7 +4270,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, decimals, 0);
-    c.emit_op(Op::DROP, 0);
 
     // return prefix + Number(value).toFixed(decimals), with optional percentage suffix
     c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
@@ -4460,11 +4282,9 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, hundred_dec, 0);
     c.emit_op(Op::F64_MUL, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.emit_end(0);
     c.patch_block(no_pct_dec);
@@ -4536,7 +4356,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
     c.emit_call(to_upper, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt, 0);
-    c.emit_op(Op::DROP, 0);
 
     let non_empty_format = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
@@ -4553,7 +4372,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
 
     emit_const_index(&mut c, zero_num, 0);
     c.emit_op_u16(Op::LOCAL_SET, precision, 0);
-    c.emit_op(Op::DROP, 0);
 
     let no_precision_suffix = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
@@ -4569,7 +4387,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_str_substring(&mut c, 0);
     c.emit_call(parse_int, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, precision, 0);
-    c.emit_op(Op::DROP, 0);
     let precision_is_number = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, precision, 0);
     c.emit_op_u16(Op::LOCAL_GET, precision, 0);
@@ -4577,7 +4394,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, zero_num, 0);
     c.emit_op_u16(Op::LOCAL_SET, precision, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(precision_is_number);
     c.emit_end(0);
@@ -4587,7 +4403,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 0);
     emit_str_char_code_at(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, first_code, 0);
-    c.emit_op(Op::DROP, 0);
 
     let dispatch = c.emit_block(0);
 
@@ -4601,7 +4416,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_call(parse_int, 1, 0);
     c.emit_call(to_str, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
 
     let non_negative = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
@@ -4628,7 +4442,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_call(pad_start, 3, 0);
     emit_str_concat(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(2, 0);
     c.emit_end(0);
     c.patch_block(non_negative);
@@ -4638,7 +4451,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, zero_str, 0);
     c.emit_call(pad_start, 3, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(not_decimal);
@@ -4658,7 +4470,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, zero_str, 0);
     c.emit_call(pad_start, 3, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(not_hex);
@@ -4674,7 +4485,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, precision, 0);
     c.emit_call(to_fixed, 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(not_fixed);
@@ -4694,7 +4504,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, percent_suffix, 0);
     emit_str_concat(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0);
     c.emit_end(0);
     c.patch_block(not_percent);
@@ -4702,7 +4511,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(to_str, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(dispatch);
@@ -4729,7 +4537,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     c.emit_op_u16(Op::LOCAL_SET, abs_width, 0);
-    c.emit_op(Op::DROP, 0);
     let width_non_negative = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     emit_const_index(&mut c, zero_num, 0);
@@ -4740,7 +4547,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     c.emit_op(Op::F64_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, abs_width, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.patch_block(width_non_negative);
 
@@ -4798,20 +4604,16 @@ fn build_transform_values(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
     c.emit_call(entries_idx, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_call(map_new_idx, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, entries, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -4827,7 +4629,6 @@ fn build_transform_values(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, pair, 0);
-    c.emit_op(Op::DROP, 0);
 
     // result[pair[0]] = fn(pair[1])
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -4847,7 +4648,6 @@ fn build_transform_values(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -4878,20 +4678,16 @@ fn build_transform_keys(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, map, 0);
     c.emit_call(entries_idx, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_call(map_new_idx, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, entries, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -4906,7 +4702,6 @@ fn build_transform_keys(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_op_u16(Op::LOCAL_SET, pair, 0);
-    c.emit_op(Op::DROP, 0);
 
     // result[fn(pair[0])] = pair[1]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
@@ -4927,7 +4722,6 @@ fn build_transform_keys(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -4963,16 +4757,13 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
     emit_const_index(&mut c, empty, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 0; len = STR_LENGTH(s)
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
     emit_str_length(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     let open_brace = c.add_constant(Value::I32(b'{' as i32));
     let close_brace = c.add_constant(Value::I32(b'}' as i32));
@@ -4999,7 +4790,6 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
         new
     };
     c.emit_op_u16(Op::LOCAL_SET, ch_slot, 0);
-    c.emit_op(Op::DROP, 0);
 
     // -- '{' branch --
     let open_block = c.emit_block(0);
@@ -5014,7 +4804,6 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, end, 0);
-    c.emit_op(Op::DROP, 0);
 
     let scan_block = c.emit_block(0);
     let (scan_loop, _) = c.emit_loop_s(0);
@@ -5033,7 +4822,6 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, end, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(scan_loop);
@@ -5048,7 +4836,6 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_GET, d, 0);
@@ -5057,13 +4844,11 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_call(to_str, 1, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(1, 0); // continue outer loop
     c.emit_end(0);
     c.patch_block(open_block);
@@ -5078,12 +4863,10 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     emit_str_substring(&mut c, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -5244,7 +5027,6 @@ fn build_js_get_method(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -5260,7 +5042,6 @@ fn build_js_get_method(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 3, 0);
-    c.emit_op(Op::DROP, 0);
 
     let missing_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
@@ -5278,7 +5059,6 @@ fn build_js_get_method(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, proto_key, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -5302,7 +5082,6 @@ fn build_js_instance_of(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, proto_key, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
@@ -5313,7 +5092,6 @@ fn build_js_instance_of(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 3, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -5322,7 +5100,6 @@ fn build_js_instance_of(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, link_key, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 3, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
@@ -5403,13 +5180,11 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     // result = new array
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 4, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 10, 0);
-    c.emit_op(Op::DROP, 0);
 
     // step = step ?? 1
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
@@ -5417,11 +5192,9 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_if(0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, 7, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op_u16(Op::LOCAL_SET, 7, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
 
     // start = start ?? (step > 0 ? 0 : len - 1)
@@ -5435,18 +5208,15 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_if(0);
     emit_const_index(&mut c, zero, 0);
     c.emit_op_u16(Op::LOCAL_SET, 8, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, 10, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, 8, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, 8, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
 
     // end = end ?? (step > 0 ? len : -1)
@@ -5460,16 +5230,13 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 10, 0);
     c.emit_op_u16(Op::LOCAL_SET, 9, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_else(0);
     emit_const_index(&mut c, neg_one, 0);
     c.emit_op_u16(Op::LOCAL_SET, 9, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
     c.emit_else(0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, 9, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
 
     // step=0 would otherwise spin forever; return empty slice.
@@ -5485,7 +5252,6 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     // i = normalized start
     c.emit_op_u16(Op::LOCAL_GET, 8, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
-    c.emit_op(Op::DROP, 0);
 
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -5503,7 +5269,6 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 9, 0);
     crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
-    c.emit_op(Op::DROP, 0);
 
     // negative step: cond = i > end
     c.emit_else(0);
@@ -5511,7 +5276,6 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 9, 0);
     crate::emitter::ops::emit_dyn_gt_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_end(0);
 
     // Check condition — exit if false
@@ -5559,7 +5323,6 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
     c.patch_loop(loop_p);
@@ -5649,12 +5412,10 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 1
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let outer_block_p = c.emit_block(0);
     let (outer_loop_p, _) = c.emit_loop_s(0);
@@ -5669,21 +5430,18 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
-    c.emit_op(Op::DROP, 0);
 
     // keyVal = keyFn(key)
     c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, key_val, 0);
-    c.emit_op(Op::DROP, 0);
 
     // j = i - 1
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     // while j >= 0 && keyFn(arr[j]) > keyVal
     let inner_block_p = c.emit_block(0);
@@ -5721,7 +5479,6 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, j, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue inner loop
     c.emit_end(0);
@@ -5743,7 +5500,6 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue outer loop
     c.emit_end(0);
@@ -5829,18 +5585,15 @@ fn build_string_raw(imports: &mut Chunk) -> Chunk {
     let empty = c.add_constant(Value::String(Arc::from("")));
     emit_const_index(&mut c, empty, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // len = strings.length
     c.emit_op_u16(Op::LOCAL_GET, strings, 0);
     crate::emitter::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op(Op::DROP, 0);
 
     // i = 0
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     // loop: while i < len
     let block_p = c.emit_block(0);
@@ -5858,7 +5611,6 @@ fn build_string_raw(imports: &mut Chunk) -> Chunk {
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     emit_str_concat(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if i < values.length: result += String(values[i])
     let skip_val_p = c.emit_block(0);
@@ -5875,7 +5627,6 @@ fn build_string_raw(imports: &mut Chunk) -> Chunk {
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     emit_str_concat(imports, &mut c, 0); // dyn_add would also work since result is string
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_end(0);
     c.patch_block(skip_val_p);
@@ -5885,7 +5636,6 @@ fn build_string_raw(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     c.emit_br(0, 0); // continue loop
     c.emit_end(0);
@@ -5980,7 +5730,6 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     let index_of = c.add_import("ecma:array", "indexOf");
     c.emit_call(index_of, 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx, 0);
-    c.emit_op(Op::DROP, 0);
 
     // if idx >= 0: splice + return true
     c.emit_op_u16(Op::LOCAL_GET, idx, 0);
@@ -6024,11 +5773,9 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
     c.emit_call(len_import, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, src_len, 0);
-    c.emit_op(Op::DROP, 0);
     // i = 0
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let blk = c.emit_block(0);
     let (lp, _) = c.emit_loop_s(0);
@@ -6053,7 +5800,6 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(lp);
@@ -6083,10 +5829,8 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
     c.emit_call(len_import, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, src_len, 0);
-    c.emit_op(Op::DROP, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
 
     let blk = c.emit_block(0);
     let (lp, _) = c.emit_loop_s(0);
@@ -6108,7 +5852,6 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(lp);
@@ -6154,7 +5897,6 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     // lo = index; hi = index + count - 1
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op_u16(Op::LOCAL_SET, lo, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op_u16(Op::LOCAL_GET, count, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
@@ -6162,7 +5904,6 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     crate::emitter::ops::emit_dyn_neg_into(imports, &mut c, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, hi, 0);
-    c.emit_op(Op::DROP, 0);
 
     let blk = c.emit_block(0);
     let (lp, _) = c.emit_loop_s(0);
@@ -6177,7 +5918,6 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, lo, 0);
     c.emit_call(get_import, 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, tmp, 0);
-    c.emit_op(Op::DROP, 0);
     // arr[lo] = arr[hi]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, lo, 0);
@@ -6197,13 +5937,11 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, 0, 1);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, lo, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, hi, 0);
     core_wasm::i32_const(&mut c, 0, 1);
     crate::emitter::ops::emit_dyn_neg_into(imports, &mut c, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, hi, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(lp);

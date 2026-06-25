@@ -366,7 +366,6 @@ fn local_get_set() {
     let c = chunk.add_constant(Value::I32(77));
     chunk.emit_op_u16(Op::CONST, c, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // local[1] = 77, keeps on stack
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0); // push local[1]
     chunk.emit_op(Op::HALT, 0);
 
@@ -382,7 +381,6 @@ fn global_get_set() {
     let val = chunk.add_constant(Value::I32(55));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name_idx, 0); // keeps on stack
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -1189,7 +1187,6 @@ fn array_set() {
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
     // store in local for reuse
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     // array_set: stack [obj, key, val] => [val]
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let idx = chunk.add_constant(Value::I32(0));
@@ -1223,7 +1220,6 @@ fn array_fill() {
     }
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     // array_fill: stack [array, value, start, len]
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let val = chunk.add_constant(Value::I32(7));
@@ -1296,7 +1292,6 @@ fn struct_set_property() {
     chunk.emit_op_u16(Op::CONST, v1, 0);
     chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     // struct_set: stack [obj, val] with operand prop name
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let new_val = chunk.add_constant(Value::I32(99));
@@ -1339,7 +1334,6 @@ fn struct_getter_auto_dispatch() {
     let k = main.add_constant(Value::String(Arc::from("__get_foo")));
     chunk_emit_key_func_struct(&mut main, k, 1);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
     // Now struct_get "foo" should auto-invoke __get_foo
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let foo_key = main.add_constant(Value::String(Arc::from("foo")));
@@ -1374,7 +1368,6 @@ fn struct_setter_auto_dispatch() {
     let k = main.add_constant(Value::String(Arc::from("__set_bar")));
     chunk_emit_key_func_struct(&mut main, k, 1);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
     // struct_set "bar" should auto-invoke __set_bar
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let val = main.add_constant(Value::I32(5));
@@ -1473,11 +1466,9 @@ fn loop_sum_1_to_5() {
     // sum = 0
     chunk.emit_op(Op::I32_CONST_0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     // i = 1
     chunk.emit_op(Op::I32_CONST_1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     let outer = chunk.emit_block(0);
     let (lp, _loop_start) = chunk.emit_loop_s(0);
@@ -1493,14 +1484,12 @@ fn loop_sum_1_to_5() {
     chunk.emit_op_u16(Op::LOCAL_GET, 2, 0);
     chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     // i += 1
     chunk.emit_op_u16(Op::LOCAL_GET, 2, 0);
     chunk.emit_op(Op::I32_CONST_1, 0);
     chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_br(0, 0);
     chunk.emit_end(0);
@@ -1981,15 +1970,12 @@ fn multiple_locals() {
     // local[1] = 10
     chunk.emit_op_u16(Op::CONST, c1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     // local[2] = 20
     chunk.emit_op_u16(Op::CONST, c2, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    chunk.emit_op(Op::DROP, 0);
     // local[3] = 30
     chunk.emit_op_u16(Op::CONST, c3, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 3, 0);
-    chunk.emit_op(Op::DROP, 0);
     // result = local[1] + local[2] + local[3]
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 2, 0);

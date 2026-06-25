@@ -43,7 +43,6 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     // Create empty object → store in this_slot
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Stamp __type string (untyped fallback for typeof/instanceof)
     // struct_set expects [obj, val] → leaves [val]
@@ -388,7 +387,6 @@ pub fn emit_super_call_store_result(
 ) {
     // Store parent-created object as this
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Save parent's methods that child will override (for super.method() calls)
     for method_name in child_method_names {
@@ -556,11 +554,10 @@ pub fn emit_store_constructor_with_upvalues(
         chunk.emit(if *is_local { 1 } else { 0 }, line);
         chunk.emit(*index, line);
     }
-    chunk.emit_op_u16(Op::LOCAL_SET, local_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, local_slot, line);
     // Store under original name (case-sensitive lookup)
     let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));
     chunk.emit_op_u16(Op::GLOBAL_SET, global_name, line);
-    chunk.emit_op(Op::DROP, line);
     // Also store under lowercase alias for cross-language lookup (VB is case-insensitive).
     // Skip in case-sensitive profiles (JS): a `class Range` must NOT overwrite a hoisted
     // `function* range` — the two names are distinct in a case-sensitive language.
@@ -570,7 +567,6 @@ pub fn emit_store_constructor_with_upvalues(
             chunk.emit_op_u16(Op::LOCAL_GET, local_slot, line);
             let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
             chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 }

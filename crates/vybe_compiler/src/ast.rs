@@ -40,6 +40,7 @@ pub enum Lang {
     Fortran,
     Go,
     Lua,
+    Java,
     Unknown,
 }
 

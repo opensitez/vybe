@@ -60,16 +60,13 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     for k in (0..nrest).rev() {
         let slot = first_arg_slot + k as u16;
         chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     // Now fmt is on top — store it.
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // Build args array: []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // Push each variadic arg into the array.
     for k in 0..nrest {
@@ -102,9 +99,7 @@ pub fn emit_sprintf_from_array(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunks[current].local_count += 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
     chunks[current].emit(0u8, line); // upvalue count
@@ -155,9 +150,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
     chunks[current].local_count += 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, inp_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
     chunks[current].emit(0u8, line);
@@ -208,7 +201,6 @@ fn lg(c: &mut Chunk, s: u16) {
 }
 fn ls(c: &mut Chunk, s: u16) {
     c.emit_op_u16(Op::LOCAL_SET, s, 0);
-    c.emit_op(Op::DROP, 0);
 }
 fn ci(c: &mut Chunk, v: i32) {
     c.emit_i32_const(v, 0);

@@ -626,7 +626,7 @@ impl VM {
                 }
                 _ if op == Op::LOCAL_SET => {
                     let slot = self.read_u16() as usize;
-                    let val = self.peek(0).clone();
+                    let val = self.pop();
                     if let Some(rec) = self.type_recorder.as_mut() {
                         let chunk_idx = self.frames.last().unwrap().chunk_index;
                         rec.record(chunk_idx, slot, &val);
@@ -642,6 +642,10 @@ impl VM {
                 _ if op == Op::LOCAL_TEE => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
+                    if let Some(rec) = self.type_recorder.as_mut() {
+                        let chunk_idx = self.frames.last().unwrap().chunk_index;
+                        rec.record(chunk_idx, slot, &val);
+                    }
                     let base = self.frame().base;
                     let idx = base + slot;
                     let dst = self
@@ -685,7 +689,7 @@ impl VM {
                     } else {
                         name
                     };
-                    let val = self.peek(0).clone();
+                    let val = self.pop();
                     self.globals.insert(key, val);
                 }
                 _ if op == Op::UPVALUE_GET => {

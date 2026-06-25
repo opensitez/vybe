@@ -28,7 +28,6 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit(1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
-    chunk.emit_op(Op::DROP, line);
 
     // NaN check: `r !== r` is the canonical NaN test.
     let if_block = chunk.emit_block(line);
@@ -58,7 +57,6 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit(1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
-    chunk.emit_op(Op::DROP, line);
 
     let if_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
@@ -86,7 +84,6 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit(1, line);
     let lc = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, lc, line);
-    chunk.emit_op(Op::DROP, line);
 
     // If lc === "true" → push true and return.
     let outer = chunk.emit_block(line);
@@ -127,7 +124,6 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let value = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, value, line);
-    chunk.emit_op(Op::DROP, line);
 
     let ok_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);

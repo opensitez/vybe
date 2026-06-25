@@ -76,7 +76,6 @@ fn js_can_read_python_dict_fields() {
     chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     // Read like JS does (struct_get)
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -106,7 +105,6 @@ fn python_can_read_js_object_fields() {
     chunk.emit_op_u16(Op::STRUCT_SET, key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     // Python-style dict access
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -147,7 +145,6 @@ fn typed_class_across_languages() {
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     // Python-style: read field with struct_get
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);

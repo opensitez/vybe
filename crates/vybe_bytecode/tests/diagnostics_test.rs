@@ -30,7 +30,6 @@ fn type_recorder_captures_monomorphic_slot() {
     let k = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, k, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -58,10 +57,8 @@ fn type_recorder_flags_polymorphic_slot() {
     let s = chunk.add_constant(Value::String(std::sync::Arc::from("hi")));
     chunk.emit_op_u16(Op::CONST, i, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -85,15 +82,12 @@ fn type_recorder_summary_reports_monomorphic_percentage() {
     let i = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, i, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     // slot 1: polymorphic I32 then String
     chunk.emit_op_u16(Op::CONST, i, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     let s = chunk.add_constant(Value::String(std::sync::Arc::from("x")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -117,7 +111,6 @@ fn type_recorder_off_means_zero_overhead() {
     let k = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, k, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
 

@@ -6,7 +6,6 @@ pub(super) fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunks[current].local_count += argc as u16;
     for offset in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     base
 }

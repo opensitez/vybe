@@ -247,7 +247,6 @@ fn function_in_separate_chunk_callable() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
-    main.emit_op(Op::DROP, 0);
     // Call: add(10, 20)
     main.emit_op_u16(Op::GLOBAL_GET, name, 0);
     let a = main.add_constant(Value::F64(10.0));
@@ -296,12 +295,10 @@ fn multiple_chunks_cross_call() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, d_name, 0);
-    main.emit_op(Op::DROP, 0);
     // Register quad
     main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, q_name, 0);
-    main.emit_op(Op::DROP, 0);
     // Call quad(5)
     main.emit_op_u16(Op::GLOBAL_GET, q_name, 0);
     let five = main.add_constant(Value::F64(5.0));

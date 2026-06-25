@@ -38,7 +38,6 @@ fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -278,10 +277,8 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
-    chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -293,7 +290,6 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     push_const(chunk, Value::Bool(true), line);
 }
@@ -303,7 +299,6 @@ pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let chunk = &mut chunks[current];
     let session = chunk.add_constant(Value::String(Arc::from("$_SESSION")));
     chunk.emit_op_u16(Op::GLOBAL_SET, session, line);
-    chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(true), line);
 }
 
@@ -318,13 +313,10 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
-    chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
-    chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
-    chunk.emit_op(Op::DROP, line);
 
     push_str(chunk, "PHPSESSID", line);
     push_str(chunk, "", line);
@@ -545,7 +537,6 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         let obj_norm_slot = alloc_local(&mut helper);
         lget(&mut helper, value_slot, line);
         helper.emit_op_u16(Op::LOCAL_SET, obj_norm_slot, line);
-        helper.emit_op(Op::DROP, line);
         // not null
         lget(&mut helper, obj_norm_slot, line);
         helper.emit_op(Op::REF_IS_NULL, line);
@@ -766,7 +757,6 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let fn_slot_ser = alloc_local(&mut helper);
             lget(&mut helper, method_slot, line);
             helper.emit_op_u16(Op::LOCAL_SET, fn_slot_ser, line);
-            helper.emit_op(Op::DROP, line);
             lget(&mut helper, fn_slot_ser, line);
             helper.emit_op(Op::REF_IS_NULL, line);
             helper.emit_op(Op::I32_EQZ, line);
@@ -817,7 +807,6 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let fn_slot_slp = alloc_local(&mut helper);
             lget(&mut helper, method_slot, line);
             helper.emit_op_u16(Op::LOCAL_SET, fn_slot_slp, line);
-            helper.emit_op(Op::DROP, line);
             lget(&mut helper, fn_slot_slp, line);
             helper.emit_op(Op::REF_IS_NULL, line);
             helper.emit_op(Op::I32_EQZ, line);
@@ -933,7 +922,6 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let fn_slot_tmp = alloc_local(&mut helper);
             lget(&mut helper, tmp_slot, line);
             helper.emit_op_u16(Op::LOCAL_SET, fn_slot_tmp, line);
-            helper.emit_op(Op::DROP, line);
             lget(&mut helper, fn_slot_tmp, line);
             helper.emit_op(Op::REF_IS_NULL, line);
             helper.emit_op(Op::I32_EQZ, line);
@@ -1137,7 +1125,6 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
             let fn_slot_uns = alloc_local(&mut helper);
             lget(&mut helper, method_slot, line);
             helper.emit_op_u16(Op::LOCAL_SET, fn_slot_uns, line);
-            helper.emit_op(Op::DROP, line);
             lget(&mut helper, fn_slot_uns, line);
             helper.emit_op(Op::REF_IS_NULL, line);
             helper.emit_op(Op::I32_EQZ, line);
@@ -1211,7 +1198,6 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
             let fn_slot_wk = alloc_local(&mut helper);
             lget(&mut helper, method_slot, line);
             helper.emit_op_u16(Op::LOCAL_SET, fn_slot_wk, line);
-            helper.emit_op(Op::DROP, line);
             lget(&mut helper, fn_slot_wk, line);
             helper.emit_op(Op::REF_IS_NULL, line);
             helper.emit_op(Op::I32_EQZ, line);
@@ -1408,12 +1394,10 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
 
     // Pop the object arg
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Create struct, store weak ref
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // this.__weak = REF_MAKE_WEAK(obj)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

@@ -168,14 +168,11 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -194,7 +191,6 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_contains(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
     chunks[current].emit_if(line);
 
@@ -223,16 +219,13 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_index_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -358,12 +351,10 @@ pub fn emit_values_from_local(
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push(dict[keys[i]])
     let state =
@@ -412,12 +403,10 @@ pub fn emit_items_from_local(
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // for i in 0..keys.length: result.push([keys[i], dict[keys[i]]])
     let state =
@@ -520,7 +509,6 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     let entries_local = chunks[current].local_count;
     chunks[current].local_count = entries_local + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::GLOBAL_GET, global_name, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);

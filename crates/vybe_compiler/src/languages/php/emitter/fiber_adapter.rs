@@ -26,7 +26,6 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {

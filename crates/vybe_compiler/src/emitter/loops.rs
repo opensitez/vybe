@@ -150,7 +150,6 @@ pub fn emit_for_in_start(
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     // LOCAL_SET leaves the assigned value on the stack in Vybe bytecode;
     // drop it here so every iteration starts with a clean stack.
-    chunks[current].emit_op(Op::DROP, line);
 
     // block $exit { loop $loop {
     let block_patch = chunks[current].emit_block(line);
@@ -205,7 +204,6 @@ pub fn emit_for_in_end(
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     // LOCAL_SET peeks (Vybe convention) — drop the residue so the
     // stack height at loop top is invariant across iterations.
-    chunks[current].emit_op(Op::DROP, line);
 
     // br $loop (continue loop)
     chunks[current].emit_br(0, line);
@@ -232,7 +230,6 @@ pub fn emit_map(
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
@@ -271,13 +268,11 @@ pub fn emit_filter(
     // result = []
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
     // Store element
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // if fn(element): result.push(element)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -347,7 +342,6 @@ pub fn emit_reduce(
     chunks[current].emit_i32_const(0, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // i = 1
     chunks[current].emit_i32_const(1, line);
@@ -375,7 +369,6 @@ pub fn emit_reduce(
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // i += 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -419,7 +412,6 @@ pub fn emit_any_every(
         chunks[current].emit_bool_const(true, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
@@ -441,7 +433,6 @@ pub fn emit_any_every(
         chunks[current].emit_br_if(0, line); // skip if false
         chunks[current].emit_bool_const(true, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
-        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
         chunks[current].emit_end(line);
         chunks[current].patch_block(skip);
@@ -450,7 +441,6 @@ pub fn emit_any_every(
         chunks[current].emit_br_if(0, line); // skip if true
         chunks[current].emit_bool_const(false, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
-        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
         chunks[current].emit_end(line);
         chunks[current].patch_block(skip);

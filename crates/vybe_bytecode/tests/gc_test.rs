@@ -347,7 +347,6 @@ fn struct_set_and_get_roundtrip() {
         // create empty struct, store in slot 0, drop stack copy
         c.emit_op_u16(Op::STRUCT_NEW, 0, 0); // stack: [obj]
         c.emit_op_u16(Op::LOCAL_SET, 0, 0); // stack: [obj] (peek)
-        c.emit_op(Op::DROP, 0); // stack: []
 
         // obj.x = 42
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
@@ -370,7 +369,6 @@ fn struct_set_overwrites_field() {
 
         c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, v1, 0);
@@ -421,7 +419,6 @@ fn array_set_updates_element() {
         c.emit_op_u16(Op::CONST, zero, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         // arr[1] = 77: push arr, idx, val
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -463,7 +460,6 @@ fn array_fill_sets_range() {
         }
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         // array.fill: pops (count, start, val, arr) → push arr, val, start, count
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -495,7 +491,6 @@ fn array_copy_copies_range() {
         c.emit_op_u16(Op::CONST, v5, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         // dst = [0,0,0]
         c.emit_op_u16(Op::CONST, v0, 0);
@@ -503,7 +498,6 @@ fn array_copy_copies_range() {
         c.emit_op_u16(Op::CONST, v0, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-        c.emit_op(Op::DROP, 0);
 
         // array.copy dst dst_offset=0 src src_offset=0 count=3
         let zero = c.add_constant(Value::I32(0));
@@ -739,7 +733,6 @@ fn array_init_data_copies_into_array() {
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, one, 0); // dst_offset
@@ -771,7 +764,6 @@ fn array_init_elem_copies_into_array() {
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, zero, 0); // dst_offset

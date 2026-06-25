@@ -67,7 +67,6 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 #[allow(dead_code)]
@@ -158,7 +157,6 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_len_slot = chunks[current].local_count;
     chunks[current].local_count += 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_len_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -170,7 +168,6 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     let map_len_slot = chunks[current].local_count;
     chunks[current].local_count += 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, map_len_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // map_len != 0: ecma:map.size returns I32 — use I32_NE directly.
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
@@ -344,9 +341,7 @@ pub fn emit_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
     };
     let arr_slot = sep_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sep_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sep_slot, line);
     emit_import_call(chunks, current, "ecma:array", "join", 2, line);
@@ -438,7 +433,6 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].local_count += 1;
     // save count
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_local, line);
-    chunks[current].emit_op(Op::DROP, line);
     // stack: [arr, index]
     chunks[current].emit_dup(line); // [arr, index, index]
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_local, line); // [arr, index, index, count]
@@ -592,7 +586,6 @@ pub fn emit_runtime_helper_call(
     // Stash args (top-of-stack is arg N-1 → highest slot).
     for i in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + i, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     let name_c = chunks[current].add_constant(Value::String(Arc::from(global)));
     chunks[current].emit_op_u16(Op::GLOBAL_GET, name_c, line);
@@ -623,7 +616,6 @@ pub fn emit_pack_n(chunks: &mut [Chunk], current: usize, n: u16, slot_base: u16,
     for i in (0..n).rev() {
         let slot = slot_base + i;
         chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     // Build empty array, push each in forward order.
     emit_array_new(chunks, current, 0, line);
@@ -643,9 +635,7 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     let v1 = chunks[current].local_count + 1;
     chunks[current].local_count += 2;
     chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line);
-    chunks[current].emit_op(Op::DROP, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
     chunks[current].emit_dup(line);
@@ -695,7 +685,6 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
         .checked_add(2)
         .expect("emit_len_into: local slot overflow");
     code.emit_op_u16(Op::LOCAL_SET, scratch_val, line);
-    code.emit_op(Op::DROP, line);
 
     let outer = code.emit_block(line);
     let str_block = code.emit_block(line);
@@ -714,7 +703,6 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
     emit_import_call_into(imports, code, "wasm:js-string", "length", 1, line);
     code.emit_op_u16(Op::LOCAL_SET, scratch_len, line);
-    code.emit_op(Op::DROP, line);
     code.emit_br(1, line);
     code.emit_end(line);
     code.patch_block(str_block);
@@ -722,7 +710,6 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
     emit_import_call_into(imports, code, "ecma:array", "length", 1, line);
     code.emit_op_u16(Op::LOCAL_SET, scratch_len, line);
-    code.emit_op(Op::DROP, line);
     code.emit_end(line);
     code.patch_block(outer);
     code.emit_op_u16(Op::LOCAL_GET, scratch_len, line);
@@ -788,9 +775,7 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.local_count += 2;
     // Stack: [v1, v2] — stash both into temp slots (peek-set + drop).
     code.emit_op_u16(Op::LOCAL_SET, v2, line);
-    code.emit_op(Op::DROP, line);
     code.emit_op_u16(Op::LOCAL_SET, v1, line);
-    code.emit_op(Op::DROP, line);
     // arr = ecma:array.newWithLength(0)
     core_wasm::i32_const(code, line, 0);
     emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
@@ -835,13 +820,10 @@ pub fn emit_range_targeted(
             let result_local = stop_local + 2;
 
             chunk.emit_op_u16(Op::LOCAL_SET, stop_local, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
             chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
-            chunk.emit_op(Op::DROP, line);
             core_wasm::i32_const(chunk, line, 0);
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
-            chunk.emit_op(Op::DROP, line);
 
             let block_patch = chunk.emit_block(line);
             let (loop_patch, _) = chunk.emit_loop_s(line);
@@ -862,7 +844,6 @@ pub fn emit_range_targeted(
             core_wasm::i32_const(chunk, line, 1);
             chunk.emit_op(Op::I32_ADD, line);
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
-            chunk.emit_op(Op::DROP, line);
 
             chunk.emit_br(0, line);
             chunk.emit_end(line);

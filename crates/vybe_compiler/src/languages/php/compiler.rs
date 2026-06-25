@@ -74,7 +74,6 @@ impl Compiler {
             }
         }
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
     }
 
     fn emit_buffered_generator_apply_next_result(
@@ -184,10 +183,8 @@ impl Compiler {
         crate::emitter::generators::emit_next(self.chunk(), line);
         let has_more_slot = self.define_local("__php_gen_has_more");
         self.emit_u16(Op::LOCAL_SET, has_more_slot);
-        self.emit(Op::DROP);
         let value_slot = self.define_local("__php_gen_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
 
         self.emit_buffered_generator_mark_started(obj_slot, started_key);
         self.emit_buffered_generator_apply_next_result(
@@ -210,7 +207,6 @@ impl Compiler {
             let slot = self.define_local("__php_gen_loop_index");
             self.emit_const(Value::F64(0.0));
             self.emit_u16(Op::LOCAL_SET, slot);
-            self.emit(Op::DROP);
             Some(slot)
         } else {
             None
@@ -276,13 +272,11 @@ impl Compiler {
     ) {
         self.emit_generator_yield_key_or_fallback(value_slot, key_index_slot);
         self.emit_u16(Op::LOCAL_SET, key_slot);
-        self.emit(Op::DROP);
     }
 
     pub(crate) fn emit_buffered_generator_value_binding(&mut self, var_slot: u16, value_slot: u16) {
         self.emit_generator_yield_value(value_slot);
         self.emit_u16(Op::LOCAL_SET, var_slot);
-        self.emit(Op::DROP);
     }
 
     pub(crate) fn emit_buffered_generator_method_dispatch(
@@ -321,7 +315,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, return_key);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
             }
             "valid" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -344,7 +337,6 @@ impl Compiler {
                     crate::emitter::ops::emit_dyn_not(self.chunk(), line);
                 };
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 self.chunk().emit_else(line);
                 self.emit_buffered_generator_start_with_next(
@@ -377,13 +369,11 @@ impl Compiler {
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, current_key);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 self.chunk().emit_end(line);
                 self.chunk().emit_else(line);
@@ -417,7 +407,6 @@ impl Compiler {
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -430,7 +419,6 @@ impl Compiler {
                 crate::emitter::generators::emit_resume(self.chunk(), line);
                 let value_slot = self.define_local("__php_gen_resume_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
-                self.emit(Op::DROP);
                 self.emit_buffered_generator_apply_resume_result(
                     obj_tmp,
                     value_slot,
@@ -478,7 +466,6 @@ impl Compiler {
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -487,7 +474,6 @@ impl Compiler {
                 crate::emitter::generators::emit_resume_throw(self.chunk(), line);
                 let value_slot = self.define_local("__php_gen_throw_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
-                self.emit(Op::DROP);
                 self.emit_buffered_generator_apply_resume_result(
                     obj_tmp,
                     value_slot,
@@ -504,10 +490,8 @@ impl Compiler {
                 crate::emitter::generators::emit_next(self.chunk(), line);
                 let has_more_slot = self.define_local("__php_gen_throw_has_more");
                 self.emit_u16(Op::LOCAL_SET, has_more_slot);
-                self.emit(Op::DROP);
                 let start_value_slot = self.define_local("__php_gen_throw_start_value");
                 self.emit_u16(Op::LOCAL_SET, start_value_slot);
-                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
@@ -527,7 +511,6 @@ impl Compiler {
                 crate::emitter::generators::emit_resume_throw(self.chunk(), line);
                 let start_resume_slot = self.define_local("__php_gen_throw_resume_value");
                 self.emit_u16(Op::LOCAL_SET, start_resume_slot);
-                self.emit(Op::DROP);
                 self.emit_buffered_generator_apply_resume_result(
                     obj_tmp,
                     start_resume_slot,
@@ -574,7 +557,6 @@ impl Compiler {
                 self.chunk().emit_end(line);
                 self.emit(Op::NULL);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
             }
             _ => unreachable!(),
         }
@@ -592,7 +574,6 @@ impl Compiler {
         self.emit_var_get(name);
         let gen_slot = self.define_local("__buffered_generator_overwrite");
         self.emit_u16(Op::LOCAL_SET, gen_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let is_generator = self.import("ecma:value", "isGenerator");
@@ -652,12 +633,10 @@ impl Compiler {
         common::strings::emit_to_lower(self.chunk(), line);
         let callee_name_slot = self.define_local("__php_string_callee_name");
         self.emit_u16(Op::LOCAL_SET, callee_name_slot);
-        self.emit(Op::DROP);
 
         let matched_slot = self.define_local("__php_string_callee_matched");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
-        self.emit(Op::DROP);
         for function_name in known_functions {
             let lowered_name = function_name.to_ascii_lowercase();
             self.emit_u16(Op::LOCAL_GET, matched_slot);
@@ -677,10 +656,8 @@ impl Compiler {
             let idx = self.str_const(&function_name);
             self.emit_u16(Op::GLOBAL_GET, idx);
             self.emit_u16(Op::LOCAL_SET, callee_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -689,7 +666,6 @@ impl Compiler {
     pub(crate) fn finish_buffered_generator_method_dispatch(&mut self, result_slot: usize) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_SET, result_slot as u16);
-        self.emit(Op::DROP);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
     }
@@ -765,7 +741,6 @@ impl Compiler {
         self.chunk().emit_op_u16(Op::CALL_IMPORT, map_new_idx, line);
         self.chunk().emit(0, line);
         self.emit_u16(Op::LOCAL_SET, obj_slot);
-        self.emit(Op::DROP);
 
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);

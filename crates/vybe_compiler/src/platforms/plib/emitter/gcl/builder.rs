@@ -122,11 +122,9 @@ pub fn build_constructor_chunk(
             chunk.emit_op_u8(Op::CALL_REF, 0, line);
         }
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-        chunk.emit_op(Op::DROP, line);
     } else {
         chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -223,7 +221,6 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
         chunk.emit(arity as u8, line);
         chunk.emit_op_u16(Op::LOCAL_SET, widget_slot, line);
-        chunk.emit_op(Op::DROP, line);
 
         for field in ["name", "__control_name", "__control_type"] {
             let key_idx = chunk.add_constant(Value::String(Arc::from(field)));
@@ -255,7 +252,6 @@ pub fn emit_install_class_global(
     script_chunk.emit(0, line);
     let name_const = script_chunk.add_constant(Value::String(Arc::from(class_name)));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
-    script_chunk.emit_op(Op::DROP, line);
 
     let lower = class_name.to_lowercase();
     if lower != class_name {
@@ -263,7 +259,6 @@ pub fn emit_install_class_global(
         script_chunk.emit(0, line);
         let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
         script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
-        script_chunk.emit_op(Op::DROP, line);
     }
 }
 
@@ -358,7 +353,6 @@ pub fn emit_install_function_global(
     script_chunk.emit(0, line);
     let name_const = script_chunk.add_constant(Value::String(Arc::from(name)));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
-    script_chunk.emit_op(Op::DROP, line);
 
     let lower = name.to_lowercase();
     if lower != name {
@@ -366,7 +360,6 @@ pub fn emit_install_function_global(
         script_chunk.emit(0, line);
         let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
         script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
-        script_chunk.emit_op(Op::DROP, line);
     }
 }
 
@@ -419,11 +412,9 @@ pub fn emit_install_application_global(
     core_wasm::dup(script_chunk, line);
     let app_name = script_chunk.add_constant(Value::String(Arc::from("Application")));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, app_name, line);
-    script_chunk.emit_op(Op::DROP, line);
 
     let lower_name = script_chunk.add_constant(Value::String(Arc::from("application")));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
-    script_chunk.emit_op(Op::DROP, line);
 }
 
 fn bind_ref(chunk: &mut Chunk, this_slot: u16, key: &str, chunk_idx: usize, line: u32) {

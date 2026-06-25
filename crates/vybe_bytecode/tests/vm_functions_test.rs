@@ -531,7 +531,6 @@ fn call_value_with_function_object() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
     // Load it back and call it
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let c99 = main.add_constant(Value::I32(99));
@@ -1004,10 +1003,8 @@ fn local_get_set_within_function() {
     let c10 = func.add_constant(Value::I32(10));
     func.emit_op_u16(Op::CONST, c5, 0);
     func.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 5
-    func.emit_op(Op::DROP, 0);
     func.emit_op_u16(Op::CONST, c10, 0);
     func.emit_op_u16(Op::LOCAL_SET, 2, 0); // y = 10
-    func.emit_op(Op::DROP, 0);
     func.emit_op_u16(Op::LOCAL_GET, 1, 0); // x
     func.emit_op_u16(Op::LOCAL_GET, 2, 0); // y
     func.emit_op(Op::I32_ADD, 0);
@@ -1117,7 +1114,6 @@ fn global_set_get_roundtrip() {
     let val = chunk.add_constant(Value::String(Arc::from("hello world")));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -1190,7 +1186,6 @@ fn local_set_nested_doesnt_affect_outer() {
     let c5 = outer.add_constant(Value::I32(5));
     outer.emit_op_u16(Op::CONST, c5, 0);
     outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    outer.emit_op(Op::DROP, 0);
     // call inner
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(0, 0);
@@ -1237,7 +1232,6 @@ fn closure_capture_one_variable() {
     let c10 = outer.add_constant(Value::I32(10));
     outer.emit_op_u16(Op::CONST, c10, 0);
     outer.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 10
-    outer.emit_op(Op::DROP, 0);
 
     // ref_func(2) with 1 upvalue: is_local=1, index=1 (capture local 1)
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
@@ -1285,7 +1279,6 @@ fn closure_mutation() {
     let c10 = outer.add_constant(Value::I32(10));
     outer.emit_op_u16(Op::CONST, c10, 0);
     outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    outer.emit_op(Op::DROP, 0);
 
     // ref_func(2) with 1 upvalue capturing local 1
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
@@ -1338,7 +1331,6 @@ fn multiple_closures_sharing_upvalue() {
     let c0 = outer.add_constant(Value::I32(0));
     outer.emit_op_u16(Op::CONST, c0, 0);
     outer.emit_op_u16(Op::LOCAL_SET, 1, 0); // x = 0
-    outer.emit_op(Op::DROP, 0);
 
     // inc = ref_func(2) capturing local 1 (x)
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
@@ -1346,7 +1338,6 @@ fn multiple_closures_sharing_upvalue() {
     outer.emit(1, 0); // is_local
     outer.emit(1, 0); // index = 1
     outer.emit_op_u16(Op::LOCAL_SET, 2, 0); // inc
-    outer.emit_op(Op::DROP, 0);
 
     // get = ref_func(3) capturing local 1 (x)
     outer.emit_op_u16(Op::REF_FUNC, 3, 0);
@@ -1354,7 +1345,6 @@ fn multiple_closures_sharing_upvalue() {
     outer.emit(1, 0); // is_local
     outer.emit(1, 0); // index = 1
     outer.emit_op_u16(Op::LOCAL_SET, 3, 0); // get
-    outer.emit_op(Op::DROP, 0);
 
     // call inc() 3 times
     outer.emit_op_u16(Op::LOCAL_GET, 2, 0);
@@ -1423,7 +1413,6 @@ fn nested_closure() {
     let c100 = outer.add_constant(Value::I32(100));
     outer.emit_op_u16(Op::CONST, c100, 0);
     outer.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    outer.emit_op(Op::DROP, 0);
 
     // middle = ref_func(2) capturing local 1
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
@@ -1512,7 +1501,6 @@ fn struct_set_creates_new_property() {
     // Create empty object
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // local 1 = obj
-    chunk.emit_op(Op::DROP, 0);
 
     // struct_set: pops val then obj from stack
     let set_key = chunk.add_constant(Value::String(Arc::from("age")));
@@ -1547,7 +1535,6 @@ fn struct_set_overwrites_existing_property() {
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     // Overwrite x = 99
     let set_key = chunk.add_constant(Value::String(Arc::from("x")));
@@ -1593,7 +1580,6 @@ fn struct_get_chain() {
     // inner_obj is on stack. We need to push "b" under it.
     // Simpler: store inner in local, then build outer
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, key_b, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {b: {c: 42}}
@@ -1662,7 +1648,6 @@ fn setter_auto_dispatch() {
     main.emit(0, 0);
     main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { __set_x: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // struct_set "x" = 5
     let set_key = main.add_constant(Value::String(Arc::from("x")));
@@ -1712,7 +1697,6 @@ fn object_method_get_and_call() {
     main.emit(0, 0);
     main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { greet: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // obj.greet
     let get_key = main.add_constant(Value::String(Arc::from("greet")));
@@ -1759,7 +1743,6 @@ fn object_multiple_methods_call_correct() {
 
     main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { add: <f1>, mul: <f2> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // Call obj.mul(3, 4)
     let get_mul = main.add_constant(Value::String(Arc::from("mul")));
@@ -1818,7 +1801,6 @@ fn object_method_receives_this() {
 
     main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { value: 7, get_value: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // Call obj.get_value(obj)
     let get_method = main.add_constant(Value::String(Arc::from("get_value")));

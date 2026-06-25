@@ -374,7 +374,6 @@ fn typed_catch_with_object_exception_type() {
         let off = emit_try_table_typed_start(c, tag_idx);
         c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, type_val, 0);
         c.emit_op_u16(Op::STRUCT_SET, type_key, 0);

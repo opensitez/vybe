@@ -42,13 +42,11 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit(0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, global, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(create_block);
 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
-    chunk.emit_op(Op::DROP, line);
     object_slot
 }
 
@@ -86,16 +84,13 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
     chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -108,7 +103,6 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -133,9 +127,7 @@ pub fn emit_environment_set(chunks: &mut [Chunk], current: usize, line: u32) {
     let name_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let object_slot = load_or_create_env_overrides(chunks, current, line);
     let chunk = &mut chunks[current];

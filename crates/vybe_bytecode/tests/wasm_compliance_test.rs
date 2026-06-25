@@ -269,7 +269,6 @@ fn local_get_set_slot_0() {
         let idx = c.add_constant(Value::F64(42.0));
         c.emit_op_u16(Op::CONST, idx, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0); // tee to slot 0, keeps value
-        c.emit_op(Op::DROP, 0); // drop the teed copy
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // push slot 0
     });
     assert_eq!(result.as_f64(), 42.0);
@@ -314,7 +313,6 @@ fn function_with_local_beyond_args() {
     fun.emit_op_u16(Op::LOCAL_GET, 1, 0); // b
     fun.emit_op(Op::F64_ADD, 0);
     fun.emit_op_u16(Op::LOCAL_SET, 2, 0); // tmp
-    fun.emit_op(Op::DROP, 0);
     fun.emit_op_u16(Op::LOCAL_GET, 2, 0); // tmp
     let two = fun.add_constant(Value::F64(2.0));
     fun.emit_op_u16(Op::CONST, two, 0);
@@ -414,7 +412,6 @@ fn simple_while_loop() {
         c.local_count = 1;
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         let bp = c.emit_block(0);
         let (lp, _) = c.emit_loop_s(0);
@@ -433,7 +430,6 @@ fn simple_while_loop() {
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         // continue loop
         c.emit_br(0, 0);
@@ -471,10 +467,8 @@ fn nested_loops_break_with_labels() {
         // Init
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0); // total=0
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-        c.emit_op(Op::DROP, 0); // i_outer=0
 
         let outer_b = c.emit_block(0);
         let (outer_l, _) = c.emit_loop_s(0);
@@ -490,7 +484,6 @@ fn nested_loops_break_with_labels() {
         // Reset i_inner = 0
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-        c.emit_op(Op::DROP, 0);
 
         let inner_b = c.emit_block(0);
         let (inner_l, _) = c.emit_loop_s(0);
@@ -508,14 +501,12 @@ fn nested_loops_break_with_labels() {
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         // i_inner++
         c.emit_op_u16(Op::LOCAL_GET, 2, 0);
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-        c.emit_op(Op::DROP, 0);
 
         c.emit_br(0, 0); // continue inner loop
         c.emit_end(0);
@@ -528,7 +519,6 @@ fn nested_loops_break_with_labels() {
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-        c.emit_op(Op::DROP, 0);
 
         c.emit_br(0, 0); // continue outer loop
         c.emit_end(0);
@@ -1029,7 +1019,6 @@ fn array_set_then_get() {
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
         // Save to slot 0
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         // arr[1] = 99
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         let one = c.add_constant(Value::I32(1));
@@ -1190,7 +1179,6 @@ fn loop_restarts_at_top() {
         c.local_count = 1;
         c.emit_op(Op::I32_CONST_0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
 
         let bp = c.emit_block(0);
         let (lp, _) = c.emit_loop_s(0);
@@ -1205,7 +1193,6 @@ fn loop_restarts_at_top() {
         c.emit_op(Op::I32_CONST_1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_br(0, 0);
         c.emit_end(0);
         c.patch_loop(lp);
@@ -1281,7 +1268,6 @@ fn round_trip_loop_execution_matches() {
     chunk.local_count = 1;
     chunk.emit_op(Op::I32_CONST_0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     let bp = chunk.emit_block(0);
     let (lp, _) = chunk.emit_loop_s(0);
@@ -1295,7 +1281,6 @@ fn round_trip_loop_execution_matches() {
     chunk.emit_op(Op::I32_CONST_1, 0);
     chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_br(0, 0);
     chunk.emit_end(0);
     chunk.patch_loop(lp);
@@ -1397,7 +1382,6 @@ fn global_set_then_get_returns_same_value() {
         let v = c.add_constant(Value::F64(42.0));
         c.emit_op_u16(Op::CONST, v, 0);
         c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
     });
     assert_eq!(result.as_f64(), 42.0);
@@ -1411,10 +1395,8 @@ fn global_overwrite_takes_latest_value() {
         let v2 = c.add_constant(Value::F64(99.0));
         c.emit_op_u16(Op::CONST, v1, 0);
         c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::CONST, v2, 0);
         c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-        c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
     });
     assert_eq!(result.as_f64(), 99.0);
@@ -1687,7 +1669,6 @@ fn round_trip_globals_persist() {
     let v = script.add_constant(Value::F64(123.0));
     script.emit_op_u16(Op::CONST, v, 0);
     script.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
     script.emit_op(Op::RETURN, 0);
 

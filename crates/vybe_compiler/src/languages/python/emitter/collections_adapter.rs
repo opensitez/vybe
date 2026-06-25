@@ -22,7 +22,6 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     chunks[current].local_count += argc as u16;
     for offset in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     base
 }
@@ -186,7 +185,6 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     let out = chunks[current].local_count;
     chunks[current].local_count += 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:object", "assign", 2, line);
@@ -257,13 +255,11 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         core_wasm::i32_const(&mut chunks[current], line, 1);
         chunks[current].emit_op(Op::I32_SUB, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
         collections::emit_get(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
@@ -284,7 +280,6 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
         collections::emit_get(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
@@ -299,7 +294,6 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
         dict::emit_get(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);

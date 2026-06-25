@@ -35,7 +35,6 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Stash v.
     chunk.emit_op_u16(Op::LOCAL_SET, v_local, line);
-    chunk.emit_op(Op::DROP, line);
 
     let exit_block = chunk.emit_block(line);
 
@@ -55,7 +54,6 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_string_const("False", line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line); // exit
     chunk.emit_end(line);
     chunk.patch_block(not_bool);
@@ -68,7 +66,6 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_br_if(0, line);
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(not_null);
@@ -84,7 +81,6 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     crate::emitter::strings::emit_to_string(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
     chunk.patch_block(exit_block);
@@ -113,7 +109,6 @@ pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
     // Push level UNDER v: stash v, push level, restore v.
     let v_local = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, v_local, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_string_const("error", line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);

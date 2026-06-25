@@ -37,7 +37,6 @@ pub fn emit_default_param_start(chunk: &mut Chunk, param_slot: u16, line: u32) -
 /// Stack before: [default_value]  Stack after: [] (stored in param_slot)
 pub fn emit_default_param_end(chunk: &mut Chunk, param_slot: u16, block: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, param_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(block);
 }
@@ -98,7 +97,6 @@ pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8
 pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Store a function in a local slot.
@@ -106,7 +104,6 @@ pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
 /// Stack before: [closure_ref]  Stack after: []
 pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Cross-language function call ────────────────────────────────────────

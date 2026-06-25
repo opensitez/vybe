@@ -36,18 +36,15 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let v_slot = chunk.local_count;
     chunk.local_count = v_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, v_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // len = s.length
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let outer = chunk.emit_block(line);
 
@@ -58,18 +55,15 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_if(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
 
     // i = 0
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_bool_const(true, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // while i < len: per-char range check
     let (loop_patch, _) = chunk.emit_loop_s(line);
@@ -84,11 +78,9 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     { let idx = chunk.add_import("wasm:js-string", "codePointAt"); chunk.emit_call(idx, 2, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // For each range: if lo<=code<=hi, remember that this char matched.
     for rng in ranges {
@@ -106,7 +98,6 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         chunk.emit_if(line);
         chunk.emit_bool_const(true, line);
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
     }
@@ -119,7 +110,6 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_if(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(2, line);
     chunk.emit_end(line);
 
@@ -128,7 +118,6 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_f64_const(1.0, line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_br(0, line);
     chunk.emit_end(line);

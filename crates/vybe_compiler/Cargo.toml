@@ -72,6 +72,10 @@ name = "go"
 path = "tests/go/main.rs"
 
 [[test]]
+name = "java"
+path = "tests/java/main.rs"
+
+[[test]]
 name = "wast"
 path = "tests/wast/main.rs"
 

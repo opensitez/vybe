@@ -131,8 +131,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Array helpers ─────────────────────────────────────────────────
         "java.new_array" => {
-            // Expects length on stack; create empty array of that size.
-            collections::emit_array_new(chunks, current, 0, line);
+            collections::emit_new_with_length(chunks, current, line);
         }
         "java.array_clone" => {
             collections::emit_slice(chunks, current, line);

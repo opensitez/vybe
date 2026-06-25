@@ -175,7 +175,6 @@ impl Compiler {
         let delegate_slot = self.define_local("__raise_event_delegate");
         self.compile_expr(target)?;
         self.emit_u16(Op::LOCAL_SET, delegate_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, delegate_slot);
         self.emit(Op::REF_IS_NULL);

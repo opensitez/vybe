@@ -176,7 +176,6 @@ fn call_indirect_basic() {
     // Store result (closure) as global "add_fn"
     let add_name = script.add_constant(Value::String(Arc::from("add_fn")));
     script.emit_op_u16(Op::GLOBAL_SET, add_name, 0);
-    script.emit_op(Op::DROP, 0);
 
     // Push table index 0 + args, call_indirect
     // First we need to populate func_table at runtime...

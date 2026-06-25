@@ -195,6 +195,9 @@ fn normalize_for_profile(
         "fortran" => Ok(crate::languages::fortran::normalize_class::normalize_class(
             span, name, parents, interfaces, members, modifiers,
         )),
+        "java" => Ok(crate::languages::java::normalize_class::normalize_class(
+            span, name, parents, interfaces, members, modifiers,
+        )),
         other => Err(format!(
             "normalize_class not yet implemented for language {:?} — set \
              `uses_normalize_class = false` in the profile until Phase 3 \

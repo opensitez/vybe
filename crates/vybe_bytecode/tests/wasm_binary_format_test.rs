@@ -665,7 +665,6 @@ fn roundtrip_loop_with_br() {
     let one = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, n, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     let _blk = chunk.emit_block(0);
     let (_loop_blk, _loop_body) = chunk.emit_loop_s(0);
@@ -678,7 +677,6 @@ fn roundtrip_loop_with_br() {
     chunk.emit_op_u16(Op::CONST, one, 0);
     chunk.emit_op(Op::I32_SUB, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_br(0, 0); // continue loop
     chunk.emit_end(0); // end loop
     chunk.emit_end(0); // end block
@@ -723,7 +721,7 @@ fn core_control_opcodes_have_spec_byte_values() {
 fn core_variable_opcodes_have_spec_byte_values() {
     assert_eq!(Op::LOCAL_GET.sub(), 0x20);
     assert_eq!(Op::LOCAL_SET.sub(), 0x21);
-    assert_eq!(Op::LOCAL_TEE.sub(), 0x22);
+    assert_eq!(Op::LOCAL_SET.sub(), 0x22);
     assert_eq!(Op::GLOBAL_GET.sub(), 0x23);
     assert_eq!(Op::GLOBAL_SET.sub(), 0x24);
     assert_eq!(Op::TABLE_GET.sub(), 0x25);

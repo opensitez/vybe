@@ -20,7 +20,6 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.local_count = base + argc as u16;
     for i in (0..argc).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
-        chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op(Op::REF_IS_NULL, line);

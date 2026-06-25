@@ -62,9 +62,7 @@ pub fn emit_format_picture(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.local_count = value_slot + 2;
     // Stash picture (top), then value.
     chunk.emit_op_u16(Op::LOCAL_SET, picture_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // Push global ref + (value, picture) and call.
     chunk.emit_op_u16(Op::GLOBAL_GET, global_name, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);

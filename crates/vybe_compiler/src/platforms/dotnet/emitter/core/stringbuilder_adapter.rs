@@ -65,7 +65,6 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             // [initial] → stash to scratch slot
             let init_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, init_slot, line);
-            chunk.emit_op(Op::DROP, line);
             // [] → STRUCT_NEW → [obj] → DUP → [obj, obj] → load initial → [obj, obj, initial]
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             core_wasm::dup(chunk, line);
@@ -88,7 +87,6 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // [sb, s] → stash s → [sb]
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // [sb] → DUP → [sb, sb] → STRUCT_GET __buffer → [sb, buffer]
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
@@ -110,7 +108,6 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, line: u32) {
     let s_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -169,15 +166,12 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Stash text and idx args.
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Read sb.__buffer once and stash.
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // Stack now: [sb]
 
     // before = buf.substring(0, idx)
@@ -221,14 +215,11 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let buf_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     push_const(chunk, Value::I32(0), line);
@@ -265,9 +256,7 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Stash old, new
     chunk.emit_op_u16(Op::LOCAL_SET, new_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, old_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // Stack: [sb]
 
     // [sb, sb, buf, old, new] — buffer + replace args

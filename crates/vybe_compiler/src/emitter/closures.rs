@@ -32,7 +32,6 @@ pub fn emit_env_set(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {
         s
     };
     chunk.emit_op_u16(Op::LOCAL_SET, tmp, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, env_slot, line);
     chunk.emit_i32_const(index as i32, line);
     chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);

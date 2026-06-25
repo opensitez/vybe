@@ -53,7 +53,6 @@ pub fn emit_constructor_ref_with_autoload(
     let ctor_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     {
@@ -66,7 +65,6 @@ pub fn emit_constructor_ref_with_autoload(
 
     chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
 }
@@ -85,7 +83,6 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     let primary_idx = str_idx(chunk, primary_ctor_global);
     chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     if let Some(fallback) = fallback_ctor_global {
         emit_fallback_if_undefined(chunk, ctor_slot, fallback, line);
@@ -102,7 +99,6 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
 
     chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_op(Op::DROP, line);
     if let Some(fallback) = fallback_ctor_global {
         emit_fallback_if_undefined(chunk, ctor_slot, fallback, line);
     }
@@ -122,7 +118,6 @@ fn emit_fallback_if_undefined(chunk: &mut Chunk, ctor_slot: u16, fallback: &str,
     let fallback_idx = str_idx(chunk, fallback);
     chunk.emit_op_u16(Op::GLOBAL_GET, fallback_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 }
 
@@ -134,7 +129,6 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     let autoload_idx = str_idx(chunk, "__php_autoload_callback");
     chunk.emit_op_u16(Op::GLOBAL_GET, autoload_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, autoload_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
     {
@@ -148,7 +142,6 @@ fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
     let receiver_idx = str_idx(chunk, "__php_autoload_callback_receiver");
     chunk.emit_op_u16(Op::GLOBAL_GET, receiver_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     {

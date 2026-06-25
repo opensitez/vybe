@@ -528,7 +528,6 @@ impl Compiler {
         }
         let result_slot = self.define_local("__fortran_member_call_result");
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
         if self.compile_assign_target(object).is_err() {
             self.emit(Op::DROP);
@@ -567,7 +566,6 @@ impl Compiler {
 
         let obj_slot = self.define_local("__fortran_type_ctor_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
-        self.emit(Op::DROP);
 
         let mut positional_index = 0usize;
         for (index, arg) in args.iter().enumerate() {
@@ -594,7 +592,6 @@ impl Compiler {
             self.compile_expr_with_value_copy(&arg.value)?;
             let value_slot = self.define_local(&format!("__fortran_type_ctor_arg_{}", index));
             self.emit_u16(Op::LOCAL_SET, value_slot);
-            self.emit(Op::DROP);
 
             let field_idx = self.str_const(&field_name);
             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -871,7 +868,6 @@ impl Compiler {
         self.chunk().emit(0, line);
         let fn_tmp = self.define_local("__direct_instance_method_fn");
         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-        self.emit(Op::DROP);
 
         if let Some(param_modes) = self
             .function_param_modes
@@ -893,7 +889,6 @@ impl Compiler {
                     let arg_slot =
                         self.define_local(&format!("__direct_instance_method_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
 
@@ -901,7 +896,6 @@ impl Compiler {
 
                 let pack_slot = self.define_local("__direct_instance_method_ref_call_pack");
                 self.emit_u16(Op::LOCAL_SET, pack_slot);
-                self.emit(Op::DROP);
                 let mut ref_out_index = 1usize;
                 for (index, arg) in args.iter().enumerate() {
                     if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
@@ -925,7 +919,6 @@ impl Compiler {
             self.compile_expr(arg)?;
             let arg_slot = self.define_local(&format!("__direct_instance_method_arg_{}", index));
             self.emit_u16(Op::LOCAL_SET, arg_slot);
-            self.emit(Op::DROP);
             arg_slots.push(arg_slot);
         }
         self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
@@ -942,13 +935,11 @@ impl Compiler {
         self.chunk().emit(0, line);
         let fn_tmp = self.define_local("__direct_static_method_fn");
         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-        self.emit(Op::DROP);
         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
         for (index, arg) in arg_exprs.iter().enumerate() {
             self.compile_expr(arg)?;
             let arg_slot = self.define_local(&format!("__direct_static_method_arg_{}", index));
             self.emit_u16(Op::LOCAL_SET, arg_slot);
-            self.emit(Op::DROP);
             arg_slots.push(arg_slot);
         }
         self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -1004,7 +995,6 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_GET, js_global_this);
         let global_this_slot = self.define_local("__js_global_this_value");
         self.emit_u16(Op::LOCAL_SET, global_this_slot);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
@@ -1012,7 +1002,6 @@ impl Compiler {
         self.emit_common("object.new", 0, line);
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::GLOBAL_SET, js_global_this);
-        self.emit(Op::DROP);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -1021,7 +1010,6 @@ impl Compiler {
         self.emit_common("object.new", 0, self.line);
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::GLOBAL_SET, js_global_this);
-        self.emit(Op::DROP);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         self.chunk().emit_end(line);
@@ -1036,7 +1024,6 @@ impl Compiler {
         };
         let result_slot = self.define_local(result_local_name);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.restore_js_this(saved_js_this);
         self.emit_u16(Op::LOCAL_GET, result_slot);
     }
@@ -1097,7 +1084,6 @@ impl Compiler {
         let rest_slot = self.define_local("__runtime_rest_call_array");
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, rest_slot);
-        self.emit(Op::DROP);
         for slot in arg_slots.iter().skip(fixed_count) {
             self.emit_u16(Op::LOCAL_GET, rest_slot);
             self.emit_u16(Op::LOCAL_GET, *slot);
@@ -1225,7 +1211,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 common::collections::emit_len(&mut self.chunks, self.current, line);
                 self.emit_u16(Op::LOCAL_SET, len_slot);
-                self.emit(Op::DROP);
                 for index in 0..fixed_count {
                     self.emit_array_value_or_undefined(args_slot, len_slot, index);
                 }
@@ -1256,7 +1241,6 @@ impl Compiler {
             let args_arr_slot = self.define_local("__proxy_apply_args");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
             self.emit_u16(Op::LOCAL_SET, args_arr_slot);
-            self.emit(Op::DROP);
             for slot in arg_slots {
                 self.emit_u16(Op::LOCAL_GET, args_arr_slot);
                 self.emit_u16(Op::LOCAL_GET, *slot);
@@ -1273,7 +1257,6 @@ impl Compiler {
             let idx = self.import("ecma:proxy", "apply");
             self.emit_host_call(idx, 3);
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             return;
         }
 
@@ -1286,7 +1269,6 @@ impl Compiler {
                 arg_slots,
             );
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             return;
         }
 
@@ -1295,12 +1277,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         self.emit_u16(Op::STRUCT_GET, rest_key);
         self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
-        self.emit(Op::DROP);
 
         let used_rest_slot = self.define_local("__call_used_rest_arity");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, used_rest_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, rest_arity_slot);
         self.emit(Op::REF_IS_NULL);
@@ -1329,10 +1309,8 @@ impl Compiler {
                 fixed_count as usize,
             );
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, used_rest_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -1344,7 +1322,6 @@ impl Compiler {
         self.chunk().emit_if(line);
         self.emit_normal_call_from_arg_slots(callee_slot, receiver_slot, js_this_slot, arg_slots);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.chunk().emit_end(line);
     }
 
@@ -1448,7 +1425,6 @@ impl Compiler {
         self.emit_host_call(lookup, 2);
         let lookup_slot = self.define_local("__js_lookup_fn");
         self.emit_u16(Op::LOCAL_SET, lookup_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, lookup_slot);
         self.emit(Op::REF_IS_NULL);
@@ -1507,12 +1483,10 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             self.emit_u16(Op::STRUCT_GET, rest_key);
             self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
-            self.emit(Op::DROP);
 
             let used_rest_slot = self.define_local("__spread_used_rest_arity");
             self.emit_const(Value::I32(0));
             self.emit_u16(Op::LOCAL_SET, used_rest_slot);
-            self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, rest_arity_slot);
             self.emit(Op::REF_IS_NULL);
@@ -1541,10 +1515,8 @@ impl Compiler {
                     fixed_count as usize,
                 );
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, used_rest_slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
             }
@@ -1556,14 +1528,12 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_normal_call_from_args_array(callee_slot, receiver_slot, args_slot, known_len);
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             return;
         }
 
         self.emit_normal_call_from_args_array(callee_slot, receiver_slot, args_slot, known_len);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
     }
 
     fn emit_call_ref_with_args_array(
@@ -1647,7 +1617,6 @@ impl Compiler {
         self.compile_expr(callee)?;
         let callee_slot = self.define_local("__spread_builtin_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
-        self.emit(Op::DROP);
         let (args_slot, _) = self.compile_call_args_array(args, "spread_builtin")?;
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         inst!(self, core_wasm::undefined);
@@ -1666,7 +1635,6 @@ impl Compiler {
         let args_slot = self.define_local(&format!("__{}_args", local_prefix));
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, args_slot);
-        self.emit(Op::DROP);
 
         let mut known_len: Option<usize> = Some(0);
         for arg in args {
@@ -1675,7 +1643,6 @@ impl Compiler {
                 self.compile_expr(&arg.value)?;
                 common::collections::emit_concat(&mut self.chunks, self.current, line);
                 self.emit_u16(Op::LOCAL_SET, args_slot);
-                self.emit(Op::DROP);
                 if let ExprKind::Array(elements) = &arg.value.kind {
                     if let Some(len) = known_len.as_mut() {
                         *len += elements.len();
@@ -1841,20 +1808,17 @@ impl Compiler {
         self.chunk().emit(0, line);
         let wrapper_slot = self.define_local("__js_promise_chain_wrapper");
         self.emit_u16(Op::LOCAL_SET, wrapper_slot);
-        self.emit(Op::DROP);
 
         let mut arg_slots = Vec::with_capacity(arg_exprs.len() + 1);
         self.compile_expr(object)?;
         let promise_slot = self.define_local("__js_promise_chain_arg_0");
         self.emit_u16(Op::LOCAL_SET, promise_slot);
-        self.emit(Op::DROP);
         arg_slots.push(promise_slot);
 
         for (index, arg) in arg_exprs.iter().enumerate() {
             self.compile_expr(arg)?;
             let arg_slot = self.define_local(&format!("__js_promise_chain_arg_{}", index + 1));
             self.emit_u16(Op::LOCAL_SET, arg_slot);
-            self.emit(Op::DROP);
             arg_slots.push(arg_slot);
         }
 
@@ -1871,14 +1835,12 @@ impl Compiler {
         let args_slot = self.define_local(slot_name);
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, args_slot);
-        self.emit(Op::DROP);
         for arg in args {
             if arg.spread {
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 self.compile_expr(&arg.value)?;
                 common::collections::emit_concat(&mut self.chunks, self.current, line);
                 self.emit_u16(Op::LOCAL_SET, args_slot);
-                self.emit(Op::DROP);
             } else {
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 self.compile_expr_with_value_copy(&arg.value)?;
@@ -1936,7 +1898,6 @@ impl Compiler {
             let rest_slot = self.define_local("__packed_rest_call_array");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
             self.emit_u16(Op::LOCAL_SET, rest_slot);
-            self.emit(Op::DROP);
             for arg in args.iter().skip(fixed_count) {
                 self.emit_u16(Op::LOCAL_GET, rest_slot);
                 self.compile_expr_with_value_copy(&arg.value)?;
@@ -1958,7 +1919,6 @@ impl Compiler {
         self.compile_expr(array_expr)?;
         let args_slot = self.define_local("__params_array_args");
         self.emit_u16(Op::LOCAL_SET, args_slot);
-        self.emit(Op::DROP);
 
         self.emit_call_ref_with_args_array(callee_slot, None, args_slot, None);
         Ok(())
@@ -1984,7 +1944,6 @@ impl Compiler {
     ) -> Result<(), String> {
         let msg_val = self.define_local("__exc_msg_val");
         self.emit_u16(Op::LOCAL_SET, msg_val);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::STRUCT_NEW, 0);
         inst!(self, core_wasm::dup);
@@ -1994,7 +1953,6 @@ impl Compiler {
 
         let exc_tmp = self.define_local("__exc_tmp");
         self.emit_u16(Op::LOCAL_SET, exc_tmp);
-        self.emit(Op::DROP);
 
         if self.is_js_profile() {
             // Fix property descriptors to be non-enumerable per ECMA-262 §20.5.
@@ -2046,7 +2004,6 @@ impl Compiler {
         fn_call!(self, "wasm:js-string", "concat", 2);
         let stack_val = self.define_local("__stack_val");
         self.emit_u16(Op::LOCAL_SET, stack_val);
-        self.emit(Op::DROP);
 
         if self.is_js_profile() {
             // Set stack as non-enumerable using Object.defineProperty
@@ -2105,7 +2062,6 @@ impl Compiler {
 
             let exc_tmp = self.define_local("__agg_exc_tmp");
             self.emit_u16(Op::LOCAL_SET, exc_tmp);
-            self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
             if let Some(errors_arg) = args.first() {
@@ -2124,7 +2080,6 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, cause_key);
                 let cause_val = self.define_local("__agg_cause_val");
                 self.emit_u16(Op::LOCAL_SET, cause_val);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 self.emit_u16(Op::LOCAL_GET, cause_val);
                 self.emit_u16(Op::STRUCT_SET, cause_key);
@@ -2145,12 +2100,10 @@ impl Compiler {
         if let Some(opts_arg) = args.get(1) {
             let exc_tmp = self.define_local("__exc_with_opts");
             self.emit_u16(Op::LOCAL_SET, exc_tmp);
-            self.emit(Op::DROP);
             // Evaluate the options object once and stash it.
             self.compile_expr(opts_arg)?;
             let opts_tmp = self.define_local("__exc_opts");
             self.emit_u16(Op::LOCAL_SET, opts_tmp);
-            self.emit(Op::DROP);
             // Copy `cause` and `code` from the options object onto the
             // exception so the canonical exception shape carries them
             // uniformly. `new Error(msg, {cause})` (JS/ECMA), PHP's
@@ -2175,7 +2128,6 @@ impl Compiler {
     pub(crate) fn emit_generator_control_packet_from_stack(&mut self, op: &str) {
         let value_slot = self.define_local("__gen_control_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
 
         let line = self.line;
         common::dict::emit_new(&mut self.chunks, self.current, line);
@@ -2303,7 +2255,6 @@ impl Compiler {
         self.compile_expr(&args[0].value)?;
         let map_slot = self.define_local("__go_map_has_obj");
         self.emit_u16(Op::LOCAL_SET, map_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, map_slot);
         self.emit(Op::REF_IS_NULL);
@@ -2393,7 +2344,6 @@ impl Compiler {
                         self.compile_expr(&arg.value)?;
                         let arg_slot = self.define_local("__js_number_arg");
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, arg_slot);
                         fn_call!(self, "ecma:value", "typeof", 1);
                         self.emit_const(Value::String(Arc::from("symbol")));
@@ -2568,7 +2518,6 @@ impl Compiler {
                                 let key_tmp = self.define_local("__py_dict_ctor_key");
                                 inst!(self, core_wasm::dup);
                                 self.emit_u16(Op::LOCAL_SET, key_tmp);
-                                self.emit(Op::DROP);
                                 self.compile_expr(&items[1])?;
                                 common::collections::emit_set(&mut self.chunks, self.current, line);
                                 self.emit(Op::DROP);
@@ -2610,11 +2559,9 @@ impl Compiler {
                                 else {
                                     inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
                                     let global_idx = self.str_const("__php_autoload_callback");
                                     self.emit_u16(Op::GLOBAL_SET, global_idx);
-                                    self.emit(Op::DROP);
                                     for arg in args.iter().skip(1) {
                                         self.compile_expr(&arg.value)?;
                                         self.emit(Op::DROP);
@@ -2627,11 +2574,9 @@ impl Compiler {
                                 else {
                                     inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
                                     let global_idx = self.str_const("__php_autoload_callback");
                                     self.emit_u16(Op::GLOBAL_SET, global_idx);
-                                    self.emit(Op::DROP);
                                     for arg in args.iter().skip(1) {
                                         self.compile_expr(&arg.value)?;
                                         self.emit(Op::DROP);
@@ -2647,32 +2592,27 @@ impl Compiler {
                                     self.emit_u16(Op::GLOBAL_GET, class_idx);
                                     inst!(self, core_wasm::dup);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.emit(Op::DROP);
                                     let method_idx = self.str_const(&self.canon(method_name));
                                     self.emit_u16(Op::STRUCT_GET, method_idx);
                                 } else {
                                     inst!(self, core_wasm::undefined);
                                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.emit(Op::DROP);
                                     self.compile_php_autoload_callable_ref(&callback.value)?;
                                 }
                             }
                             _ => {
                                 inst!(self, core_wasm::undefined);
                                 self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                self.emit(Op::DROP);
                                 self.compile_php_autoload_callable_ref(&callback.value)?;
                             }
                         }
                     } else {
                         inst!(self, core_wasm::undefined);
                         self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                        self.emit(Op::DROP);
                         inst!(self, core_wasm::undefined);
                     }
                     let global_idx = self.str_const("__php_autoload_callback");
                     self.emit_u16(Op::GLOBAL_SET, global_idx);
-                    self.emit(Op::DROP);
 
                     for arg in args.iter().skip(1) {
                         self.compile_expr(&arg.value)?;
@@ -2692,11 +2632,9 @@ impl Compiler {
                     inst!(self, core_wasm::undefined);
                     let receiver_idx = self.str_const("__php_autoload_callback_receiver");
                     self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::undefined);
                     let global_idx = self.str_const("__php_autoload_callback");
                     self.emit_u16(Op::GLOBAL_SET, global_idx);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::Bool(true));
                     return Ok(());
                 }
@@ -2755,12 +2693,10 @@ impl Compiler {
                         let map_slot = self.define_local("__php_extract_map");
                         self.compile_expr(&arg_exprs[0])?;
                         self.emit_u16(Op::LOCAL_SET, map_slot);
-                        self.emit(Op::DROP);
 
                         let count_slot = self.define_local("__php_extract_count");
                         self.emit_const(Value::I64(0));
                         self.emit_u16(Op::LOCAL_SET, count_slot);
-                        self.emit(Op::DROP);
 
                         for bind_name in binding_names {
                             let key_name =
@@ -2771,7 +2707,6 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, line);
                             let value_slot = self.define_local("__php_extract_value");
                             self.emit_u16(Op::LOCAL_SET, value_slot);
-                            self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, value_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
@@ -2786,7 +2721,6 @@ impl Compiler {
                                 crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                             };
                             self.emit_u16(Op::LOCAL_SET, count_slot);
-                            self.emit(Op::DROP);
                             self.chunk().emit_end(line);
                         }
 
@@ -2815,7 +2749,6 @@ impl Compiler {
                         {
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_SET, slot);
-                            self.emit(Op::DROP);
                         }
                         return Ok(());
                     }
@@ -2833,7 +2766,6 @@ impl Compiler {
                     {
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_SET, slot);
-                        self.emit(Op::DROP);
                     }
                     return Ok(());
                 }
@@ -2891,7 +2823,6 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_super_method_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.restore_js_this(saved_js_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     } else {
@@ -3076,7 +3007,6 @@ impl Compiler {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__static_container_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                self.emit(Op::DROP);
                 let fn_tmp = self.define_local("__static_container_fn");
                 let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                 if self.is_js_profile() && field.starts_with('#') {
@@ -3107,7 +3037,6 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, method_idx);
                 }
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                self.emit(Op::DROP);
                 if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
                     if self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
@@ -3146,7 +3075,6 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__static_container_php_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
@@ -3157,7 +3085,6 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__static_container_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     if self.class_prototype_dispatch() {
@@ -3181,7 +3108,6 @@ impl Compiler {
                 if args.iter().any(|arg| arg.by_ref) {
                     let pack_slot = self.define_local("__static_container_by_ref_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
-                    self.emit(Op::DROP);
                     let mut ref_out_index = 1usize;
                     for arg in args {
                         if !arg.by_ref {
@@ -3263,19 +3189,16 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__host_namespace_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     self.emit_var_get(obj_name);
                     let namespace_slot = self.define_local("__host_namespace_call_ns");
                     self.emit_u16(Op::LOCAL_SET, namespace_slot);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, namespace_slot);
                     let field_idx = self.str_const(field);
                     self.emit_u16(Op::STRUCT_GET, field_idx);
                     let callee_slot = self.define_local("__host_namespace_call_callee");
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
                     self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
                     return Ok(());
                 }
@@ -3322,7 +3245,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__host_prefix_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         for slot in &arg_slots {
@@ -3384,7 +3306,6 @@ impl Compiler {
                         .resolve("__early_static_fn")
                         .unwrap_or_else(|| self.define_local("__early_static_fn"));
                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                    self.emit(Op::DROP);
 
                     if let Some(param_modes) = self
                         .function_param_modes
@@ -3405,7 +3326,6 @@ impl Compiler {
                                 let arg_slot = self
                                     .define_local(&format!("__early_static_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
 
@@ -3417,7 +3337,6 @@ impl Compiler {
 
                             let pack_slot = self.define_local("__early_static_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
-                            self.emit(Op::DROP);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
                                 if !matches!(
@@ -3482,7 +3401,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__early_static_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         if self.profile.name == "php" {
@@ -3490,7 +3408,6 @@ impl Compiler {
                             self.emit_u16(Op::GLOBAL_GET, cls_idx);
                             let receiver_slot = self.define_local("__early_static_receiver");
                             self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                            self.emit(Op::DROP);
                             self.emit_call_ref_with_arg_slots(
                                 fn_tmp,
                                 Some(receiver_slot),
@@ -3503,7 +3420,6 @@ impl Compiler {
                     if args.iter().any(|arg| arg.by_ref) {
                         let pack_slot = self.define_local("__early_static_by_ref_pack");
                         self.emit_u16(Op::LOCAL_SET, pack_slot);
-                        self.emit(Op::DROP);
                         let mut ref_out_index = 1usize;
                         for arg in args {
                             if !arg.by_ref {
@@ -3622,7 +3538,6 @@ impl Compiler {
                                     self.emit_common(&emit, 2, line);
                                     let resized_slot = self.define_local("__array_resize_value");
                                     self.emit_u16(Op::LOCAL_SET, resized_slot);
-                                    self.emit(Op::DROP);
                                     self.emit_u16(Op::LOCAL_GET, resized_slot);
                                     self.compile_assign_target(&args[0].value)?;
                                     self.emit(Op::NULL);
@@ -3773,11 +3688,9 @@ impl Compiler {
                                     self.emit_u16(Op::STRUCT_GET, method_idx);
                                     let fn_tmp = self.define_local("__ns_fn");
                                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                                    self.emit(Op::DROP);
                                     let obj_tmp = self.define_local("__ns_obj");
                                     self.reserve_local_slot(obj_tmp);
                                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                                    self.emit(Op::DROP);
                                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                                     for a in &arg_exprs {
@@ -3969,7 +3882,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__host_alias_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             for slot in &arg_slots {
@@ -4059,7 +3971,6 @@ impl Compiler {
                             .resolve("__static_cls")
                             .unwrap_or_else(|| self.define_local("__static_cls"));
                         self.emit_u16(Op::LOCAL_SET, cls_tmp);
-                        self.emit(Op::DROP);
                         let fn_tmp = self
                             .scope()
                             .resolve("__static_fn")
@@ -4082,7 +3993,6 @@ impl Compiler {
                             self.emit_u16(Op::STRUCT_GET, method_idx);
                         }
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        self.emit(Op::DROP);
                         let saved_js_this = self.save_js_this("__js_prev_this_static_method");
                         self.emit_u16(Op::LOCAL_GET, cls_tmp);
                         self.set_js_this_from_stack();
@@ -4106,7 +4016,6 @@ impl Compiler {
                                     let arg_slot = self
                                         .define_local(&format!("__js_static_call_arg_{}", index));
                                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                    self.emit(Op::DROP);
                                     arg_slots.push(arg_slot);
                                 }
 
@@ -4117,7 +4026,6 @@ impl Compiler {
                                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                                 let pack_slot = self.define_local("__js_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
-                                self.emit(Op::DROP);
                                 self.restore_js_this(saved_js_this);
 
                                 let mut ref_out_index = 1usize;
@@ -4157,7 +4065,6 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_static_method_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.restore_js_this(saved_js_this);
                         if args.iter().any(|arg| arg.by_ref) {
                             let mut ref_out_index = 1usize;
@@ -4200,13 +4107,11 @@ impl Compiler {
                         .resolve("__static_fn")
                         .unwrap_or_else(|| self.define_local("__static_fn"));
                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                    self.emit(Op::DROP);
                     let cls_tmp = self
                         .scope()
                         .resolve("__static_cls")
                         .unwrap_or_else(|| self.define_local("__static_cls"));
                     self.emit_u16(Op::LOCAL_SET, cls_tmp);
-                    self.emit(Op::DROP);
                     let qualified_method = self.canon(&format!("{}.{}", canon, field));
                     if let Some(param_modes) = self
                         .function_param_modes
@@ -4227,7 +4132,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__static_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
 
@@ -4239,7 +4143,6 @@ impl Compiler {
 
                             let pack_slot = self.define_local("__static_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
-                            self.emit(Op::DROP);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
                                 if !matches!(
@@ -4300,7 +4203,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__static_class_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -4308,7 +4210,6 @@ impl Compiler {
                     if args.iter().any(|arg| arg.by_ref) {
                         let pack_slot = self.define_local("__static_by_ref_pack");
                         self.emit_u16(Op::LOCAL_SET, pack_slot);
-                        self.emit(Op::DROP);
                         let mut ref_out_index = 1usize;
                         for arg in args {
                             if !arg.by_ref {
@@ -4369,7 +4270,6 @@ impl Compiler {
                                 .resolve("__nested_static_cls")
                                 .unwrap_or_else(|| self.define_local("__nested_static_cls"));
                             self.emit_u16(Op::LOCAL_SET, cls_tmp);
-                            self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, cls_tmp);
                             let method_idx = self.str_const(&self.canon(field));
                             self.emit_u16(Op::STRUCT_GET, method_idx);
@@ -4378,7 +4278,6 @@ impl Compiler {
                                 .resolve("__nested_static_fn")
                                 .unwrap_or_else(|| self.define_local("__nested_static_fn"));
                             self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                            self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, fn_tmp);
                             for a in &arg_exprs {
                                 self.compile_expr(a)?;
@@ -4709,7 +4608,6 @@ impl Compiler {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_value_push_spread_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit(Op::DROP);
 
                     let (args_slot, _) =
                         self.compile_call_args_array(args, "js_value_push_spread_values")?;
@@ -4717,12 +4615,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, args_slot);
                     common::collections::emit_len(&mut self.chunks, self.current, line);
                     self.emit_u16(Op::LOCAL_SET, len_slot);
-                    self.emit(Op::DROP);
 
                     let idx_slot = self.define_local("__js_value_push_spread_idx");
                     self.emit_const(Value::I32(0));
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.emit(Op::DROP);
 
                     let loop_block = self.chunk().emit_block(line);
                     let (loop_patch, _) = self.chunk().emit_loop_s(line);
@@ -4751,7 +4647,6 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                     };
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_br(0, line);
                     self.chunk().emit_end(line);
                     self.chunk().patch_loop(loop_patch);
@@ -4898,7 +4793,6 @@ impl Compiler {
                 self.compile_expr(object)?;
                 let arr_slot = self.define_local("__hof_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
-                self.emit(Op::DROP);
 
                 if let Some(fn_expr) = arg_exprs.first() {
                     self.compile_expr(fn_expr)?;
@@ -4907,7 +4801,6 @@ impl Compiler {
                 }
                 let fn_slot = self.define_local("__hof_fn");
                 self.emit_u16(Op::LOCAL_SET, fn_slot);
-                self.emit(Op::DROP);
 
                 let idx_slot = self.define_local("__hof_idx");
                 let result_slot = self.define_local("__hof_result");
@@ -4949,11 +4842,9 @@ impl Compiler {
                             // acc = initial, i = 0
                             self.compile_expr(init_expr)?;
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.emit(Op::DROP);
                             // Inline reduce loop starting from i=0
                             inst!(self, core_wasm::i32_const, 0);
                             self.emit_u16(Op::LOCAL_SET, idx_slot);
-                            self.emit(Op::DROP);
                             let loop_block = self.chunk().emit_block(line);
                             let (loop_patch, _) = self.chunk().emit_loop_s(line);
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -4982,7 +4873,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
                             self.emit_u8(Op::CALL_REF, 3);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.emit(Op::DROP);
                             // i++
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
                             self.emit_const(Value::I32(1));
@@ -4991,7 +4881,6 @@ impl Compiler {
                                 crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                             };
                             self.emit_u16(Op::LOCAL_SET, idx_slot);
-                            self.emit(Op::DROP);
                             self.chunk().emit_br(0, line);
                             self.chunk().emit_end(line);
                             self.chunk().patch_loop(loop_patch);
@@ -5078,7 +4967,6 @@ impl Compiler {
                             self.emit(Op::NULL);
                         }
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
                             &mut self.chunks,
                             self.current,
@@ -5088,7 +4976,6 @@ impl Compiler {
                         );
                         let elem_slot = self.define_local("__find_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u8(Op::CALL_REF, 1);
@@ -5100,7 +4987,6 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(3, line);
                         self.chunk().emit_end(line);
                         common::loops::emit_for_in_end(
@@ -5116,7 +5002,6 @@ impl Compiler {
                         // findIndex: like find but returns the index, not the element
                         self.emit_const(Value::I32(-1));
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
                             &mut self.chunks,
                             self.current,
@@ -5126,7 +5011,6 @@ impl Compiler {
                         );
                         let elem_slot = self.define_local("__findi_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -5139,7 +5023,6 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(3, line);
                         self.chunk().emit_end(line);
                         common::loops::emit_for_in_end(
@@ -5300,7 +5183,6 @@ impl Compiler {
                         if let Some(init_expr) = arg_exprs.get(1) {
                             self.compile_expr(init_expr)?;
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.emit(Op::DROP);
                         } else {
                             // acc = arr[len-1]
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -5311,7 +5193,6 @@ impl Compiler {
                             self.emit_const(Value::I32(1));
                             self.emit(Op::F64_SUB);
                             self.emit_u16(Op::LOCAL_SET, idx_slot);
-                            self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
                             {
@@ -5319,7 +5200,6 @@ impl Compiler {
                                 common::collections::emit_get(&mut self.chunks, self.current, l);
                             }
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.emit(Op::DROP);
                         }
                         // Start from len-1 (or len-2 if no initial)
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -5334,7 +5214,6 @@ impl Compiler {
                             self.emit(Op::F64_SUB);
                         }
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         let loop_block = self.chunk().emit_block(line);
                         let (loop_patch, _) = self.chunk().emit_loop_s(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -5359,13 +5238,11 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u8(Op::CALL_REF, 3);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         // i--
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(0, line);
                         self.chunk().emit_end(line);
                         self.chunk().patch_loop(loop_patch);
@@ -5377,7 +5254,6 @@ impl Compiler {
                         // Iterate backward, return last element matching predicate
                         self.emit(Op::NULL);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         {
                             let l = self.line;
@@ -5386,7 +5262,6 @@ impl Compiler {
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         let loop_block = self.chunk().emit_block(line);
                         let (loop_patch, _) = self.chunk().emit_loop_s(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -5407,7 +5282,6 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u8(Op::CALL_REF, 1);
@@ -5419,14 +5293,12 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(2, line);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(0, line);
                         self.chunk().emit_end(line);
                         self.chunk().patch_loop(loop_patch);
@@ -5438,7 +5310,6 @@ impl Compiler {
                         // Iterate backward, return last index matching predicate
                         self.emit_const(Value::I32(-1));
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         {
                             let l = self.line;
@@ -5447,7 +5318,6 @@ impl Compiler {
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         let loop_block = self.chunk().emit_block(line);
                         let (loop_patch, _) = self.chunk().emit_loop_s(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -5468,7 +5338,6 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }
                         self.emit_u16(Op::LOCAL_SET, elem_slot2);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot2);
                         self.emit_u8(Op::CALL_REF, 1);
@@ -5480,14 +5349,12 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(2, line);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(0, line);
                         self.chunk().emit_end(line);
                         self.chunk().patch_loop(loop_patch);
@@ -5501,7 +5368,6 @@ impl Compiler {
                         let removed_slot = self.define_local("__ra_removed");
                         self.emit_const(Value::I32(0));
                         self.emit_u16(Op::LOCAL_SET, removed_slot);
-                        self.emit(Op::DROP);
                         // Start i = arr.len - 1
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         {
@@ -5511,7 +5377,6 @@ impl Compiler {
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         let loop_block = self.chunk().emit_block(line);
                         let (loop_patch, _) = self.chunk().emit_loop_s(line);
                         // while i >= 0
@@ -5534,7 +5399,6 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }
                         self.emit_u16(Op::LOCAL_SET, ra_elem);
-                        self.emit(Op::DROP);
                         // if fn(elem) → remove
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, ra_elem);
@@ -5561,14 +5425,12 @@ impl Compiler {
                             crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                         };
                         self.emit_u16(Op::LOCAL_SET, removed_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                         // i--
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_br(0, line);
                         self.chunk().emit_end(line);
                         self.chunk().patch_loop(loop_patch);
@@ -5637,7 +5499,6 @@ impl Compiler {
                         self.compile_expr(object)?;
                         let obj_tmp = self.define_local("__pascal_callable_field_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                        self.emit(Op::DROP);
                         let prop = self.str_const(&canon_field);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::STRUCT_GET, prop);
@@ -5666,7 +5527,6 @@ impl Compiler {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__js_private_call_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                self.emit(Op::DROP);
 
                 let fn_tmp = self.define_local("__js_private_call_fn");
                 let class_parts = self.flatten_member_chain(object);
@@ -5717,14 +5577,12 @@ impl Compiler {
                         self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
                         self.chunk().emit(0, line);
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        self.emit(Op::DROP);
                     } else {
                         let field_name = self.js_member_storage_name_for_class(&class_name, field);
                         let prop = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::STRUCT_GET, prop);
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        self.emit(Op::DROP);
                     }
                 } else {
                     let field_name = self.js_member_storage_name_for_receiver(object, field);
@@ -5732,7 +5590,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::STRUCT_GET, prop);
                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                    self.emit(Op::DROP);
                 }
 
                 let saved_js_this = self.save_js_this("__js_prev_this_private_call");
@@ -5745,7 +5602,6 @@ impl Compiler {
                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_private_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
                 self.restore_js_this(saved_js_this);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return Ok(());
@@ -5760,17 +5616,14 @@ impl Compiler {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__js_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                self.emit(Op::DROP);
 
                 let method_name = self.js_member_storage_name(field);
                 let js_result_slot = self.define_local("__js_member_dispatch_result");
                 self.emit(Op::NULL);
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.emit(Op::DROP);
                 let js_handled_slot = self.define_local("__js_member_dispatch_handled");
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                self.emit(Op::DROP);
 
                 // JS generator objects are both iterators and iterables:
                 // `g[Symbol.iterator]()` must return `g` itself.
@@ -5783,10 +5636,8 @@ impl Compiler {
                     self.chunk().emit_if(gen_if_line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(gen_if_line);
                 }
 
@@ -5819,10 +5670,8 @@ impl Compiler {
                         self.compile_expr(&arg_exprs[0])?;
                     }
                     self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     if arg_exprs.is_empty() {
@@ -5834,13 +5683,11 @@ impl Compiler {
                     let line = self.line;
                     crate::emitter::generators::emit_resume(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                     self.emit_host_call(is_done_idx, 1);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
-                    self.emit(Op::DROP);
 
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -5860,10 +5707,8 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, done_key);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(gen_if_line);
                 }
 
@@ -5902,10 +5747,8 @@ impl Compiler {
                     self.chunk().emit_if(line);
                     inst!(self, core_wasm::undefined);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     if arg_exprs.is_empty() {
                         // `g.next()` — GEN_NEXT path: pushes value+has_more.
@@ -5914,9 +5757,7 @@ impl Compiler {
                         crate::emitter::generators::emit_next(self.chunk(), line);
                         let has_more_slot = self.define_local("__gen_has_more");
                         self.emit_u16(Op::LOCAL_SET, has_more_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, has_more_slot);
                         {
                             let line = self.line;
@@ -5930,7 +5771,6 @@ impl Compiler {
                             crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
                         };
                         self.emit_u16(Op::LOCAL_SET, done_slot);
-                        self.emit(Op::DROP);
                         // Per ECMA-262 §27.5.3.5: when a generator completes
                         // (done=true) with no explicit return value, the VM
                         // leaves null on the stack. Convert null → undefined
@@ -5946,7 +5786,6 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             inst!(self, core_wasm::undefined);
                             self.emit_u16(Op::LOCAL_SET, value_slot);
-                            self.emit(Op::DROP);
                             self.chunk().emit_end(line);
                             self.chunk().emit_end(line);
                         }
@@ -5960,12 +5799,10 @@ impl Compiler {
                         let line = self.line;
                         crate::emitter::generators::emit_resume(self.chunk(), line);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                         self.emit_host_call(is_done_idx, 1);
                         self.emit_u16(Op::LOCAL_SET, done_slot);
-                        self.emit(Op::DROP);
                     }
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -5987,10 +5824,8 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, done_key);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(gen_if_line);
                 }
 
@@ -6021,10 +5856,8 @@ impl Compiler {
                     crate::emitter::generators::emit_next(self.chunk(), line);
                     let has_more_slot = self.define_local("__gen_throw_has_more");
                     self.emit_u16(Op::LOCAL_SET, has_more_slot);
-                    self.emit(Op::DROP);
                     let primed_value_slot = self.define_local("__gen_throw_primed_value");
                     self.emit_u16(Op::LOCAL_SET, primed_value_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
@@ -6057,13 +5890,11 @@ impl Compiler {
                     let line = self.line;
                     crate::emitter::generators::emit_resume_throw(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                     self.emit_host_call(is_done_idx, 1);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
-                    self.emit(Op::DROP);
 
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     inst!(self, core_wasm::dup);
@@ -6077,10 +5908,8 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, done_key);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(gen_if_line);
                 }
 
@@ -6106,7 +5935,6 @@ impl Compiler {
                         self.compile_expr(arg)?;
                         let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
 
@@ -6115,13 +5943,11 @@ impl Compiler {
                         self.emit_u16(Op::STRUCT_GET, prop);
                         let fn_slot = self.define_local("__js_typed_method_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_slot);
-                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::STRUCT_GET, receiver_marker);
                         let marker_slot = self.define_local("__js_typed_receiver_marker");
                         self.emit_u16(Op::LOCAL_SET, marker_slot);
-                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, marker_slot);
                         self.emit(Op::REF_IS_NULL);
@@ -6167,13 +5993,11 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, prop);
                     let fn_slot = self.define_local("__js_typed_method_fn");
                     self.emit_u16(Op::LOCAL_SET, fn_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, fn_slot);
                     self.emit_u16(Op::STRUCT_GET, receiver_marker);
                     let marker_slot = self.define_local("__js_typed_receiver_marker");
                     self.emit_u16(Op::LOCAL_SET, marker_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, marker_slot);
                     self.emit(Op::REF_IS_NULL);
@@ -6205,10 +6029,8 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
                 }
@@ -6224,7 +6046,6 @@ impl Compiler {
                 self.emit_host_call(lookup, 2);
                 let lookup_slot = self.define_local("__js_lookup_fn");
                 self.emit_u16(Op::LOCAL_SET, lookup_slot);
-                self.emit(Op::DROP);
                 let spread_args = args.iter().any(|arg| arg.spread);
                 let spread_call_args = if spread_args {
                     Some(self.compile_call_args_array(args, "js_dispatch_lookup_spread")?)
@@ -6237,7 +6058,6 @@ impl Compiler {
                         self.compile_expr(arg)?;
                         let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                 }
@@ -6262,7 +6082,6 @@ impl Compiler {
                     self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 }
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, lookup_slot);
                 fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -6285,7 +6104,6 @@ impl Compiler {
                     self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                 }
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 if let Some((args_slot, known_len)) = spread_call_args {
                     self.emit_call_ref_with_args_array(
@@ -6302,7 +6120,6 @@ impl Compiler {
                     );
                 }
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
@@ -6314,7 +6131,6 @@ impl Compiler {
             let obj_tmp = self.define_local("__obj");
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp);
-            self.emit(Op::DROP);
 
             if self.is_js_profile() && field.starts_with('#') && !*null_safe {
                 let class_parts = self.flatten_member_chain(object);
@@ -6380,7 +6196,6 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_private_static_call_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
                         self.restore_js_this(saved_js_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         return Ok(());
@@ -6435,19 +6250,16 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                self.emit(Op::DROP);
                 let receiver_key = self.str_const("__vybe_method_receiver");
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::STRUCT_GET, receiver_key);
                 let receiver_slot = self.define_local("__member_call_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                self.emit(Op::DROP);
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                 for (index, arg) in arg_exprs.iter().enumerate() {
                     self.compile_expr(arg)?;
                     let arg_slot = self.define_local(&format!("__member_nullsafe_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
                 self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
@@ -6519,12 +6331,10 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::STRUCT_GET, receiver_key);
                 let receiver_slot = self.define_local("__member_fast_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                self.emit(Op::DROP);
                 if self.is_js_profile() {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
@@ -6532,7 +6342,6 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__js_member_bound_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -6548,7 +6357,6 @@ impl Compiler {
                         self.chunk().emit(0, line);
                         let direct_fn_tmp = self.define_local("__php_direct_instance_fn");
                         self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                        self.emit(Op::DROP);
                         if overload.signature.has_rest {
                             self.emit_known_rest_call_from_local(
                                 direct_fn_tmp,
@@ -6581,7 +6389,6 @@ impl Compiler {
                             self.chunk().emit(0, line);
                             let direct_fn_tmp = self.define_local("__php_direct_static_fn");
                             self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                            self.emit(Op::DROP);
                             if overload.signature.has_rest {
                                 self.emit_known_rest_call_from_local(
                                     direct_fn_tmp,
@@ -6674,7 +6481,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__js_static_member_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -6685,7 +6491,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__static_member_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(
@@ -6701,7 +6506,6 @@ impl Compiler {
                     if args.iter().any(|arg| arg.by_ref) {
                         let pack_slot = self.define_local("__member_static_container_by_ref_pack");
                         self.emit_u16(Op::LOCAL_SET, pack_slot);
-                        self.emit(Op::DROP);
                         let mut ref_out_index = 1usize;
                         for arg in args {
                             if !arg.by_ref {
@@ -6732,12 +6536,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_u16(Op::LOCAL_SET, type_tmp);
-                    self.emit(Op::DROP);
 
                     let primitive_slot = self.define_local("__dotnet_tostring_is_primitive");
                     self.emit_const(Value::I32(0));
                     self.emit_u16(Op::LOCAL_SET, primitive_slot);
-                    self.emit(Op::DROP);
                     for type_name in ["number", "i32", "i64", "string", "boolean"] {
                         self.emit_u16(Op::LOCAL_GET, type_tmp);
                         self.emit_const(Value::String(Arc::from(type_name)));
@@ -6750,7 +6552,6 @@ impl Compiler {
                         self.chunk().emit_if(line);
                         self.emit_const(Value::I32(1));
                         self.emit_u16(Op::LOCAL_SET, primitive_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                     }
 
@@ -6796,7 +6597,6 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__js_member_fast_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     if field == "toString" {
@@ -6831,7 +6631,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__member_fast_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
 
@@ -6843,7 +6642,6 @@ impl Compiler {
 
                             let pack_slot = self.define_local("__member_fast_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
-                            self.emit(Op::DROP);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
                                 if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out))
@@ -6887,7 +6685,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__member_fast_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             self.emit_call_ref_with_arg_slots(
@@ -6916,7 +6713,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__member_fast_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
@@ -6965,7 +6761,6 @@ impl Compiler {
                     self.chunk().emit(0, line);
                     let direct_fn_tmp = self.define_local("__direct_instance_fn");
                     self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                    self.emit(Op::DROP);
                     self.emit_known_rest_call_from_local(
                         direct_fn_tmp,
                         if self.is_js_profile() {
@@ -6991,7 +6786,6 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__go_pending_instance_fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                self.emit(Op::DROP);
 
                 let receiver_slot =
                     if self
@@ -7010,7 +6804,6 @@ impl Compiler {
                         self.emit_user_value_type_clone_from_stack(&class_name);
                         let receiver_slot = self.define_local("__go_value_receiver");
                         self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                        self.emit(Op::DROP);
                         receiver_slot
                     } else {
                         obj_tmp
@@ -7021,7 +6814,6 @@ impl Compiler {
                     self.compile_expr(arg)?;
                     let arg_slot = self.define_local(&format!("__go_pending_method_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
                 self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
@@ -7033,7 +6825,6 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp);
-            self.emit(Op::DROP);
             if self.profile.name == "php" {
                 if let Some(overload) =
                     self.resolve_instance_method_overload(object, field, &arg_exprs, false)
@@ -7043,7 +6834,6 @@ impl Compiler {
                     self.chunk().emit(0, line);
                     let direct_fn_tmp = self.define_local("__php_direct_instance_fn");
                     self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                    self.emit(Op::DROP);
                     if overload.signature.has_rest {
                         self.emit_known_rest_call_from_local(
                             direct_fn_tmp,
@@ -7090,7 +6880,6 @@ impl Compiler {
                         self.chunk().emit(0, line);
                         let direct_fn_tmp = self.define_local("__php_direct_static_fn");
                         self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                        self.emit(Op::DROP);
                         if overload.signature.has_rest {
                             self.emit_known_rest_call_from_local(
                                 direct_fn_tmp,
@@ -7151,7 +6940,6 @@ impl Compiler {
                         self.chunk().emit(0, line);
                         let direct_fn_tmp = self.define_local("__static_rest_body_fn");
                         self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                        self.emit(Op::DROP);
                         direct_fn_tmp
                     } else {
                         fn_tmp
@@ -7173,7 +6961,6 @@ impl Compiler {
                         let arg_slot =
                             self.define_local(&format!("__static_member_call_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
                     self.emit_call_ref_with_arg_slots(
@@ -7189,7 +6976,6 @@ impl Compiler {
                 if args.iter().any(|arg| arg.by_ref) {
                     let pack_slot = self.define_local("__member_static_container_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
-                    self.emit(Op::DROP);
                     let mut ref_out_index = 1usize;
                     for arg in args {
                         if !arg.by_ref {
@@ -7218,12 +7004,10 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_u16(Op::LOCAL_SET, type_tmp);
-                self.emit(Op::DROP);
 
                 let primitive_slot = self.define_local("__dotnet_tostring_is_primitive");
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, primitive_slot);
-                self.emit(Op::DROP);
                 for type_name in ["number", "i32", "i64", "string", "boolean"] {
                     self.emit_u16(Op::LOCAL_GET, type_tmp);
                     self.emit_const(Value::String(Arc::from(type_name)));
@@ -7236,7 +7020,6 @@ impl Compiler {
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, primitive_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
                 }
 
@@ -7283,7 +7066,6 @@ impl Compiler {
                 self.chunk().emit(0, line);
                 let direct_fn_tmp = self.define_local("__instance_rest_body_fn");
                 self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                self.emit(Op::DROP);
                 self.emit_known_rest_call_from_local(
                     direct_fn_tmp,
                     if self.is_js_profile() {
@@ -7300,11 +7082,9 @@ impl Compiler {
                     let js_result_slot = self.define_local("__js_member_result");
                     self.emit(Op::NULL);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     let js_handled_slot = self.define_local("__js_member_handled");
                     self.emit_const(Value::I32(0));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                    self.emit(Op::DROP);
 
                     let js_user_defined_member =
                         self.direct_receiver_has_own_pending_method(object, field)
@@ -7341,7 +7121,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__js_member_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             self.emit_call_ref_with_bound_js_this_arg_slots(
@@ -7349,10 +7128,8 @@ impl Compiler {
                             );
                         }
                         self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                        self.emit(Op::DROP);
                         self.emit_const(Value::I32(1));
                         self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
                     }
@@ -7368,7 +7145,6 @@ impl Compiler {
                     self.emit_host_call(lookup, 2);
                     let lookup_slot = self.define_local("__js_member_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot);
-                    self.emit(Op::DROP);
                     let spread_args = args.iter().any(|arg| arg.spread);
                     let spread_call_args = if spread_args {
                         Some(self.compile_call_args_array(args, "js_member_lookup_spread")?)
@@ -7382,7 +7158,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__js_member_lookup_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                     }
@@ -7408,7 +7183,6 @@ impl Compiler {
                         self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -7431,7 +7205,6 @@ impl Compiler {
                         self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     if let Some((args_slot, known_len)) = spread_call_args {
                         self.emit_call_ref_with_args_array(
@@ -7448,7 +7221,6 @@ impl Compiler {
                         );
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.emit(Op::DROP);
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
@@ -7482,7 +7254,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__member_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             self.emit_call_ref_with_arg_slots(
@@ -7493,7 +7264,6 @@ impl Compiler {
 
                             let pack_slot = self.define_local("__member_call_ref_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
-                            self.emit(Op::DROP);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
                                 if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out))
@@ -7537,7 +7307,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__member_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             self.emit_call_ref_with_arg_slots(
@@ -7566,7 +7335,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__member_call_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
@@ -7626,13 +7394,11 @@ impl Compiler {
                     self.compile_expr_with_value_copy(arg)?;
                     let arg_slot = self.define_local(&format!("__host_import_call_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
                 self.emit_var_get(name);
                 let callee_slot = self.define_local("__host_import_call_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
-                self.emit(Op::DROP);
                 self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
                 return Ok(());
             }
@@ -7644,7 +7410,6 @@ impl Compiler {
                     let arg_slot = self.define_local("__php_exit_arg");
                     self.compile_expr(arg)?;
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, arg_slot);
                     let typeof_idx = self.import("ecma:value", "typeof");
@@ -7688,7 +7453,6 @@ impl Compiler {
                         self.emit_u16(Op::STRUCT_GET, method_idx);
                         let fn_tmp = self.define_local("__bare_static_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        self.emit(Op::DROP);
 
                         let method_canon = self.canon(name);
                         if let Some(param_modes) =
@@ -7707,7 +7471,6 @@ impl Compiler {
                                     let arg_slot = self
                                         .define_local(&format!("__bare_static_call_arg_{}", index));
                                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                    self.emit(Op::DROP);
                                     arg_slots.push(arg_slot);
                                 }
 
@@ -7719,7 +7482,6 @@ impl Compiler {
 
                                 let pack_slot = self.define_local("__bare_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
-                                self.emit(Op::DROP);
                                 let mut ref_out_index = 1usize;
                                 for (index, arg) in args.iter().enumerate() {
                                     if !matches!(
@@ -7769,7 +7531,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__bare_static_call_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -7865,14 +7626,12 @@ impl Compiler {
                     let callee_slot = self.define_local("__paren_ambig_callee");
                     self.emit_var_get(name);
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
 
                     let table_idx_key = self.str_const("__table_idx");
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
                     self.emit_u16(Op::STRUCT_GET, table_idx_key);
                     let table_idx_slot = self.define_local("__paren_ambig_table_idx");
                     self.emit_u16(Op::LOCAL_SET, table_idx_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, table_idx_slot);
                     self.emit(Op::REF_IS_NULL);
@@ -7902,12 +7661,10 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, receiver_key);
                     let receiver_slot = self.define_local("__paren_ambig_receiver");
                     self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                    self.emit(Op::DROP);
 
                     self.compile_expr_with_value_copy(&arg_exprs[0])?;
                     let arg_slot = self.define_local("__paren_ambig_arg_0");
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     self.emit_call_ref_with_arg_slots(
                         callee_slot,
                         Some(receiver_slot),
@@ -7939,10 +7696,8 @@ impl Compiler {
                         self.emit_u16(Op::STRUCT_GET, prop);
                         let fn_tmp = self.define_local("__bare_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        self.emit(Op::DROP);
                         let obj_tmp = self.define_local("__bare_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                        self.emit(Op::DROP);
 
                         let is_callable_field = self
                             .lookup_implicit_self_field_type_hint(name)
@@ -7956,7 +7711,6 @@ impl Compiler {
                                 let arg_slot =
                                     self.define_local(&format!("__bare_field_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
                             self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
@@ -7969,7 +7723,6 @@ impl Compiler {
                             let arg_slot =
                                 self.define_local(&format!("__bare_method_call_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
@@ -7984,7 +7737,6 @@ impl Compiler {
                     let callee_slot = self.define_local("__packed_rest_spread_callee");
                     self.emit_var_get(name);
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
-                    self.emit(Op::DROP);
                     self.emit_known_rest_call_from_local(callee_slot, None, args, signature)?;
                     return Ok(());
                 }
@@ -8003,7 +7755,6 @@ impl Compiler {
                         let spread_slot = self.define_local("__php_named_unpack");
                         self.compile_expr(&args[0].value)?;
                         self.emit_u16(Op::LOCAL_SET, spread_slot);
-                        self.emit(Op::DROP);
 
                         let probe_slot = self.define_local("__php_named_unpack_probe");
                         self.emit_u16(Op::LOCAL_GET, spread_slot);
@@ -8012,7 +7763,6 @@ impl Compiler {
                         )));
                         common::collections::emit_get(&mut self.chunks, self.current, self.line);
                         self.emit_u16(Op::LOCAL_SET, probe_slot);
-                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, probe_slot);
                         self.emit(Op::REF_IS_NULL);
@@ -8028,7 +7778,6 @@ impl Compiler {
                             line,
                         );
                         self.emit_u16(Op::LOCAL_SET, args_slot);
-                        self.emit(Op::DROP);
                         let mut known_len: Option<usize> = Some(0);
                         for a in args {
                             if a.spread {
@@ -8040,7 +7789,6 @@ impl Compiler {
                                     line,
                                 );
                                 self.emit_u16(Op::LOCAL_SET, args_slot);
-                                self.emit(Op::DROP);
                                 if let ExprKind::Array(elems) = &a.value.kind {
                                     if let Some(ref mut k) = known_len {
                                         *k += elems.len();
@@ -8094,7 +7842,6 @@ impl Compiler {
                 let args_slot = self.define_local("__spread_args");
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 self.emit_u16(Op::LOCAL_SET, args_slot);
-                self.emit(Op::DROP);
                 let mut known_len: Option<usize> = Some(0);
                 for a in args {
                     if a.spread {
@@ -8103,7 +7850,6 @@ impl Compiler {
                         self.compile_expr(&a.value)?;
                         common::collections::emit_concat(&mut self.chunks, self.current, line);
                         self.emit_u16(Op::LOCAL_SET, args_slot);
-                        self.emit(Op::DROP);
                         if let ExprKind::Array(elems) = &a.value.kind {
                             if let Some(ref mut k) = known_len {
                                 *k += elems.len();
@@ -8156,14 +7902,12 @@ impl Compiler {
                 }
                 let callee_slot = self.define_local("__ident_spread_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
-                self.emit(Op::DROP);
                 self.emit_php_dynamic_function_name_resolution(callee_slot);
                 let receiver_key = self.str_const("__vybe_method_receiver");
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 self.emit_u16(Op::STRUCT_GET, receiver_key);
                 let receiver_slot = self.define_local("__ident_spread_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                self.emit(Op::DROP);
                 self.emit_call_ref_with_args_array(
                     callee_slot,
                     Some(receiver_slot),
@@ -8176,7 +7920,6 @@ impl Compiler {
                 let callee_slot = self.define_local("__py_call_target");
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
-                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 let typeof_idx = self.import("ecma:value", "typeof");
@@ -8202,7 +7945,6 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, call_prop);
                 let call_slot = self.define_local("__py_call_method");
                 self.emit_u16(Op::LOCAL_SET, call_slot);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, call_slot);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -8213,7 +7955,6 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, dunder_prop);
                 let dunder_slot = self.define_local("__py_dunder_call_method");
                 self.emit_u16(Op::LOCAL_SET, dunder_slot);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, dunder_slot);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -8275,21 +8016,18 @@ impl Compiler {
                 self.emit_var_get(name);
             }
             self.emit_u16(Op::LOCAL_SET, callee_slot);
-            self.emit(Op::DROP);
             self.emit_php_dynamic_function_name_resolution(callee_slot);
             let receiver_key = self.str_const("__vybe_method_receiver");
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             self.emit_u16(Op::STRUCT_GET, receiver_key);
             let receiver_slot = self.define_local("__direct_call_receiver");
             self.emit_u16(Op::LOCAL_SET, receiver_slot);
-            self.emit(Op::DROP);
             if let Some(signature) = rest_signature.as_ref() {
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                 for (index, arg) in arg_exprs.iter().enumerate() {
                     self.compile_expr_with_value_copy(arg)?;
                     let arg_slot = self.define_local(&format!("__direct_rest_call_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
 
@@ -8316,7 +8054,6 @@ impl Compiler {
 
                         let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
 
@@ -8328,7 +8065,6 @@ impl Compiler {
 
                     let pack_slot = self.define_local("__ref_call_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
-                    self.emit(Op::DROP);
                     let mut ref_out_index = 1usize;
                     for (index, arg) in args.iter().enumerate() {
                         if !param_modes
@@ -8361,7 +8097,6 @@ impl Compiler {
                     }
                     let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(arg_slot);
                 }
 
@@ -8369,7 +8104,6 @@ impl Compiler {
 
                 let result_slot = self.define_local("__direct_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
 
                 let mut ref_out_index = 1usize;
                 for arg in args {
@@ -8393,7 +8127,6 @@ impl Compiler {
                 self.compile_expr_with_value_copy(arg)?;
                 let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
                 self.emit_u16(Op::LOCAL_SET, arg_slot);
-                self.emit(Op::DROP);
                 arg_slots.push(arg_slot);
             }
 
@@ -8409,7 +8142,6 @@ impl Compiler {
                     let pad_slot = self.define_local(&format!("__gen_pad_arg_{}", index));
                     inst!(self, core_wasm::undefined);
                     self.emit_u16(Op::LOCAL_SET, pad_slot);
-                    self.emit(Op::DROP);
                     arg_slots.push(pad_slot);
                 }
             }
@@ -8442,7 +8174,6 @@ impl Compiler {
                 let obj_tmp = self.define_local("__js_idx_obj");
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                self.emit(Op::DROP);
                 let saved_js_this = self.save_js_this("__js_prev_this_idx");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.set_js_this_from_stack();
@@ -8469,14 +8200,12 @@ impl Compiler {
                     _ => self.compile_expr(index)?,
                 }
                 self.emit_u16(Op::LOCAL_SET, key_tmp);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::LOCAL_GET, key_tmp);
                 let line = self.line;
                 common::collections::emit_get(&mut self.chunks, self.current, line);
                 let callee_tmp = self.define_local("__js_idx_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_tmp);
-                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
                 self.emit(Op::REF_IS_NULL);
@@ -8508,7 +8237,6 @@ impl Compiler {
                 }
                 self.emit_u8(Op::CALL_REF, 2);
                 self.emit_u16(Op::LOCAL_SET, callee_tmp);
-                self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
                 fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -8539,7 +8267,6 @@ impl Compiler {
                 }
                 self.emit_u8(Op::CALL_REF, 2);
                 self.emit_u16(Op::LOCAL_SET, callee_tmp);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
 
@@ -8550,7 +8277,6 @@ impl Compiler {
                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
                 self.restore_js_this(saved_js_this);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return Ok(());
@@ -8584,17 +8310,14 @@ impl Compiler {
         self.compile_expr(callee)?;
         let callee_slot = self.define_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
-        self.emit(Op::DROP);
         self.emit_php_dynamic_function_name_resolution(callee_slot);
 
         let result_slot = self.define_local("__call_ref_result");
         self.emit(Op::NULL);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         let runtime_index_matched = self.define_local("__call_ref_runtime_index_matched");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, runtime_index_matched);
-        self.emit(Op::DROP);
 
         if self.profile.parens_for_index
             && !arg_exprs.is_empty()
@@ -8612,10 +8335,8 @@ impl Compiler {
                 common::collections::emit_get(&mut self.chunks, self.current, line);
             }
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, runtime_index_matched);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
         }
 
@@ -8630,14 +8351,12 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, receiver_key);
         let receiver_slot = self.define_local("__call_ref_receiver");
         self.emit_u16(Op::LOCAL_SET, receiver_slot);
-        self.emit(Op::DROP);
 
         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
         for (index, arg) in arg_exprs.iter().enumerate() {
             self.compile_expr(arg)?;
             let arg_slot = self.define_local(&format!("__call_ref_arg_{}", index));
             self.emit_u16(Op::LOCAL_SET, arg_slot);
-            self.emit(Op::DROP);
             arg_slots.push(arg_slot);
         }
 
@@ -8651,7 +8370,6 @@ impl Compiler {
         self.set_js_new_target_undefined();
         self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.restore_js_new_target(saved_js_new_target);
         self.chunk().emit_end(line); // close the runtime_index_matched `if`
 
@@ -8702,7 +8420,6 @@ impl Compiler {
 
         let parsed_slot = self.define_local("__guid_try_parse_value");
         self.emit_u16(Op::LOCAL_SET, parsed_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, parsed_slot);
         self.emit(Op::REF_IS_NULL);
@@ -8767,7 +8484,6 @@ impl Compiler {
 
         let parsed_slot = self.define_local("__numeric_try_parse_value");
         self.emit_u16(Op::LOCAL_SET, parsed_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, parsed_slot);
         self.emit_u16(Op::LOCAL_GET, parsed_slot);
@@ -8842,7 +8558,6 @@ impl Compiler {
         self.compile_expr(object)?;
         let map_slot = self.define_local("__dict_try_get_map");
         self.emit_u16(Op::LOCAL_SET, map_slot);
-        self.emit(Op::DROP);
 
         self.compile_expr(&args[0].value)?;
         if self.expr_uses_case_insensitive_string_keys(object) {
@@ -8851,7 +8566,6 @@ impl Compiler {
         }
         let key_slot = self.define_local("__dict_try_get_key");
         self.emit_u16(Op::LOCAL_SET, key_slot);
-        self.emit(Op::DROP);
 
         let has_idx = self.import("ecma:map", "has");
         self.emit_u16(Op::LOCAL_GET, map_slot);
@@ -8859,7 +8573,6 @@ impl Compiler {
         self.emit_host_call(has_idx, 2);
         let has_slot = self.define_local("__dict_try_get_has");
         self.emit_u16(Op::LOCAL_SET, has_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, has_slot);
         let line = self.line;
@@ -8871,7 +8584,6 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, getter_key);
         let getter_slot = self.define_local("__dict_try_get_getter");
         self.emit_u16(Op::LOCAL_SET, getter_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, getter_slot);
         self.emit(Op::REF_IS_NULL);
@@ -8925,11 +8637,9 @@ impl Compiler {
 
                     self.compile_expr(object)?;
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit(Op::DROP);
 
                     self.compile_collection_key(object, &args[0].value)?;
                     self.emit_u16(Op::LOCAL_SET, key_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -8942,7 +8652,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::STRUCT_GET, keys_key);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, keys_slot);
                     self.emit(Op::REF_IS_NULL);
@@ -8953,7 +8662,6 @@ impl Compiler {
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::STRUCT_SET, keys_key);
                     self.emit(Op::DROP);
 
@@ -9547,7 +9255,6 @@ impl Compiler {
         }))?;
         let slot = self.define_local("__reflection_attr");
         self.emit_u16(Op::LOCAL_SET, slot);
-        self.emit(Op::DROP);
 
         for arg in named_args {
             self.compile_expr(&arg.value)?;
@@ -9949,7 +9656,6 @@ impl Compiler {
                         let value_slot = self.define_local("__reflection_field_value");
                         self.compile_expr(&args[1].value)?;
                         self.emit_u16(Op::LOCAL_SET, value_slot);
-                        self.emit(Op::DROP);
 
                         self.compile_expr(&args[0].value)?;
                         inst!(self, core_wasm::dup);
@@ -10093,23 +9799,19 @@ impl Compiler {
         self.compile_expr(object)?;
         let obj_slot = self.define_local("__dotnet_tostring_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         fn_call!(self, "ecma:value", "typeof", 1);
         let type_slot = self.define_local("__dotnet_tostring_type");
         self.emit_u16(Op::LOCAL_SET, type_slot);
-        self.emit(Op::DROP);
 
         let result_slot = self.define_local("__dotnet_tostring_result");
         self.emit(Op::NULL);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
 
         let primitive_slot = self.define_local("__dotnet_tostring_primitive");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, primitive_slot);
-        self.emit(Op::DROP);
 
         for type_name in ["number", "i32", "i64", "string", "boolean"] {
             self.emit_u16(Op::LOCAL_GET, primitive_slot);
@@ -10127,7 +9829,6 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, primitive_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -10138,7 +9839,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         common::strings::emit_to_string(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.chunk().emit_else(line);
 
         let canon_key = self.str_const(&self.canon(field));
@@ -10146,7 +9846,6 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, canon_key);
         let fn_slot = self.define_local("__dotnet_tostring_fn");
         self.emit_u16(Op::LOCAL_SET, fn_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, fn_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -10157,7 +9856,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, obj_slot);
             self.emit_u16(Op::STRUCT_GET, exact_key);
             self.emit_u16(Op::LOCAL_SET, fn_slot);
-            self.emit(Op::DROP);
         }
         self.chunk().emit_end(line);
 
@@ -10184,14 +9882,12 @@ impl Compiler {
         common::strings::emit_to_string(self.chunk(), line);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
 
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, fn_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u8(Op::CALL_REF, 1);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -10303,16 +9999,13 @@ impl Compiler {
         }
         let input_slot = self.define_local("__enum_name_input");
         self.emit_u16(Op::LOCAL_SET, input_slot);
-        self.emit(Op::DROP);
 
         let result_slot = self.define_local("__enum_name_result");
         let matched_slot = self.define_local("__enum_name_matched");
         self.emit(Op::NULL);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
-        self.emit(Op::DROP);
         for (_, name) in entries {
             self.emit_u16(Op::LOCAL_GET, matched_slot);
             self.emit(Op::I32_EQZ);
@@ -10334,10 +10027,8 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_const(Value::String(Arc::from(name.as_str())));
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -10362,16 +10053,13 @@ impl Compiler {
         let value_slot = self.define_local("__enum_tostring_value");
         self.compile_expr(value_expr)?;
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
 
         let result_slot = self.define_local("__enum_tostring_result");
         let matched_slot = self.define_local("__enum_tostring_matched");
         self.emit(Op::NULL);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
-        self.emit(Op::DROP);
         for (value, name) in &entries {
             self.emit_u16(Op::LOCAL_GET, matched_slot);
             self.emit(Op::I32_EQZ);
@@ -10388,10 +10076,8 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_const(Value::String(Arc::from(name.as_str())));
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -10403,10 +10089,8 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_const(Value::String(Arc::from("")));
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.emit_const(Value::I32(0));
             self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.emit(Op::DROP);
 
             for (value, name) in &entries {
                 if *value <= 0 || (value & (value - 1)) != 0 {
@@ -10443,10 +10127,8 @@ impl Compiler {
                 self.chunk().emit_end(line);
 
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.emit(Op::DROP);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
             }
 
@@ -10456,7 +10138,6 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, result_slot);
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit(Op::DROP);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         }
@@ -10488,7 +10169,6 @@ impl Compiler {
         self.compile_expr(expr)?;
         let value_slot = self.define_local("__dotnet_console_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
         fn_call!(self, "ecma:value", "typeof", 1);
@@ -10524,10 +10204,8 @@ impl Compiler {
         let value_slot = self.define_local("__enum_flag_source");
         self.compile_expr(flag_expr)?;
         self.emit_u16(Op::LOCAL_SET, flag_slot);
-        self.emit(Op::DROP);
         self.compile_expr(value_expr)?;
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_u16(Op::LOCAL_GET, flag_slot);
         self.emit(Op::I32_AND);
@@ -10680,7 +10358,6 @@ impl Compiler {
                     self.emit_enum_name_lookup(&enum_type, value_arg, ignore_case)?;
                     let parsed_slot = self.define_local("__enum_try_parse_value");
                     self.emit_u16(Op::LOCAL_SET, parsed_slot);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, parsed_slot);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
@@ -10859,7 +10536,6 @@ impl Compiler {
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
                         crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
                         self.emit_u16(Op::LOCAL_SET, tmp);
-                        self.emit(Op::DROP);
                         tmp
                     };
                     env_slots.push(slot);
@@ -10868,7 +10544,6 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_factory_{}", factory_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.emit(Op::DROP);
             common::functions::emit_ref_func(
                 &mut self.chunks[self.current], factory_idx, 1, line,
             );
@@ -10929,11 +10604,16 @@ impl Compiler {
         // a prologue, so they only inherit.
         let saved_strict = self.in_strict;
         let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
-        if let LambdaBody::Block(stmts) = body {
-            if Self::stmts_have_use_strict_directive(stmts) {
-                self.in_strict = true;
+        match body {
+            LambdaBody::Block(stmts) => {
+                if Self::stmts_have_use_strict_directive(stmts) {
+                    self.in_strict = true;
+                }
+                crate::compiler::collect_closure_captured_idents(stmts, &mut self.current_closure_captured_locals);
             }
-            crate::compiler::collect_closure_captured_idents(stmts, &mut self.current_closure_captured_locals);
+            LambdaBody::Expr(expr) => {
+                crate::compiler::collect_closure_captured_in_expr(expr, &mut self.current_closure_captured_locals);
+            }
         }
         for p in params {
             self.define_local_typed(&p.name, p.type_hint.clone());
@@ -10945,15 +10625,47 @@ impl Compiler {
                 self.chunk().emit_if(line);
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
             }
         }
+        if !self.current_closure_captured_locals.is_empty() {
+            let mut captured_names: Vec<String> = self.current_closure_captured_locals
+                .iter()
+                .cloned()
+                .collect();
+            captured_names.sort();
+            let env_size = captured_names.len() as u16;
+            let line = self.line;
+            for _ in 0..env_size {
+                self.emit(Op::NULL);
+            }
+            self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+            let env_slot = self.define_local("__shared_env");
+            self.emit_u16(Op::LOCAL_SET, env_slot);
+            self.shared_env_slot = Some(env_slot);
+            self.shared_env_names = captured_names.clone();
+            let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            if let LambdaBody::Block(stmts) = body {
+                crate::compiler::collect_declared_names(stmts, &mut local_decls);
+            }
+            for (idx, cap_name) in captured_names.iter().enumerate() {
+                if let Some(param_slot) = self.scope().resolve(cap_name) {
+                    self.emit_u16(Op::LOCAL_GET, param_slot);
+                    crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
+                    if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                        let closure_env = self.closure_env_slot();
+                        crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+                        crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                    }
+                }
+            }
+        }
+
         let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
             let rs = self.define_local("Result");
             self.emit(Op::NULL);
             self.emit_u16(Op::LOCAL_SET, rs);
-            self.emit(Op::DROP);
             let saved_rs = self.current_result_slot.take();
             self.current_result_slot = Some(rs);
             Some((rs, saved_rs))
@@ -11073,7 +10785,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, orig_slot);
                             let snap = self.define_local(&format!("__snap_{}_{}", name, ci));
                             self.emit_u16(Op::LOCAL_SET, snap);
-                            self.emit(Op::DROP);
                             snap
                         } else {
                             uv.index as u16
@@ -11084,7 +10795,6 @@ impl Compiler {
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
                         crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
                         self.emit_u16(Op::LOCAL_SET, tmp);
-                        self.emit(Op::DROP);
                         tmp
                     };
                     env_names.push(name);
@@ -11094,7 +10804,6 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_{}", ci));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.emit(Op::DROP);
             common::functions::emit_ref_func(
                 &mut self.chunks[self.current],
                 ci, 1, line,
@@ -11137,27 +10846,22 @@ impl Compiler {
     pub(super) fn emit_object_group_by(&mut self, line: u32) -> Result<(), String> {
         let fn_slot = self.define_local("__groupby_fn");
         self.emit_u16(Op::LOCAL_SET, fn_slot);
-        self.emit(Op::DROP);
         let arr_slot = self.define_local("__groupby_arr");
         self.emit_u16(Op::LOCAL_SET, arr_slot);
-        self.emit(Op::DROP);
 
         let new_idx = self.import("ecma:object", "new");
         self.emit_host_call(new_idx, 0);
         let result_slot = self.define_local("__groupby_result");
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, arr_slot);
         common::collections::emit_len(&mut self.chunks, self.current, line);
         let len_slot = self.define_local("__groupby_len");
         self.emit_u16(Op::LOCAL_SET, len_slot);
-        self.emit(Op::DROP);
 
         self.emit_const(Value::F64(0.0));
         let i_slot = self.define_local("__groupby_i");
         self.emit_u16(Op::LOCAL_SET, i_slot);
-        self.emit(Op::DROP);
 
         let loop_state = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
 
@@ -11174,7 +10878,6 @@ impl Compiler {
         common::collections::emit_get(&mut self.chunks, self.current, line);
         let item_slot = self.define_local("__groupby_item");
         self.emit_u16(Op::LOCAL_SET, item_slot);
-        self.emit(Op::DROP);
 
         // key = fn(item)
         self.emit_u16(Op::LOCAL_GET, fn_slot);
@@ -11182,7 +10885,6 @@ impl Compiler {
         self.emit_u8(Op::CALL_REF, 1);
         let key_slot = self.define_local("__groupby_key");
         self.emit_u16(Op::LOCAL_SET, key_slot);
-        self.emit(Op::DROP);
 
         // if result[key] === undefined: result[key] = []
         self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -11213,7 +10915,6 @@ impl Compiler {
             crate::emitter::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::LOCAL_SET, i_slot);
-        self.emit(Op::DROP);
 
         common::loops::emit_loop_end(&mut self.chunks, self.current, loop_state, line);
         self.emit_u16(Op::LOCAL_GET, result_slot);

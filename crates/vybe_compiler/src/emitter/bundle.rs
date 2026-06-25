@@ -200,7 +200,6 @@ pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
         script.emit_op_u16(Op::REF_FUNC, ci as u16, 0);
         script.emit(0, 0); // 0 upvalues
         script.emit_op_u16(Op::GLOBAL_SET, name_c, 0);
-        script.emit_op(Op::DROP, 0);
 
         script.emit_end(0);
         script.patch_block(install_block);

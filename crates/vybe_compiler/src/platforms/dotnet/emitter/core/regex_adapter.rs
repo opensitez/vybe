@@ -40,7 +40,6 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
             }
             let pattern_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             core_wasm::dup(chunk, line);
             chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
@@ -58,9 +57,7 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
     let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, pattern_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
@@ -77,11 +74,8 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
     let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, replacement_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
@@ -99,9 +93,7 @@ pub fn emit_regex_split(chunks: &mut [Chunk], current: usize, line: u32) {
     let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
@@ -121,9 +113,7 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, pattern_key, line);
@@ -131,11 +121,9 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::CALL_IMPORT, exec_idx, line);
     chunk.emit(2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
@@ -164,9 +152,7 @@ pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     let count_key = chunk.add_constant(Value::String(Arc::from(COUNT_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
@@ -175,11 +161,9 @@ pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit(2, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);

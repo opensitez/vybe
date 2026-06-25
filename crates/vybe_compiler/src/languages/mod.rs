@@ -5,6 +5,7 @@ pub mod dart;
 pub mod form_modules;
 pub mod fortran;
 pub mod go;
+pub mod java;
 pub mod js;
 pub mod lua;
 pub mod pascal;
@@ -124,6 +125,12 @@ pub fn all() -> Vec<Language> {
             parse: go::parse,
             profile_source: go::profile_source,
             emit_dispatch: Some(go::emitter::dispatch::dispatch),
+        },
+        Language {
+            name: "java",
+            parse: java::parse,
+            profile_source: java::profile_source,
+            emit_dispatch: Some(java::emitter::dispatch::dispatch),
         },
         Language {
             name: "wast",

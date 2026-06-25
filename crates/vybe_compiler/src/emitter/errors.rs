@@ -21,7 +21,6 @@ pub fn emit_exception_constructor(
     // Create object
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // __type = exc_name (for ref_test matching)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

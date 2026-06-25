@@ -84,8 +84,7 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     // reload inside the block, leaving the block stack-neutral on entry.
     let cont_slot = chunk.local_count;
     chunk.local_count += 1;
-    chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, line); // LOCAL_SET tees the value…
-    chunk.emit_op(Op::DROP, line); // …DROP clears it → [cont] becomes []
+    chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
     let done_key = chunk.add_constant(Value::String(Arc::from("__gen_done")));
 
@@ -169,7 +168,6 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
 
     // Stash has_more in val_slot temporarily so we can check it after clearing it from the stack
     chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line); // val_slot = has_more (top)
-    chunk.emit_op(Op::DROP, line);
     // Stack: [value]
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line); // restore has_more to TOS
     // Stack: [value, has_more]
@@ -182,7 +180,6 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
     // Stack: [value]  — only reached when has_more=1
 
     chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line); // val_slot = yielded value
-    chunk.emit_op(Op::DROP, line);
 
     // result[result.length] = val  (ARRAY_SET auto-extends via Object::set)
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -213,7 +210,6 @@ pub fn emit_drain_into_array_into(_imports: &mut Chunk, code: &mut Chunk, line: 
 
     code.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line); // empty array
     code.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    code.emit_op(Op::DROP, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, code, line);
 
@@ -230,11 +226,9 @@ pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].local_count += 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line); // empty array
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, &mut chunks[current], line);
 
@@ -265,17 +259,13 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].local_count += 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, limit_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let block_p = chunks[current].emit_block(line);
     let (loop_p, _) = chunks[current].emit_loop_s(line);
@@ -289,9 +279,7 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cont_slot, line);
     emit_next(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_more_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_more_slot, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -308,7 +296,6 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -348,22 +335,17 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].local_count += 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, mapper_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let outer_block = chunks[current].emit_block(line);
     let (outer_loop, _) = chunks[current].emit_loop_s(line);
@@ -378,13 +360,11 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let inner_block = chunks[current].emit_block(line);
     let (inner_loop, _) = chunks[current].emit_loop_s(line);
@@ -392,9 +372,7 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cont_slot, line);
     emit_next(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_more_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_more_slot, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -417,7 +395,6 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -492,13 +469,11 @@ pub fn emit_resume_dispatch(
     let resume_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, resume_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let result_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     recipes::is_object(chunk, line);

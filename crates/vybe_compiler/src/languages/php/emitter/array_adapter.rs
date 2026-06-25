@@ -36,7 +36,6 @@ fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
 }
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -1826,12 +1825,10 @@ pub fn emit_array_diff_key(chunks: &mut [Chunk], current: usize, _argc: u8, line
     }
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -1911,12 +1908,10 @@ pub fn emit_array_diff_assoc(chunks: &mut [Chunk], current: usize, _argc: u8, li
     }
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2000,12 +1995,10 @@ pub fn emit_array_intersect_assoc(chunks: &mut [Chunk], current: usize, _argc: u
     }
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2085,12 +2078,10 @@ pub fn emit_array_intersect_key(chunks: &mut [Chunk], current: usize, _argc: u8,
     }
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2163,14 +2154,12 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     }
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     // Copy a then b. Two passes for simplicity.
     for src_slot in &[a_slot, b_slot] {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *src_slot, line);
         call_import(chunks, current, "ecma:object", "keys", 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         {
             let chunk = &mut chunks[current];
@@ -2240,7 +2229,6 @@ fn emit_copy_object_entries(
 
     emit_php_key_list_from_slot(chunks, current, src_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2405,14 +2393,11 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
 
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, preserve_keys_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
     } else {
         push_const(&mut chunks[current], Value::Bool(true), line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, preserve_keys_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, iter_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2422,11 +2407,9 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         let _ = chunk;
         call_import(chunks, current, "ecma:map", "new", 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
     }
 
@@ -2517,7 +2500,6 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
     }
     emit_php_key_list_from_slot(chunks, current, iter_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     {
         let chunk = &mut chunks[current];
         push_const(chunk, Value::F64(0.0), line);
@@ -2604,13 +2586,11 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
 
     call_import(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_copy_object_entries(chunks, current, base_slot, out_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, over_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];
@@ -2658,7 +2638,6 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let _ = chunk;
         emit_php_key_list_from_slot(chunks, current, cur_val_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, cur_keys_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
         let chunk = &mut chunks[current];
         lget(chunk, cur_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -2674,7 +2653,6 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let _ = chunk;
         emit_php_key_list_from_slot(chunks, current, over_val_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, over_keys_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
         let chunk = &mut chunks[current];
         lget(chunk, over_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -2697,7 +2675,6 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let _ = chunk;
         call_import(chunks, current, "ecma:map", "new", 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, merged_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
         emit_copy_object_entries(chunks, current, cur_val_slot, merged_slot, line);
         emit_copy_object_entries(chunks, current, over_val_slot, merged_slot, line);
 
@@ -2760,7 +2737,6 @@ fn emit_assoc_sort_impl(
 
     // obj = pop()
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // is_list = isArray(obj) — a sequential (list) array reorders by
     // POSITION, not by Map insertion order; the delete-then-reinsert dance
@@ -2775,7 +2751,6 @@ fn emit_assoc_sort_impl(
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // n = keys.length
     lget(chunk, keys_slot, line);
@@ -2787,7 +2762,6 @@ fn emit_assoc_sort_impl(
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, used_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, sorted_keys_slot, line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
@@ -3067,7 +3041,6 @@ pub fn emit_php_uasort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         let chunk = &mut chunks[current];
         let s = alloc_local(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, s, line);
-        chunk.emit_op(Op::DROP, line);
         s
     };
     emit_assoc_sort_impl(chunks, current, 4, Some(cmp_slot), line);
@@ -3077,7 +3050,6 @@ pub fn emit_php_uksort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         let chunk = &mut chunks[current];
         let s = alloc_local(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, s, line);
-        chunk.emit_op(Op::DROP, line);
         s
     };
     emit_assoc_sort_impl(chunks, current, 5, Some(cmp_slot), line);

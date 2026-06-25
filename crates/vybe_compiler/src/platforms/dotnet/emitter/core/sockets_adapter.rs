@@ -103,9 +103,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // 1. Create socket
     let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
@@ -119,7 +117,6 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // 2. Push args for start-connect: (socket, network=null, "host:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
@@ -181,7 +178,6 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
@@ -192,7 +188,6 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
@@ -292,7 +287,6 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let create_idx = chunks[0].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
@@ -303,7 +297,6 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].local_count = sock_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);

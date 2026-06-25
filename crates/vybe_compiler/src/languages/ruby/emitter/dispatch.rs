@@ -45,11 +45,9 @@ fn emit_dig(chunk: &mut Chunk, argc: u8, line: u32) {
     for i in (0..nkeys).rev() {
         let slot = cur_slot + 1 + i as u16;
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     // Stash receiver as initial `cur`.
     chunk.emit_op_u16(Op::LOCAL_SET, cur_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Wrapping block: `br_if(0)` exits early when `cur` becomes null.
     let exit_block = chunk.emit_block(line);
@@ -64,7 +62,6 @@ fn emit_dig(chunk: &mut Chunk, argc: u8, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
         chunk.emit_op_u16(Op::LOCAL_SET, cur_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_end(line);
     chunk.patch_block(exit_block);

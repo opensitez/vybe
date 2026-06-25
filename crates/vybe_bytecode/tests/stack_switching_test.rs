@@ -17,7 +17,6 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
     let cont_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     let done_key = chunk.add_constant(Value::String(Arc::from("__gen_done")));
     let _block = chunk.emit_block_typed(0, 2);
@@ -706,7 +705,6 @@ fn switch_requires_matching_on_tag_switch_handler() {
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
@@ -760,7 +758,6 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
@@ -900,7 +897,6 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
     script.emit_op(Op::NULL, 0);
     let resume_ip = script.code.len();
@@ -1042,7 +1038,6 @@ fn generator_resume_preserves_loop_label_stack() {
 
     gen_body.emit_op(Op::I32_CONST_0, 0);
     gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    gen_body.emit_op(Op::DROP, 0);
 
     let block = gen_body.emit_block(0);
     let (loop_patch, _) = gen_body.emit_loop_s(0);
@@ -1062,7 +1057,6 @@ fn generator_resume_preserves_loop_label_stack() {
     gen_body.emit_op_u16(Op::CONST, one, 0);
     gen_body.emit_op(Op::I32_ADD, 0);
     gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    gen_body.emit_op(Op::DROP, 0);
     gen_body.emit_br(0, 0);
     gen_body.emit_end(0);
     gen_body.patch_loop(loop_patch);
@@ -1077,15 +1071,12 @@ fn generator_resume_preserves_loop_label_stack() {
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
 
     for _ in 0..2 {
         script.emit_op_u16(Op::LOCAL_GET, 0, 0);
         emit_spec_gen_next(&mut script);
         script.emit_op_u16(Op::LOCAL_SET, 2, 0);
-        script.emit_op(Op::DROP, 0);
         script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-        script.emit_op(Op::DROP, 0);
     }
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_op(Op::RETURN, 0);
@@ -1190,14 +1181,11 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
     emit_spec_gen_next(&mut script);
     script.emit_op_u16(Op::LOCAL_SET, 2, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
@@ -1274,14 +1262,11 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0); // -> continuation
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
     emit_spec_gen_next(&mut script); // -> [value, has_more]
     script.emit_op_u16(Op::LOCAL_SET, 2, 0); // has_more
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0); // value
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
@@ -1360,7 +1345,6 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0); // -> continuation
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    script.emit_op(Op::DROP, 0);
     script.emit_op_u16(Op::REF_FUNC, 2, 0); // cb = chunk index 2
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 0, 0); // cont

@@ -20,12 +20,10 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
 
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, n, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_SUB, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);

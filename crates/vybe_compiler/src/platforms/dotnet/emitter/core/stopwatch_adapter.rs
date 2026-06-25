@@ -72,7 +72,6 @@ fn emit_stopwatch_start_impl(chunks: &mut [Chunk], current: usize, line: u32) {
     let sw_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // if not isrunning: set __start_ns = now, set isrunning = true
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
@@ -85,7 +84,6 @@ fn emit_stopwatch_start_impl(chunks: &mut [Chunk], current: usize, line: u32) {
     let now_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
@@ -103,7 +101,6 @@ pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     let sw_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     struct_get(chunk, "isrunning", line);
@@ -114,7 +111,6 @@ pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     let now_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // elapsed_ns = now - __start_ns
     chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
@@ -124,7 +120,6 @@ pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     let elapsed_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, elapsed_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // __accumulated_ns += elapsed_ns
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
@@ -173,7 +168,6 @@ pub fn emit_stopwatch_elapsed_ms(chunks: &mut [Chunk], current: usize, line: u32
     let sw_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // if running: (now - __start_ns + __accumulated_ns) / 1e6
     // else: __accumulated_ns / 1e6
@@ -185,7 +179,6 @@ pub fn emit_stopwatch_elapsed_ms(chunks: &mut [Chunk], current: usize, line: u32
     let now_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     struct_get(chunk, "__start_ns", line);

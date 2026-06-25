@@ -240,7 +240,6 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from("__str__")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -269,7 +268,6 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from("__bool__")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -351,7 +349,6 @@ pub fn emit_rich_compare_locals(
     let key = chunk.add_constant(Value::String(Arc::from(dunder)));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -371,7 +368,6 @@ pub fn emit_rich_compare_locals(
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-        chunk.emit_op(Op::DROP, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
@@ -413,7 +409,6 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from("__get_length")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);

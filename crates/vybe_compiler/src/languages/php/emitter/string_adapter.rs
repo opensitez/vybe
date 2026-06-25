@@ -38,7 +38,6 @@ fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
 }
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -2553,10 +2552,8 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // curr = new array of n+1 zeros
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, curr_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     let init2_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
@@ -2583,7 +2580,6 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // Outer loop: for i in 1..=m
     push_const(&mut chunks[current], Value::F64(1.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     let outer_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
@@ -2605,7 +2601,6 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 
     push_const(&mut chunks[current], Value::F64(1.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     let inner_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
@@ -2788,7 +2783,6 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     let outer_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
@@ -2799,7 +2793,6 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     let inner_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
@@ -4202,7 +4195,6 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         // Stack: [val]. Push copy under val, swap so STRUCT_SET sees [copy, val].
         let val_slot = alloc_local(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line);
-        chunk.emit_op(Op::DROP, line);
         lget(chunk, copy_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
         chunk.emit_op_u16(Op::STRUCT_SET, key, line);

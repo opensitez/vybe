@@ -68,7 +68,6 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
@@ -113,7 +112,6 @@ fn emit_build_guid_from_stack(
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     if validate {
         emit_validate_guid_text(chunk, test_idx, text_slot, line);
@@ -124,7 +122,6 @@ fn emit_build_guid_from_stack(
         chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
         chunk.emit(1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
@@ -135,7 +132,6 @@ pub fn emit_guid_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let text_slot = reserve_slot(chunk);
     push_const(chunk, Value::String(Arc::from(EMPTY_GUID)), line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
 }
 
@@ -170,7 +166,6 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let obj_slot = reserve_slot(chunk);
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
 }
@@ -191,7 +186,6 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
         chunk.emit(1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-        chunk.emit_op(Op::DROP, line);
 
         push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
@@ -203,7 +197,6 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
         chunk.emit(1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
     chunks[current].emit_else(line);

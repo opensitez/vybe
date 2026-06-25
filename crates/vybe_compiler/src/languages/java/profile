@@ -16,7 +16,7 @@ constructor_name   = "__init__"    # walker rewrites Java ctor to __init__
 case_sensitive     = true
 string_indexing    = "zero_based"
 uses_normalize_class = true
-entry_point        = "main"
+# entry_point not needed — walker injects Main.main() call directly
 # Java + on strings concatenates (auto-coercion via toString())
 dynamic_add        = true
 

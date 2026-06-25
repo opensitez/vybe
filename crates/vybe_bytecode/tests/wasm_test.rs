@@ -136,7 +136,6 @@ fn roundtrip_locals() {
     let c99 = chunk.add_constant(Value::F64(99.0));
     chunk.emit_op_u16(Op::CONST, c99, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     chunk.emit_op(Op::HALT, 0);
 

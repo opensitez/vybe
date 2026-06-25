@@ -507,12 +507,10 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
         chunk.emit_op_u8(Op::CALL_REF, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-        chunk.emit_op(Op::DROP, line);
     } else {
         // Root class (Object): this = struct_new 0
         chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 2: re-stamp __type with this class's name ──────────────────────
@@ -604,7 +602,6 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
         chunk.emit(arity as u8, line);
         chunk.emit_op_u16(Op::LOCAL_SET, widget_slot, line);
-        chunk.emit_op(Op::DROP, line);
 
         // Copy backing identity fields: this.<f> = widget.<f>.
         //
@@ -665,7 +662,6 @@ pub fn emit_install_class_global(
     script_chunk.emit(0, line); // 0 upvalues
     let name_const = script_chunk.add_constant(Value::String(Arc::from(class_name)));
     script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
-    script_chunk.emit_op(Op::DROP, line);
 
     // Lowercase alias (skip if already lowercase)
     let lower = class_name.to_lowercase();
@@ -674,6 +670,5 @@ pub fn emit_install_class_global(
         script_chunk.emit(0, line);
         let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
         script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
-        script_chunk.emit_op(Op::DROP, line);
     }
 }

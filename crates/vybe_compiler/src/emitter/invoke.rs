@@ -86,11 +86,9 @@ pub fn emit_invoke_method(
     for i in (0..argc).rev() {
         let slot = arg_base + i as u16;
         c.emit_op_u16(Op::LOCAL_SET, slot, line);
-        c.emit_op(Op::DROP, line);
     }
     // Stash receiver.
     c.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-    c.emit_op(Op::DROP, line);
 
     // Save current __js_this so we can restore after the call. Host
     // functions don't manage this global — every JS method call site
@@ -98,13 +96,11 @@ pub fn emit_invoke_method(
     let js_this_const = c.add_constant(Value::String(Arc::from("__js_this")));
     c.emit_op_u16(Op::GLOBAL_GET, js_this_const, line);
     c.emit_op_u16(Op::LOCAL_SET, prev_this_slot, line);
-    c.emit_op(Op::DROP, line);
 
     // Set __js_this = receiver so JS-compiled method bodies see the
     // right `this` when dispatch eventually drives `ctx.invoke`.
     c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     c.emit_op_u16(Op::GLOBAL_SET, js_this_const, line);
-    c.emit_op(Op::DROP, line);
 
     // Rebuild call stack: receiver, name, args...
     c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -128,9 +124,7 @@ pub fn emit_invoke_method(
         .expect("emit_invoke_method: local slot overflow");
     let c = &mut chunks[current];
     c.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    c.emit_op(Op::DROP, line);
     c.emit_op_u16(Op::LOCAL_GET, prev_this_slot, line);
     c.emit_op_u16(Op::GLOBAL_SET, js_this_const, line);
-    c.emit_op(Op::DROP, line);
     c.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }

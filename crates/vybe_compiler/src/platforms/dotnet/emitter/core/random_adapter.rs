@@ -45,8 +45,6 @@ pub fn emit_random_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         1 => {
             let max_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
-            chunk.emit_op(Op::DROP, line);
-            chunk.emit_op(Op::DROP, line);
             emit_random_unit(chunks, current, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, max_slot, line);
             chunks[current].emit_op(Op::F64_MUL, line);
@@ -57,10 +55,7 @@ pub fn emit_random_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
             let max_slot = reserve_slot(chunk);
             let min_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, min_slot, line);
-            chunk.emit_op(Op::DROP, line);
-            chunk.emit_op(Op::DROP, line);
             emit_random_unit(chunks, current, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, max_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, min_slot, line);

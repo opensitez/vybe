@@ -42,7 +42,6 @@ fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -247,7 +246,6 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
         let s = chunk.local_count;
         chunk.local_count = s + 1;
         chunk.emit_op_u16(Op::LOCAL_SET, s, line);
-        chunk.emit_op(Op::DROP, line);
         s
     };
 

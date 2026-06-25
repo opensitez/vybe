@@ -77,7 +77,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     // Save args array to a local; stack now `[fmt]`.
     chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Now emit the runtime walker:
     //   fmt_slot   = current local
@@ -92,23 +91,19 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     // fmt_slot = pop fmt
     chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // i = 0
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // len = STR_LENGTH(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // out = ""
     push_const(chunk, Value::String(Arc::from("")), line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Constants reused inside the loop.
 
@@ -135,7 +130,6 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let ch_slot = chunk.local_count;
     chunk.local_count = ch_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, ch_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // -- '{' branch --
     let open_block = chunk.emit_block(line);
@@ -190,14 +184,12 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // i = i + 1
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -247,12 +239,10 @@ fn emit_handle_open_brace(
     push_const(chunk, Value::String(Arc::from("{")), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(2, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // br depth 2 = continue outer loop. Depths from inside escape_block:
     // 0=escape_block, 1=open_block, 2=loop, 3=outer_block.
     chunk.emit_br(2, line);
@@ -267,7 +257,6 @@ fn emit_handle_open_brace(
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let scan_block = chunk.emit_block(line);
     let (scan_loop, _) = chunk.emit_loop_s(line);
@@ -290,7 +279,6 @@ fn emit_handle_open_brace(
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(scan_loop);
@@ -307,14 +295,12 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let inner_len_slot = chunk.local_count;
     chunk.local_count = inner_len_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_len_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // idx = parseInt(inner) — parseInt stops at first non-digit, so the
     // optional `,W` / `:fmt` suffixes are naturally trimmed.
@@ -326,7 +312,6 @@ fn emit_handle_open_brace(
     chunk.emit(1, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let comma_slot = chunk.local_count;
     let colon_slot = comma_slot + 1;
@@ -338,21 +323,17 @@ fn emit_handle_open_brace(
     chunk.emit_string_const(",", line);
     host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, comma_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_string_const(":", line);
     host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, colon_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     let no_format_spec = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
@@ -366,7 +347,6 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(no_format_spec);
 
@@ -379,7 +359,6 @@ fn emit_handle_open_brace(
     chunk.local_count = width_end_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
-    chunk.emit_op(Op::DROP, line);
     let no_colon_after_width = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
     core_wasm::i32_const(chunk, line, 0);
@@ -387,7 +366,6 @@ fn emit_handle_open_brace(
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(no_colon_after_width);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
@@ -399,7 +377,6 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
     chunk.emit(1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(no_width_spec);
 
@@ -408,14 +385,12 @@ fn emit_handle_open_brace(
     emit_dotnet_format_value_call(chunk, args_slot, idx_slot, format_slot, width_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // i = end + 1 (skip past the closing '}')
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Handle `}` at fmt[i]: either the `}}` escape or a stray `}` (which we
@@ -452,12 +427,10 @@ fn emit_handle_close_brace(
     push_const(chunk, Value::String(Arc::from("}")), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(2, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
     // br depth 2 = continue outer loop. Depths inside escape_block:
     // 0=escape_block, 1=close_block, 2=loop, 3=outer_block.
     chunk.emit_br(2, line);
@@ -469,5 +442,4 @@ fn emit_handle_close_brace(
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 }

@@ -1499,7 +1499,6 @@ mod tests {
         chunk.emit_op_u16(vybe_bytecode::opcode::Op::CALL_IMPORT, import_idx, 0);
         chunk.emit(3, 0);
         chunk.emit_op_u16(vybe_bytecode::opcode::Op::GLOBAL_SET, result_name, 0);
-        chunk.emit_op(vybe_bytecode::opcode::Op::DROP, 0);
         chunk.emit_op(vybe_bytecode::opcode::Op::NULL, 0);
         chunk.emit_op(vybe_bytecode::opcode::Op::HALT, 0);
 

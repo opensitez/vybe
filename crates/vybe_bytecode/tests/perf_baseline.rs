@@ -57,7 +57,6 @@ fn emit_structured_counter_loop(chunk: &mut Chunk, mut body: impl FnMut(&mut Chu
     let iter_const = chunk.add_constant(Value::I32(ITERATIONS as i32));
     chunk.emit_op_u16(Op::CONST, iter_const, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, LOOP_COUNTER_SLOT, 0);
-    chunk.emit_op(Op::DROP, 0);
 
     let outer = chunk.emit_block(0);
     let (lp, _loop_start) = chunk.emit_loop_s(0);
@@ -93,7 +92,6 @@ fn capture_pre_migration_baseline() {
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
-        chunk.emit_op(Op::DROP, 0);
         // One-time import setup (chunks[0]).
         let push_idx = chunk.add_import("vybe:js-array", "push");
 
@@ -116,7 +114,6 @@ fn capture_pre_migration_baseline() {
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
-        chunk.emit_op(Op::DROP, 0);
 
         emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
@@ -136,7 +133,6 @@ fn capture_pre_migration_baseline() {
         let obj_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, 0);
-        chunk.emit_op(Op::DROP, 0);
 
         // Stamp a field once
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, 0);

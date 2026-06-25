@@ -125,7 +125,6 @@ impl Compiler {
             self.emit(Op::NULL);
         }
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit(Op::DROP);
 
         common::classes::emit_init_field_start(self.chunk(), owner_slot, line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -244,7 +243,6 @@ impl Compiler {
         self.chunks[self.current].emit_if(line);
         self.emit_var_get(name);
         self.emit_u16(Op::GLOBAL_SET, nt_key);
-        self.emit(Op::DROP);
         self.chunks[self.current].emit_end(line);
     }
 
@@ -479,7 +477,7 @@ impl Compiler {
         // If parent has a shared env, pre-seed closure_env_names so
         // upvalue indices match the parent's shared env layout.
         if !parent_shared_env_names.is_empty() {
-            self.closure_env_names = parent_shared_env_names;
+            self.closure_env_names = parent_shared_env_names.clone();
         }
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
@@ -498,7 +496,6 @@ impl Compiler {
             let slot = self.define_local("arguments");
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
             self.emit_u16(Op::LOCAL_SET, slot);
-            self.emit(Op::DROP);
             self.emit_u16(Op::LOCAL_GET, slot);
             self.emit_var_get(name);
             let callee_key = self.str_const("callee");
@@ -556,7 +553,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
             common::collections::emit_len(&mut self.chunks, self.current, self.line);
             self.emit_u16(Op::LOCAL_SET, len_slot);
-            self.emit(Op::DROP);
             Some(len_slot)
         } else {
             None
@@ -579,7 +575,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, js_arguments_len_slot.unwrap());
                     common::collections::emit_slice(&mut self.chunks, self.current, self.line);
                     self.emit_u16(Op::LOCAL_SET, slot);
-                    self.emit(Op::DROP);
                 } else {
                     self.emit_array_value_or_undefined(
                         js_arguments_source_slot.unwrap(),
@@ -587,7 +582,6 @@ impl Compiler {
                         index,
                     );
                     self.emit_u16(Op::LOCAL_SET, slot);
-                    self.emit(Op::DROP);
                 }
             }
         }
@@ -613,7 +607,6 @@ impl Compiler {
                 self.chunks[self.current].emit_if(branch_line);
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot);
-                self.emit(Op::DROP);
                 self.chunks[self.current].emit_end(branch_line);
             }
             self.maybe_initialize_fortran_out_param(p);
@@ -648,7 +641,6 @@ impl Compiler {
                 let rs = self.define_local_typed(&slot_name, return_type.clone());
                 self.emit(Op::NULL);
                 self.emit_u16(Op::LOCAL_SET, rs);
-                self.emit(Op::DROP);
                 Some(rs)
             } else {
                 None
@@ -694,18 +686,30 @@ impl Compiler {
             captured_names.sort();
             let env_size = captured_names.len() as u16;
             let line = self.line;
+            for _ in 0..env_size {
+                self.emit(Op::NULL);
+            }
             self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
-            // Fill with nulls — ARRAY_NEW_FIXED creates with nulls already
             let env_slot = self.define_local("__shared_env");
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.emit(Op::DROP);
             self.shared_env_slot = Some(env_slot);
             self.shared_env_names = captured_names.clone();
-            // Immediately store captured params (they already have values)
+            // Immediately store captured params (they already have values).
+            // For names from outer scopes (not declared locally), forward
+            // from parent's shared env. Names declared locally (var/let/const)
+            // will be stored later when compile_stmt processes the VarDecl.
+            let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            crate::compiler::collect_declared_names(body, &mut local_decls);
             for (idx, cap_name) in captured_names.iter().enumerate() {
                 if let Some(param_slot) = self.scope().resolve(cap_name) {
                     self.emit_u16(Op::LOCAL_GET, param_slot);
                     crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
+                    if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                        let closure_env = self.closure_env_slot();
+                        crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+                        crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                    }
                 }
             }
         }
@@ -828,7 +832,6 @@ impl Compiler {
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
                         crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
                         self.emit_u16(Op::LOCAL_SET, tmp);
-                        self.emit(Op::DROP);
                         tmp
                     };
                     env_slots.push(slot);
@@ -837,7 +840,6 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_{}", func_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.emit(Op::DROP);
             common::functions::emit_ref_func(
                 &mut self.chunks[self.current],
                 func_idx,
@@ -854,14 +856,12 @@ impl Compiler {
         }
         let idx = self.str_const(name);
         self.emit_u16(Op::GLOBAL_SET, idx);
-        self.emit(Op::DROP);
 
         if self.is_js_profile() {
             let line = self.line;
             self.emit_common("object.new", 0, line);
             let proto_slot = self.define_local("__js_fn_proto");
             self.emit_u16(Op::LOCAL_SET, proto_slot);
-            self.emit(Op::DROP);
 
             self.emit_var_get(name);
             self.emit_const(Value::String(Arc::from(name.as_str())));
@@ -1354,7 +1354,6 @@ impl Compiler {
                                 .define_local_typed(&self_param.name, self_param.type_hint.clone());
                             cc.emit_u16(Op::LOCAL_GET, self_slot);
                             cc.emit_u16(Op::LOCAL_SET, alias_slot);
-                            cc.emit(Op::DROP);
                         }
                     }
                 }
@@ -1397,7 +1396,6 @@ impl Compiler {
                     cc.chunks[cc.current].emit_if(branch_line);
                     cc.compile_expr(default)?;
                     cc.emit_u16(Op::LOCAL_SET, slot);
-                    cc.emit(Op::DROP);
                     cc.chunks[cc.current].emit_end(branch_line);
                 }
             }
@@ -1428,7 +1426,6 @@ impl Compiler {
                     cc.emit(Op::NULL);
                 }
                 cc.emit_u16(Op::LOCAL_SET, rs);
-                cc.emit(Op::DROP);
                 cc.current_result_slot = Some(rs);
                 for s in &m.body {
                     cc.compile_stmt(s)?;
@@ -1511,7 +1508,6 @@ impl Compiler {
                     let global_name = self.canon(&format!("{}.{}", name, cname));
                     let idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_SET, idx);
-                    self.emit(Op::DROP);
                     self.defined_globals.insert(global_name);
                 }
                 ClassMember::Event { .. } => { /* type-level only */ }
@@ -1567,7 +1563,6 @@ impl Compiler {
                     let rs = self.define_local(&slot_name);
                     self.emit(Op::NULL);
                     self.emit_u16(Op::LOCAL_SET, rs);
-                    self.emit(Op::DROP);
                     let saved_fn = self.current_func_name.take();
                     let saved_rs = self.current_result_slot.take();
                     self.current_func_name = Some(p.source_name.clone());
@@ -1808,7 +1803,6 @@ impl Compiler {
                     self.chunks[self.current].emit_if(branch_line);
                     self.compile_expr(default)?;
                     self.emit_u16(Op::LOCAL_SET, slot);
-                    self.emit(Op::DROP);
                     self.chunks[self.current].emit_end(branch_line);
                 }
             }
@@ -1823,7 +1817,6 @@ impl Compiler {
                 let js_this = self.str_const("__js_this");
                 self.emit_u16(Op::GLOBAL_GET, js_this);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
-                self.emit(Op::DROP);
             }
 
             let line = self.line;
@@ -1835,7 +1828,6 @@ impl Compiler {
                 }
                 self.emit_u8(Op::CALL_REF, this_args.len() as u8);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
-                self.emit(Op::DROP);
                 if let Some((body, _, _)) = ctor_body {
                     for stmt in body {
                         self.compile_stmt(stmt)?;
@@ -1907,7 +1899,6 @@ impl Compiler {
                 if is_child {
                     self.emit(Op::NULL);
                     self.emit_u16(Op::LOCAL_SET, this_slot);
-                    self.emit(Op::DROP);
 
                     let has_explicit_base =
                         ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
@@ -1934,7 +1925,6 @@ impl Compiler {
                                     }
                                     self.emit_u8(Op::CALL_REF, bargs.len() as u8);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
-                                    self.emit(Op::DROP);
                                 } else {
                                     let canon_name = self.canon(name);
                                     common::classes::emit_new_typed_object(
@@ -1952,7 +1942,6 @@ impl Compiler {
                                     self.emit_var_get(parent_name);
                                     self.emit_u8(Op::CALL_REF, 0);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
-                                    self.emit(Op::DROP);
                                 } else {
                                     let canon_name = self.canon(name);
                                     common::classes::emit_new_typed_object(
@@ -1972,12 +1961,10 @@ impl Compiler {
                                 let parent_ctor_slot =
                                     self.define_local(&format!("__{}_parent_ctor", helper_name));
                                 self.emit_u16(Op::LOCAL_SET, parent_ctor_slot);
-                                self.emit(Op::DROP);
                                 let parent_called_slot =
                                     self.define_local(&format!("__{}_parent_called", helper_name));
                                 inst!(self, core_wasm::i32_const, 0);
                                 self.emit_u16(Op::LOCAL_SET, parent_called_slot);
-                                self.emit(Op::DROP);
                                 for count in (1..=IMPLICIT_CTOR_FORWARD_ARGS).rev() {
                                     self.emit_u16(Op::LOCAL_GET, parent_called_slot);
                                     self.emit(Op::I32_EQZ);
@@ -1997,10 +1984,8 @@ impl Compiler {
                                     }
                                     self.emit_u8(Op::CALL_REF, count);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
-                                    self.emit(Op::DROP);
                                     inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
-                                    self.emit(Op::DROP);
                                     self.chunks[self.current].emit_end(line);
                                     self.chunks[self.current].emit_end(line);
                                 }
@@ -2010,7 +1995,6 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                 self.emit_u8(Op::CALL_REF, 0);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
-                                self.emit(Op::DROP);
                                 self.chunks[self.current].emit_end(line);
                             } else {
                                 for i in 0..user_arity {
@@ -2018,7 +2002,6 @@ impl Compiler {
                                 }
                                 self.emit_u8(Op::CALL_REF, user_arity);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
-                                self.emit(Op::DROP);
                             }
                         } else {
                             let canon_name = self.canon(name);
@@ -2044,7 +2027,6 @@ impl Compiler {
                                 self.define_local(&format!("__{}_link_proto", helper_name));
                             self.emit_load_instance_proto(name);
                             self.emit_u16(Op::LOCAL_SET, proto_local);
-                            self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
                             self.emit(Op::REF_IS_NULL);
                             let branch_line = self.line;
@@ -2319,7 +2301,6 @@ impl Compiler {
                             self.define_local(&format!("__{}_link_proto_base", helper_name));
                         self.emit_load_instance_proto(name);
                         self.emit_u16(Op::LOCAL_SET, proto_local);
-                        self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
                         self.emit(Op::REF_IS_NULL);
                         let branch_line = self.line;
@@ -2517,7 +2498,6 @@ impl Compiler {
             self.emit_common("object.new", 0, line);
             let proto_local = self.define_local(&format!("__{}_prototype", name));
             self.emit_u16(Op::LOCAL_SET, proto_local);
-            self.emit(Op::DROP);
 
             if let Some(parent_name) = parent {
                 let pname = self.canon(parent_name);
@@ -2526,7 +2506,6 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, parent_proto_key);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
                 self.emit_u16(Op::LOCAL_SET, parent_proto_local);
-                self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 self.emit(Op::REF_IS_NULL);
                 let branch_line = self.line;
@@ -2591,7 +2570,6 @@ impl Compiler {
         let static_self_slot = self.define_local(&static_self_kw);
         self.emit_u16(Op::LOCAL_GET, ctor_local);
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
-        self.emit(Op::DROP);
 
         // Initialize static fields on the constructor object
         for (fname, type_hint, init, array_bounds) in &static_field_inits {

@@ -53,7 +53,6 @@ fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
 
 fn local_set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn local_get(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -338,7 +337,6 @@ fn emit_append_to_result(chunk: &mut Chunk, result_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, piece_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Push `String("") + n` (forces string coercion of a numeric value).
@@ -385,7 +383,6 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
         crate::emitter::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -417,7 +414,6 @@ fn emit_code_arm(
         let chunk = &mut chunks[current];
         core_wasm::i32_const(chunk, line, 1);
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
     }
@@ -445,7 +441,6 @@ fn emit_format_code_dispatch(
         let slot = alloc_local(chunk);
         core_wasm::i32_const(chunk, line, 0);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunk.emit_op(Op::DROP, line);
         slot
     };
 

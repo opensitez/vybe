@@ -162,37 +162,29 @@ fn emit_wrap_ms_internal(
     chunk.local_count = ms_slot + 8;
 
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCFullYear", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCMonth", line);
     push_const(&mut chunks[current], Value::I32(1), line);
     chunks[current].emit_op(Op::F64_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCDate", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, day_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCHours", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, hour_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCMinutes", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, minute_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCSeconds", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, second_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     emit_dt_getter(chunks, current, ms_slot, "getUTCDay", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dow_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -284,18 +276,14 @@ pub fn emit_datetime_today(chunks: &mut [Chunk], current: usize, line: u32) {
     let day_slot = ms_slot + 3;
     chunk.local_count = ms_slot + 4;
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_dt_getter(chunks, current, ms_slot, "getUTCFullYear", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_dt_getter(chunks, current, ms_slot, "getUTCMonth", line);
     push_const(&mut chunks[current], Value::I32(1), line);
     chunks[current].emit_op(Op::F64_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_dt_getter(chunks, current, ms_slot, "getUTCDate", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, day_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_utc_from_slots(
         chunks, current, year_slot, month_slot, day_slot, None, None, None, line,
     );
@@ -316,18 +304,12 @@ pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
             if argc == 6 {
                 chunk.emit_op_u16(Op::LOCAL_SET, second_slot, line);
-                chunk.emit_op(Op::DROP, line);
                 chunk.emit_op_u16(Op::LOCAL_SET, minute_slot, line);
-                chunk.emit_op(Op::DROP, line);
                 chunk.emit_op_u16(Op::LOCAL_SET, hour_slot, line);
-                chunk.emit_op(Op::DROP, line);
             }
             chunk.emit_op_u16(Op::LOCAL_SET, day_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-            chunk.emit_op(Op::DROP, line);
 
             emit_utc_from_slots(
                 chunks,
@@ -352,9 +334,7 @@ pub fn emit_datetime_add_days(chunks: &mut [Chunk], current: usize, line: u32) {
     let date_slot = value_slot + 1;
     chunk.local_count = value_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
@@ -369,9 +349,7 @@ pub fn emit_datetime_add_hours(chunks: &mut [Chunk], current: usize, line: u32) 
     let date_slot = value_slot + 1;
     chunk.local_count = value_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     push_const(chunk, Value::F64(3_600_000.0), line);
@@ -393,28 +371,20 @@ pub fn emit_datetime_add_months(chunks: &mut [Chunk], current: usize, line: u32)
     let total_months_slot = months_slot + 8;
     chunk.local_count = months_slot + 9;
     chunk.emit_op_u16(Op::LOCAL_SET, months_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_named_field_from_obj(chunk, date_slot, "Year", line);
     chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_named_field_from_obj(chunk, date_slot, "Month", line);
     chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_named_field_from_obj(chunk, date_slot, "Day", line);
     chunk.emit_op_u16(Op::LOCAL_SET, day_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_named_field_from_obj(chunk, date_slot, "Hour", line);
     chunk.emit_op_u16(Op::LOCAL_SET, hour_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_named_field_from_obj(chunk, date_slot, "Minute", line);
     chunk.emit_op_u16(Op::LOCAL_SET, minute_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_named_field_from_obj(chunk, date_slot, "Second", line);
     chunk.emit_op_u16(Op::LOCAL_SET, second_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
     push_const(chunk, Value::F64(12.0), line);
@@ -426,14 +396,12 @@ pub fn emit_datetime_add_months(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, months_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, total_months_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, total_months_slot, line);
     push_const(chunk, Value::F64(12.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_TRUNC, line);
     chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, total_months_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
@@ -443,7 +411,6 @@ pub fn emit_datetime_add_months(chunks: &mut [Chunk], current: usize, line: u32)
     push_const(chunk, Value::I32(1), line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_utc_from_slots(
         chunks,
@@ -466,9 +433,7 @@ pub fn emit_datetime_days_in_month(chunks: &mut [Chunk], current: usize, line: u
     let ms_slot = month_slot + 2;
     chunk.local_count = month_slot + 3;
     chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, month_slot, line);
@@ -480,7 +445,6 @@ pub fn emit_datetime_days_in_month(chunks: &mut [Chunk], current: usize, line: u
     push_const(&mut chunks[current], Value::F64(86_400_000.0), line);
     chunks[current].emit_op(Op::F64_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_dt_getter(chunks, current, ms_slot, "getUTCDate", line);
 }
 
@@ -489,7 +453,6 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     let year_slot = chunk.local_count;
     chunk.local_count = year_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
     push_const(chunk, Value::I32(2), line);
     emit_datetime_days_in_month(chunks, current, line);
@@ -505,15 +468,11 @@ pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     let left_time_slot = right_slot + 3;
     chunk.local_count = right_slot + 4;
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_time_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, right_time_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_compare_numeric_slots(chunk, left_time_slot, right_time_slot, line);
 }
 
@@ -522,7 +481,6 @@ pub fn emit_datetime_to_short_date_string(chunks: &mut [Chunk], current: usize, 
     let obj_slot = chunk.local_count;
     chunk.local_count = obj_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, obj_slot, line);
     call_import(chunks, current, "ecma:date", "toISOString", 1, line);
 }
@@ -534,9 +492,7 @@ pub fn emit_datetime_add_timespan(chunks: &mut [Chunk], current: usize, line: u3
     let total_ms_key = chunk.add_constant(Value::String(Arc::from("TotalMilliseconds")));
     chunk.local_count = span_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, span_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, span_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, total_ms_key, line);
@@ -550,9 +506,7 @@ pub fn emit_datetime_subtract_datetime(chunks: &mut [Chunk], current: usize, lin
     let left_slot = right_slot + 1;
     chunk.local_count = right_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
-    chunk.emit_op(Op::DROP, line);
     emit_datetime_time_from_obj(chunk, left_slot, line);
     emit_datetime_time_from_obj(chunk, right_slot, line);
     chunk.emit_op(Op::F64_SUB, line);

@@ -36,7 +36,6 @@ pub fn emit_net_create_connection(chunks: &mut Vec<Chunk>, current: usize, argc:
             let port_slot = chunk.local_count;
             chunk.local_count = port_slot + 1;
             chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
-            chunk.emit_op(Op::DROP, line);
             push_const(chunk, Value::String(Arc::from("127.0.0.1")), line);
             chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
         }
@@ -45,9 +44,7 @@ pub fn emit_net_create_connection(chunks: &mut Vec<Chunk>, current: usize, argc:
             let port_slot = host_slot + 1;
             chunk.local_count = port_slot + 1;
             chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
         }
@@ -64,7 +61,6 @@ pub fn emit_net_create_server(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         let listener_slot = chunk.local_count;
         chunk.local_count = listener_slot + 1;
         chunk.emit_op_u16(Op::LOCAL_SET, listener_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     core_wasm::i32_const(chunk, line, 0);
     super::sockets_adapter::emit_tcp_listener_new(chunks, current, line);
@@ -79,7 +75,6 @@ pub fn emit_dgram_create_socket(chunks: &mut Vec<Chunk>, current: usize, argc: u
         let kind_slot = chunk.local_count;
         chunk.local_count = kind_slot + 1;
         chunk.emit_op_u16(Op::LOCAL_SET, kind_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     core_wasm::i32_const(chunk, line, 0);
     super::sockets_adapter::emit_udp_client_new(chunks, current, line);

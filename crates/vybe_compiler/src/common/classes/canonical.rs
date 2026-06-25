@@ -28,6 +28,7 @@ pub enum ClassLang {
     Php,
     Dart,
     Pascal,
+    Java,
 }
 
 /// Resolve a source method name to `(canonical, special_kind?)`.
@@ -203,6 +204,15 @@ pub fn canonicalize_method(
             "divide" => ("div".into(), Some(Div)),
             "equal" => ("eq".into(), Some(Eq)),
             other => (other.to_string(), None),
+        },
+
+        ClassLang::Java => match normalized {
+            "toString" => ("tostring".into(), Some(ToString)),
+            "hashCode" => ("hash".into(), Some(Hash)),
+            "equals" => ("eq".into(), Some(Eq)),
+            "compareTo" => ("compare".into(), Some(Compare)),
+            "iterator" => ("iterator".into(), Some(Iterator)),
+            _ => (normalized.to_string(), None),
         },
     }
 }

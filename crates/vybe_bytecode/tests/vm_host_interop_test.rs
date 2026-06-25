@@ -514,7 +514,6 @@ fn vm_modifies_object_host_sees() {
     main.emit_op_u16(Op::CONST, v1, 0);
     main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // Modify: obj.x = 99
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -566,7 +565,6 @@ fn host_modifies_object_vm_sees() {
     main.emit_op_u16(Op::CONST, v1, 0);
     main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main.emit_op(Op::DROP, 0);
 
     // Pass to host fn which adds y=999
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -620,7 +618,6 @@ fn object_with_array_property_host_reads() {
     // Stack has the array. Need to push key before it.
     // Let's store the array, push key, then push array back.
     main.emit_op_u16(Op::LOCAL_SET, 0, 0); // temp store
-    main.emit_op(Op::DROP, 0);
     main.emit_op_u16(Op::CONST, k_items, 0);
     main.emit_op_u16(Op::LOCAL_GET, 0, 0);
     main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
@@ -977,7 +974,6 @@ fn invoke_preserves_globals() {
     main_chunk.emit_op_u16(Op::CONST, c0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("counter")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::DROP, 0);
     main_chunk.emit_op(Op::NULL, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
@@ -992,6 +988,8 @@ fn invoke_preserves_globals() {
     func.emit_op(Op::I32_ADD, 0);
     let gc2 = func.add_constant(Value::String(Arc::from("counter")));
     func.emit_op_u16(Op::GLOBAL_SET, gc2, 0);
+    let gc3 = func.add_constant(Value::String(Arc::from("counter")));
+    func.emit_op_u16(Op::GLOBAL_GET, gc3, 0);
     func.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, func]).unwrap();
@@ -1078,7 +1076,6 @@ fn invoke_modifies_global() {
     main_chunk.emit_op_u16(Op::CONST, c_init, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("status")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::DROP, 0);
     main_chunk.emit_op(Op::NULL, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
@@ -1179,7 +1176,6 @@ fn invoke_closure_with_upvalue() {
     let c100 = main_chunk.add_constant(Value::I32(100));
     main_chunk.emit_op_u16(Op::CONST, c100, 0);
     main_chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main_chunk.emit_op(Op::DROP, 0);
     // ref_func chunk 1, 1 upvalue (is_local=1, index=1)
     main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
     main_chunk.emit(1, 0); // 1 upvalue
@@ -1188,7 +1184,6 @@ fn invoke_closure_with_upvalue() {
     // Store the closure in global "closure"
     let gc = main_chunk.add_constant(Value::String(Arc::from("closure")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, gc, 0);
-    main_chunk.emit_op(Op::DROP, 0);
     main_chunk.emit_op(Op::NULL, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
@@ -1225,7 +1220,6 @@ fn invoke_twice_globals_updated() {
     main_chunk.emit_op_u16(Op::CONST, c0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("acc")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::DROP, 0);
     main_chunk.emit_op(Op::NULL, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
@@ -1239,6 +1233,8 @@ fn invoke_twice_globals_updated() {
     func.emit_op(Op::I32_ADD, 0);
     let ga2 = func.add_constant(Value::String(Arc::from("acc")));
     func.emit_op_u16(Op::GLOBAL_SET, ga2, 0);
+    let ga3 = func.add_constant(Value::String(Arc::from("acc")));
+    func.emit_op_u16(Op::GLOBAL_GET, ga3, 0);
     func.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, func]).unwrap();
@@ -1397,7 +1393,6 @@ fn callback_closure_with_captured_state() {
     let c500 = main_chunk.add_constant(Value::I32(500));
     main_chunk.emit_op_u16(Op::CONST, c500, 0);
     main_chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    main_chunk.emit_op(Op::DROP, 0);
 
     // Create closure capturing local 1
     main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
@@ -1582,7 +1577,6 @@ fn callback_modifies_global_subsequent_reads() {
     main_chunk.emit_op_u16(Op::CONST, ci, 0);
     let gs = main_chunk.add_constant(Value::String(Arc::from("state")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, gs, 0);
-    main_chunk.emit_op(Op::DROP, 0);
 
     // Register callback (chunk 1)
     main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);

@@ -37,7 +37,6 @@ pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
             .expect("emit_concat: local slot overflow");
         for i in (0..part_count).rev() {
             chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
-            chunk.emit_op(Op::DROP, line);
         }
         chunk.emit_op_u16(Op::LOCAL_GET, base, line);
         for i in 1..part_count {

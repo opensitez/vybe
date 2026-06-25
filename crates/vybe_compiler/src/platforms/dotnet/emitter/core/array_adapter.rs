@@ -36,16 +36,12 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Stash args (top of stack first → reverse order)
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // i = 0
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Loop: while i < count { arr[idx + i] = default(existing_value); i++ }
     let block_p = chunk.emit_block(line);
@@ -61,13 +57,11 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
@@ -94,7 +88,6 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_i32_const(1, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_br(0, line);
     chunk.emit_end(line); // end loop
@@ -191,9 +184,7 @@ pub fn emit_array_exists(chunks: &mut [Chunk], current: usize, line: u32) {
     let _result_slot = arr_slot + 3;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_any_every(
         chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ true, line,
     );
@@ -207,9 +198,7 @@ pub fn emit_array_true_for_all(chunks: &mut [Chunk], current: usize, line: u32) 
     let _result_slot = arr_slot + 3;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_any_every(
         chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ false, line,
     );
@@ -227,9 +216,7 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     let elem_slot = arr_slot + 4;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_filter(
         chunks,
         current,
@@ -254,9 +241,7 @@ pub fn emit_array_find_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let elem_slot = arr_slot + 4;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_filter(
         chunks,
         current,
@@ -277,9 +262,7 @@ pub fn emit_array_convert_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx_slot = arr_slot + 3;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_map(
         chunks,
         current,
@@ -301,9 +284,7 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx_slot = list_slot + 2;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, other_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, list_slot, line);
-    chunk.emit_op(Op::DROP, line);
 
     // for elem in other: list.push(elem)
     let state =
@@ -315,7 +296,6 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
         s
     };
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     crate::emitter::collections::emit_push(chunks, current, line);
@@ -331,8 +311,6 @@ pub fn emit_array_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx_slot = arr_slot + 2;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op(Op::DROP, line);
     crate::emitter::loops::emit_foreach(chunks, current, fn_slot, arr_slot, idx_slot, line);
 }
