@@ -4527,7 +4527,11 @@ impl Compiler {
                 c.emit_op_u16(Op::GLOBAL_GET, idx, l);
             }
             Value::String(ref s) => c.emit_string_const(s, l),
-            Value::BigInt(v) => c.emit_i64_const(v, l),
+            Value::BigInt(v) => {
+                c.emit_i64_const(v, l);
+                let idx = c.add_import("wasm:js-bigint", "fromI64");
+                c.emit_call(idx, 1, l);
+            }
             Value::V128(v) => {
                 c.emit_op(Op::V128_CONST, l);
                 for b in v {

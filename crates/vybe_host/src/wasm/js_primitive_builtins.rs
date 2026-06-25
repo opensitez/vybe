@@ -337,4 +337,19 @@ fn register_bigint(vm: &mut VM) {
             })
         }),
     );
+    // fromI64(i64) -> externref — wrap an i64 as a BigInt value
+    vm.register_host_fn(
+        "wasm:js-bigint",
+        "fromI64",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let n = match args.first() {
+                Some(Value::I64(v)) => *v,
+                Some(Value::I32(v)) => *v as i64,
+                Some(Value::F64(v)) => *v as i64,
+                Some(Value::BigInt(v)) => *v,
+                _ => 0,
+            };
+            Value::BigInt(n)
+        }),
+    );
 }
