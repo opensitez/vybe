@@ -51,3 +51,8 @@ pub fn compile_ok(src: &str) {
         .compile(&module)
         .expect("Python compile failed");
 }
+
+/// Shorthand: `print(expr)` then return the single logged line.
+pub fn run_print(expr: &str) -> String {
+    run_python_one(&format!("print({expr})\n"))
+}
