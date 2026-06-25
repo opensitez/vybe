@@ -7,9 +7,7 @@ const DERIVATIVE_EPSILON: f64 = 1e-7;
 const MAX_RATE_ITERATIONS: f64 = 25.0;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -693,6 +691,8 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, iter_slot, line);
     }
 
+    // Standard breakable-loop pattern: BLOCK { LOOP { ... br_if 1 exits block ... br 0 continues } }
+    let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     {
         let chunk = &mut chunks[current];
@@ -751,8 +751,10 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, iter_slot, line);
         chunk.emit_br(0, line);
-        chunk.emit_end(line);
+        chunk.emit_end(line);           // end LOOP
         chunk.patch_loop(loop_patch);
+        chunk.emit_end(line);           // end BLOCK
+        chunk.patch_block(block_patch);
     }
     lget(&mut chunks[current], rate_slot, line);
 }

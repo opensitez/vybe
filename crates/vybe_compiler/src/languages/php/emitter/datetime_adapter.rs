@@ -27,9 +27,7 @@ const MS_PER_DAY: f64 = 86_400_000.0;
 const MS_PER_WEEK: f64 = 604_800_000.0;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {

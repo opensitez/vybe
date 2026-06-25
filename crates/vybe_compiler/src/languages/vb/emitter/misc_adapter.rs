@@ -10,9 +10,7 @@ const VB_RECORD_ROWS_BY_HANDLE: &str = "__vb_record_rows_by_handle";
 const VB_RECORD_NEXT_INDEX_BY_HANDLE: &str = "__vb_record_next_index_by_handle";
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {

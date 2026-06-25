@@ -35,10 +35,10 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
 
     // Allocate a local to hold the args array being built.
     let arr_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     // Allocate a local to hold the format string.
     let fmt_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     let nargs = argc as i32; // total args including fmt
     let nrest = nargs - 1; // args after fmt
@@ -51,8 +51,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     //   3. GLOBAL_GET the sprintf fn, call(fmt, args_array).
 
     // Allocate temp locals for the variadic args.
-    let first_arg_slot = chunks[current].local_count;
-    chunks[current].local_count += nrest.max(0) as u16;
+    let first_arg_slot = chunks[current].alloc_scratch(nrest.max(0) as u16);
 
     // Store variadic args (they are on top of stack, in order arg0..argN-1).
     // Stack order: ... fmt arg0 arg1 ... argN-1  (argN-1 on top)
@@ -94,9 +93,9 @@ pub fn emit_sprintf_from_array(chunks: &mut Vec<Chunk>, current: usize, line: u3
     // CALL_REF expects [callee, arg0, arg1]. The caller currently has
     // [fmt, args_array], so stash and rebuild in the expected order.
     let arr_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let fmt_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
@@ -145,9 +144,9 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
 
     // CALL_REF expects [callee, input, fmt]; caller has [input, fmt].
     let fmt_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let inp_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, inp_slot, line);

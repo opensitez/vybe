@@ -26,8 +26,7 @@ pub fn emit_env_set(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {
     let tmp = if let Some(s) = chunk.dup_slot {
         s
     } else {
-        let s = chunk.local_count;
-        chunk.local_count += 1;
+        let s = chunk.alloc_scratch(1);
         chunk.dup_slot = Some(s);
         s
     };

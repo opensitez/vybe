@@ -7,9 +7,7 @@ use vybe_bytecode::opcode::Op;
 use crate::emitter::collections;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count += 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {

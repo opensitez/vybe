@@ -24,17 +24,15 @@ const fn r(lo: u32, hi: u32) -> Range {
 /// Stack on entry: `[s]` ; Stack on exit: `[bool]`.
 fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32) {
     let chunk = &mut chunks[current];
-    let s_slot = chunk.local_count;
-    let i_slot = s_slot + 1;
-    let len_slot = s_slot + 2;
-    let code_slot = s_slot + 3;
-    let matched_slot = s_slot + 4;
-    let result_slot = s_slot + 5;
-    chunk.local_count = s_slot + 6;
+    let s_slot = chunk.alloc_scratch(1);
+    let i_slot = chunk.alloc_scratch(1);
+    let len_slot = chunk.alloc_scratch(1);
+    let code_slot = chunk.alloc_scratch(1);
+    let matched_slot = chunk.alloc_scratch(1);
+    let result_slot = chunk.alloc_scratch(1);
 
     // s = "" + s  (string coerce)
-    let v_slot = chunk.local_count;
-    chunk.local_count = v_slot + 1;
+    let v_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, v_slot, line);
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);

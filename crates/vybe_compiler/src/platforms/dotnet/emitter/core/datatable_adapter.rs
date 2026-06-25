@@ -32,9 +32,7 @@ fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32),
 
 /// Reserve a local scratch slot.
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 /// `new DataTable(name?)` — creates `{ __type: "DataTable", tablename, columns: [], rows: [] }`.
@@ -133,8 +131,7 @@ pub fn emit_datatable_new_row(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_datatable_add_row(chunks: &mut [Chunk], current: usize, line: u32) {
     let row_slot = {
         let c = &mut chunks[current];
-        let s = c.local_count;
-        c.local_count += 1;
+        let s = c.alloc_scratch(1);
         s
     };
     {
@@ -158,8 +155,7 @@ pub fn emit_datatable_add_row(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_datatable_select(chunks: &mut [Chunk], current: usize, line: u32) {
     let table_slot = {
         let c = &mut chunks[current];
-        let s = c.local_count;
-        c.local_count += 1;
+        let s = c.alloc_scratch(1);
         s
     };
     let chunk = &mut chunks[current];

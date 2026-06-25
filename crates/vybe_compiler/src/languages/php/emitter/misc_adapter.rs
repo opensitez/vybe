@@ -12,9 +12,7 @@ use crate::emitter::functions::create_function_chunk;
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -384,7 +382,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let types = chunks[0].types.clone();
 
     let mut helper = create_function_chunk("__php_unserialize_alloc", 1);
-    helper.local_count = 1;
+    helper.alloc_scratch(1);
     let class_slot = 0;
     let obj_slot = alloc_local(&mut helper);
 
@@ -468,7 +466,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut helper = create_function_chunk("__php_json_normalize", 1);
-    helper.local_count = 1;
+    helper.alloc_scratch(1);
 
     let value_slot = 0u16;
     let out_slot = alloc_local(&mut helper);
@@ -626,7 +624,7 @@ pub fn emit_php_json_normalize(
 fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut helper = create_function_chunk("__php_serialize_value", 1);
-    helper.local_count = 1;
+    helper.alloc_scratch(1);
 
     let value_slot = 0;
     let _type_slot = alloc_local(&mut helper);
@@ -965,7 +963,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut helper = create_function_chunk("__php_unserialize_value", 1);
-    helper.local_count = 1;
+    helper.alloc_scratch(1);
 
     let node_slot = 0;
     let _type_slot = alloc_local(&mut helper);
@@ -1388,9 +1386,8 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     };
 
     let chunk = &mut chunks[current];
-    let obj_slot = chunk.local_count;
-    let this_slot = chunk.local_count + 1;
-    chunk.local_count += 2;
+    let obj_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
 
     // Pop the object arg
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);

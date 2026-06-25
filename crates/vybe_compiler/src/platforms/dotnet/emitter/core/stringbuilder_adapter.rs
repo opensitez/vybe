@@ -32,9 +32,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 /// Stack-based scratch slot — bumps `local_count` and returns the new slot.
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 /// `new StringBuilder()` / `new StringBuilder(initial)` — multi-arity

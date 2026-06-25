@@ -14,9 +14,8 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
         return;
     }
     let n = (argc as u16) - 1;
-    let arr_slot = chunk.local_count;
+    let arr_slot = chunk.alloc_scratch(2);
     let idx_slot = arr_slot + 1;
-    chunk.local_count = arr_slot + 2;
 
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, n, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);

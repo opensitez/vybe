@@ -72,12 +72,7 @@ pub fn emit_invoke_method(
     // when the method is bound on the instance and dispatched
     // dynamically.
     let c = &mut chunks[current];
-    let temp_base = c.local_count;
-    // slots: [receiver, prev_js_this, args...]
-    c.local_count = c
-        .local_count
-        .checked_add(argc as u16 + 2)
-        .expect("emit_invoke_method: local slot overflow");
+    let temp_base = c.alloc_scratch(argc as u16 + 2);
     let receiver_slot = temp_base;
     let prev_this_slot = temp_base + 1;
     let arg_base = temp_base + 2;

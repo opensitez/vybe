@@ -26,13 +26,12 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     // Allocate scratch slots: arr, idx, count, i (counter), target index,
     // current element.
-    let arr_slot = chunk.local_count;
+    let arr_slot = chunk.alloc_scratch(6);
     let idx_slot = arr_slot + 1;
     let count_slot = arr_slot + 2;
     let i_slot = arr_slot + 3;
     let target_slot = arr_slot + 4;
     let elem_slot = arr_slot + 5;
-    chunk.local_count = arr_slot + 6;
 
     // Stash args (top of stack first → reverse order)
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
@@ -171,9 +170,7 @@ pub fn emit_array_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
 // shape.
 
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
-    let base = chunk.local_count;
-    chunk.local_count = base + count;
-    base
+    chunk.alloc_scratch(count)
 }
 
 /// `Array.Exists(arr, pred)` → `arr.some(pred)`. Stack: `[arr, pred]` → `[bool]`.
@@ -290,11 +287,7 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
     let state =
         crate::emitter::loops::emit_for_in_start(chunks, current, other_slot, idx_slot, line);
     let chunk = &mut chunks[current];
-    let elem_slot = {
-        let s = chunk.local_count;
-        chunk.local_count = s + 1;
-        s
-    };
+    let elem_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);

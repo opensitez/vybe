@@ -48,13 +48,12 @@ fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 /// Build the TimeSpan object given the total milliseconds on the stack.
 /// Stack on entry: `[total_ms]` ; Stack on exit: `[ts_obj]`
 pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
-    let ms_slot = chunk.local_count;
+    let ms_slot = chunk.alloc_scratch(6);
     let days_slot = ms_slot + 1;
     let rem_slot = ms_slot + 2;
     let hours_slot = ms_slot + 3;
     let minutes_slot = ms_slot + 4;
     let seconds_slot = ms_slot + 5;
-    chunk.local_count = ms_slot + 6;
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
 
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
@@ -252,10 +251,9 @@ pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let chunk = &mut chunks[current];
     match argc {
         3 => {
-            let seconds_slot = chunk.local_count;
+            let seconds_slot = chunk.alloc_scratch(3);
             let minutes_slot = seconds_slot + 1;
             let hours_slot = seconds_slot + 2;
-            chunk.local_count = seconds_slot + 3;
 
             chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
             chunk.emit_op_u16(Op::LOCAL_SET, minutes_slot, line);
@@ -280,11 +278,10 @@ pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
 pub fn emit_timespan_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let right_slot = chunk.local_count;
+    let right_slot = chunk.alloc_scratch(4);
     let left_slot = right_slot + 1;
     let right_ms_slot = right_slot + 2;
     let left_ms_slot = right_slot + 3;
-    chunk.local_count = right_slot + 4;
 
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
@@ -298,8 +295,7 @@ pub fn emit_timespan_compare(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_timespan_negate(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let obj_slot = chunk.local_count;
-    chunk.local_count = obj_slot + 1;
+    let obj_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_total_ms_from_obj(chunk, obj_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
@@ -309,8 +305,7 @@ pub fn emit_timespan_negate(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_timespan_duration(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let obj_slot = chunk.local_count;
-    chunk.local_count = obj_slot + 1;
+    let obj_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_total_ms_from_obj(chunk, obj_slot, line);
     math::emit_abs(chunk, line);
@@ -319,9 +314,8 @@ pub fn emit_timespan_duration(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_timespan_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let right_slot = chunk.local_count;
+    let right_slot = chunk.alloc_scratch(2);
     let left_slot = right_slot + 1;
-    chunk.local_count = right_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
     emit_total_ms_from_obj(chunk, left_slot, line);
@@ -332,9 +326,8 @@ pub fn emit_timespan_add(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_timespan_sub(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let right_slot = chunk.local_count;
+    let right_slot = chunk.alloc_scratch(2);
     let left_slot = right_slot + 1;
-    chunk.local_count = right_slot + 2;
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
     emit_total_ms_from_obj(chunk, left_slot, line);

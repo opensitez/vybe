@@ -2329,8 +2329,8 @@ impl Compiler {
         // slots compiler_common helpers (e.g. `invoke::emit_invoke_method`)
         // reserved directly on the chunk — those bypass `Scope` but still
         // need the VM to reserve slots at call-frame entry.
-        let locals = self.scope().next_slot.max(self.chunks[0].local_count);
-        self.chunks[0].local_count = locals;
+        let ns = self.scope().next_slot;
+        self.chunks[0].finalize_local_count(ns);
         // Skip helper linking when compiling runtime helper source.
         // Re-running finalization here would call back into helper
         // compilation and recurse through `Compiler::compile`.

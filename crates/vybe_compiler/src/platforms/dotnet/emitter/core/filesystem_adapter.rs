@@ -16,9 +16,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32) {

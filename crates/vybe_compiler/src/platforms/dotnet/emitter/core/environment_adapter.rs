@@ -18,9 +18,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {

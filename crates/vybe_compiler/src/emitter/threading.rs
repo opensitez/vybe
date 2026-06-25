@@ -155,8 +155,7 @@ pub fn emit_thread_new(chunks: &mut [Chunk], current: usize, line: u32) {
 /// but no start_arg. We need `[null, func_ref]` for THREAD_SPAWN; given
 /// `[func_ref]`, the cheapest reorder is via a scratch local.
 fn emit_thread_spawn_no_arg(chunks: &mut [Chunk], current: usize, line: u32) {
-    let slot = chunks[current].local_count;
-    chunks[current].local_count = slot + 1;
+    let slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     // [func_ref] → stash to scratch slot, drop from stack
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);

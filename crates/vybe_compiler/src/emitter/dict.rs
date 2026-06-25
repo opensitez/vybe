@@ -164,7 +164,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     let key_slot = dict_slot + 1;
     let has_slot = key_slot + 1;
     let keys_slot = has_slot + 1;
-    chunks[current].local_count += 4;
+    chunks[current].alloc_scratch(4);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
@@ -215,7 +215,7 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     let dict_slot = chunks[current].local_count;
     let key_slot = dict_slot + 1;
     let idx_slot = dict_slot + 2;
-    chunks[current].local_count += 3;
+    chunks[current].alloc_scratch(3);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
@@ -506,8 +506,7 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
     let global_name =
         chunks[current].add_constant(Value::String(Arc::from("__vybe_dict_values_from_entries")));
-    let entries_local = chunks[current].local_count;
-    chunks[current].local_count = entries_local + 1;
+    let entries_local = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
     chunks[current].emit_op_u16(Op::GLOBAL_GET, global_name, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);

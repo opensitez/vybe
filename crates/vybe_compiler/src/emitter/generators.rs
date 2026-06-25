@@ -83,7 +83,7 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     // the block, which would desync that height. Park it in a fresh local and
     // reload inside the block, leaving the block stack-neutral on entry.
     let cont_slot = chunk.local_count;
-    chunk.local_count += 1;
+    chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
     let done_key = chunk.add_constant(Value::String(Arc::from("__gen_done")));
@@ -204,9 +204,9 @@ pub fn emit_drain_into_array_into(_imports: &mut Chunk, code: &mut Chunk, line: 
     // Arg 0 (local slot 0) IS the continuation — no copy needed.
     let cont_slot = 0u16;
     let result_slot = code.local_count;
-    code.local_count += 1;
+    code.alloc_scratch(1);
     let val_slot = code.local_count;
-    code.local_count += 1;
+    code.alloc_scratch(1);
 
     code.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line); // empty array
     code.emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -219,11 +219,11 @@ pub fn emit_drain_into_array_into(_imports: &mut Chunk, code: &mut Chunk, line: 
 /// `chunks/current` variant for use inside the `Compiler`.
 pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let cont_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let val_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
@@ -246,17 +246,17 @@ pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
 /// resume continuations.
 pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let limit_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let cont_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let count_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let has_more_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, limit_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
@@ -316,23 +316,23 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
 /// continuation, so the returned continuation is drained here via `GEN_NEXT`.
 pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let mapper_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let source_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let i_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let len_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let item_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let cont_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     let has_more_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
@@ -467,11 +467,11 @@ pub fn emit_resume_dispatch(
     emit_return: &mut dyn FnMut(&mut Chunk, u32),
 ) -> (u16, u16) {
     let resume_slot = chunk.local_count;
-    chunk.local_count += 1;
+    chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, resume_slot, line);
 
     let result_slot = chunk.local_count;
-    chunk.local_count += 1;
+    chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 

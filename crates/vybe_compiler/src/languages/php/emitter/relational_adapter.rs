@@ -19,9 +19,7 @@ use vybe_bytecode::{Chunk, Value};
 use crate::emitter::ops::{emit_dyn_eq, emit_dyn_to_bool};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let s = chunk.local_count;
-    chunk.local_count = s + 1;
-    s
+    chunk.alloc_scratch(1)
 }
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {

@@ -10,9 +10,7 @@ use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let s = chunk.local_count;
-    chunk.local_count = s + 1;
-    s
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -87,8 +85,7 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         return;
     }
     // Stash all args into slots in argument order.
-    let base = chunk.local_count;
-    chunk.local_count = base + argc as u16;
+    let base = chunk.alloc_scratch(argc as u16);
     for i in (0..argc).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
     }

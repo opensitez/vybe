@@ -12,13 +12,8 @@ use crate::emitter::collections;
 
 /// Delegate combine semantics compatible with .NET multicast delegates.
 pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cur_slot = {
-        let s = chunks[current].local_count;
-        chunks[current].local_count = s + 1;
-        s
-    };
+    let cur_slot = chunks[current].alloc_scratch(2);
     let handler_slot = cur_slot + 1;
-    chunks[current].local_count = handler_slot + 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);
@@ -64,17 +59,12 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Delegate remove semantics compatible with .NET multicast delegates.
 pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cur_slot = {
-        let s = chunks[current].local_count;
-        chunks[current].local_count = s + 1;
-        s
-    };
+    let cur_slot = chunks[current].alloc_scratch(6);
     let handler_slot = cur_slot + 1;
     let idx_slot = cur_slot + 2;
     let len_slot = cur_slot + 3;
     let elem_slot = cur_slot + 4;
     let loop_counter = cur_slot + 5;
-    chunks[current].local_count = loop_counter + 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);

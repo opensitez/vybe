@@ -10,9 +10,7 @@ use crate::languages::php::emitter::string_adapter;
 const PDO_FETCH_COLUMN: f64 = 7.0;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, value: Value, line: u32) {

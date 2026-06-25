@@ -18,8 +18,7 @@ fn call_import(
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
-    let base = chunks[current].local_count;
-    chunks[current].local_count += argc as u16;
+    let base = chunks[current].alloc_scratch(argc as u16);
     for offset in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
     }
@@ -183,7 +182,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     dict::emit_new(chunks, current, line);
     let out = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -244,11 +243,11 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
     let value_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
 
     if argc == 1 {
         let index_slot = chunks[current].local_count;
-        chunks[current].local_count += 1;
+        chunks[current].alloc_scratch(1);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         collections::emit_len(chunks, current, line);

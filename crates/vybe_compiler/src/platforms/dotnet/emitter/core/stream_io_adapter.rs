@@ -47,9 +47,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 /// `new StreamReader(path)` — load file into a `__content` string and

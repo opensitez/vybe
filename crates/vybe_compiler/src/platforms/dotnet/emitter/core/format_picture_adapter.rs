@@ -57,9 +57,8 @@ pub fn emit_format_picture(chunks: &mut [Chunk], current: usize, argc: u8, line:
         chunk.emit_op(Op::DROP, line);
     }
     let global_name = chunk.add_constant(Value::String(Arc::from("__vybe_vb_format")));
-    let value_slot = chunk.local_count;
+    let value_slot = chunk.alloc_scratch(2);
     let picture_slot = value_slot + 1;
-    chunk.local_count = value_slot + 2;
     // Stash picture (top), then value.
     chunk.emit_op_u16(Op::LOCAL_SET, picture_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);

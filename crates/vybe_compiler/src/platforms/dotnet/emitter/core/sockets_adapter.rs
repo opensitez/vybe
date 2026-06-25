@@ -98,9 +98,8 @@ pub fn emit_dns_get_host_name(chunks: &mut Vec<Chunk>, current: usize, line: u32
 pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Stack at entry: [host, port] (user args)
     // Stash to scratch locals so we can re-push in any order.
-    let host_slot = chunks[current].local_count;
+    let host_slot = chunks[current].alloc_scratch(2);
     let port_slot = host_slot + 1;
-    chunks[current].local_count = port_slot + 1;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
@@ -113,8 +112,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Stack: [socket]
 
     // Stash the socket for return + for start-connect arg 0.
-    let sock_slot = chunks[current].local_count;
-    chunks[current].local_count = sock_slot + 1;
+    let sock_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 
@@ -174,8 +172,7 @@ pub fn emit_tcp_client_close(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 ///   4. `tcp.start-listen(socket)`
 ///   5. `tcp.finish-listen(socket)`
 pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let port_slot = chunks[current].local_count;
-    chunks[current].local_count = port_slot + 1;
+    let port_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
@@ -184,8 +181,7 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
 
-    let sock_slot = chunks[current].local_count;
-    chunks[current].local_count = sock_slot + 1;
+    let sock_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 
@@ -283,8 +279,7 @@ pub fn emit_tcp_listener_pending(chunks: &mut Vec<Chunk>, current: usize, line: 
 ///
 /// Stack: `[port]` → `[udp_socket]`
 pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let port_slot = chunks[current].local_count;
-    chunks[current].local_count = port_slot + 1;
+    let port_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
@@ -293,8 +288,7 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
 
-    let sock_slot = chunks[current].local_count;
-    chunks[current].local_count = sock_slot + 1;
+    let sock_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 

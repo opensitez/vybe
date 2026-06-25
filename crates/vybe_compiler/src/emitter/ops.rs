@@ -22,9 +22,7 @@ fn call2(chunk: &mut Chunk, import_idx: u16, line: u32) {
 }
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
-    let base = chunk.local_count;
-    chunk.local_count += n;
-    base
+    chunk.alloc_scratch(n)
 }
 
 /// Convert the i32 (or Bool) on top of stack to a canonical JS Bool.

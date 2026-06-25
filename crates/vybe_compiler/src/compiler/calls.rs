@@ -1760,11 +1760,8 @@ impl Compiler {
         self.emit_host_call(reject_idx, 1);
         self.emit_return();
 
-        let locals = self
-            .scope()
-            .next_slot
-            .max(self.chunks[func_idx].local_count);
-        self.chunks[func_idx].local_count = locals;
+        let ns = self.scope().next_slot;
+        self.chunks[func_idx].finalize_local_count(ns);
         self.scopes.pop();
         self.current = saved_current;
         self.function_label_base = saved_label_base;
@@ -10757,8 +10754,8 @@ impl Compiler {
         self.current_func_name = saved_fn;
         self.in_strict = saved_strict;
 
-        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-        self.chunks[ci].local_count = locals;
+        let ns = self.scope().next_slot;
+        self.chunks[ci].finalize_local_count(ns);
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         // Resolve upvalue names BEFORE popping the inner scope
         let inner_scope_idx = self.scopes.len() - 1;

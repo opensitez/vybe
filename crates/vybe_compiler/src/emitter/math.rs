@@ -19,7 +19,7 @@ pub fn emit_abs(chunk: &mut Chunk, line: u32) {
 pub fn emit_c_fmod(chunk: &mut Chunk, line: u32) {
     let b_slot = chunk.local_count;
     let a_slot = chunk.local_count + 1;
-    chunk.local_count += 2;
+    chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
@@ -37,7 +37,7 @@ pub fn emit_c_fmod(chunk: &mut Chunk, line: u32) {
 pub fn emit_python_floor_mod(chunk: &mut Chunk, line: u32) {
     let b_slot = chunk.local_count;
     let a_slot = chunk.local_count + 1;
-    chunk.local_count += 2;
+    chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
@@ -80,7 +80,7 @@ pub fn emit_neg(chunk: &mut Chunk, line: u32) {
 pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
     let max_slot = chunk.local_count;
     let min_slot = chunk.local_count + 1;
-    chunk.local_count += 2;
+    chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, min_slot, line);
     // stack: [x]

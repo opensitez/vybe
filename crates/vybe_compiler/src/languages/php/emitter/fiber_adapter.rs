@@ -19,9 +19,7 @@ use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let s = chunk.local_count;
-    chunk.local_count = s + 1;
-    s
+    chunk.alloc_scratch(1)
 }
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {

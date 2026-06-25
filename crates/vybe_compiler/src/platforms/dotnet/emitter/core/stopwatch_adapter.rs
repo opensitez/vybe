@@ -69,8 +69,7 @@ pub fn emit_stopwatch_start(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_stopwatch_start_impl(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let sw_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let sw_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
 
     // if not isrunning: set __start_ns = now, set isrunning = true
@@ -81,8 +80,7 @@ fn emit_stopwatch_start_impl(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
     emit_monotonic_now(chunks, current, line);
     let chunk = &mut chunks[current];
-    let now_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let now_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     core_wasm::dup(chunk, line);
@@ -98,8 +96,7 @@ fn emit_stopwatch_start_impl(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `sw.Stop()` — stop if running, accumulate elapsed. Stack: `[sw]` → `[]`.
 pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let sw_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let sw_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
@@ -108,8 +105,7 @@ pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     // running — compute elapsed and accumulate
     emit_monotonic_now(chunks, current, line);
     let chunk = &mut chunks[current];
-    let now_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let now_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
 
     // elapsed_ns = now - __start_ns
@@ -117,8 +113,7 @@ pub fn emit_stopwatch_stop(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     struct_get(chunk, "__start_ns", line);
     chunk.emit_op(Op::F64_SUB, line);
-    let elapsed_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let elapsed_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, elapsed_slot, line);
 
     // __accumulated_ns += elapsed_ns
@@ -165,8 +160,7 @@ pub fn emit_stopwatch_restart(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `sw.ElapsedMilliseconds` — total elapsed ms. Stack: `[sw]` → `[ms]`.
 pub fn emit_stopwatch_elapsed_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let sw_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let sw_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
 
     // if running: (now - __start_ns + __accumulated_ns) / 1e6
@@ -176,8 +170,7 @@ pub fn emit_stopwatch_elapsed_ms(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_if(line);
     emit_monotonic_now(chunks, current, line);
     let chunk = &mut chunks[current];
-    let now_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let now_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);

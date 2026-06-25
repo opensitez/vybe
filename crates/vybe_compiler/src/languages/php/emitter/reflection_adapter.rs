@@ -207,16 +207,15 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let chunk = &mut chunks[current];
 
     // Pop args from stack (right-to-left): 8 args max
-    let fields_pub_slot = chunk.local_count;
-    let methods_pub_slot = chunk.local_count + 1;
-    let fields_slot = chunk.local_count + 2;
-    let methods_slot = chunk.local_count + 3;
-    let ifaces_slot = chunk.local_count + 4;
-    let parent_slot = chunk.local_count + 5;
-    let abstract_slot = chunk.local_count + 6;
-    let name_slot = chunk.local_count + 7;
-    let this_slot = chunk.local_count + 8;
-    chunk.local_count += 9;
+    let fields_pub_slot = chunk.alloc_scratch(1);
+    let methods_pub_slot = chunk.alloc_scratch(1);
+    let fields_slot = chunk.alloc_scratch(1);
+    let methods_slot = chunk.alloc_scratch(1);
+    let ifaces_slot = chunk.alloc_scratch(1);
+    let parent_slot = chunk.alloc_scratch(1);
+    let abstract_slot = chunk.alloc_scratch(1);
+    let name_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
 
     if argc >= 8 {
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
@@ -292,8 +291,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunk.emit_if(line);
     {
         // Build mini ReflectionClass for parent
-        let parent_ref_slot = chunk.local_count;
-        chunk.local_count += 1;
+        let parent_ref_slot = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, parent_ref_slot, line);
         // parent_ref.name = parent_name
@@ -334,16 +332,15 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 
     let chunk = &mut chunks[current];
 
-    let required_slot = chunk.local_count;
-    let param_count_slot = chunk.local_count + 1;
-    let vis_slot = chunk.local_count + 2;
-    let method_slot = chunk.local_count + 3;
-    let class_slot = chunk.local_count + 4;
-    let this_slot = chunk.local_count + 5;
-    let is_pub_slot = chunk.local_count + 6;
-    let is_prot_slot = chunk.local_count + 7;
-    let is_priv_slot = chunk.local_count + 8;
-    chunk.local_count += 9;
+    let required_slot = chunk.alloc_scratch(1);
+    let param_count_slot = chunk.alloc_scratch(1);
+    let vis_slot = chunk.alloc_scratch(1);
+    let method_slot = chunk.alloc_scratch(1);
+    let class_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
+    let is_pub_slot = chunk.alloc_scratch(1);
+    let is_prot_slot = chunk.alloc_scratch(1);
+    let is_priv_slot = chunk.alloc_scratch(1);
 
     if argc >= 5 {
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
@@ -412,10 +409,9 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
     let getvalue = build_reflect_get(chunks, "__refl_getvalue", "prop", line);
     let setvalue = build_reflect_set(chunks, "__refl_setvalue", "prop", line);
     let chunk = &mut chunks[current];
-    let prop_slot = chunk.local_count;
-    let class_slot = chunk.local_count + 1;
-    let this_slot = chunk.local_count + 2;
-    chunk.local_count += 3;
+    let prop_slot = chunk.alloc_scratch(1);
+    let class_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, prop_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, class_slot, line);
     finish(
@@ -440,11 +436,10 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let get_params = build_get_parameters(chunks, line);
 
     let chunk = &mut chunks[current];
-    let required_slot = chunk.local_count;
-    let param_count_slot = chunk.local_count + 1;
-    let name_slot = chunk.local_count + 2;
-    let this_slot = chunk.local_count + 3;
-    chunk.local_count += 4;
+    let required_slot = chunk.alloc_scratch(1);
+    let param_count_slot = chunk.alloc_scratch(1);
+    let name_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
 
     if argc >= 3 {
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);

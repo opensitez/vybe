@@ -78,9 +78,7 @@ fn emit_string(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {
 }
 
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
-    let base = chunk.local_count;
-    chunk.local_count += count;
-    base
+    chunk.alloc_scratch(count)
 }
 
 fn local_set(chunk: &mut Chunk, slot: u16, line: u32) {

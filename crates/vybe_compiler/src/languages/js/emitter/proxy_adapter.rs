@@ -32,9 +32,7 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let s = chunk.local_count;
-    chunk.local_count = s + 1;
-    s
+    chunk.alloc_scratch(1)
 }
 
 fn add_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str) -> u16 {

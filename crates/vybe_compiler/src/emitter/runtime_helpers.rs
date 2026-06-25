@@ -4784,11 +4784,7 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     emit_str_char_code_at(&mut c, 0);
 
     // Branch on '{' / '}' / literal
-    let ch_slot = {
-        let new = c.local_count;
-        c.local_count = new + 1;
-        new
-    };
+    let ch_slot = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, ch_slot, 0);
 
     // -- '{' branch --

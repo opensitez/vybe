@@ -30,9 +30,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {

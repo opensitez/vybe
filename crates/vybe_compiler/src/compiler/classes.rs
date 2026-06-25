@@ -783,11 +783,8 @@ impl Compiler {
         self.current_result_slot = saved_rs;
         self.current_ref_out_params = saved_ref_out;
 
-        let locals = self
-            .scope()
-            .next_slot
-            .max(self.chunks[func_idx].local_count);
-        self.chunks[func_idx].local_count = locals;
+        let ns = self.scope().next_slot;
+        self.chunks[func_idx].finalize_local_count(ns);
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         let inner_scope_idx = self.scopes.len() - 1;
         let uv_names: Vec<Option<String>> = (0..uvs.len())
@@ -1451,8 +1448,8 @@ impl Compiler {
             cc.current_member_is_static = saved_member_static;
             cc.current_closure_captured_locals = saved_closure_captured;
 
-            let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
-            cc.chunks[ci].local_count = locals;
+            let ns = cc.scope().next_slot;
+            cc.chunks[ci].finalize_local_count(ns);
             let method_scope_idx = cc.scopes.len() - 1;
             let capture_names: Vec<String> = cc.scopes[method_scope_idx]
                 .upvalues
@@ -1576,8 +1573,7 @@ impl Compiler {
                     self.emit(Op::RETURN);
                 }
 
-                let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-                self.chunks[ci].local_count = locals;
+                { let ns = self.scope().next_slot; self.chunks[ci].finalize_local_count(ns); }
                 self.scopes.pop();
                 self.current = saved;
                 method_chunks.push((get_name, ci, false, prop_is_static));
@@ -1623,8 +1619,7 @@ impl Compiler {
 
                 let line = self.line;
                 common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
-                let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-                self.chunks[ci].local_count = locals;
+                { let ns = self.scope().next_slot; self.chunks[ci].finalize_local_count(ns); }
                 self.scopes.pop();
                 self.current = saved;
                 method_chunks.push((set_name, ci, false, prop_is_static));
@@ -2378,11 +2373,7 @@ impl Compiler {
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
 
-            let locals = self
-                .scope()
-                .next_slot
-                .max(self.chunks[helper_idx].local_count);
-            self.chunks[helper_idx].local_count = locals;
+            { let ns = self.scope().next_slot; self.chunks[helper_idx].finalize_local_count(ns); }
             let helper_upvalues = self.scope().upvalues.clone();
             self.scopes.pop();
             self.current = saved_cur;
@@ -2452,11 +2443,7 @@ impl Compiler {
             self.emit(Op::NULL);
         }
         self.emit_return_through_finally(1)?;
-        let locals = self
-            .scope()
-            .next_slot
-            .max(self.chunks[ctor_idx].local_count);
-        self.chunks[ctor_idx].local_count = locals;
+        { let ns = self.scope().next_slot; self.chunks[ctor_idx].finalize_local_count(ns); }
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
         self.current = saved_cur;

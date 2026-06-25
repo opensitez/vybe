@@ -33,16 +33,14 @@ pub fn emit_net_create_connection(chunks: &mut Vec<Chunk>, current: usize, argc:
             core_wasm::i32_const(chunk, line, 0);
         }
         1 => {
-            let port_slot = chunk.local_count;
-            chunk.local_count = port_slot + 1;
+            let port_slot = chunk.alloc_scratch(1);
             chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
             push_const(chunk, Value::String(Arc::from("127.0.0.1")), line);
             chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
         }
         _ => {
-            let host_slot = chunk.local_count;
+            let host_slot = chunk.alloc_scratch(2);
             let port_slot = host_slot + 1;
-            chunk.local_count = port_slot + 1;
             chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
             chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
@@ -58,8 +56,7 @@ pub fn emit_net_create_connection(chunks: &mut Vec<Chunk>, current: usize, argc:
 pub fn emit_net_create_server(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc > 0 {
-        let listener_slot = chunk.local_count;
-        chunk.local_count = listener_slot + 1;
+        let listener_slot = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, listener_slot, line);
     }
     core_wasm::i32_const(chunk, line, 0);
@@ -72,8 +69,7 @@ pub fn emit_net_create_server(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
 pub fn emit_dgram_create_socket(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc > 0 {
-        let kind_slot = chunk.local_count;
-        chunk.local_count = kind_slot + 1;
+        let kind_slot = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, kind_slot, line);
     }
     core_wasm::i32_const(chunk, line, 0);

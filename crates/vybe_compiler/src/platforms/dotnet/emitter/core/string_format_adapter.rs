@@ -66,8 +66,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // Stash trailing args in an array local so the format walker can
     // index into them by `{N}` placeholder.
     let n = (argc as u16) - 1;
-    let args_slot = chunk.local_count;
-    chunk.local_count = args_slot + 1;
+    let args_slot = chunk.alloc_scratch(1);
 
     // Build the args array from the top `n` stack entries.
     // `ARRAY_NEW_FIXED n` pops the top n values (in stack order) and
@@ -83,11 +82,10 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     //   i          = next local
     //   len        = next + 1
     //   out        = next + 2
-    let fmt_slot = chunk.local_count;
+    let fmt_slot = chunk.alloc_scratch(4);
     let i_slot = fmt_slot + 1;
     let len_slot = fmt_slot + 2;
     let out_slot = fmt_slot + 3;
-    chunk.local_count = fmt_slot + 4;
 
     // fmt_slot = pop fmt
     chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
@@ -127,8 +125,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // Implementation strategy: nested blocks for each "case" tag.
 
     // Save char code to a temp slot for repeated comparisons.
-    let ch_slot = chunk.local_count;
-    chunk.local_count = ch_slot + 1;
+    let ch_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, ch_slot, line);
 
     // -- '{' branch --
@@ -251,8 +248,7 @@ fn emit_handle_open_brace(
 
     // Not an escape: parse `{N[,W][:fmt]}` placeholder.
     // Find closing '}' starting from i+1.
-    let end_slot = chunk.local_count;
-    chunk.local_count = end_slot + 1;
+    let end_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
@@ -286,8 +282,7 @@ fn emit_handle_open_brace(
     chunk.patch_block(scan_block);
 
     // inner = fmt.substring(i+1, end) — the placeholder body, e.g. "0" or "0,5" or "0:N2"
-    let inner_slot = chunk.local_count;
-    chunk.local_count = inner_slot + 1;
+    let inner_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(chunk, line, 1);
@@ -296,16 +291,14 @@ fn emit_handle_open_brace(
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_slot, line);
 
-    let inner_len_slot = chunk.local_count;
-    chunk.local_count = inner_len_slot + 1;
+    let inner_len_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, inner_len_slot, line);
 
     // idx = parseInt(inner) — parseInt stops at first non-digit, so the
     // optional `,W` / `:fmt` suffixes are naturally trimmed.
-    let idx_slot = chunk.local_count;
-    chunk.local_count = idx_slot + 1;
+    let idx_slot = chunk.alloc_scratch(1);
     let pf_idx = chunk.add_import("ecma:number", "parseInt");
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
@@ -313,11 +306,10 @@ fn emit_handle_open_brace(
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
-    let comma_slot = chunk.local_count;
+    let comma_slot = chunk.alloc_scratch(4);
     let colon_slot = comma_slot + 1;
     let format_slot = colon_slot + 1;
     let width_slot = format_slot + 1;
-    chunk.local_count = width_slot + 1;
 
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_string_const(",", line);
@@ -355,8 +347,7 @@ fn emit_handle_open_brace(
     core_wasm::i32_const(chunk, line, 0);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
-    let width_end_slot = chunk.local_count;
-    chunk.local_count = width_end_slot + 1;
+    let width_end_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
     let no_colon_after_width = chunk.emit_block(line);

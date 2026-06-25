@@ -16,9 +16,7 @@ use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count = slot + 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -243,8 +241,7 @@ pub fn emit_php_dec(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32) {
     let v_slot = {
         let chunk = &mut chunks[current];
-        let s = chunk.local_count;
-        chunk.local_count = s + 1;
+        let s = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, s, line);
         s
     };

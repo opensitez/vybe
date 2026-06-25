@@ -215,6 +215,11 @@ pub struct Chunk {
     pub is_generator: bool,
     /// Shared scratch local for emit_dup (local.tee + local.get).
     pub dup_slot: Option<u16>,
+    /// High-water mark for scratch locals allocated by emitter helpers.
+    /// The compiler MUST set `local_count = local_count.max(scratch_high_water)`
+    /// at function finalization. This ensures `alloc_scratch` allocations
+    /// are always included regardless of which compilation path runs.
+    pub scratch_high_water: u16,
     /// Number of captured variables (closures). The VM populates
     /// local slots [capture_base..capture_base+capture_count) from
     /// the function object's `__capture_N` properties at call time.
@@ -253,6 +258,7 @@ impl Chunk {
             is_generator: false,
             capture_count: 0,
             capture_base: 0,
+            scratch_high_water: 0,
         }
     }
 
@@ -521,6 +527,27 @@ impl Chunk {
         self.read_u16(offset) as i16
     }
 
+    /// Allocate scratch locals for emitter helpers. Returns the base slot.
+    /// Updates both `local_count` and `scratch_high_water` so the compiler
+    /// always sees the correct total at finalization.
+    pub fn alloc_scratch(&mut self, n: u16) -> u16 {
+        let base = self.local_count;
+        self.local_count += n;
+        if self.local_count > self.scratch_high_water {
+            self.scratch_high_water = self.local_count;
+        }
+        base
+    }
+
+    /// Finalize local_count after compilation. Ensures scratch allocations
+    /// from emitter helpers are always included. Call this at the end of
+    /// every function/lambda compilation path.
+    pub fn finalize_local_count(&mut self, scope_next_slot: u16) {
+        self.local_count = scope_next_slot
+            .max(self.local_count)
+            .max(self.scratch_high_water);
+    }
+
     /// Emit CALL_IMPORT: [op, import_idx_hi, import_idx_lo, argc].
     pub fn emit_call(&mut self, import_idx: u16, argc: u8, line: u32) {
         self.emit_op(Op::CALL_IMPORT, line);
@@ -534,8 +561,7 @@ impl Chunk {
         let slot = match self.dup_slot {
             Some(s) => s,
             None => {
-                let s = self.local_count;
-                self.local_count += 1;
+                let s = self.alloc_scratch(1);
                 self.dup_slot = Some(s);
                 s
             }

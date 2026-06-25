@@ -8,8 +8,7 @@ use super::support::stash_args;
 pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let value_slot = base;
-    let date_str_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    let date_str_slot = chunks[current].alloc_scratch(1);
 
     let to_string_idx = chunks[0].add_import("ecma:string", "String");
     let parse_idx = chunks[0].add_import("ecma:date", "parse");

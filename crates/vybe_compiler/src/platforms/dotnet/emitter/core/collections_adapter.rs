@@ -19,8 +19,7 @@ fn call_import(
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
-    let base = chunks[current].local_count;
-    chunks[current].local_count += argc as u16;
+    let base = chunks[current].alloc_scratch(argc as u16);
     for offset in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
     }
@@ -35,8 +34,7 @@ pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     call_import(chunks, current, "ecma:set", "has", 2, line);
-    let present_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    let present_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, present_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, present_slot, line);
@@ -55,11 +53,10 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let result_slot = chunks[current].local_count;
+    let result_slot = chunks[current].alloc_scratch(4);
     let arr_slot = result_slot + 1;
     let idx_slot = result_slot + 2;
     let value_slot = result_slot + 3;
-    chunks[current].local_count += 4;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
@@ -115,10 +112,9 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let arr_slot = chunks[current].local_count;
+    let arr_slot = chunks[current].alloc_scratch(3);
     let idx_slot = arr_slot + 1;
     let value_slot = arr_slot + 2;
-    chunks[current].local_count += 3;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     collections::emit_iter_values(chunks, current, line);
@@ -164,11 +160,10 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let source_arr_slot = chunks[current].local_count;
+    let source_arr_slot = chunks[current].alloc_scratch(4);
     let recv_arr_slot = source_arr_slot + 1;
     let idx_slot = source_arr_slot + 2;
     let value_slot = source_arr_slot + 3;
-    chunks[current].local_count += 4;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     collections::emit_iter_values(chunks, current, line);
@@ -233,12 +228,11 @@ pub fn emit_hashset_symmetric_except_with(chunks: &mut [Chunk], current: usize, 
 pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let arr = base;
-    let result = arr + 1;
-    let i = arr + 2;
-    let j = arr + 3;
-    let len = arr + 4;
-    let key = arr + 5;
-    chunks[current].local_count = chunks[current].local_count.max(arr + 6);
+    let result = chunks[current].alloc_scratch(5);
+    let i = result + 1;
+    let j = result + 2;
+    let len = result + 3;
+    let key = result + 4;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
     collections::emit_clone(chunks, current, line);
@@ -353,9 +347,8 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let needle = base + 1;
-    let index_slot = chunks[current].local_count;
+    let index_slot = chunks[current].alloc_scratch(2);
     let value_slot = index_slot + 1;
-    chunks[current].local_count += 2;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);

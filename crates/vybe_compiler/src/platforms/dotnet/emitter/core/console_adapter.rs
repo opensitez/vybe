@@ -117,7 +117,5 @@ pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let s = chunk.local_count;
-    chunk.local_count = s + 1;
-    s
+    chunk.alloc_scratch(1)
 }

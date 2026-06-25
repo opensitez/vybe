@@ -282,8 +282,7 @@ pub fn emit_spl_objectstorage_new(
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    let this_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let this_slot = chunk.alloc_scratch(1);
     // this = ecma:map.new() — the instance IS the Map
     let map_new_i = chunk.add_import("ecma:map".to_string(), "new".to_string());
     chunk.emit_call(map_new_i, 0, line);
@@ -379,8 +378,7 @@ fn finish_array_instance(
         chunk.emit_op(Op::DROP, line);
     }
 
-    let this_slot = chunk.local_count;
-    chunk.local_count += 1;
+    let this_slot = chunk.alloc_scratch(1);
 
     // this = [] (empty array)
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);

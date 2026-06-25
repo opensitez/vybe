@@ -26,9 +26,7 @@ use crate::emitter::loops;
 
 /// Allocate `count` consecutive scratch locals; returns the first slot.
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
-    let base = chunk.local_count;
-    chunk.local_count = base + count;
-    base
+    chunk.alloc_scratch(count)
 }
 
 fn emit_import_call(
@@ -340,11 +338,7 @@ pub fn emit_linq_aggregate(chunks: &mut [Chunk], current: usize, line: u32) {
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
     {
         let chunk = &mut chunks[current];
-        let elem_local = {
-            let s = chunk.local_count;
-            chunk.local_count = s + 1;
-            s
-        };
+        let elem_local = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, elem_local, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);

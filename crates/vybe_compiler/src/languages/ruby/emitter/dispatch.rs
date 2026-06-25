@@ -39,8 +39,7 @@ fn emit_dig(chunk: &mut Chunk, argc: u8, line: u32) {
     }
     let nkeys = argc - 1;
     // Allocate temps: `cur` slot + N key slots.
-    let cur_slot = chunk.local_count;
-    chunk.local_count = cur_slot + 1 + nkeys as u16;
+    let cur_slot = chunk.alloc_scratch(1 + nkeys as u16);
     // Stash keys back-to-front (last key first, ends up in highest slot).
     for i in (0..nkeys).rev() {
         let slot = cur_slot + 1 + i as u16;

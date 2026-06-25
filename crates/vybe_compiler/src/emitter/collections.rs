@@ -56,9 +56,7 @@ pub(crate) fn emit_import_call_into(
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
-    let slot = chunk.local_count;
-    chunk.local_count += 1;
-    slot
+    chunk.alloc_scratch(1)
 }
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -155,7 +153,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], value_slot, line);
     emit_import_call(chunks, current, "ecma:array", "length", 1, line);
     let arr_len_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_len_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
@@ -166,7 +164,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], value_slot, line);
     emit_import_call(chunks, current, "ecma:map", "size", 1, line);
     let map_len_slot = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, map_len_slot, line);
 
     // map_len != 0: ecma:map.size returns I32 — use I32_NE directly.
@@ -334,11 +332,7 @@ pub fn emit_join(chunks: &mut [Chunk], current: usize, line: u32) {
 /// we get here). Stack: [separator, array] → [string].
 pub fn emit_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let sep_slot = {
-        let s = chunk.local_count;
-        chunk.local_count = s + 2;
-        s
-    };
+    let sep_slot = chunk.alloc_scratch(2);
     let arr_slot = sep_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sep_slot, line);
@@ -430,7 +424,7 @@ pub fn emit_remove_range(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Computes end = index + count, then slice(arr, index, end).
 pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
     let count_local = chunks[current].local_count;
-    chunks[current].local_count += 1;
+    chunks[current].alloc_scratch(1);
     // save count
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_local, line);
     // stack: [arr, index]
@@ -582,7 +576,7 @@ pub fn emit_runtime_helper_call(
     line: u32,
 ) {
     let base = chunks[current].local_count;
-    chunks[current].local_count += argc as u16;
+    chunks[current].alloc_scratch(argc as u16);
     // Stash args (top-of-stack is arg N-1 → highest slot).
     for i in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + i, line);
@@ -633,7 +627,7 @@ pub fn emit_pack_n(chunks: &mut [Chunk], current: usize, n: u16, slot_base: u16,
 pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     let v2 = chunks[current].local_count;
     let v1 = chunks[current].local_count + 1;
-    chunks[current].local_count += 2;
+    chunks[current].alloc_scratch(2);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -772,7 +766,7 @@ pub fn emit_fill_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let v2 = code.local_count;
     let v1 = code.local_count + 1;
-    code.local_count += 2;
+    code.alloc_scratch(2);
     // Stack: [v1, v2] — stash both into temp slots (peek-set + drop).
     code.emit_op_u16(Op::LOCAL_SET, v2, line);
     code.emit_op_u16(Op::LOCAL_SET, v1, line);
@@ -815,7 +809,7 @@ pub fn emit_range_targeted(
         let chunk = &mut chunks[current];
         if arg_count == 1 {
             let stop_local = chunk.local_count;
-            chunk.local_count += 3;
+            chunk.alloc_scratch(3);
             let i_local = stop_local + 1;
             let result_local = stop_local + 2;
 
