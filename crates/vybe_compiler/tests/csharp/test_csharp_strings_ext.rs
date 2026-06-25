@@ -122,3 +122,51 @@ Console.WriteLine(result);
     );
     assert_eq!(out, vec!["Hello World"]);
 }
+
+#[test]
+fn string_intern_returns_reference_equal_for_same_literal_sequence() {
+    let out = run_csharp(
+        r#"
+string a = string.Intern("shared");
+string b = string.Intern("shared");
+Console.WriteLine(object.ReferenceEquals(a, b));
+"#,
+    );
+    assert_eq!(out, vec!["True"]);
+}
+
+#[test]
+fn string_builder_insert_puts_text_at_offset() {
+    let out = run_csharp(
+        r#"
+var sb = new System.Text.StringBuilder("ac");
+sb.Insert(1, "b");
+Console.WriteLine(sb.ToString());
+"#,
+    );
+    assert_eq!(out, vec!["abc"]);
+}
+
+#[test]
+fn string_builder_replace_substitutes_all_occurrences() {
+    let out = run_csharp(
+        r#"
+var sb = new System.Text.StringBuilder("abab");
+sb.Replace("a", "z");
+Console.WriteLine(sb.ToString());
+"#,
+    );
+    assert_eq!(out, vec!["zbzb"]);
+}
+
+#[test]
+fn string_builder_clear_resets_length_to_zero() {
+    let out = run_csharp(
+        r#"
+var sb = new System.Text.StringBuilder("data");
+sb.Clear();
+Console.WriteLine(sb.Length);
+"#,
+    );
+    assert_eq!(out, vec!["0"]);
+}

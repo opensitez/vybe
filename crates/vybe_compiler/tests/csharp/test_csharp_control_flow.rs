@@ -178,6 +178,82 @@ Console.WriteLine(count);
 }
 
 #[test]
+fn foreach_on_string_iterates_characters() {
+    let out = run_csharp(
+        r#"
+string text = "ab";
+int count = 0;
+foreach (var ch in text) count++;
+Console.WriteLine(count);
+"#,
+    );
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn foreach_on_dictionary_visits_key_value_pairs() {
+    let out = run_csharp(
+        r#"
+var map = new System.Collections.Generic.Dictionary<string, int> { ["x"] = 1 };
+int total = 0;
+foreach (var pair in map) total += pair.Value;
+Console.WriteLine(total);
+"#,
+    );
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn foreach_on_list_throws_when_collection_modified_during_iteration() {
+    let out = run_csharp(
+        r#"
+var items = new System.Collections.Generic.List<int> { 1, 2 };
+string outcome = "ok";
+try {
+    foreach (var item in items) {
+        items.RemoveAt(0);
+    }
+} catch (System.InvalidOperationException) {
+    outcome = "invalid";
+}
+Console.WriteLine(outcome);
+"#,
+    );
+    assert_eq!(out, vec!["invalid"]);
+}
+
+#[test]
+fn for_loop_with_multiple_increment_expressions() {
+    let out = run_csharp(
+        r#"
+int sum = 0;
+for (int i = 0, j = 10; i < 3; i++, j--) {
+    sum += i + j;
+}
+Console.WriteLine(sum);
+"#,
+    );
+    assert_eq!(out, vec!["27"]);
+}
+
+#[test]
+fn continue_in_while_loop_skips_remaining_body() {
+    let out = run_csharp(
+        r#"
+int n = 0;
+int sum = 0;
+while (n < 5) {
+    n++;
+    if (n % 2 == 0) continue;
+    sum += n;
+}
+Console.WriteLine(sum);
+"#,
+    );
+    assert_eq!(out, vec!["9"]);
+}
+
+#[test]
 fn ternary_expression() {
     let out = run_csharp(
         r#"

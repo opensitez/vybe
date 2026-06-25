@@ -109,3 +109,33 @@ csharp_case!(
     r#"var date = new System.DateTime(2024, 1, 1, 1, 0, 0); var span = System.TimeSpan.FromMinutes(90); Console.WriteLine((date + span).Hour); Console.WriteLine((date + span).Minute);"#,
     ["2", "30"]
 );
+csharp_case!(
+    datetime_ticks_counts_interval_since_epoch_origin,
+    r#"var epoch = new System.DateTime(1970, 1, 1, 0, 0, 0, System.DateTimeKind.Utc); Console.WriteLine(epoch.Ticks > 0);"#,
+    ["True"]
+);
+csharp_case!(
+    datetime_add_years_crosses_leap_day,
+    r#"var date = new System.DateTime(2024, 2, 29).AddYears(1); Console.WriteLine(date.Month); Console.WriteLine(date.Day);"#,
+    ["2", "28"]
+);
+csharp_case!(
+    datetime_kind_utc_survives_property_read,
+    r#"var instant = new System.DateTime(2024, 6, 1, 0, 0, 0, System.DateTimeKind.Utc); Console.WriteLine(instant.Kind);"#,
+    ["Utc"]
+);
+csharp_case!(
+    timespan_from_days_exposes_total_days_as_double,
+    r#"var span = System.TimeSpan.FromDays(2); Console.WriteLine(span.TotalDays);"#,
+    ["2"]
+);
+csharp_case!(
+    timespan_from_hours_minutes_seconds_constructor,
+    r#"var span = new System.TimeSpan(1, 2, 3); Console.WriteLine(span.TotalSeconds);"#,
+    ["3723"]
+);
+csharp_case!(
+    timespan_to_string_formats_hh_mm_ss_for_positive_duration,
+    r#"Console.WriteLine(System.TimeSpan.FromSeconds(5).ToString());"#,
+    ["00:00:05"]
+);

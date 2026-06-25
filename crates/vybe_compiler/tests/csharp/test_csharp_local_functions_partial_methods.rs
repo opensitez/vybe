@@ -109,3 +109,8 @@ csharp_case!(
     r#"string Describe(object value) { return value is int number ? (number * 2).ToString() : "other"; } Console.WriteLine(Describe(6));"#,
     ["12"]
 );
+csharp_case!(
+    static_local_function_is_callable_without_capturing_outer_state,
+    r#"int Compute() { static int Double(int n) => n * 2; return Double(4); } Console.WriteLine(Compute());"#,
+    ["8"]
+);

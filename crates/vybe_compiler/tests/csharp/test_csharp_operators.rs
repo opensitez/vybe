@@ -144,3 +144,59 @@ Console.WriteLine(-x);
     );
     assert_eq!(out, vec!["-42"]);
 }
+
+#[test]
+fn user_defined_plus_operator_combines_struct_fields() {
+    let out = run_csharp(
+        r#"
+struct Vec2 {
+    public int X;
+    public int Y;
+    public static Vec2 operator +(Vec2 a, Vec2 b) =>
+        new Vec2 { X = a.X + b.X, Y = a.Y + b.Y };
+}
+var sum = new Vec2 { X = 1, Y = 2 } + new Vec2 { X = 3, Y = 4 };
+Console.WriteLine(sum.X);
+Console.WriteLine(sum.Y);
+"#,
+    );
+    assert_eq!(out, vec!["4", "6"]);
+}
+
+#[test]
+fn user_defined_implicit_conversion_coerces_to_target_type() {
+    let out = run_csharp(
+        r#"
+struct Inch {
+    public double Value;
+    public static implicit operator double(Inch i) => i.Value;
+}
+double length = new Inch { Value = 2.5 };
+Console.WriteLine(length);
+"#,
+    );
+    assert_eq!(out, vec!["2.5"]);
+}
+
+#[test]
+fn is_not_pattern_negates_type_test() {
+    let out = run_csharp(
+        r#"
+object value = 7;
+Console.WriteLine(value is not string);
+"#,
+    );
+    assert_eq!(out, vec!["True"]);
+}
+
+#[test]
+fn as_operator_returns_null_for_incompatible_reference_cast() {
+    let out = run_csharp(
+        r#"
+object value = 1;
+var text = value as string;
+Console.WriteLine(text == null);
+"#,
+    );
+    assert_eq!(out, vec!["True"]);
+}

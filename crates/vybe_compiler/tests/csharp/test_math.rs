@@ -26,3 +26,38 @@ fn math_multiple() {
     );
     assert_eq!(out, vec!["9", "42", "12"]);
 }
+
+#[test]
+fn math_ceiling_rounds_positive_fraction_upward() {
+    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Ceiling(2.1));"), "3");
+}
+
+#[test]
+fn math_round_midpoint_to_even_for_half_values() {
+    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Round(2.5));"), "2");
+}
+
+#[test]
+fn math_max_selects_larger_of_two_doubles() {
+    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Max(1.5, 2.5));"), "2.5");
+}
+
+#[test]
+fn math_clamp_restricts_value_to_inclusive_bounds() {
+    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Clamp(10, 0, 5));"), "5");
+}
+
+#[test]
+fn math_div_rem_returns_quotient_and_remainder() {
+    assert_eq!(
+        run_csharp(
+            r#"
+int remainder;
+var quotient = System.Math.DivRem(17, 5, out remainder);
+Console.WriteLine(quotient);
+Console.WriteLine(remainder);
+"#
+        ),
+        &["3", "2"]
+    );
+}
