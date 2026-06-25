@@ -4537,6 +4537,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
     }
 
     expand_explicit_interface_members(&mut members);
+    disambiguate_explicit_property_backing_fields(&mut members);
     if !generic_params.is_empty() {
         inject_csharp_generic_ctor_fields(&mut members, generic_params.len());
         rewrite_generic_ctor_news_in_members(&mut members, &generic_params);
@@ -4619,6 +4620,421 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
     }
 
     members.extend(extras);
+}
+
+/// Explicit C# properties compile to `__get_{canon}` / `__set_{canon}` on the
+/// instance. If a separate backing field is stored under the same canonical key
+/// (`celsius` field + `Celsius` property → both `celsius`), `STRUCT_GET` invokes
+/// the getter instead of reading the field and overflows the stack.
+///
+/// Rename colliding instance fields to `__{canon}` (same convention as
+/// auto-property backing slots) and rewrite bare identifier uses in class bodies.
+fn disambiguate_explicit_property_backing_fields(members: &mut [ClassMember]) {
+    let mut explicit_property_canons = HashSet::new();
+    for member in members.iter() {
+        if let ClassMember::Property {
+            name,
+            is_auto,
+            modifiers,
+            ..
+        } = member
+        {
+            if !*is_auto && !modifiers.is_static {
+                explicit_property_canons.insert(name.to_lowercase());
+            }
+        }
+    }
+    if explicit_property_canons.is_empty() {
+        return;
+    }
+
+    let mut renames: HashMap<String, String> = HashMap::new();
+    for member in members.iter() {
+        if let ClassMember::Field { name, modifiers, .. } = member {
+            if modifiers.is_static {
+                continue;
+            }
+            let canon = name.to_lowercase();
+            if explicit_property_canons.contains(&canon) {
+                renames
+                    .entry(name.clone())
+                    .or_insert_with(|| format!("__{canon}"));
+            }
+        }
+    }
+    if renames.is_empty() {
+        return;
+    }
+
+    for member in members.iter_mut() {
+        if let ClassMember::Field { name, .. } = member {
+            if let Some(new_name) = renames.get(name) {
+                *name = new_name.clone();
+            }
+        }
+    }
+    for member in members.iter_mut() {
+        rewrite_property_backing_field_idents_in_member(member, &renames);
+    }
+}
+
+fn rewrite_property_backing_field_idents_in_member(
+    member: &mut ClassMember,
+    renames: &HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Field { init, array_bounds, .. } => {
+            if let Some(init) = init {
+                rewrite_property_backing_field_idents_in_expr(init, renames);
+            }
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_property_backing_field_idents_in_expr(bound, renames);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_property_backing_field_idents_in_statement(stmt, renames);
+        }
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_property_backing_field_idents_in_expr(arg, renames);
+                }
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_property_backing_field_idents_in_statements(getter, renames);
+            }
+            if let Some(setter) = setter {
+                rewrite_property_backing_field_idents_in_statements(&mut setter.body, renames);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_property_backing_field_idents_in_expr(value, renames);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_property_backing_field_idents_in_statements(
+    body: &mut [Statement],
+    renames: &HashMap<String, String>,
+) {
+    for stmt in body.iter_mut() {
+        rewrite_property_backing_field_idents_in_statement(stmt, renames);
+    }
+}
+
+fn rewrite_property_backing_field_idents_in_statement(
+    stmt: &mut Statement,
+    renames: &HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. } => {
+            rewrite_property_backing_field_idents_in_expr(expr, renames);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_property_backing_field_idents_in_expr(target, renames);
+            rewrite_property_backing_field_idents_in_expr(value, renames);
+        }
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
+            rewrite_property_backing_field_idents_in_expr(expr, renames);
+            rewrite_property_backing_field_idents_in_expr(cause, renames);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_property_backing_field_idents_in_expr(init, renames);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_property_backing_field_idents_in_expr(bound, renames);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_property_backing_field_idents_in_member(member, renames);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_property_backing_field_idents_in_expr(cond, renames);
+            rewrite_property_backing_field_idents_in_statements(then_body, renames);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_property_backing_field_idents_in_expr(elif_cond, renames);
+                rewrite_property_backing_field_idents_in_statements(elif_body, renames);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_property_backing_field_idents_in_statements(else_body, renames);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_property_backing_field_idents_in_statement(init, renames);
+            }
+            if let Some(cond) = cond {
+                rewrite_property_backing_field_idents_in_expr(cond, renames);
+            }
+            if let Some(update) = update {
+                rewrite_property_backing_field_idents_in_expr(update, renames);
+            }
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_property_backing_field_idents_in_expr(iter, renames);
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+            if let Some(else_body) = else_body {
+                rewrite_property_backing_field_idents_in_statements(else_body, renames);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_property_backing_field_idents_in_expr(cond, renames);
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+            if let Some(else_body) = else_body {
+                rewrite_property_backing_field_idents_in_statements(else_body, renames);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+            rewrite_property_backing_field_idents_in_expr(cond, renames);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_property_backing_field_idents_in_expr(expr, renames);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => {
+                            rewrite_property_backing_field_idents_in_expr(expr, renames)
+                        }
+                        CaseCondition::Range { from, to } => {
+                            rewrite_property_backing_field_idents_in_expr(from, renames);
+                            rewrite_property_backing_field_idents_in_expr(to, renames);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_property_backing_field_idents_in_expr(expr, renames);
+                        }
+                    }
+                }
+                rewrite_property_backing_field_idents_in_statements(&mut case.body, renames);
+            }
+            if let Some(default) = default {
+                rewrite_property_backing_field_idents_in_statements(default, renames);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_property_backing_field_idents_in_expr(when_clause, renames);
+                }
+                rewrite_property_backing_field_idents_in_statements(&mut catch.body, renames);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_property_backing_field_idents_in_statements(else_body, renames);
+            }
+            if let Some(finally) = finally {
+                rewrite_property_backing_field_idents_in_statements(finally, renames);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_property_backing_field_idents_in_expr(&mut item.expr, renames);
+            }
+            rewrite_property_backing_field_idents_in_statements(body, renames);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_property_backing_field_idents_in_expr(target, renames);
+            }
+            rewrite_property_backing_field_idents_in_expr(value, renames);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_property_backing_field_idents_in_expr(
+    expr: &mut Expression,
+    renames: &HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(new_name) = renames.get(name) {
+                *name = new_name.clone();
+            }
+        }
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
+            rewrite_property_backing_field_idents_in_expr(left, renames);
+            rewrite_property_backing_field_idents_in_expr(right, renames);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr) => {
+            rewrite_property_backing_field_idents_in_expr(expr, renames);
+        }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(name) => {
+                if let Some(new_name) = renames.get(name) {
+                    *name = new_name.clone();
+                }
+            }
+            PlaceExpr::Member { object, .. } => {
+                rewrite_property_backing_field_idents_in_expr(object, renames);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_property_backing_field_idents_in_expr(object, renames);
+                rewrite_property_backing_field_idents_in_expr(index, renames);
+            }
+            PlaceExpr::Deref(expr) => {
+                rewrite_property_backing_field_idents_in_expr(expr, renames);
+            }
+        },
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_property_backing_field_idents_in_expr(cond, renames);
+            rewrite_property_backing_field_idents_in_expr(then, renames);
+            rewrite_property_backing_field_idents_in_expr(else_, renames);
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_property_backing_field_idents_in_expr(object, renames);
+            if let Some(new_name) = renames.get(field) {
+                *field = new_name.clone();
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_property_backing_field_idents_in_expr(object, renames);
+            rewrite_property_backing_field_idents_in_expr(index, renames);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_property_backing_field_idents_in_expr(callee, renames);
+            for arg in args.iter_mut() {
+                rewrite_property_backing_field_idents_in_expr(&mut arg.value, renames);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_property_backing_field_idents_in_expr(class, renames);
+            for arg in args {
+                rewrite_property_backing_field_idents_in_expr(&mut arg.value, renames);
+            }
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_property_backing_field_idents_in_expr(target, renames);
+            rewrite_property_backing_field_idents_in_expr(value, renames);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_property_backing_field_idents_in_expr(expr, renames),
+            LambdaBody::Block(body) => {
+                rewrite_property_backing_field_idents_in_statements(body, renames)
+            }
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_property_backing_field_idents_in_expr(&mut item.value, renames);
+                if let Some(key) = &mut item.key {
+                    rewrite_property_backing_field_idents_in_expr(key, renames);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_property_backing_field_idents_in_expr(item, renames);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_property_backing_field_idents_in_expr(key, renames);
+                        rewrite_property_backing_field_idents_in_expr(value, renames);
+                    }
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_property_backing_field_idents_in_expr(expr, renames);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_property_backing_field_idents_in_statement(value, renames);
+                    }
+                    ObjectProperty::Shorthand(name) => {
+                        if let Some(new_name) = renames.get(name) {
+                            *name = new_name.clone();
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            rewrite_property_backing_field_idents_in_expr(element, renames);
+            for generator in generators {
+                rewrite_property_backing_field_idents_in_expr(&mut generator.target, renames);
+                rewrite_property_backing_field_idents_in_expr(&mut generator.iter, renames);
+                for condition in &mut generator.conditions {
+                    rewrite_property_backing_field_idents_in_expr(condition, renames);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn csharp_generic_ctor_field_name(index: usize) -> String {
@@ -6450,6 +6866,8 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             },
         ))));
     }
+
+    disambiguate_explicit_property_backing_fields(&mut members);
 
     Ok(StmtKind::StructDecl {
         name,
