@@ -888,6 +888,83 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
     }
 }
 
+pub(crate) fn body_contains_this(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| stmt_contains_this(s))
+}
+
+fn stmt_contains_this(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => expr_contains_this(e),
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| d.init.as_ref().is_some_and(expr_contains_this)),
+        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => expr_contains_this(value),
+        StmtKind::If { cond, then_body, elifs, else_body, .. } => {
+            expr_contains_this(cond) || body_contains_this(then_body)
+                || elifs.iter().any(|(c, b)| expr_contains_this(c) || body_contains_this(b))
+                || else_body.as_ref().is_some_and(|b| body_contains_this(b))
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            expr_contains_this(cond) || body_contains_this(body)
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            init.as_ref().is_some_and(|s| stmt_contains_this(s))
+                || cond.as_ref().is_some_and(expr_contains_this)
+                || update.as_ref().is_some_and(expr_contains_this)
+                || body_contains_this(body)
+        }
+        StmtKind::ForIn { iter, body, .. } => expr_contains_this(iter) || body_contains_this(body),
+        StmtKind::Block(stmts) => body_contains_this(stmts),
+        StmtKind::Try { body, catches, finally, .. } => {
+            body_contains_this(body)
+                || catches.iter().any(|c| body_contains_this(&c.body))
+                || finally.as_ref().is_some_and(|b| body_contains_this(b))
+        }
+        StmtKind::Switch { expr, cases, default, .. } => {
+            expr_contains_this(expr)
+                || cases.iter().any(|c| body_contains_this(&c.body))
+                || default.as_ref().is_some_and(|b| body_contains_this(b))
+        }
+        StmtKind::Labeled { body, .. } => stmt_contains_this(body),
+        _ => false,
+    }
+}
+
+pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::This => true,
+        ExprKind::Lambda { body, .. } => {
+            match body {
+                LambdaBody::Block(stmts) => body_contains_this(stmts),
+                LambdaBody::Expr(e) => expr_contains_this(e),
+            }
+        }
+        ExprKind::FunctionExpr(_) => false,
+        ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr) | ExprKind::Delete(expr) => expr_contains_this(expr),
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right } => {
+            expr_contains_this(left) || expr_contains_this(right)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_contains_this(cond) || expr_contains_this(then) || expr_contains_this(else_)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            expr_contains_this(callee) || args.iter().any(|a| expr_contains_this(&a.value))
+        }
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => expr_contains_this(object),
+        ExprKind::Array(elems) => elems.iter().any(|e| expr_contains_this(&e.value)),
+        ExprKind::Object(props) => props.iter().any(|p| match p {
+            ObjectProperty::KeyValue { value, .. } => expr_contains_this(value),
+            _ => false,
+        }),
+        ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
+            crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) => expr_contains_this(e),
+            _ => false,
+        }),
+        ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_this),
+        _ => false,
+    }
+}
+
 pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
         ExprKind::Lambda { params, body, .. } => {

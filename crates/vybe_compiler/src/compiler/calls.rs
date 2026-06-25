@@ -10628,6 +10628,26 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
         }
+        // Snapshot __js_this as a local BEFORE shared env creation so inner
+        // arrows can capture it via the shared env / upvalue chain.
+        if self.is_js_profile() && self.scopes.len() > 1 {
+            let parent_has_this = self.scopes.len() > 2
+                && self.scopes[self.scopes.len() - 2].resolve("__js_this").is_some();
+            if !parent_has_this {
+                let body_has_this = match body {
+                    LambdaBody::Block(stmts) => crate::compiler::body_contains_this(stmts),
+                    LambdaBody::Expr(expr) => crate::compiler::expr_contains_this(expr),
+                };
+                if body_has_this {
+                    let this_idx = self.str_const("__js_this");
+                    self.emit_u16(Op::GLOBAL_GET, this_idx);
+                    let this_local = self.define_local("__js_this");
+                    self.emit_u16(Op::LOCAL_SET, this_local);
+                    self.current_closure_captured_locals.insert("__js_this".to_string());
+                }
+            }
+        }
+
         if !self.current_closure_captured_locals.is_empty() {
             let mut captured_names: Vec<String> = self.current_closure_captured_locals
                 .iter()
@@ -10645,6 +10665,7 @@ impl Compiler {
             self.shared_env_slot = Some(env_slot);
             self.shared_env_names = captured_names.clone();
             let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            local_decls.insert("__js_this".to_string());
             if let LambdaBody::Block(stmts) = body {
                 crate::compiler::collect_declared_names(stmts, &mut local_decls);
             }
