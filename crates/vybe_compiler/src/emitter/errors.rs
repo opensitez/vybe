@@ -96,8 +96,11 @@ pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
 }
 
 /// Emit the end of the try body (normal exit path).
+/// Must use TRY_END (not END) to pop the exception handler from the
+/// VM's handler stack. Otherwise the handler stays active and catches
+/// exceptions from code after the try block.
 pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::END, line);
+    chunk.emit_op(Op::TRY_END, line);
 }
 
 /// Patch the catch handler offset after the handler code has been emitted.

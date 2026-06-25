@@ -4383,7 +4383,7 @@ impl Compiler {
         }
         if self.current_chunk_is_js_async() {
             for _ in 0..self.active_async_try_depth {
-                self.emit(Op::END);
+                self.emit(Op::TRY_END);
             }
         }
         self.emit_return();
@@ -4407,6 +4407,9 @@ impl Compiler {
                 .len()
                 .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
+                for _ in 0..nested_finally_count {
+                    self.emit(Op::TRY_END);
+                }
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
                     self.active_finally_blocks = original[..idx].to_vec();
@@ -4440,6 +4443,9 @@ impl Compiler {
                 .len()
                 .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
+                for _ in 0..nested_finally_count {
+                    self.emit(Op::TRY_END);
+                }
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
                     self.active_finally_blocks = original[..idx].to_vec();
@@ -7923,30 +7929,30 @@ impl Compiler {
         let value_slot = self.define_local("__py_truth_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
+        // Python: empty str/list/dict/set are falsy; numbers/bool/None use dyn_to_bool.
+        // Reuse collections::emit_len (ecma:array.length / ecma:map.size / string length).
         let typeof_idx = self.import("ecma:value", "typeof");
-        let array_len_idx = self.import("ecma:array", "length");
-        let has_own_idx = self.import("ecma:object", "hasOwn");
+        let is_object_slot = self.define_local("__py_truth_is_object");
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("object")));
         fn_call!(self, "wasm:js-string", "equals", 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, is_object_slot);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_host_call(typeof_idx, 1);
+        self.emit_const(Value::String(Arc::from("string")));
+        fn_call!(self, "wasm:js-string", "equals", 2);
+        self.emit_u16(Op::LOCAL_GET, is_object_slot);
+        self.chunk().emit_op(Op::I32_OR, line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_host_call(array_len_idx, 1);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
-        inst!(self, core_wasm::i32_const, 1);
-        self.chunk().emit_else(line);
+        crate::emitter::collections::emit_len(&mut self.chunks, self.current, line);
+        inst!(self, core_wasm::i32_const, 0);
+        self.chunk().emit_op(Op::I32_NE, line);
 
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_const(Value::String(Arc::from("__proto__")));
-        self.emit_host_call(has_own_idx, 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-
-        self.chunk().emit_end(line);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -8560,6 +8566,7 @@ impl Compiler {
                     finally_depth: self.active_finally_blocks.len(),
                 });
                 self.compile_expr(cond)?;
+                self.emit_condition_truthiness_from_stack();
                 let line = self.line;
                 common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
                 for s in body {
@@ -8610,6 +8617,7 @@ impl Compiler {
                 let break_depth = self.label_depth - 1; // the block
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
+                    self.emit_condition_truthiness_from_stack();
                 } else {
                     inst!(self, core_wasm::bool_const, true);
                 }
@@ -9000,6 +9008,7 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 self.compile_expr(cond)?;
+                self.emit_condition_truthiness_from_stack();
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
@@ -9268,7 +9277,6 @@ impl Compiler {
                 self.label_depth += 1;
                 let catch_jump =
                     common::errors::emit_try_start(&mut self.chunks[self.current], line);
-                self.label_depth += 1;
                 if let Some(fin) = finally.clone() {
                     self.active_finally_blocks
                         .push(FinallyAction::Statements(fin));
@@ -9277,7 +9285,6 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
-                self.label_depth -= 1;
                 // Python else: runs if no exception
                 if let Some(else_stmts) = else_body {
                     for s in else_stmts {
@@ -15418,7 +15425,11 @@ impl Compiler {
             }
             "dyn_to_bool" => {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                if self.is_python_profile() {
+                    self.emit_condition_truthiness_from_stack();
+                } else {
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                }
             }
             "dyn_not" => {
                 let line = self.line;
@@ -15818,7 +15829,11 @@ impl Compiler {
                 }
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    if self.is_python_profile() {
+                        self.emit_condition_truthiness_from_stack();
+                    } else {
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    }
                 }
             }
             "ref_is_null" => {
