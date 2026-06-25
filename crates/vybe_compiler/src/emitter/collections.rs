@@ -241,6 +241,58 @@ pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:object", "values", 1, line);
 }
 
+/// Materialize any iterable into an array for JS for-of semantics.
+/// Stack: [iterable] → [array].
+/// Handles Array (pass-through), Map (entries), Set (values), String (chars),
+/// and custom iterables with [Symbol.iterator] / next() protocol — all via
+/// the `ecma:object.iterForOf` host function.
+pub fn emit_iter_for_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "ecma:object", "iterForOf", 1, line);
+}
+
+/// Materialize any value into an array for spread/destructuring.
+/// Stack: [value] → [array].
+/// Generators (Continuations) use stack-switching drain (emit_next/resume).
+/// Everything else goes through iterForOf.
+pub fn emit_spread_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_gen, 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // Value is already a generator — drain via stack-switching
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    crate::emitter::generators::emit_drain_into_array(chunks, current, line);
+
+    chunks[current].emit_else(line);
+
+    // Materialize via iterForOf (Array/Map/Set/String/custom iterables)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_import_call(chunks, current, "ecma:object", "iterForOf", 1, line);
+
+    // iterForOf may return a Continuation when the [Symbol.iterator]
+    // method is a generator function — the host can't resume it.
+    // Check the result and drain via stack-switching if needed.
+    let result_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    let is_gen2 = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_gen2, 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    crate::emitter::generators::emit_drain_into_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+}
+
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →
 /// [array_of_pairs]. Used for `foreach ($m as $k => $v)` in PHP and
 /// equivalents in other languages.

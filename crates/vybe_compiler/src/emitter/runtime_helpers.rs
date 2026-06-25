@@ -1312,7 +1312,9 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(string_step);
 
-    // method = getMethodForCall(v, "iterator")
+    // method = getMethodForCall(v, "iterator") — walks prototype chain and
+    // binds the receiver for HostFunctions. For bytecode functions, the
+    // caller sets __js_this directly.
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_string_const("iterator", 0);
     crate::emitter::collections::emit_import_call_into(
@@ -1345,7 +1347,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0); // method already set → skip
+    c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::STRUCT_GET, iter_alt_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
@@ -1356,7 +1358,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0); // method already set → skip
+    c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::STRUCT_GET, async_iter_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);

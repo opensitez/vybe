@@ -626,18 +626,22 @@ impl VM {
                 }
                 _ if op == Op::LOCAL_SET => {
                     let slot = self.read_u16() as usize;
-                    let val = self.pop();
+                    let base = self.frame().base;
+                    let ci = self.frame().chunk_index;
+                    let local_floor = base + self.chunks[ci].local_count as usize;
+                    let idx = base + slot;
+                    let top = self.stack.len() - 1;
+                    let val = self.stack[top].clone();
+                    if idx >= self.stack.len() {
+                        return Err(VMError::new("trap: local index out of bounds"));
+                    }
+                    self.stack[idx] = val.clone();
+                    // Shrink operand stack by 1 but never below the locals region
+                    self.stack.truncate(top.max(local_floor));
                     if let Some(rec) = self.type_recorder.as_mut() {
                         let chunk_idx = self.frames.last().unwrap().chunk_index;
                         rec.record(chunk_idx, slot, &val);
                     }
-                    let base = self.frame().base;
-                    let idx = base + slot;
-                    let dst = self
-                        .stack
-                        .get_mut(idx)
-                        .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
-                    *dst = val;
                 }
                 _ if op == Op::LOCAL_TEE => {
                     let slot = self.read_u16() as usize;

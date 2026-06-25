@@ -120,4 +120,48 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // ── Convenience extensions under wasi:random/random ───────────────
+    vm.register_host_fn(
+        "wasi:random/random",
+        "random",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_f64())),
+    );
+    vm.register_host_fn(
+        "wasi:random/random",
+        "randomInt",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let min = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
+            let max = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(min);
+            if min >= max {
+                return Value::F64(min as f64);
+            }
+            let range = (max - min + 1) as u64;
+            let r = (next_u64() % range) as i64 + min;
+            Value::F64(r as f64)
+        }),
+    );
+    vm.register_host_fn(
+        "wasi:random/random",
+        "uuid",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            let a = next_u64();
+            let b = next_u64();
+            let bytes: [u8; 16] = {
+                let mut buf = [0u8; 16];
+                buf[..8].copy_from_slice(&a.to_le_bytes());
+                buf[8..].copy_from_slice(&b.to_le_bytes());
+                buf[6] = (buf[6] & 0x0f) | 0x40; // version 4
+                buf[8] = (buf[8] & 0x3f) | 0x80; // variant 1
+                buf
+            };
+            let s = format!(
+                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                bytes[0], bytes[1], bytes[2], bytes[3],
+                bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11],
+                bytes[12], bytes[13], bytes[14], bytes[15],
+            );
+            Value::String(Arc::from(s.as_str()))
+        }),
+    );
 }

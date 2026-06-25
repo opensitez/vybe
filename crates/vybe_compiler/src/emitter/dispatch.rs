@@ -215,8 +215,8 @@ pub fn emit_common(
         "str_last_index_of" => strings::emit_last_index_of(&mut chunks[current], line),
         "str_concat" => strings::emit_str_concat(&mut chunks[current], line),
         "str_from_char_code" => {
-            let idx = chunks[current].add_import("wasm:js-string", "fromCharCode");
-            chunks[current].emit_call(idx, 1, line);
+            let idx = chunks[current].add_import("ecma:string", "fromCharCode");
+            chunks[current].emit_call(idx, argc as u8, line);
         }
         "str_char_code_at" => {
             let idx = chunks[current].add_import("wasm:js-string", "charCodeAt");

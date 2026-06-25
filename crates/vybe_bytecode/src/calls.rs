@@ -412,7 +412,7 @@ impl VM {
         // parameters. WASM core dispatch is fixed-arity; padding with
         // Undefined is the standard JS-engine convention used by every
         // browser-grade JS-on-WASM implementation.
-        if argc > arity && arity > 0 {
+        if argc > arity {
             for _ in 0..(argc - arity) {
                 self.pop();
             }

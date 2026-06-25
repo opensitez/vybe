@@ -293,6 +293,32 @@ fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Va
     None
 }
 
+fn call_iterator_if_generator(
+    ctx: &mut HostContext,
+    receiver: &Arc<Mutex<Object>>,
+    method_name: &str,
+) -> Option<Value> {
+    let method = lookup_protocol_member(receiver, method_name)?;
+    if matches!(method, Value::Null | Value::Undefined) {
+        return None;
+    }
+    let iterator = crate::ecma::function::invoke_bound_callback_if_needed(ctx, &method, &[])
+        .unwrap_or_else(|| {
+            invoke_with_explicit_this(ctx, &method, Value::Object(receiver.clone()), &[])
+        });
+    let iterator = match await_or_reject(iterator) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    if let Value::Object(ref obj) = iterator {
+        let o = obj.lock().unwrap();
+        if matches!(o.kind, ObjectKind::Continuation(_)) {
+            return Some(iterator.clone());
+        }
+    }
+    None
+}
+
 pub(crate) fn collect_protocol_iterable(
     ctx: &mut HostContext,
     receiver: &Arc<Mutex<Object>>,
@@ -1628,8 +1654,13 @@ fn register_enumeration(vm: &mut VM) {
                         let values: Vec<Value> = v
                             .iter()
                             .enumerate()
-                            .filter(|(index, _)| !is_array_hole(&o, *index as i32))
-                            .map(|(_, value)| value.clone())
+                            .map(|(index, value)| {
+                                if is_array_hole(&o, index as i32) {
+                                    Value::Undefined
+                                } else {
+                                    value.clone()
+                                }
+                            })
                             .collect();
                         return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
                     }
@@ -1647,9 +1678,24 @@ fn register_enumeration(vm: &mut VM) {
                         let vals: Vec<Value> = s.iter().cloned().collect();
                         return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
                     }
+                    ObjectKind::TypedArray(ta) => {
+                        let len = crate::ecma::typedarray::ta_live_length(ta);
+                        let vals: Vec<Value> = (0..len)
+                            .map(|i| crate::ecma::typedarray::read_element(ta, i))
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                    }
                     _ => {}
                 }
                 drop(o);
+                // Try iterator protocol. If the iterator() call returns a
+                // generator Continuation, pass it through so the bytecode
+                // caller can drain via stack-switching (host can't resume).
+                if let Some(cont) = call_iterator_if_generator(ctx, &obj, "asyncIterator")
+                    .or_else(|| call_iterator_if_generator(ctx, &obj, "iterator"))
+                {
+                    return cont;
+                }
                 if let Some(values) = collect_protocol_iterable(ctx, &obj, "asyncIterator") {
                     return values;
                 }
@@ -1657,6 +1703,16 @@ fn register_enumeration(vm: &mut VM) {
                     return values;
                 }
                 let o = obj.lock().unwrap();
+                if let Some(len_val) = o.properties.get("length") {
+                    let len = len_val.as_f64().max(0.0) as usize;
+                    let mut values = Vec::with_capacity(len);
+                    for i in 0..len {
+                        values.push(
+                            o.properties.get(&i.to_string()).cloned().unwrap_or(Value::Undefined),
+                        );
+                    }
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                }
                 let values: Vec<Value> = ordinary_ordered_keys(&o)
                     .into_iter()
                     .filter_map(|k| o.properties.get(&k).cloned())

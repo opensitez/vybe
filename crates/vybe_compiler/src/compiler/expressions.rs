@@ -3084,24 +3084,9 @@ impl Compiler {
                         if name == "Set" && args.len() <= 1 {
                             if let Some(arg) = args.first() {
                                 self.compile_expr(&arg.value)?;
-                                let v_slot = self.define_local("__js_set_iterable");
-                                self.emit_u16(Op::LOCAL_SET, v_slot);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                let is_gen_idx = self.import("ecma:value", "isGenerator");
-                                self.emit_host_call(is_gen_idx, 1);
-                                let line = self.line;
-                                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                                self.chunk().emit_if_value(line);
-                                let drain_key = self.str_const("__vybe_drain_generator");
-                                self.emit_u16(Op::GLOBAL_GET, drain_key);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
-                                self.chunk().emit_else(line);
-                                let iter_drain_key = self.str_const("__vybe_iter_drain");
-                                self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
-                                self.chunk().emit_end(line);
+                                common::collections::emit_spread_iterable(
+                                    &mut self.chunks, self.current, self.line,
+                                );
                             } else {
                                 common::collections::emit_array_new(
                                     &mut self.chunks,
@@ -3688,33 +3673,9 @@ impl Compiler {
                                     );
                                     continue;
                                 }
-                                if self.is_js_profile() {
-                                    let v_slot = self.define_local("__arr_spread_v");
-                                    self.emit_u16(Op::LOCAL_SET, v_slot);
-                                    self.emit_u16(Op::LOCAL_GET, v_slot);
-                                    let is_gen_idx = self.import("ecma:value", "isGenerator");
-                                    self.emit_host_call(is_gen_idx, 1);
-                                    let line = self.line;
-                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                                    self.chunk().emit_if_value(line);
-                                    let drain_key = self.str_const("__vybe_drain_generator");
-                                    self.emit_u16(Op::GLOBAL_GET, drain_key);
-                                    self.emit_u16(Op::LOCAL_GET, v_slot);
-                                    self.emit_u8(Op::CALL_REF, 1);
-                                    self.chunk().emit_else(line);
-                                    // Non-generator branch: route through
-                                    // `__vybe_iter_drain` JS polyfill which
-                                    // calls `v.iterator()` and drains the
-                                    // protocol with `__js_this` correctly
-                                    // bound. For Array / built-ins it
-                                    // returns the value unchanged so concat
-                                    // sees the natural shape.
-                                    let iter_drain_key = self.str_const("__vybe_iter_drain");
-                                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                                    self.emit_u16(Op::LOCAL_GET, v_slot);
-                                    self.emit_u8(Op::CALL_REF, 1);
-                                    self.chunk().emit_end(line);
-                                }
+                                common::collections::emit_spread_iterable(
+                                    &mut self.chunks, self.current, self.line,
+                                );
                                 common::collections::emit_concat(
                                     &mut self.chunks,
                                     self.current,
@@ -4868,23 +4829,9 @@ impl Compiler {
                 // (emit_next) to drive their iterator protocol, which a
                 // host fn can't do — route them through the
                 // `__stdlib_drain_generator` bytecode helper.
-                let inner_slot = self.define_local("__spread_iter");
-                self.emit_u16(Op::LOCAL_SET, inner_slot);
-                self.emit_u16(Op::LOCAL_GET, inner_slot);
-                let is_gen_idx = self.import("ecma:value", "isGenerator");
-                self.emit_host_call(is_gen_idx, 1);
-                let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                let drain_key = self.str_const("__vybe_drain_generator");
-                self.emit_u16(Op::GLOBAL_GET, drain_key);
-                self.emit_u16(Op::LOCAL_GET, inner_slot);
-                self.emit_u8(Op::CALL_REF, 1);
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, inner_slot);
-                let idx = self.import("ecma:object", "iterForOf");
-                self.emit_host_call(idx, 1);
-                self.chunk().emit_end(line);
+                common::collections::emit_spread_iterable(
+                    &mut self.chunks, self.current, self.line,
+                );
             }
 
             // ── Await ───────────────────────────────────────────────────
@@ -5000,18 +4947,9 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
-                if self.is_js_profile() {
-                    let iter_drain_key = self.str_const("__vybe_iter_drain");
-                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                    self.emit_u16(Op::LOCAL_GET, gen_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
-                } else {
-                    common::collections::emit_iter_values(
-                        &mut self.chunks,
-                        self.current,
-                        self.line,
-                    );
-                }
+                common::collections::emit_iter_for_of(
+                    &mut self.chunks, self.current, self.line,
+                );
                 let iter_slot = self.define_local("__yield_star_iter");
                 let idx_slot = self.define_local("__yield_star_idx");
                 let len_slot = self.define_local("__yield_star_len");

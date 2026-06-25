@@ -188,7 +188,10 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     let canon = canonical_exception_name(exc_name);
     let original = exc_name.trim();
 
-    // [obj, obj, msg] → [obj, msg_val] via struct_set "message"
+    // Coerce message to string per ECMA-262 §20.5.1.1 step 3
+    let str_idx = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(str_idx, 1, line);
+    // [obj, obj, msg_string] → [obj, msg_string] via struct_set "message"
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
     chunk.emit_op_u16(Op::STRUCT_SET, m_key, line);
     // [obj, msg_val] → [obj]

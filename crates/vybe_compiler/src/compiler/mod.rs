@@ -3662,8 +3662,11 @@ impl Compiler {
         inst!(self, core_wasm::bool_const, false);
         self.emit_u16(Op::LOCAL_SET, did_break_slot);
 
-        // Get iterator method
+        // Get iterator method via STRUCT_GET — the TypeRegistry resolves
+        // methods registered by common::classes::register_type, including
+        // "iterator" (the walker-normalized [Symbol.iterator]).
         self.emit_u16(Op::LOCAL_GET, iter_slot);
+        let iterator_key = self.str_const("iterator");
         self.emit_u16(Op::STRUCT_GET, iterator_key);
         let iter_fn_slot = self.define_local("__cit_iter_fn");
         self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
@@ -3680,8 +3683,9 @@ impl Compiler {
         let (loop_patch, _) = self.chunk().emit_loop_s(line);
         self.label_depth += 2;
 
-        // next_method = it.next
+        // next_method = it.next via STRUCT_GET
         self.emit_u16(Op::LOCAL_GET, it_slot);
+        let next_key_c = self.str_const("next");
         self.emit_u16(Op::STRUCT_GET, next_key_c);
         self.emit_u16(Op::LOCAL_SET, next_method_slot);
 
@@ -8829,11 +8833,9 @@ impl Compiler {
                         None
                     };
 
-                    // Gate 2: custom iterable with user-defined [Symbol.iterator] — lazy
-                    // per-iteration loop so infinite iterables work with break. Only fires
-                    // when the `iterator` property is a BYTECODE function (REF_IS_FUNC).
-                    // Built-in Map/Set iterators store a HostFunction there and fall through
-                    // to iter_drain below. Exits done_block (BR 1) after completing the loop.
+                    // Gate 2: custom iterable with bytecode [Symbol.iterator].
+                    // Uses lazy next() loop so break/return() work on infinite
+                    // iterators. Only for for-of (not spread/destructuring).
                     if self.is_js_profile()
                         && *of
                         && key.is_none()
@@ -8843,44 +8845,37 @@ impl Compiler {
                         let custom_iter_gate = self.chunk().emit_block(line);
                         self.label_depth += 1;
 
-                        // Only fire for user-defined bytecode iterators, not host-backed ones
-                        // (Map/Set store HostFunction objects for "iterator"; REF_IS_FUNC is false
-                        // for those). Arrays/Strings also fall through since they use host paths.
-                        // Symbol-keyed properties are stored as "Symbol(<desc>)" strings by
-                        // ecma:array.set, so look up "Symbol(iterator)" not plain "iterator".
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
-                        inst!(self, recipes::is_func);
+                        self.emit(Op::REF_IS_FUNC);
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_not(self.chunk(), line);
                         };
-                        self.chunk().emit_br_if(0, line); // not a bytecode fn → fall to iter_drain
+                        self.chunk().emit_br_if(0, line);
 
-                        // Custom iterable: lazy next() loop (supports break on infinite iterators).
                         self.compile_for_of_custom_iterator_lazy(
                             iter_slot,
                             &var.clone(),
                             body,
                             else_body.as_deref(),
                         )?;
-                        // Loop finished — skip the iter_drain path entirely.
-                        self.chunk().emit_br(1, line); // exit done_block
+                        self.chunk().emit_br(1, line);
 
                         self.chunk().emit_end(line);
                         self.chunk().patch_block(custom_iter_gate);
                         self.label_depth -= 1;
                     }
 
-                    // JS profile: route the iter through __vybe_iter_drain for remaining cases
-                    // (Map, Set, generators via host, etc.). Arrays return as-is (fast path in
-                    // iter_drain). Custom iterables were handled above. Only for `for ... of`.
-                    if self.is_js_profile() && *of && key.is_none() {
-                        let drain_key = self.str_const("__vybe_iter_drain");
-                        self.emit_u16(Op::GLOBAL_GET, drain_key);
+                    // Materialize iterable → array via common emitter.
+                    // All languages use iterForOf which handles Array, Map,
+                    // Set, String, and custom iterables uniformly.
+                    if *of && key.is_none() {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        common::collections::emit_iter_for_of(
+                            &mut self.chunks, self.current, self.line,
+                        );
                         self.emit_u16(Op::LOCAL_SET, iter_slot);
                     }
 
@@ -12068,27 +12063,9 @@ impl Compiler {
                 // helper into a real Array first. ARRAY_GET on a
                 // Continuation returns undefined otherwise.
                 if self.is_js_profile() {
-                    let raw_slot = self.define_local("__destruct_raw");
-                    self.emit_u16(Op::LOCAL_SET, raw_slot);
-                    self.emit_u16(Op::LOCAL_GET, raw_slot);
-                    let is_gen_idx = self.import("ecma:value", "isGenerator");
-                    self.emit_host_call(is_gen_idx, 1);
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                    self.chunk().emit_if_value(line);
-                    let drain_key = self.str_const("__vybe_drain_generator");
-                    self.emit_u16(Op::GLOBAL_GET, drain_key);
-                    self.emit_u16(Op::LOCAL_GET, raw_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
-                    self.chunk().emit_else(line);
-                    // Non-generator: route through iter_drain so custom iterables
-                    // (objects with [Symbol.iterator]) work. Arrays pass through
-                    // unchanged; plain arrays return as-is from iter_drain.
-                    let iter_drain_key = self.str_const("__vybe_iter_drain");
-                    self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                    self.emit_u16(Op::LOCAL_GET, raw_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
-                    self.chunk().emit_end(line);
+                    common::collections::emit_spread_iterable(
+                        &mut self.chunks, self.current, self.line,
+                    );
                 }
                 let arr_slot = self.define_local("__destruct_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
@@ -15345,24 +15322,9 @@ impl Compiler {
                                 && (func == "from" || func == "asyncFrom")));
                     if drain_first_arg && !args.is_empty() {
                         self.compile_expr(args[0])?;
-                        let v_slot = self.define_local("__hc_iter_v");
-                        self.emit_u16(Op::LOCAL_SET, v_slot);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        let is_gen_idx = self.import("ecma:value", "isGenerator");
-                        self.emit_host_call(is_gen_idx, 1);
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        self.chunk().emit_if_value(line);
-                        let drain_key = self.str_const("__vybe_drain_generator");
-                        self.emit_u16(Op::GLOBAL_GET, drain_key);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
-                        self.chunk().emit_else(line);
-                        let iter_drain_key = self.str_const("__vybe_iter_drain");
-                        self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
-                        self.emit_u16(Op::LOCAL_GET, v_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
-                        self.chunk().emit_end(line);
+                        common::collections::emit_spread_iterable(
+                            &mut self.chunks, self.current, self.line,
+                        );
                         for a in args.iter().skip(1) {
                             self.compile_expr(a)?;
                         }
@@ -16443,7 +16405,8 @@ impl Compiler {
         self.emit_const(Value::I32(1));
         self.emit(Op::I32_ADD);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.chunk().emit_br(1, line);
+        // depth 0=inner IF, depth 1=back_loop (LOOP→repeats), depth 2=back_block (BLOCK→exits)
+        self.chunk().emit_br(2, line);
         self.chunk().emit_end(line);
 
         self.emit_u16(Op::LOCAL_GET, index_slot);
@@ -16487,7 +16450,8 @@ impl Compiler {
         self.emit_const(Value::I32(1));
         self.emit(Op::I32_ADD);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.chunk().emit_br(1, line);
+        // depth 0=inner IF, depth 1=forward_loop (LOOP→repeats), depth 2=forward_block (BLOCK→exits)
+        self.chunk().emit_br(2, line);
         self.chunk().emit_end(line);
 
         self.emit_u16(Op::LOCAL_GET, index_slot);
