@@ -23,17 +23,13 @@ impl VM {
                 break;
             }
 
-            // 1. Drain all microtasks
-            let microtasks: Vec<Task> = {
-                let mut el = self.event_loop.borrow_mut();
-                let mut tasks = Vec::new();
-                while let Some(task) = el.next_microtask() {
-                    tasks.push(task);
-                }
-                tasks
-            };
-
-            for task in microtasks {
+            // 1. Drain all microtasks — loop until none remain.
+            // Microtask callbacks can schedule new microtasks (e.g.
+            // .then() → .finally()), so drain iteratively per the
+            // HTML spec microtask checkpoint algorithm.
+            loop {
+                let task = self.event_loop.borrow_mut().next_microtask();
+                let Some(task) = task else { break };
                 match task {
                     Task::Microtask { callback, value } => {
                         self.invoke(&callback, &[value])?;

@@ -2019,6 +2019,13 @@ fn dispatch_set(
                 Some(Value::Object(rhs)) => rhs.clone(),
                 _ => return Value::Bool(false),
             };
+            if Arc::ptr_eq(&obj, &rhs) {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(lhs) = &so.kind {
+                    return Value::Bool(lhs.iter().all(|value| lhs.contains(value)));
+                }
+                return Value::Bool(false);
+            }
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
@@ -2031,6 +2038,13 @@ fn dispatch_set(
                 Some(Value::Object(rhs)) => rhs.clone(),
                 _ => return Value::Bool(false),
             };
+            if Arc::ptr_eq(&obj, &rhs) {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(lhs) = &so.kind {
+                    return Value::Bool(lhs.iter().all(|value| lhs.contains(value)));
+                }
+                return Value::Bool(false);
+            }
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
@@ -2043,6 +2057,13 @@ fn dispatch_set(
                 Some(Value::Object(rhs)) => rhs.clone(),
                 _ => return Value::Bool(false),
             };
+            if Arc::ptr_eq(&obj, &rhs) {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(lhs) = &so.kind {
+                    return Value::Bool(!lhs.iter().any(|value| lhs.contains(value)));
+                }
+                return Value::Bool(false);
+            }
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {

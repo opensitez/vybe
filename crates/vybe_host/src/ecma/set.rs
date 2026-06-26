@@ -107,6 +107,26 @@ fn is_set(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
     None
 }
 
+fn with_two_sets<R>(
+    a: &Arc<Mutex<Object>>,
+    b: &Arc<Mutex<Object>>,
+    f: impl FnOnce(&indexmap::IndexSet<Value>, &indexmap::IndexSet<Value>) -> R,
+) -> Option<R> {
+    if Arc::ptr_eq(a, b) {
+        let guard = a.lock().unwrap();
+        if let ObjectKind::Set(ref s) = guard.kind {
+            return Some(f(s, s));
+        }
+        return None;
+    }
+    let ag = a.lock().unwrap();
+    let bg = b.lock().unwrap();
+    match (&ag.kind, &bg.kind) {
+        (ObjectKind::Set(avs), ObjectKind::Set(bvs)) => Some(f(avs, bvs)),
+        _ => None,
+    }
+}
+
 fn sync_set_size(obj: &mut Object) {
     if let ObjectKind::Set(ref s) = obj.kind {
         let n = s.len() as i32;
@@ -440,10 +460,9 @@ pub fn register(vm: &mut VM) {
         "isSubsetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let alock = a.lock().unwrap();
-                let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
-                    let is_sub = avs.iter().all(|v| bvs.contains(v));
+                if let Some(is_sub) =
+                    with_two_sets(&a, &b, |avs, bvs| avs.iter().all(|v| bvs.contains(v)))
+                {
                     return Value::I32(if is_sub { 1 } else { 0 });
                 }
             }
@@ -456,10 +475,9 @@ pub fn register(vm: &mut VM) {
         "isSupersetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let alock = a.lock().unwrap();
-                let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
-                    let is_super = bvs.iter().all(|v| avs.contains(v));
+                if let Some(is_super) =
+                    with_two_sets(&a, &b, |avs, bvs| bvs.iter().all(|v| avs.contains(v)))
+                {
                     return Value::I32(if is_super { 1 } else { 0 });
                 }
             }
@@ -472,10 +490,9 @@ pub fn register(vm: &mut VM) {
         "isDisjointFrom",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let alock = a.lock().unwrap();
-                let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
-                    let disjoint = !avs.iter().any(|v| bvs.contains(v));
+                if let Some(disjoint) =
+                    with_two_sets(&a, &b, |avs, bvs| !avs.iter().any(|v| bvs.contains(v)))
+                {
                     return Value::I32(if disjoint { 1 } else { 0 });
                 }
             }
@@ -493,6 +510,9 @@ pub fn register(vm: &mut VM) {
         "unionWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                if Arc::ptr_eq(&a, &b) {
+                    return Value::Undefined;
+                }
                 let to_add: Vec<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
@@ -518,6 +538,9 @@ pub fn register(vm: &mut VM) {
         "intersectWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                if Arc::ptr_eq(&a, &b) {
+                    return Value::Undefined;
+                }
                 let b_snapshot: Vec<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
@@ -541,7 +564,14 @@ pub fn register(vm: &mut VM) {
         "exceptWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let b_snapshot: Vec<Value> = {
+                let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
+                    let block = a.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
                         bvs.iter().cloned().collect()
@@ -564,7 +594,14 @@ pub fn register(vm: &mut VM) {
         "symmetricExceptWith",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let b_snapshot: Vec<Value> = {
+                let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
+                    let block = a.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
                         bvs.iter().cloned().collect()
@@ -599,10 +636,9 @@ pub fn register(vm: &mut VM) {
         "overlaps",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let alock = a.lock().unwrap();
-                let block = b.lock().unwrap();
-                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&alock.kind, &block.kind) {
-                    let overlap = avs.iter().any(|v| bvs.contains(v));
+                if let Some(overlap) =
+                    with_two_sets(&a, &b, |avs, bvs| avs.iter().any(|v| bvs.contains(v)))
+                {
                     return Value::Bool(overlap);
                 }
             }
