@@ -1,6 +1,18 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+#[macro_export]
+macro_rules! csharp_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_csharp($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
 /// Run C# source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_csharp(src: &str) -> Vec<String> {
     let module = vybe_compiler::languages::csharp::parse(src).expect("C# parse failed");
@@ -60,6 +72,12 @@ pub fn run_csharp(src: &str) -> Vec<String> {
 
 pub fn run_csharp_one(src: &str) -> String {
     run_csharp(src).into_iter().next().unwrap_or_default()
+}
+
+pub fn assert_csharp(src: &str, expected: &[&str]) {
+    let actual = run_csharp(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
 
 pub fn compile_csharp_to_wasm(src: &str) -> Vec<u8> {
