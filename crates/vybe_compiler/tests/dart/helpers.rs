@@ -3,6 +3,18 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+#[macro_export]
+macro_rules! dart_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_dart($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::dart::parse(src)?;
     let profile =
@@ -61,4 +73,10 @@ pub fn parse_ok(src: &str) -> bool {
 
 pub fn compile_ok_check(src: &str) -> bool {
     compile_chunks(src).is_ok()
+}
+
+pub fn assert_dart(src: &str, expected: &[&str]) {
+    let actual = run_prints(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
