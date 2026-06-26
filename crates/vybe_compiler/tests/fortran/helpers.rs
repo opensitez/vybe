@@ -3,6 +3,18 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+#[macro_export]
+macro_rules! fortran_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_fortran($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::fortran::parse(src)?;
     let profile =
@@ -46,4 +58,10 @@ pub fn run_prints(src: &str) -> Vec<String> {
 
 pub fn parse_ok(src: &str) -> bool {
     vybe_compiler::languages::fortran::parse(src).is_ok()
+}
+
+pub fn assert_fortran(src: &str, expected: &[&str]) {
+    let actual = run_prints(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
