@@ -109,7 +109,7 @@ echo filemtime($file) > 0 ? 't' : 'f';
 "#
     ));
 
-    assert_eq!(out, vec!["t", "t", "t", "5", "t"]);
+    assert_eq!(out, vec!["ttt5t"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -155,10 +155,11 @@ foreach ($files as $file) echo basename($file);
 "#
     ));
 
-    assert_eq!(out.first().map(String::as_str), Some("2"));
-    let mut names = out.into_iter().skip(1).collect::<Vec<_>>();
-    names.sort();
-    assert_eq!(names, vec!["one.knt".to_string(), "two.knt".to_string()]);
+    assert_eq!(out.len(), 1);
+    let s = &out[0];
+    assert!(s.starts_with("2"));
+    assert!(s.contains("one.knt"));
+    assert!(s.contains("two.knt"));
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -173,7 +174,7 @@ echo defined('SIZESTEP') ? 't1' : 'f1';
 echo SIZESTEP;
 "#,
     );
-    assert_eq!(out, vec!["t0", "t1", "1024"]);
+    assert_eq!(out, vec!["t0t11024"]);
 }
 
 #[test]
@@ -184,7 +185,7 @@ echo urlEncode('a b') === urlencode('a b') ? 'ok' : 'bad';
 echo rawUrlEncode('c d') === rawurlencode('c d') ? 'ok' : 'bad';
 "#,
     );
-    assert_eq!(out, vec!["ok", "ok"]);
+    assert_eq!(out, vec!["okok"]);
 }
 
 #[test]
@@ -195,7 +196,7 @@ echo urldecode('a+b');
 echo rawurldecode('a+b');
 "#,
     );
-    assert_eq!(out, vec!["a b", "a+b"]);
+    assert_eq!(out, vec!["a ba+b"]);
 }
 
 #[test]
@@ -239,17 +240,12 @@ $info = pathinfo(readlink($link));
 "#
         ));
 
-        assert_eq!(
-            out,
-            vec![
-                "t".to_string(),
-                target_path,
-                root.to_string_lossy().to_string(),
-                "target.txt".to_string(),
-                "target".to_string(),
-                "txt".to_string(),
-            ]
+        let expected = format!(
+            "t{}{}target.txttargettxt",
+            target_path,
+            root.to_string_lossy(),
         );
+        assert_eq!(out, vec![expected]);
 
         let _ = fs::remove_dir_all(&root);
     }

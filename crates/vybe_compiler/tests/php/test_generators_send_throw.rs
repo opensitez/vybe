@@ -349,7 +349,7 @@ try { $gen->rewind(); } catch (Exception $e) { echo 'caught'; }
 echo $gen->current();
 "#
         ),
-        vec!["caught", "1"]
+        vec!["caught1"]
     );
 }
 

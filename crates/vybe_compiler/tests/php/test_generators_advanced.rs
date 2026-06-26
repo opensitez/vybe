@@ -43,7 +43,7 @@ $log->send("hello");
 $log->send("world");
 "#
         ),
-        &["HELLO", "WORLD"]
+        &["HELLOWORLD"]
     );
 }
 
@@ -203,7 +203,7 @@ foreach (csvRows($csv) as $row) {
 }
 "#
         ),
-        &["Alice is 30", "Bob is 25"]
+        &["Alice is 30Bob is 25"]
     );
 }
 
@@ -226,7 +226,7 @@ $gen->next();
 echo $gen->valid() ? "valid" : "done";
 "#
         ),
-        &["valid", "done"]
+        &["validdone"]
     );
 }
 
@@ -304,7 +304,7 @@ foreach (outer() as $v) {
 }
 "#
         ),
-        &["a", "b", "done"]
+        &["abdone"]
     );
 }
 
@@ -351,7 +351,7 @@ $gen = handled();
 echo $gen->throw(new Exception("stop"));
 "#
         ),
-        &["caught", "handled"]
+        &["caughthandled"]
     );
 }
 
@@ -372,7 +372,7 @@ $gen = handled('a', 'b', 'c');
 echo $gen->throw(new Exception('stop'));
 "#
         ),
-        &["b,c", "stop"]
+        &["b,cstop"]
     );
 }
 
@@ -425,7 +425,7 @@ echo $gen->current();
 $gen = null; // drop triggers finally
 "#
         ),
-        &["open", "1", "2", "close"]
+        &["open12close"]
     );
 }
 
@@ -558,7 +558,7 @@ try {
 }
 "#
         ),
-        &["first", "second", "rewind-error"]
+        &["firstsecondrewind-error"]
     );
 }
 
@@ -705,7 +705,7 @@ $g->next();        // advance to next yield
 echo $g->send(7);  // yields 14
 "#
         ),
-        &["10", "14"]
+        &["1014"]
     );
 }
 
@@ -799,7 +799,7 @@ foreach (nulls(3) as $v) {
 echo $c;
 "#
         ),
-        &["null", "null", "null", "3"]
+        &["nullnullnull3"]
     );
 }
 

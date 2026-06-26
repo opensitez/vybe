@@ -15,7 +15,7 @@ echo $s->contains($a) ? 'yes' : 'no';
 echo $s->contains($b) ? 'yes' : 'no';
 "#
         ),
-        vec!["yes", "no"]
+        vec!["yesno"]
     );
 }
 #[test]
@@ -166,7 +166,7 @@ $m->offsetUnset($x);
 echo $m->offsetExists($x) ? 'yes' : 'no';
 "#
         ),
-        vec!["yes", "no"]
+        vec!["yesno"]
     );
 }
 

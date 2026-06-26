@@ -52,7 +52,7 @@ $s->push(1);
 echo $s->isEmpty() ? 'empty' : 'not';
 "#
         ),
-        vec!["empty", "not"]
+        vec!["emptynot"]
     );
 }
 

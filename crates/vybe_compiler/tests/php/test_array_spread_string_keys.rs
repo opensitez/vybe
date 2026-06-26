@@ -266,7 +266,7 @@ echo ',';
 echo $config['timeout'] . ',' . $config['retries'] . ',' . $config['name'];
 "#
         ),
-        vec!["false", ",", "60,3,app"]
+        vec!["false,60,3,app"]
     );
 }
 

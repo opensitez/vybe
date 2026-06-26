@@ -137,7 +137,7 @@ $g->next();
 $g = null;
 "#
         ),
-        vec!["1,", "cleanup"]
+        vec!["1,cleanup"]
     );
 }
 
@@ -155,7 +155,7 @@ $g->rewind();
 echo $g->current();
 "#
         ),
-        vec!["a", "a"]
+        vec!["aa"]
     );
 }
 

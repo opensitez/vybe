@@ -56,9 +56,16 @@ fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
             let stream_val = args.first().cloned().unwrap_or(Value::Null);
             let bytes = ctx.stream_drain(&stream_val);
             if !bytes.is_empty() {
-                out.lock()
-                    .unwrap()
-                    .push(String::from_utf8_lossy(&bytes).into_owned());
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let mut vec = out.lock().unwrap();
+                // Concatenate with last stream fragment (PHP echo is
+                // unbuffered — no newline between calls).
+                let append = vec.last().map_or(false, |l| !l.ends_with('\n'));
+                if append {
+                    vec.last_mut().unwrap().push_str(&text);
+                } else {
+                    vec.push(text);
+                }
             }
             Value::Null
         }),

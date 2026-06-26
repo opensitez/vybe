@@ -27,7 +27,7 @@ echo $b->get('env');
 echo ($a === $b) ? 'same' : 'different';
 "#
         ),
-        vec!["prod", "same"]
+        vec!["prodsame"]
     );
 }
 
@@ -61,7 +61,7 @@ echo (new RoadLogistics())->plan();
 echo (new SeaLogistics())->plan();
 "#
         ),
-        vec!["truck", "ship"]
+        vec!["truckship"]
     );
 }
 
@@ -98,7 +98,7 @@ buildUI(new WinFactory());
 buildUI(new MacFactory());
 "#
         ),
-        vec!["win-button", "win-check", "mac-button", "mac-check"]
+        vec!["win-buttonwin-checkmac-buttonmac-check"]
     );
 }
 
@@ -133,7 +133,7 @@ echo $p->crust;
 echo implode(',', $p->toppings);
 "#
         ),
-        vec!["large", "thin", "mozzarella,pepperoni"]
+        vec!["largethinmozzarella,pepperoni"]
     );
 }
 
@@ -167,7 +167,7 @@ echo $s2->x . ',' . $s2->y;
 echo $s2->color;
 "#
         ),
-        vec!["0,0", "5,10", "red"]
+        vec!["0,05,10red"]
     );
 }
 
@@ -331,7 +331,7 @@ echo 'proxy created';
 echo $img->display();
 "#
         ),
-        vec!["proxy created", "loaded:photo.jpg", "showing:photo.jpg"]
+        vec!["proxy createdloaded:photo.jpgshowing:photo.jpg"]
     );
 }
 
@@ -367,7 +367,7 @@ $bus->subscribe('login', new LogObserver('B'));
 $bus->emit('login', 'alice');
 "#
         ),
-        vec!["A:alice", "B:alice"]
+        vec!["A:aliceB:alice"]
     );
 }
 
@@ -398,7 +398,7 @@ $s2 = new Sorter(new DescendingSort());
 echo implode(',', $s2->sort([3, 1, 4, 1, 5]));
 "#
         ),
-        vec!["1,1,3,4,5", "5,4,3,1,1"]
+        vec!["1,1,3,4,55,4,3,1,1"]
     );
 }
 
@@ -471,7 +471,7 @@ array_pop($history)->undo();
 echo $editor->text;
 "#
         ),
-        vec!["Hello World", "Hello"]
+        vec!["Hello WorldHello"]
     );
 }
 
@@ -531,7 +531,7 @@ for ($i = 0; $i < 4; $i++) {
 }
 "#
         ),
-        vec!["red", "green", "yellow", "red"]
+        vec!["redgreenyellowred"]
     );
 }
 
@@ -574,7 +574,7 @@ echo $small->handle(50);
 echo $small->handle(500);
 "#
         ),
-        vec!["small:5", "medium:50", "large:500"]
+        vec!["small:5medium:50large:500"]
     );
 }
 
@@ -632,7 +632,7 @@ $e->restore($snap);
 echo $e->content;
 "#
         ),
-        vec!["version2", "version1"]
+        vec!["version2version1"]
     );
 }
 
@@ -667,7 +667,7 @@ echo (new Circle(2.0))->accept($v);
 echo (new Rect(3.0, 4.0))->accept($v);
 "#
         ),
-        vec!["12.57", "12"]
+        vec!["12.5712"]
     );
 }
 
@@ -749,7 +749,7 @@ echo $cache->get('key1');
 echo $cache->get('missing') ?? 'null';
 "#
         ),
-        vec!["value1", "null"]
+        vec!["value1null"]
     );
 }
 
@@ -890,7 +890,7 @@ echo $dto->name;
 echo $dto->toArray()['email'];
 "#
         ),
-        vec!["Alice", "alice@example.com"]
+        vec!["Alicealice@example.com"]
     );
 }
 
@@ -918,7 +918,7 @@ echo processData([1, 2, 3], new ConsoleLogger());
 echo processData([1, 2], new NullLogger());
 "#
         ),
-        vec!["processing", "3", "2"]
+        vec!["processing32"]
     );
 }
 
@@ -1099,7 +1099,7 @@ echo $balance;
 echo $store->count();
 "#
         ),
-        vec!["120", "3"]
+        vec!["1203"]
     );
 }
 
@@ -1169,7 +1169,7 @@ echo $result['updated'];
 echo $result['deleted'];
 "#
         ),
-        vec!["2", "1", "1"]
+        vec!["211"]
     );
 }
 
@@ -1238,11 +1238,7 @@ echo count($vm->data['items']);
 echo renderView($vm);
 "#
         ),
-        vec![
-            "My Page",
-            "3",
-            "<h1>My Page</h1><ul><li>a</li><li>b</li><li>c</li></ul>"
-        ]
+        vec!["My Page3<h1>My Page</h1><ul><li>a</li><li>b</li><li>c</li></ul>"]
     );
 }
 

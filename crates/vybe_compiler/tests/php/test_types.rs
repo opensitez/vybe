@@ -136,7 +136,7 @@ fn empty_values() {
         run_prints(
             "<?php echo empty('') ? 't' : 'f'; echo empty(0) ? 't' : 'f'; echo empty(null) ? 't' : 'f'; echo empty('0') ? 't' : 'f'; echo empty('x') ? 't' : 'f'; echo empty([]) ? 't' : 'f';"
         ),
-        &["t", "t", "t", "t", "f", "t"]
+        &["ttttft"]
     );
 }
 #[test]
@@ -145,7 +145,7 @@ fn empty_associative_array_uses_assoc_entries() {
         run_prints(
             "<?php $files = []; $files['a.knt'] = '/tmp/a.knt'; echo empty($files) ? 't' : 'f'; echo count($files);"
         ),
-        &["f", "1"]
+        &["f1"]
     );
 }
 #[test]
@@ -154,7 +154,7 @@ fn associative_array_key_first_and_foreach_entries() {
         run_prints(
             "<?php $files = []; $files['a.knt'] = '/tmp/a'; $files['b.knt'] = '/tmp/b'; echo array_key_first($files); foreach ($files as $key => $path) { echo $key; echo $path; }"
         ),
-        &["a.knt", "a.knt", "/tmp/a", "b.knt", "/tmp/b"]
+        &["a.knta.knt/tmp/ab.knt/tmp/b"]
     );
 }
 #[test]
@@ -172,7 +172,7 @@ fn associative_array_truthiness_in_if() {
         run_prints(
             "<?php $section = ['properties' => [], 'notes' => []]; if ($section) { echo 'yes'; } else { echo 'no'; } $section['properties']['NN'] = 'Work'; if ($section) { echo 'yes'; } else { echo 'no'; }"
         ),
-        &["yes", "yes"]
+        &["yesyes"]
     );
 }
 #[test]

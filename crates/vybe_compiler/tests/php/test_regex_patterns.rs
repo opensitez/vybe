@@ -12,7 +12,7 @@ echo $count;
 echo implode(",", $matches[1]);
 "#
         ),
-        &["3", "10,20,30"]
+        &["310,20,30"]
     );
 }
 
@@ -89,7 +89,7 @@ echo $m['month'];
 echo $m['day'];
 "#
         ),
-        &["2024", "06", "15"]
+        &["20240615"]
     );
 }
 
@@ -104,7 +104,7 @@ echo implode(",", $matches['level']);
 echo implode(",", $matches['msg']);
 "#
         ),
-        &["ERROR,WARN,ERROR", "file not found,low memory,timeout"]
+        &["ERROR,WARN,ERRORfile not found,low memory,timeout"]
     );
 }
 
@@ -191,7 +191,7 @@ echo preg_match('/^[\w]+$/', "hello_123") ? "word" : "no";
 echo preg_match('/^[^aeiou]+$/i', "fly") ? "no vowels" : "has vowels";
 "#
         ),
-        &["digits", "alpha", "word", "no vowels"]
+        &["digitsalphawordno vowels"]
     );
 }
 
@@ -209,7 +209,7 @@ echo preg_match('/^a*$/', "") ? "yes" : "no";
 echo preg_match('/^a?$/', "a") ? "yes" : "no";
 "#
         ),
-        &["yes", "yes", "no", "yes", "yes", "yes"]
+        &["yesyesnoyesyesyes"]
     );
 }
 
@@ -225,7 +225,7 @@ echo preg_match($pattern, "bad@") ? "valid" : "invalid";
 echo preg_match($pattern, "test.user+tag@domain.co.uk") ? "valid" : "invalid";
 "#
         ),
-        &["valid", "invalid", "valid"]
+        &["validinvalidvalid"]
     );
 }
 
@@ -258,7 +258,7 @@ echo slugify("Hello World! This is PHP");
 echo slugify("  Multiple   Spaces  Here  ");
 "#
         ),
-        &["hello-world-this-is-php", "multiple-spaces-here"]
+        &["hello-world-this-is-phpmultiple-spaces-here"]
     );
 }
 

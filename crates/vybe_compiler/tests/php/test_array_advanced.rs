@@ -12,7 +12,7 @@ echo implode(",", $a);
 echo implode(",", $removed);
 "#
         ),
-        &["1,4,5", "2,3"]
+        &["1,4,52,3"]
     );
 }
 
@@ -57,7 +57,7 @@ foreach ($chunks as $chunk) {
 }
 "#
         ),
-        &["1,2", "3,4", "5"]
+        &["1,23,45"]
     );
 }
 
@@ -72,7 +72,7 @@ echo count($chunks);
 echo implode(",", array_keys($chunks[0]));
 "#
         ),
-        &["2", "a,b,c"]
+        &["2a,b,c"]
     );
 }
 
@@ -109,7 +109,7 @@ echo $indexed[10];
 echo $indexed[20];
 "#
         ),
-        &["Alice", "Bob"]
+        &["AliceBob"]
     );
 }
 
@@ -140,7 +140,7 @@ echo $f[2];
 echo $f[3];
 "#
         ),
-        &["a", "b", "c"]
+        &["abc"]
     );
 }
 
@@ -157,7 +157,7 @@ echo $combined["age"];
 echo $combined["city"];
 "#
         ),
-        &["Alice", "30", "NYC"]
+        &["Alice30NYC"]
     );
 }
 
@@ -219,7 +219,7 @@ echo implode(",", array_keys($result));
 echo implode(",", $result);
 "#
         ),
-        &["a,c", "1,3"]
+        &["a,c1,3"]
     );
 }
 
@@ -235,7 +235,7 @@ echo implode(",", array_keys($result));
 echo implode(",", $result);
 "#
         ),
-        &["b", "2"]
+        &["b2"]
     );
 }
 
@@ -250,7 +250,7 @@ echo implode(",", $a);
 echo count($a);
 "#
         ),
-        &["x,x,x,x,x", "5"]
+        &["x,x,x,x,x5"]
     );
 }
 
@@ -266,7 +266,7 @@ $left = array_pad($a, -6, 0);
 echo implode(",", $left);
 "#
         ),
-        &["1,2,3,0,0,0", "0,0,0,1,2,3"]
+        &["1,2,3,0,0,00,0,0,1,2,3"]
     );
 }
 
@@ -295,7 +295,7 @@ echo $counts["banana"];
 echo $counts["cherry"];
 "#
         ),
-        &["3", "2", "1"]
+        &["321"]
     );
 }
 
@@ -325,7 +325,7 @@ echo implode(",", array_keys($a));
 echo implode(",", $a);
 "#
         ),
-        &["a,b,c", "1,2,3"]
+        &["a,b,c1,2,3"]
     );
 }
 
@@ -368,7 +368,7 @@ echo implode(",", $a);
 echo implode(",", array_keys($a));
 "#
         ),
-        &["1,2,3", "y,z,x"]
+        &["1,2,3y,z,x"]
     );
 }
 
@@ -405,7 +405,7 @@ echo $result["c"];
 echo $result["d"];
 "#
         ),
-        &["1", "20", "3", "40"]
+        &["120340"]
     );
 }
 
@@ -421,7 +421,7 @@ echo $matrix[1][1];
 echo $matrix[2][2];
 "#
         ),
-        &["1", "5", "9"]
+        &["159"]
     );
 }
 
@@ -437,7 +437,7 @@ echo $doubled["banana"];
 echo $doubled["cherry"];
 "#
         ),
-        &["3", "1.5", "4"]
+        &["31.54"]
     );
 }
 
@@ -470,7 +470,7 @@ extract(["x" => 100, "y" => 200]);
 echo $x + $y;
 "#
         ),
-        &["Alice", "30", "300"]
+        &["Alice30300"]
     );
 }
 
@@ -504,7 +504,7 @@ echo array_key_first($a);
 echo array_key_last($a);
 "#
         ),
-        &["x", "z"]
+        &["xz"]
     );
 }
 
@@ -519,7 +519,7 @@ foreach ($coords as [$x, $y]) {
 }
 "#
         ),
-        &["3", "7", "11"]
+        &["3711"]
     );
 }
 
@@ -534,7 +534,7 @@ echo $name;
 echo $age;
 "#
         ),
-        &["Alice", "30"]
+        &["Alice30"]
     );
 }
 
@@ -552,7 +552,7 @@ echo $a["baz"];
 echo count($a);
 "#
         ),
-        &["0", "0", "0", "3"]
+        &["0003"]
     );
 }
 
@@ -569,7 +569,7 @@ echo implode(",", array_keys($result));
 echo implode(",", $result);
 "#
         ),
-        &["a,c", "1,3"]
+        &["a,c1,3"]
     );
 }
 
@@ -585,7 +585,7 @@ echo in_array(1,   $a, true)  ? "yes" : "no";
 echo in_array("4", $a, true)  ? "yes" : "no";
 "#
         ),
-        &["no", "yes", "yes"]
+        &["noyesyes"]
     );
 }
 
@@ -602,7 +602,7 @@ $k2 = array_search("20", $a, true);
 echo $k2;
 "#
         ),
-        &["not found", "1"]
+        &["not found1"]
     );
 }
 
@@ -618,7 +618,7 @@ echo $r[0];
 echo $r[4];
 "#
         ),
-        &["5", "0", "1"]
+        &["501"]
     );
 }
 
@@ -666,7 +666,7 @@ foreach ($zipped as $pair) {
 }
 "#
         ),
-        &["1a", "2b", "3c"]
+        &["1a2b3c"]
     );
 }
 
@@ -700,7 +700,7 @@ echo $union["b"];
 echo $union["c"];
 "#
         ),
-        &["20", "2", "30"]
+        &["20230"]
     );
 }
 
@@ -721,7 +721,7 @@ foreach ($people as $p) {
 }
 "#
         ),
-        &["Alice", "Bob", "Charlie"]
+        &["AliceBobCharlie"]
     );
 }
 
@@ -752,7 +752,7 @@ echo $first;
 echo $last;
 "#
         ),
-        &["10", "40"]
+        &["1040"]
     );
 }
 
@@ -771,7 +771,7 @@ echo $indexed["u1"]["name"];
 echo $indexed["u2"]["score"];
 "#
         ),
-        &["Alice", "85"]
+        &["Alice85"]
     );
 }
 
@@ -787,7 +787,7 @@ echo implode(",", array_keys($a));
 echo implode(",", $a);
 "#
         ),
-        &["x,z,y", "5,3,1"]
+        &["x,z,y5,3,1"]
     );
 }
 
@@ -806,6 +806,6 @@ echo $result["a"]["z"];
 echo $result["b"];
 "#
         ),
-        &["1", "99", "3", "10"]
+        &["199310"]
     );
 }

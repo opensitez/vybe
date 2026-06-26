@@ -21,7 +21,7 @@ echo classify(82);
 echo classify(55);
 "#
         ),
-        &["A", "B", "F"]
+        &["ABF"]
     );
 }
 
@@ -46,13 +46,7 @@ echo httpStatus(503);
 echo httpStatus(418);
 "#
         ),
-        &[
-            "success",
-            "redirect",
-            "not found",
-            "server error",
-            "unknown"
-        ]
+        &["successredirectnot foundserver errorunknown"]
     );
 }
 
@@ -112,7 +106,7 @@ $cfg2 = getConfig("prod");
 echo $cfg2["debug"] ? "debug" : "no-debug";
 "#
         ),
-        &["verbose", "no-debug"]
+        &["verboseno-debug"]
     );
 }
 
@@ -144,7 +138,7 @@ echo greet(name: "Alice");
 echo greet(name: "Bob", greeting: "Hi");
 "#
         ),
-        &["Hello, Alice!", "Hi, Bob!"]
+        &["Hello, Alice!Hi, Bob!"]
     );
 }
 
@@ -211,7 +205,7 @@ echo implode(separator: ", ", array: ["a", "b", "c"]);
 echo str_pad(string: "42", length: 5, pad_string: "0", pad_type: STR_PAD_LEFT);
 "#
         ),
-        &["a, b, c", "00042"]
+        &["a, b, c00042"]
     );
 }
 
@@ -311,7 +305,7 @@ echo $u2?->address?->country?->name ?? "unknown";
 echo $u3?->address?->country?->name ?? "unknown";
 "#
         ),
-        &["USA", "unknown", "unknown"]
+        &["USAunknownunknown"]
     );
 }
 
@@ -330,7 +324,7 @@ echo strlen($repo->find(1) ?? "");
 echo $repo->find(99) ?? "not found";
 "#
         ),
-        &["5", "not found"]
+        &["5not found"]
     );
 }
 
@@ -350,7 +344,7 @@ echo $root->left?->value;
 echo $root->right?->value ?? "null";
 "#
         ),
-        &["2", "null"]
+        &["2null"]
     );
 }
 
@@ -393,7 +387,7 @@ echo stringify(3.14);
 echo stringify("hello");
 "#
         ),
-        &["int:42", "float:3.14", "str:hello"]
+        &["int:42float:3.14str:hello"]
     );
 }
 
@@ -413,7 +407,7 @@ echo $a->type();
 echo $b->type();
 "#
         ),
-        &["int", "string"]
+        &["intstring"]
     );
 }
 
@@ -429,7 +423,7 @@ echo greet("Alice");
 echo greet(null);
 "#
         ),
-        &["Hello, Alice", "Hello, stranger"]
+        &["Hello, AliceHello, stranger"]
     );
 }
 
@@ -457,7 +451,7 @@ echo $b->x;
 echo $a->distanceTo($b);
 "#
         ),
-        &["3", "5"]
+        &["35"]
     );
 }
 
@@ -505,7 +499,7 @@ echo $b->lat;
 echo $a->distanceTo($b);
 "#
         ),
-        &["3", "5"]
+        &["35"]
     );
 }
 
@@ -526,7 +520,7 @@ echo "between";
 $fiber->resume();
 "#
         ),
-        &["start", "between", "end"]
+        &["startbetweenend"]
     );
 }
 
@@ -546,7 +540,7 @@ echo $fiber->resume("world");
 echo $fiber->getReturn();
 "#
         ),
-        &["first", "second", "result: hello + world"]
+        &["firstsecondresult: hello + world"]
     );
 }
 
@@ -564,7 +558,7 @@ echo $suspended;
 $fiber->resume("ping");
 "#
         ),
-        &["waiting", "got: ping"]
+        &["waitinggot: ping"]
     );
 }
 
@@ -606,7 +600,7 @@ echo $cases[0]->name;
 echo $cases[3]->name;
 "#
         ),
-        &["4", "North", "West"]
+        &["4NorthWest"]
     );
 }
 
@@ -626,7 +620,7 @@ $t = Status::tryFrom("unknown");
 echo $t === null ? "null" : $t->name;
 "#
         ),
-        &["Active", "null"]
+        &["Activenull"]
     );
 }
 
@@ -655,7 +649,7 @@ echo Currency::EUR->symbol();
 echo Currency::GBP->value;
 "#
         ),
-        &["$", "€", "gbp"]
+        &["$€gbp"]
     );
 }
 
@@ -679,7 +673,7 @@ echo Color::Red->label();
 echo Color::Green->label();
 "#
         ),
-        &["Red", "Green"]
+        &["RedGreen"]
     );
 }
 
@@ -704,7 +698,7 @@ echo color(Suit::Hearts);
 echo color(Suit::Spades);
 "#
         ),
-        &["red", "black"]
+        &["redblack"]
     );
 }
 
@@ -728,7 +722,7 @@ echo count($permissions[$role->value]);
 echo $permissions[Role::Guest->value][0];
 "#
         ),
-        &["2", "read"]
+        &["2read"]
     );
 }
 
@@ -783,7 +777,7 @@ echo $fn("hello");
 echo $fn("hi");
 "#
         ),
-        &["5", "2"]
+        &["52"]
     );
 }
 
@@ -922,7 +916,7 @@ echo Config::MAX_SIZE;
 echo Config::DEFAULT_ENV;
 "#
         ),
-        &["1024", "production"]
+        &["1024production"]
     );
 }
 
@@ -1001,7 +995,7 @@ echo $increment();
 echo $increment();
 "#
         ),
-        &["1", "2", "3"]
+        &["123"]
     );
 }
 
@@ -1036,7 +1030,7 @@ echo $add(3, 4);
 echo $doubleInc(5);
 "#
         ),
-        &["7", "12"]
+        &["712"]
     );
 }
 
@@ -1059,7 +1053,7 @@ $merged = [...$a, ...$b];
 echo implode(",", $merged);
 "#
         ),
-        &["6", "15", "1,2,3,4,5,6"]
+        &["6151,2,3,4,5,6"]
     );
 }
 
@@ -1085,7 +1079,7 @@ echo display([1, 2, 3]);
 echo display(null);
 "#
         ),
-        &["int:42", "str:hello", "arr:3", "null"]
+        &["int:42str:helloarr:3null"]
     );
 }
 
@@ -1107,7 +1101,7 @@ echo ($perms & Permission::Read->value)    ? "can read"  : "no read";
 echo ($perms & Permission::Execute->value) ? "can exec"  : "no exec";
 "#
         ),
-        &["3", "can read", "no exec"]
+        &["3can readno exec"]
     );
 }
 
@@ -1131,13 +1125,6 @@ foreach ($fibers as $f) { $f->start(); }
 foreach ($fibers as $f) { $f->resume(); }
 "#
         ),
-        &[
-            "task1 start",
-            "task2 start",
-            "task3 start",
-            "task1 end",
-            "task2 end",
-            "task3 end"
-        ]
+        &["task1 starttask2 starttask3 starttask1 endtask2 endtask3 end"]
     );
 }

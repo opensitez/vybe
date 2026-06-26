@@ -3260,6 +3260,8 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::print_expression => {
+            // PHP `print $x` outputs $x (no newline) and evaluates to 1.
+            // Route through common:php.print_expr which uses the stream path.
             let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
             ExprKind::Call {
                 callee: Box::new(Expression::ident("__php_print_expr")),
@@ -11999,4 +12001,94 @@ fn to_span(pair: &Pair<Rule>) -> Span {
             }
         }
     })
+}
+
+fn merge_echos_in_stmt(stmt: Statement) -> Statement {
+    let span = stmt.span.clone();
+    let kind = match stmt.kind {
+        StmtKind::Block(body) => StmtKind::Block(merge_consecutive_echos(body)),
+        StmtKind::FunctionDecl { name, params, body, is_async, is_generator, return_type, modifiers, handles, is_sub } => {
+            StmtKind::FunctionDecl { name, params, body: merge_consecutive_echos(body), is_async, is_generator, return_type, modifiers, handles, is_sub }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body: merge_consecutive_echos(then_body),
+                elifs: elifs.into_iter().map(|(c, b)| (c, merge_consecutive_echos(b))).collect(),
+                else_body: else_body.map(merge_consecutive_echos),
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            StmtKind::While { cond, body: merge_consecutive_echos(body), else_body: else_body.map(merge_consecutive_echos) }
+        }
+        StmtKind::DoWhile { cond, body, until } => {
+            StmtKind::DoWhile { cond, body: merge_consecutive_echos(body), until }
+        }
+        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => {
+            StmtKind::ForIn { var, key, iter, body: merge_consecutive_echos(body), of, else_body: else_body.map(merge_consecutive_echos), is_async }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            StmtKind::For { init, cond, update, body: merge_consecutive_echos(body) }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            StmtKind::Try {
+                body: merge_consecutive_echos(body),
+                catches: catches.into_iter().map(|c| crate::ast::CatchClause { body: merge_consecutive_echos(c.body), ..c }).collect(),
+                else_body: else_body.map(merge_consecutive_echos),
+                finally: finally.map(merge_consecutive_echos),
+            }
+        }
+        other => other,
+    };
+    Statement::with_span(kind, span)
+}
+
+/// Merge consecutive `Echo` statements into a single `Echo` with string
+/// concatenation. PHP `echo` does not append newlines, so `echo "a";
+/// echo "b";` should produce `"ab"` not two separate outputs.
+fn merge_consecutive_echos(stmts: Vec<Statement>) -> Vec<Statement> {
+    let mut result: Vec<Statement> = Vec::with_capacity(stmts.len());
+    let mut i = 0;
+    while i < stmts.len() {
+        if let StmtKind::Echo(exprs) = &stmts[i].kind {
+            let mut merged: Vec<Expression> = exprs.clone();
+            let first_span = stmts[i].span.clone();
+            let mut j = i + 1;
+            while j < stmts.len() {
+                if let StmtKind::Echo(next_exprs) = &stmts[j].kind {
+                    merged.extend(next_exprs.iter().cloned());
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if j > i + 1 {
+                // Multiple consecutive echos — concatenate all into one
+                let concat = merged.into_iter().reduce(|acc, e| {
+                    Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(acc),
+                            right: Box::new(e),
+                        },
+                        first_span.clone(),
+                    )
+                });
+                if let Some(expr) = concat {
+                    result.push(Statement::with_span(
+                        StmtKind::Echo(vec![expr]),
+                        first_span,
+                    ));
+                }
+                i = j;
+            } else {
+                result.push(stmts[i].clone());
+                i += 1;
+            }
+        } else {
+            result.push(merge_echos_in_stmt(stmts[i].clone()));
+            i += 1;
+        }
+    }
+    result
 }

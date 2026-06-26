@@ -78,7 +78,7 @@ echo $g->current() . ',';
 echo $g->send('hello');
 "#
         ),
-        vec!["first,", "got:hello"]
+        vec!["first,got:hello"]
     );
 }
 
@@ -97,7 +97,7 @@ function indexed(): Generator {
 foreach (indexed() as $k => $v) echo $k . $v;
 "#
         ),
-        vec!["a1", "b2", "c3"]
+        vec!["a1b2c3"]
     );
 }
 #[test]
@@ -153,7 +153,7 @@ $g->next();
 echo $g->current();
 "#
         ),
-        vec!["1,", "caught:boom,", "2"]
+        vec!["1,caught:boom,2"]
     );
 }
 
@@ -236,6 +236,6 @@ echo $sm->send('pause') . ',';
 echo $sm->send('stop');
 "#
         ),
-        vec!["idle,", "running,", "paused,"]
+        vec!["idle,running,paused,"]
     );
 }

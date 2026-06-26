@@ -114,7 +114,7 @@ echo $double(5);
 echo $double(10);
 "#
         ),
-        &["10", "20"]
+        &["1020"]
     );
 }
 
@@ -187,7 +187,7 @@ echo is_callable($h) ? "yes" : "no";
 $h("test");
 "#
         ),
-        &["yes", "handled: test"]
+        &["yeshandled: test"]
     );
 }
 
@@ -213,7 +213,7 @@ echo $obj->foo;
 echo $obj->missing;
 "#
         ),
-        &["bar", "undefined"]
+        &["barundefined"]
     );
 }
 
@@ -236,7 +236,7 @@ echo implode(",", $b->keys());
 echo $b->y;
 "#
         ),
-        &["x,y,z", "20"]
+        &["x,y,z20"]
     );
 }
 
@@ -260,7 +260,7 @@ echo $l->bar;
 echo $l->foo;
 "#
         ),
-        &["FOO_VALUE", "BAR_VALUE", "FOO_VALUE"]
+        &["FOO_VALUEBAR_VALUEFOO_VALUE"]
     );
 }
 
@@ -314,7 +314,7 @@ echo isset($r->a) ? "set" : "not set";
 echo isset($r->c) ? "set" : "not set";
 "#
         ),
-        &["30", "set", "not set"]
+        &["30setnot set"]
     );
 }
 
@@ -371,7 +371,7 @@ unset($b->x);
 echo isset($b->x) ? "yes" : "no";
 "#
         ),
-        &["yes", "no", "no"]
+        &["yesnono"]
     );
 }
 
@@ -390,7 +390,7 @@ echo isset($s->b) ? "yes" : "no";
 echo isset($s->c) ? "yes" : "no";
 "#
         ),
-        &["yes", "no", "yes"]
+        &["yesnoyes"]
     );
 }
 
@@ -412,7 +412,7 @@ echo $s->count();
 echo isset($s->k2) ? "yes" : "no";
 "#
         ),
-        &["3", "2", "no"]
+        &["32no"]
     );
 }
 
@@ -522,7 +522,7 @@ echo $a->getName();
 echo $a->getAge();
 "#
         ),
-        &["John", "30"]
+        &["John30"]
     );
 }
 
@@ -568,7 +568,7 @@ echo implode(",", $a->items);
 echo implode(",", $b->items);
 "#
         ),
-        &["1,2,3", "10,20,30"]
+        &["1,2,310,20,30"]
     );
 }
 
@@ -590,7 +590,7 @@ echo $a->count;
 echo $b->count;
 "#
         ),
-        &["2", "0"]
+        &["20"]
     );
 }
 
@@ -640,7 +640,7 @@ echo implode(",", $a->items);
 echo implode(",", $b->items);
 "#
         ),
-        &["1,2,3", "3,2,1,4"]
+        &["1,2,33,2,1,4"]
     );
 }
 
@@ -664,7 +664,7 @@ echo $info["name"];
 echo $info["password"];
 "#
         ),
-        &["visible", "***"]
+        &["visible***"]
     );
 }
 
@@ -747,7 +747,7 @@ echo $v2->y;
 echo $v2->length();
 "#
         ),
-        &["3", "4", "5"]
+        &["345"]
     );
 }
 
@@ -775,7 +775,7 @@ echo $c2->dsn;
 echo $c2->status;
 "#
         ),
-        &["mysql:host=localhost", "reconnected"]
+        &["mysql:host=localhostreconnected"]
     );
 }
 
@@ -800,7 +800,7 @@ echo $c2->key;
 echo $c2->get("a") === null ? "cleared" : "kept";
 "#
         ),
-        &["my_key", "cleared"]
+        &["my_keycleared"]
     );
 }
 
@@ -822,7 +822,7 @@ echo $p->x;
 echo $p->y;
 "#
         ),
-        &["3", "4"]
+        &["34"]
     );
 }
 
@@ -872,7 +872,7 @@ echo $s();
 echo $s;
 "#
         ),
-        &["1", "yes", "2", "{\"x\":1,\"y\":2}"]
+        &["1yes2{\"x\":1,\"y\":2}"]
     );
 }
 
@@ -896,7 +896,7 @@ echo $u->name;
 echo $u->getType();
 "#
         ),
-        &["Alice", "user"]
+        &["Aliceuser"]
     );
 }
 
@@ -999,7 +999,7 @@ echo $fn(10);
 echo $fn->getCalls();
 "#
         ),
-        &["10", "20", "30", "3"]
+        &["1020303"]
     );
 }
 
@@ -1018,7 +1018,7 @@ echo $e;
 echo $e(3);
 "#
         ),
-        &["2+3 = 5", "15"]
+        &["2+3 = 515"]
     );
 }
 
@@ -1045,7 +1045,7 @@ echo $bag->value;
 echo isset($bag->extra) ? "yes" : "no";
 "#
         ),
-        &["name,value", "42", "no"]
+        &["name,value42no"]
     );
 }
 
@@ -1094,6 +1094,6 @@ echo FluentStatic::greet("Alice", "Bob");
 echo FluentStatic::sum("1", "2", "3");
 "#
         ),
-        &["greet(Alice,Bob)", "sum(1,2,3)"]
+        &["greet(Alice,Bob)sum(1,2,3)"]
     );
 }

@@ -20,7 +20,7 @@ function process(Serializable2&Loggable $obj): string {
 echo process(new Payload());
 "#
         ),
-        vec!["logged", "data"]
+        vec!["loggeddata"]
     );
 }
 

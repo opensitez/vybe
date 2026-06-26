@@ -315,7 +315,7 @@ base_convert        = { emit = "common:php.base_convert",   min_args = 3, max_ar
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-intval              = { emit = "intrinsic:cint",     min_args = 1, max_args = 2 }
+intval              = { emit = "common:php.intval",   min_args = 1, max_args = 2 }
 floatval            = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
 doubleval           = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
 strval              = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
@@ -485,7 +485,7 @@ __php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, ma
 __php_strpos        = { emit = "intrinsic:php_strpos",          min_args = 2, max_args = 3 }
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
 __php_array_slice   = { emit = "intrinsic:php_array_slice",     min_args = 2, max_args = 4 }
-__php_print_expr    = { emit = "intrinsic:php_print_expr",      min_args = 1, max_args = 1 }
+__php_print_expr    = { emit = "common:php.print_expr",          min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 

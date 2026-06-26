@@ -30,7 +30,7 @@ echo $ref->getName();
 echo $ref->isAbstract() ? 'abstract' : 'concrete';
 "#
         ),
-        vec!["Sample", "concrete"]
+        vec!["Sampleconcrete"]
     );
 }
 #[test]
@@ -44,7 +44,7 @@ echo $ref->getName();
 echo $ref->isAbstract() ? 'abstract' : 'concrete';
 "#
         ),
-        vec!["Entity", "concrete"]
+        vec!["Entityconcrete"]
     );
 }
 #[test]

@@ -118,7 +118,7 @@ echo $rows[0]['name'];
 "#,
     );
 
-    assert_eq!(lines, vec!["1", "Alice"]);
+    assert_eq!(lines, vec!["1Alice"]);
 }
 
 #[test]
@@ -220,13 +220,15 @@ echo mysqli_insert_id($dbh);
 "#,
     );
 
-    assert_eq!(lines[0], "no");
-    assert_eq!(lines[1], "yes");
-    assert_eq!(lines[2], "utf8mb4");
-    assert!(lines.iter().any(|line| line.contains("mysqlnd")));
-    assert!(lines.iter().any(|line| line == "8.0.0"));
-    assert!(lines.iter().any(|line| line.contains("O\\'Reilly\\\\")));
-    assert!(lines.iter().filter(|line| line.as_str() == "0").count() >= 1);
+    assert_eq!(lines.len(), 1);
+    let s = &lines[0];
+    assert!(s.starts_with("no"));
+    assert!(s.contains("yes"));
+    assert!(s.contains("utf8mb4"));
+    assert!(s.contains("mysqlnd"));
+    assert!(s.contains("8.0.0"));
+    assert!(s.contains("O\\'Reilly\\\\"));
+    assert!(s.ends_with("0"));
 }
 
 #[test]

@@ -112,7 +112,7 @@ echo checkdate(13, 1, 2024) ? "valid" : "invalid";
 echo checkdate(12, 31, 2024) ? "valid" : "invalid";
 "#
         ),
-        &["valid", "invalid", "invalid", "valid"]
+        &["validinvalidinvalidvalid"]
     );
 }
 
@@ -127,7 +127,7 @@ echo $dt->format("Y-m-d");
 echo $dt->format("H:i:s");
 "#
         ),
-        &["2024-06-15", "14:30:00"]
+        &["2024-06-1514:30:00"]
     );
 }
 
@@ -143,7 +143,7 @@ $dt->modify("-10 days");
 echo $dt->format("Y-m-d");
 "#
         ),
-        &["2024-07-01", "2024-06-21"]
+        &["2024-07-012024-06-21"]
     );
 }
 
@@ -159,7 +159,7 @@ echo $diff->days;
 echo $diff->m;
 "#
         ),
-        &["60", "2"]
+        &["602"]
     );
 }
 
@@ -174,7 +174,7 @@ echo $dt->format("F j, Y");
 echo $dt->format("g:i A");
 "#
         ),
-        &["Wednesday", "December 25, 2024", "9:30 AM"]
+        &["WednesdayDecember 25, 20249:30 AM"]
     );
 }
 
@@ -202,7 +202,7 @@ echo is_int($ts) ? "yes" : "no";
 echo date("Y", $ts);
 "#
         ),
-        &["yes", "2024"]
+        &["yes2024"]
     );
 }
 
@@ -218,7 +218,7 @@ echo $interval->m;
 echo $interval->d;
 "#
         ),
-        &["1", "2", "3"]
+        &["123"]
     );
 }
 
@@ -266,7 +266,7 @@ echo $info["mday"];
 echo $info["hours"];
 "#
         ),
-        &["2024", "6", "15", "14"]
+        &["202461514"]
     );
 }
 
@@ -297,7 +297,7 @@ echo $d1 < $d2 ? "before" : "after";
 echo $d1 == $d2 ? "equal" : "not equal";
 "#
         ),
-        &["before", "not equal"]
+        &["beforenot equal"]
     );
 }
 

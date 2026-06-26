@@ -38,6 +38,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP array helpers ──────────────────────────────────────
         // Index-based loops + ECMA array/object ops. PHP `array` ≡
         // `Map` (assoc) or `Array` (sequential).
+        "php.echo" => {
+            use vybe_bytecode::opcode::Op;
+            let write_idx = chunks[current].add_import("wasi:cli/stdout", "write-via-stream");
+            let rd_slot = chunks[current].alloc_scratch(1);
+            let wr_slot = chunks[current].alloc_scratch(1);
+            // All args are already on the stack. Save them in reverse order,
+            // then write each one.
+            let mut slots = Vec::with_capacity(argc as usize);
+            for _ in 0..argc {
+                let s = chunks[current].alloc_scratch(1);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+                slots.push(s);
+            }
+            slots.reverse();
+            for s in slots {
+                let val_slot = s;
+                crate::emitter::io::emit_write_stdout_with_imports(
+                    &mut chunks[current], write_idx, rd_slot, wr_slot, line,
+                    |chunk| {
+                        chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
+                    },
+                );
+            }
+        }
+        "php.print_expr" => {
+            use vybe_bytecode::opcode::Op;
+            let write_idx = chunks[current].add_import("wasi:cli/stdout", "write-via-stream");
+            let val_slot = chunks[current].alloc_scratch(1);
+            let rd_slot = chunks[current].alloc_scratch(1);
+            let wr_slot = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
+            crate::emitter::io::emit_write_stdout_with_imports(
+                &mut chunks[current], write_idx, rd_slot, wr_slot, line,
+                |chunk| {
+                    chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
+                },
+            );
+            chunks[current].emit_i32_const(1, line);
+        }
+        "php.intval" => {
+            let num_idx = chunks[current].add_import("ecma:number", "Number");
+            chunks[current].emit_call(num_idx, 1, line);
+            chunks[current].emit_op(vybe_bytecode::opcode::Op::F64_TRUNC, line);
+        }
         "php.array_pad" => super::array_adapter::emit_array_pad(chunks, current, argc, line),
         "php.array_map" => super::array_adapter::emit_array_map(chunks, current, argc, line),
         "php.array_filter" => super::array_adapter::emit_array_filter(chunks, current, argc, line),

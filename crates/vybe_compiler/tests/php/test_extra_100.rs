@@ -339,7 +339,7 @@ function gen():Generator{yield 'a';yield 'b';yield 'c';}
 foreach(gen() as $k=>$v) echo $k.$v;
 "#
         ),
-        vec!["0a", "1b", "2c"]
+        vec!["0a1b2c"]
     );
 }
 #[test]

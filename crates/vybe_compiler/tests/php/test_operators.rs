@@ -199,13 +199,7 @@ if (true xor true) {
 	echo 'word-xor-ok';
 }
 "#,
-        &[
-            "and-ok",
-            "or-ok",
-            "word-and-ok",
-            "word-or-ok",
-            "word-xor-ok",
-        ],
+        &["and-okor-okword-and-okword-or-okword-xor-ok"],
     );
 }
 
@@ -239,10 +233,7 @@ echo 'value' ?? 'fallback';
 echo false ? 'then' : 'else';
 echo 0 ?: 'fallback';
 "#,
-        &[
-            "3", "3", "42", "3.5", "1", "8", "ab", "3", "5", "t", "t", "t", "t", "f", "t", "f",
-            "t", "t", "-1", "0", "1", "fallback", "value", "else", "fallback",
-        ],
+        &["33423.518ab35ttttftftt-101fallbackvalueelsefallback"],
     );
 }
 
@@ -257,7 +248,7 @@ echo 1 << 3;
 echo 8 >> 2;
 echo ~1;
 "#,
-        &["2", "7", "5", "8", "2", "-2"],
+        &["27582-2"],
     );
 }
 
@@ -301,8 +292,6 @@ echo $fallback;
 $fallback ??= 'again';
 echo $fallback;
 "#,
-        &[
-            "7", "3", "9", "1", "1", "ab", "2", "6", "7", "8", "2", "set", "set",
-        ],
+        &["73911ab26782setset"],
     );
 }
