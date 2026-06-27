@@ -962,6 +962,10 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
             _ => false,
         }),
         ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_this),
+        ExprKind::New { class, args } => {
+            expr_contains_this(class) || args.iter().any(|a| expr_contains_this(&a.value))
+        }
+        ExprKind::Yield(Some(inner)) => expr_contains_this(inner),
         _ => false,
     }
 }
@@ -1206,6 +1210,13 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
             if let StmtKind::FunctionDecl { body, .. } = &stmt.kind {
                 collect_all_idents_in_stmts(body, out);
             }
+        }
+        ExprKind::New { class, args } => {
+            collect_all_idents_in_expr(class, out);
+            for a in args { collect_all_idents_in_expr(&a.value, out); }
+        }
+        ExprKind::Await(inner) | ExprKind::Spread(inner) | ExprKind::Yield(Some(inner)) => {
+            collect_all_idents_in_expr(inner, out);
         }
         _ => {}
     }

@@ -10655,34 +10655,37 @@ impl Compiler {
         if !self.current_closure_captured_locals.is_empty() {
             let mut captured_names: Vec<String> = self.current_closure_captured_locals
                 .iter()
+                .filter(|name| !self.defined_globals.contains(name.as_str()))
                 .cloned()
                 .collect();
             captured_names.sort();
 
-            let env_size = captured_names.len() as u16;
-            let line = self.line;
-            for _ in 0..env_size {
-                self.emit(Op::NULL);
-            }
-            self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
-            let env_slot = self.define_local("__shared_env");
-            self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.shared_env_slot = Some(env_slot);
-            self.shared_env_names = captured_names.clone();
-            let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-            local_decls.insert("__js_this".to_string());
-            if let LambdaBody::Block(stmts) = body {
-                crate::compiler::collect_declared_names(stmts, &mut local_decls);
-            }
-            for (idx, cap_name) in captured_names.iter().enumerate() {
-                if let Some(param_slot) = self.scope().resolve(cap_name) {
-                    self.emit_u16(Op::LOCAL_GET, param_slot);
-                    crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
-                } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
-                    if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
-                        let closure_env = self.closure_env_slot();
-                        crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+            {
+                let env_size = captured_names.len() as u16;
+                let line = self.line;
+                for _ in 0..env_size {
+                    self.emit(Op::NULL);
+                }
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                let env_slot = self.define_local("__shared_env");
+                self.emit_u16(Op::LOCAL_SET, env_slot);
+                self.shared_env_slot = Some(env_slot);
+                self.shared_env_names = captured_names.clone();
+                let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                local_decls.insert("__js_this".to_string());
+                if let LambdaBody::Block(stmts) = body {
+                    crate::compiler::collect_declared_names(stmts, &mut local_decls);
+                }
+                for (idx, cap_name) in captured_names.iter().enumerate() {
+                    if let Some(param_slot) = self.scope().resolve(cap_name) {
+                        self.emit_u16(Op::LOCAL_GET, param_slot);
                         crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                    } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
+                        if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                            let closure_env = self.closure_env_slot();
+                            crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+                            crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                        }
                     }
                 }
             }

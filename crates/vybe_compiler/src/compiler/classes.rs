@@ -1397,6 +1397,18 @@ impl Compiler {
                 }
             }
 
+            if ambient_this
+                && !is_static
+                && !cc.current_closure_captured_locals.is_empty()
+                && crate::compiler::body_contains_this(&m.body)
+            {
+                let this_idx = cc.str_const("__js_this");
+                cc.emit_u16(Op::GLOBAL_GET, this_idx);
+                let this_local = cc.define_local(&self_kw);
+                cc.emit_u16(Op::LOCAL_SET, this_local);
+                cc.current_closure_captured_locals.insert(self_kw.clone());
+            }
+
             // Shared env for closures inside class methods: if the
             // method body has inner closures that capture the method's
             // locals, create a shared env array so mutations are visible
