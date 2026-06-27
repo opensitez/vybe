@@ -55,6 +55,7 @@ mod test_scope_advanced;
 mod test_string_extra;
 mod test_string_ops;
 mod test_strings;
+mod test_time;
 mod test_type_convert;
 mod test_type_system;
 mod test_variables;

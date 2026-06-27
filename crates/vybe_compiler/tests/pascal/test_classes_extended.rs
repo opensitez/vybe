@@ -343,3 +343,358 @@ end."#
         &["10", "20", "30"]
     );
 }
+
+// -------------------------------------------------------------------
+// from test_classes_virtual_dispatch.rs
+// -------------------------------------------------------------------
+#[test]
+fn virtual_method_calls_derived_override() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TAnimal = class
+    function Speak: String; virtual;
+  end;
+  TDog = class(TAnimal)
+    function Speak: String; override;
+  end;
+function TAnimal.Speak: String; begin Result := '...'; end;
+function TDog.Speak: String; begin Result := 'woof'; end;
+var a: TAnimal;
+begin
+  a := TDog.Create;
+  WriteLn(a.Speak);
+  a.Free;
+end."#
+        ),
+        &["woof"]
+    );
+}
+
+#[test]
+fn virtual_method_base_reference_calls_override() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TBase = class
+    function Id: Integer; virtual;
+  end;
+  TChild = class(TBase)
+    function Id: Integer; override;
+  end;
+function TBase.Id: Integer; begin Result := 1; end;
+function TChild.Id: Integer; begin Result := 2; end;
+procedure PrintId(o: TBase);
+begin
+  WriteLn(o.Id);
+end;
+var c: TChild;
+begin
+  c := TChild.Create;
+  PrintId(c);
+  c.Free;
+end."#
+        ),
+        &["2"]
+    );
+}
+
+#[test]
+fn inherited_calls_parent_virtual_implementation() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TBase = class
+    function Name: String; virtual;
+  end;
+  TChild = class(TBase)
+    function Name: String; override;
+  end;
+function TBase.Name: String; begin Result := 'base'; end;
+function TChild.Name: String; begin Result := inherited Name + '+child'; end;
+var c: TChild;
+begin
+  c := TChild.Create;
+  WriteLn(c.Name);
+  c.Free;
+end."#
+        ),
+        &["base+child"]
+    );
+}
+
+#[test]
+fn constructor_sets_virtual_field_used_by_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TCounter = class
+    FCount: Integer;
+    constructor Create(start: Integer);
+    function Value: Integer; virtual;
+  end;
+constructor TCounter.Create(start: Integer);
+begin
+  inherited Create;
+  FCount := start;
+end;
+function TCounter.Value: Integer; begin Result := FCount; end;
+var c: TCounter;
+begin
+  c := TCounter.Create(7);
+  WriteLn(c.Value);
+  c.Free;
+end."#
+        ),
+        &["7"]
+    );
+}
+
+#[test]
+fn destructor_runs_before_after_write() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TResource = class
+    constructor Create;
+    destructor Destroy; override;
+  end;
+constructor TResource.Create; begin inherited Create; end;
+destructor TResource.Destroy;
+begin
+  WriteLn('destroy');
+  inherited Destroy;
+end;
+var r: TResource;
+begin
+  r := TResource.Create;
+  WriteLn('create');
+  r.Free;
+  WriteLn('done');
+end."#
+        ),
+        &["create", "destroy", "done"]
+    );
+}
+
+#[test]
+fn class_method_reads_class_var() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TSettings = class
+  strict private
+    class var FCount: Integer;
+  public
+    class function Count: Integer; static;
+    class procedure Bump; static;
+  end;
+class function TSettings.Count: Integer; begin Result := FCount; end;
+class procedure TSettings.Bump; begin FCount := FCount + 1; end;
+begin
+  TSettings.Bump;
+  TSettings.Bump;
+  WriteLn(TSettings.Count);
+end."#
+        ),
+        &["2"]
+    );
+}
+
+#[test]
+fn property_getter_reads_backing_field() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TCounter = class
+  private
+    FValue: Integer;
+  public
+    property Value: Integer read FValue write FValue;
+  end;
+var c: TCounter;
+begin
+  c := TCounter.Create;
+  c.Value := 12;
+  WriteLn(c.Value);
+  c.Free;
+end."#
+        ),
+        &["12"]
+    );
+}
+
+#[test]
+fn destructor_virtual_chain_calls_inherited() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TBase = class
+    destructor Destroy; override;
+  end;
+  TChild = class(TBase)
+    destructor Destroy; override;
+  end;
+destructor TBase.Destroy; begin WriteLn('base'); inherited Destroy; end;
+destructor TChild.Destroy; begin WriteLn('child'); inherited Destroy; end;
+var o: TChild;
+begin
+  o := TChild.Create;
+  o.Free;
+end."#
+        ),
+        &["child", "base"]
+    );
+}
+
+#[test]
+fn class_instance_is_operator() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TMy = class end;
+var o: TMy;
+begin
+  o := TMy.Create;
+  WriteLn(o is TMy);
+  o.Free;
+end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn as_cast_down_to_derived_type() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TBase = class
+    function Tag: String; virtual;
+  end;
+  TChild = class(TBase)
+    function Tag: String; override;
+  end;
+function TBase.Tag: String; begin Result := 'base'; end;
+function TChild.Tag: String; begin Result := 'child'; end;
+var b: TBase;
+begin
+  b := TChild.Create;
+  WriteLn(TChild(b).Tag);
+  b.Free;
+end."#
+        ),
+        &["child"]
+    );
+}
+
+#[test]
+fn class_property_read_write_pair() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TBox = class
+  private
+    FValue: Integer;
+  public
+    property Value: Integer read FValue write FValue;
+  end;
+var b: TBox;
+begin
+  b := TBox.Create;
+  b.Value := 42;
+  WriteLn(b.Value);
+  b.Free;
+end."#
+        ),
+        &["42"]
+    );
+}
+
+#[test]
+fn virtual_method_dispatches_on_runtime_type() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TAnimal = class
+    function Sound: String; virtual;
+  end;
+  TDog = class(TAnimal)
+    function Sound: String; override;
+  end;
+function TAnimal.Sound: String; begin Result := 'generic'; end;
+function TDog.Sound: String; begin Result := 'woof'; end;
+procedure Speak(a: TAnimal);
+begin
+  WriteLn(a.Sound);
+end;
+var d: TDog;
+begin
+  d := TDog.Create;
+  Speak(d);
+  d.Free;
+end."#
+        ),
+        &["woof"]
+    );
+}
+
+#[test]
+fn class_destructor_frees_owned_string_field() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TNamed = class
+  Name: String;
+  constructor Create(const n: String);
+  destructor Destroy; override;
+end;
+constructor TNamed.Create(const n: String); begin inherited Create; Name := n; end;
+destructor TNamed.Destroy; begin WriteLn(Name); inherited; end;
+var o: TNamed;
+begin
+  o := TNamed.Create('bye');
+  o.Free;
+end."#
+        ),
+        &["bye"]
+    );
+}
+
+#[test]
+fn inherited_constructor_calls_parent_init() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type
+  TBase = class
+    N: Integer;
+    constructor Create;
+  end;
+  TChild = class(TBase)
+    constructor Create;
+  end;
+constructor TBase.Create; begin inherited Create; N := 1; end;
+constructor TChild.Create; begin inherited Create; N := N + 1; end;
+var c: TChild;
+begin
+  c := TChild.Create;
+  WriteLn(c.N);
+  c.Free;
+end."#
+        ),
+        &["2"]
+    );
+}
+
+

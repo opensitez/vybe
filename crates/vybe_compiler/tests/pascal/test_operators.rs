@@ -213,3 +213,102 @@ fn bool_complex() {
         &["y"]
     );
 }
+
+#[test]
+fn logical_xor_true_when_exactly_one_true() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(True xor False); end."#),
+        &["true"]
+    );
+}
+
+#[test]
+fn logical_xor_false_when_both_same() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(True xor True); end."#),
+        &["false"]
+    );
+}
+
+#[test]
+fn logical_not_inverts_false() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(not False); end."#),
+        &["true"]
+    );
+}
+
+#[test]
+fn integer_bitwise_xor_operator() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(5 xor 3); end."#),
+        &["6"]
+    );
+}
+
+#[test]
+fn integer_bitwise_or_operator() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(8 or 1); end."#),
+        &["9"]
+    );
+}
+
+#[test]
+fn integer_bitwise_and_operator() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(7 and 3); end."#),
+        &["3"]
+    );
+}
+
+#[test]
+fn integer_bitwise_not_operator() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(not 0); end."#),
+        &["-1"]
+    );
+}
+
+#[test]
+fn shift_left_doubles_bits() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(1 shl 3); end."#),
+        &["8"]
+    );
+}
+
+#[test]
+fn shift_right_halves_bits() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(16 shr 2); end."#),
+        &["4"]
+    );
+}
+
+#[test]
+fn real_equality_exact_match() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(1.5 = 1.5); end."#),
+        &["true"]
+    );
+}
+
+#[test]
+fn string_not_equal_operator() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn('a' <> 'b'); end."#),
+        &["true"]
+    );
+}
+
+#[test]
+fn chained_range_check_with_and() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var n: Integer; begin n := 5; WriteLn((n > 1) and (n < 10)); end."#
+        ),
+        &["true"]
+    );
+}
+

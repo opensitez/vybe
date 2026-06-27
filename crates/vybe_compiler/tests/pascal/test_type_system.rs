@@ -398,3 +398,155 @@ fn boolean_to_string() {
         &["true"]
     );
 }
+
+#[test]
+fn high_returns_last_array_index() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array[0..4] of Integer; begin WriteLn(High(a)); end."#
+        ),
+        &["4"]
+    );
+}
+
+#[test]
+fn low_returns_first_array_index() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array[1..5] of Integer; begin WriteLn(Low(a)); end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn ord_of_enum_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; type TColor = (Red, Green, Blue); begin WriteLn(Ord(Green)); end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn pred_of_char_steps_backward() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Pred('C')); end."#
+        ),
+        &["B"]
+    );
+}
+
+#[test]
+fn succ_of_char_steps_forward() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Succ('M')); end."#
+        ),
+        &["N"]
+    );
+}
+
+#[test]
+fn sizeof_integer_type() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(SizeOf(Integer)); end."#
+        ),
+        &["4"]
+    );
+}
+
+#[test]
+fn type_info_returns_runtime_type_data() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(TypeInfo(Integer) <> nil); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn variant_integer_stores_and_reads() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var v: Variant; begin v := 42; WriteLn(v); end."#
+        ),
+        &["42"]
+    );
+}
+
+#[test]
+fn variant_string_stores_and_reads() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var v: Variant; begin v := 'text'; WriteLn(v); end."#
+        ),
+        &["text"]
+    );
+}
+
+#[test]
+fn float_to_str_formats_real() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(FloatToStr(2.5)); end."#
+        ),
+        &["2.5"]
+    );
+}
+
+#[test]
+fn sizeof_byte_is_one() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(SizeOf(Byte)); end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn high_low_on_static_array_bounds() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array[2..5] of Integer; begin WriteLn(Low(a)); WriteLn(High(a)); end."#
+        ),
+        &["2", "5"]
+    );
+}
+
+#[test]
+fn typecast_integer_to_char() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Char(65)); end."#
+        ),
+        &["A"]
+    );
+}
+
+#[test]
+fn ord_returns_enum_ordinal() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; type TColor = (Red, Green, Blue); begin WriteLn(Ord(Green)); end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn succ_advances_enum_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; type TColor = (Red, Green, Blue); var c: TColor; begin c := Red; c := Succ(c); WriteLn(Ord(c)); end."#
+        ),
+        &["1"]
+    );
+}
+
+

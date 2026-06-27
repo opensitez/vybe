@@ -346,3 +346,54 @@ end."#
         &["7", "0"]
     );
 }
+
+#[test]
+fn char_comparison_less_than() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn('a' < 'b'); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn chr_produces_printable_ascii() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Chr(49)); end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn ord_of_space_is_thirty_two() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Ord(' ')); end."#
+        ),
+        &["32"]
+    );
+}
+
+#[test]
+fn char_in_set_membership() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var s: set of Char; begin s := ['a'..'c']; WriteLn('b' in s); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn pred_char_steps_backward() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Pred('B')); end."#
+        ),
+        &["A"]
+    );
+}
+

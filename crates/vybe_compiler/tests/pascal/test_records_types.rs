@@ -622,3 +622,428 @@ end."#
         &["Alice", "30"]
     );
 }
+
+// -------------------------------------------------------------------
+// from test_sets_union_intersection.rs
+// -------------------------------------------------------------------
+#[test]
+fn set_membership_char_in_literal() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var letters: set of Char;
+begin
+  letters := ['a', 'b', 'c'];
+  if 'b' in letters then WriteLn('yes') else WriteLn('no');
+end."#
+        ),
+        &["yes"]
+    );
+}
+
+#[test]
+fn set_membership_char_not_in_set() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var letters: set of Char;
+begin
+  letters := ['x'];
+  if 'y' in letters then WriteLn('in') else WriteLn('out');
+end."#
+        ),
+        &["out"]
+    );
+}
+
+#[test]
+fn set_union_combines_elements() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TDigit = '0'..'9';
+var a, b, u: set of TDigit;
+begin
+  a := ['1', '2'];
+  b := ['2', '3'];
+  u := a + b;
+  if ('3' in u) and ('1' in u) then WriteLn('ok') else WriteLn('bad');
+end."#
+        ),
+        &["ok"]
+    );
+}
+
+#[test]
+fn set_intersection_keeps_common() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TLetter = 'a'..'z';
+var a, b, both: set of TLetter;
+begin
+  a := ['a', 'b', 'c'];
+  b := ['b', 'c', 'd'];
+  both := a * b;
+  if ('b' in both) and not ('a' in both) then WriteLn('bc') else WriteLn('x');
+end."#
+        ),
+        &["bc"]
+    );
+}
+
+#[test]
+fn set_difference_removes_right_operands() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TLetter = 'a'..'z';
+var a, b, diff: set of TLetter;
+begin
+  a := ['a', 'b', 'c'];
+  b := ['b'];
+  diff := a - b;
+  if ('a' in diff) and not ('b' in diff) then WriteLn('ac') else WriteLn('x');
+end."#
+        ),
+        &["ac"]
+    );
+}
+
+#[test]
+fn set_include_adds_element() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var s: set of Byte;
+begin
+  s := [];
+  Include(s, 5);
+  if 5 in s then WriteLn('5') else WriteLn('0');
+end."#
+        ),
+        &["5"]
+    );
+}
+
+#[test]
+fn set_exclude_removes_element() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var s: set of Byte;
+begin
+  s := [1, 2, 3];
+  Exclude(s, 2);
+  if not (2 in s) and (3 in s) then WriteLn('ok') else WriteLn('bad');
+end."#
+        ),
+        &["ok"]
+    );
+}
+
+#[test]
+fn set_empty_test_via_comparison() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var s: set of Integer;
+begin
+  s := [];
+  if s = [] then WriteLn('empty') else WriteLn('not');
+end."#
+        ),
+        &["empty"]
+    );
+}
+
+#[test]
+fn set_enum_days_weekend_membership() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TDay = (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+var weekend: set of TDay;
+begin
+  weekend := [Sat, Sun];
+  if Sun in weekend then WriteLn('sun') else WriteLn('no');
+end."#
+        ),
+        &["sun"]
+    );
+}
+
+#[test]
+fn set_subset_superset_relation() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var small, big: set of Integer;
+begin
+  small := [1, 2];
+  big := [1, 2, 3];
+  if small <= big then WriteLn('subset') else WriteLn('not');
+end."#
+        ),
+        &["subset"]
+    );
+}
+
+// -------------------------------------------------------------------
+// from test_records_with_blocks.rs
+// -------------------------------------------------------------------
+#[test]
+fn with_assigns_multiple_fields() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TPoint = record X, Y: Integer; end;
+var p: TPoint;
+begin
+  with p do begin
+    X := 2;
+    Y := 5;
+  end;
+  WriteLn(p.X + p.Y);
+end."#
+        ),
+        &["7"]
+    );
+}
+
+#[test]
+fn with_nested_record_path() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TInner = record Value: Integer; end;
+    TOuter = record Inner: TInner; end;
+var o: TOuter;
+begin
+  with o.Inner do
+    Value := 9;
+  WriteLn(o.Inner.Value);
+end."#
+        ),
+        &["9"]
+    );
+}
+
+#[test]
+fn with_doubles_field_in_place() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TBox = record N: Integer; end;
+var b: TBox;
+begin
+  b.N := 3;
+  with b do
+    N := N * 2;
+  WriteLn(b.N);
+end."#
+        ),
+        &["6"]
+    );
+}
+
+#[test]
+fn with_string_field_update() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TPerson = record Name: String; end;
+var p: TPerson;
+begin
+  with p do
+    Name := 'Ann';
+  WriteLn(p.Name);
+end."#
+        ),
+        &["Ann"]
+    );
+}
+
+#[test]
+fn with_in_loop_updates_array_of_records() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TItem = record V: Integer; end;
+var items: array[0..1] of TItem;
+    i: Integer;
+begin
+  for i := 0 to 1 do
+    with items[i] do
+      V := i + 1;
+  WriteLn(items[0].V + items[1].V);
+end."#
+        ),
+        &["3"]
+    );
+}
+
+#[test]
+fn with_two_sequential_blocks_same_record() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TRect = record W, H: Integer; end;
+var r: TRect;
+begin
+  with r do W := 4;
+  with r do H := 5;
+  WriteLn(r.W * r.H);
+end."#
+        ),
+        &["20"]
+    );
+}
+
+#[test]
+fn with_boolean_field_toggle() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TFlags = record Active: Boolean; end;
+var f: TFlags;
+begin
+  with f do Active := True;
+  with f do Active := not Active;
+  WriteLn(f.Active);
+end."#
+        ),
+        &["false"]
+    );
+}
+
+#[test]
+fn with_record_passed_to_procedure_by_var() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TScore = record Points: Integer; end;
+procedure AddTen(var s: TScore);
+begin
+  with s do
+    Points := Points + 10;
+end;
+var s: TScore;
+begin
+  s.Points := 5;
+  AddTen(s);
+  WriteLn(s.Points);
+end."#
+        ),
+        &["15"]
+    );
+}
+
+#[test]
+fn enum_explicit_values_leave_gaps() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TCode = (A = 10, B, C);
+var c: TCode;
+begin
+  c := B;
+  WriteLn(Ord(c));
+end."#
+        ),
+        &["11"]
+    );
+}
+
+#[test]
+fn subrange_type_bounds_check() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TDigit = 0..9;
+var d: TDigit;
+begin
+  d := 7;
+  WriteLn(d);
+end."#
+        ),
+        &["7"]
+    );
+}
+
+#[test]
+fn set_difference_removes_elements() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TLetter = 'a'..'z';
+var a, b, d: set of TLetter;
+begin
+  a := ['a', 'b', 'c'];
+  b := ['b'];
+  d := a - b;
+  if ('a' in d) and not ('b' in d) then WriteLn('ok');
+end."#
+        ),
+        &["ok"]
+    );
+}
+
+#[test]
+fn packed_record_size_may_differ() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TPacked = packed record A: Byte; B: Byte; end;
+var p: TPacked;
+begin
+  p.A := 1;
+  p.B := 2;
+  WriteLn(p.A + p.B);
+end."#
+        ),
+        &["3"]
+    );
+}
+
+#[test]
+fn record_method_modifies_self_field() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TAcc = record
+  N: Integer;
+  procedure IncN;
+end;
+procedure TAcc.IncN; begin N := N + 1; end;
+var a: TAcc;
+begin
+  a.N := 0;
+  a.IncN;
+  WriteLn(a.N);
+end."#
+        ),
+        &["1"]
+    );
+}
+
+#[test]
+fn case_variant_record_tag_selects_field() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TShape = record
+  case Integer of
+    1: (Radius: Real);
+    2: (Width, Height: Real);
+end;
+var s: TShape;
+begin
+  s.Radius := 2.0;
+  WriteLn(Format('%.0f', [s.Radius]));
+end."#
+        ),
+        &["2"]
+    );
+}
+

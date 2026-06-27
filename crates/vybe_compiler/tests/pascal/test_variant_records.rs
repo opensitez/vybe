@@ -568,3 +568,108 @@ end.
     let out = run_pascal(src);
     assert_eq!(out, vec!["1:p=10", "2:s=99"]);
 }
+
+#[test]
+fn variant_record_boolean_tag_selects_branch() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TVal = record
+  case Boolean of
+    True: (I: Integer);
+    False: (S: String);
+end;
+var v: TVal;
+begin
+  v.I := 7;
+  WriteLn(v.I);
+end."#
+        ),
+        &["7"]
+    );
+}
+
+#[test]
+fn variant_record_integer_tag_two_shapes() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TNum = record
+  case Byte of
+    1: (A: Integer);
+    2: (B, C: Integer);
+end;
+var n: TNum;
+begin
+  n.A := 5;
+  WriteLn(n.A);
+end."#
+        ),
+        &["5"]
+    );
+}
+
+#[test]
+fn variant_record_enum_discriminant() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TKind = (Circle, Rect);
+    TShape = record
+  case TKind of
+    Circle: (Radius: Real);
+    Rect: (W, H: Real);
+end;
+var s: TShape;
+begin
+  s.Radius := 3.0;
+  WriteLn(Trunc(s.Radius));
+end."#
+        ),
+        &["3"]
+    );
+}
+
+#[test]
+fn variant_record_with_shared_prefix_field() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TTagged = record
+  Tag: Integer;
+  case Integer of
+    0: (N: Integer);
+    1: (Text: String);
+end;
+var t: TTagged;
+begin
+  t.Tag := 0;
+  t.N := 42;
+  WriteLn(t.N);
+end."#
+        ),
+        &["42"]
+    );
+}
+
+#[test]
+fn variant_record_assign_between_same_tag() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TPair = record
+  case Boolean of
+    True: (X: Integer);
+    False: (Y: Integer);
+end;
+var a, b: TPair;
+begin
+  a.X := 10;
+  b := a;
+  WriteLn(b.X);
+end."#
+        ),
+        &["10"]
+    );
+}
+

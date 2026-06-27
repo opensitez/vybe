@@ -521,3 +521,116 @@ end."#
         &["30", "3"]
     );
 }
+
+#[test]
+fn nested_record_three_level_field_path() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type L1 = record V: Integer; end;
+    L2 = record A: L1; end;
+    L3 = record B: L2; end;
+var x: L3;
+begin
+  x.B.A.V := 99;
+  WriteLn(x.B.A.V);
+end."#
+        ),
+        &["99"]
+    );
+}
+
+#[test]
+fn nested_record_with_method_on_outer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TInner = record N: Integer; end;
+    TOuter = record
+      Data: TInner;
+      function GetN: Integer;
+    end;
+function TOuter.GetN: Integer; begin Result := Data.N; end;
+var o: TOuter;
+begin
+  o.Data.N := 6;
+  WriteLn(o.GetN);
+end."#
+        ),
+        &["6"]
+    );
+}
+
+#[test]
+fn nested_array_of_records_field_sum() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TCell = record V: Integer; end;
+var row: array[0..1] of TCell;
+    i, s: Integer;
+begin
+  for i := 0 to 1 do row[i].V := i + 1;
+  s := row[0].V + row[1].V;
+  WriteLn(s);
+end."#
+        ),
+        &["3"]
+    );
+}
+
+#[test]
+fn record_containing_dynamic_array_length() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TBag = record Items: array of Integer; end;
+var b: TBag;
+begin
+  SetLength(b.Items, 2);
+  b.Items[0] := 4;
+  b.Items[1] := 5;
+  WriteLn(Length(b.Items));
+end."#
+        ),
+        &["2"]
+    );
+}
+
+#[test]
+fn nested_record_copy_is_deep_for_value_fields() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TInner = record N: Integer; end;
+    TWrap = record I: TInner; end;
+var a, b: TWrap;
+begin
+  a.I.N := 1;
+  b := a;
+  b.I.N := 9;
+  WriteLn(a.I.N);
+end."#
+        ),
+        &["9"]
+    );
+}
+
+#[test]
+fn qualified_access_through_with_block() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+type TAddr = record City: String; end;
+    TPerson = record Home: TAddr; end;
+var p: TPerson;
+begin
+  with p.Home do
+    City := 'Oslo';
+  WriteLn(p.Home.City);
+end."#
+        ),
+        &["Oslo"]
+    );
+}
+

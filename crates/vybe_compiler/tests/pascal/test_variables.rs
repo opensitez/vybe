@@ -116,3 +116,119 @@ fn const_maxint() {
         &["2147483647"]
     );
 }
+
+#[test]
+fn var_shadowing_inner_hides_outer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+procedure Demo;
+var x: Integer;
+  procedure Inner;
+  var x: Integer;
+  begin
+    x := 2;
+    WriteLn(x);
+  end;
+begin
+  x := 1;
+  Inner;
+  WriteLn(x);
+end;
+begin
+  Demo;
+end."#
+        ),
+        &["2", "1"]
+    );
+}
+
+#[test]
+fn typed_constant_string_immutable() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; const Greeting: string = 'hi'; begin WriteLn(Greeting); end."#
+        ),
+        &["hi"]
+    );
+}
+
+#[test]
+fn typed_constant_real_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; const PiApprox: Real = 3.25; begin WriteLn(PiApprox:0:2); end."#
+        ),
+        &["3.25"]
+    );
+}
+
+#[test]
+fn local_var_initialized_in_declaration() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var n: Integer = 7; begin WriteLn(n); end."#
+        ),
+        &["7"]
+    );
+}
+
+#[test]
+fn global_var_visible_from_procedure() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
+var g: Integer;
+procedure ShowGlobal;
+begin
+  WriteLn(g);
+end;
+begin
+  g := 99;
+  ShowGlobal;
+end."#
+        ),
+        &["99"]
+    );
+}
+
+#[test]
+fn const_expression_used_in_array_bounds() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; const N = 3; var a: array[1..N] of Integer; begin a[2] := 5; WriteLn(a[2]); end."#
+        ),
+        &["5"]
+    );
+}
+
+#[test]
+fn minint_constant_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(MinInt); end."#
+        ),
+        &["-2147483648"]
+    );
+}
+
+#[test]
+fn multiple_vars_single_var_declaration() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a, b, c: Integer; begin a := 1; b := 2; c := 3; WriteLn(a + b + c); end."#
+        ),
+        &["6"]
+    );
+}
+
+#[test]
+fn byte_var_overflow_wrap_behavior() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var b: Byte; begin b := 255; b := b + 1; WriteLn(b); end."#
+        ),
+        &["0"]
+    );
+}
+

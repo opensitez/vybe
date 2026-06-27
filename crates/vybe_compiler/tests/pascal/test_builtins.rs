@@ -344,3 +344,104 @@ fn assigned_nil() {
         &["y"]
     );
 }
+
+#[test]
+fn chr_from_ord_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Chr(66)); end."#
+        ),
+        &["B"]
+    );
+}
+
+#[test]
+fn ord_from_char_value() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Ord('Z')); end."#
+        ),
+        &["90"]
+    );
+}
+
+#[test]
+fn length_on_dynamic_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array of Integer; begin SetLength(a, 3); WriteLn(Length(a)); end."#
+        ),
+        &["3"]
+    );
+}
+
+#[test]
+fn copy_from_dynamic_array_slice() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array of Integer; begin SetLength(a, 3); a[0]:=1; a[1]:=2; a[2]:=3; WriteLn(a[1]); end."#
+        ),
+        &["2"]
+    );
+}
+
+#[test]
+fn random_zero_to_one_range() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin Randomize; WriteLn(Random < 1.0); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn random_range_inclusive_bounds() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var n: Integer; begin Randomize; n := Random(6); WriteLn((n >= 0) and (n <= 5)); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn include_exclude_set_characters() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var s: set of Char; begin s := ['a']; Include(s, 'b'); Exclude(s, 'a'); if 'b' in s then WriteLn('b'); end."#
+        ),
+        &["b"]
+    );
+}
+
+#[test]
+fn paramstr_zero_returns_program_path_marker() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(Length(ParamStr(0)) > 0); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn upcase_converts_ascii_lower() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(UpCase('k')); end."#
+        ),
+        &["K"]
+    );
+}
+
+#[test]
+fn lo_case_converts_ascii_upper() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; begin WriteLn(LoCase('K')); end."#
+        ),
+        &["k"]
+    );
+}
+
