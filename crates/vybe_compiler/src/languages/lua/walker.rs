@@ -114,74 +114,11 @@ fn walk_for_numeric(pair: Pair<Rule>) -> Result<StmtKind, String> {
     };
     let body = body_pair.map(walk_block).transpose()?.unwrap_or_default();
 
-    // Same shape as JS `for (let i = start; cond; i = i + step)` — lowered by
-    // `compiler/mod.rs` via `common::loops::{emit_loop_start, emit_loop_cond, emit_loop_end}`.
-    let limit_temp = format!("__lua_for_limit_{var}");
-    let init = Box::new(Statement::new(StmtKind::VarDecl {
-        declarations: vec![
-            VarDeclarator {
-                pattern: BindingPattern::Ident(var.clone()),
-                type_hint: None,
-                init: Some(start),
-                array_bounds: None,
-                with_events: false,
-            },
-            VarDeclarator {
-                pattern: BindingPattern::Ident(limit_temp.clone()),
-                type_hint: None,
-                init: Some(limit),
-                array_bounds: None,
-                with_events: false,
-            },
-        ],
-        kind: VarDeclKind::Let,
-    }));
-
-    let var_expr = Expression::new(ExprKind::Ident(var));
-    let compare_op = if lua_step_is_negative(&step) {
-        BinOp::GtEq
-    } else {
-        BinOp::LtEq
-    };
-    let cond = Expression::new(ExprKind::Binary {
-        op: compare_op,
-        left: Box::new(var_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Ident(limit_temp))),
-    });
-    let update = Expression::new(ExprKind::Assign {
-        target: Box::new(var_expr.clone()),
-        value: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::Add,
-            left: Box::new(var_expr),
-            right: Box::new(step),
-        })),
-    });
-    Ok(StmtKind::For {
-        init: Some(init),
-        cond: Some(cond),
-        update: Some(update),
-        body: lua_scoped_body(body),
-    })
-}
-
-fn lua_step_is_negative(step: &Expression) -> bool {
-    match &step.kind {
-        ExprKind::Lit(Literal::Int(n)) => *n < 0,
-        ExprKind::Lit(Literal::Float(n)) => *n < 0.0,
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr,
-        } => match &expr.kind {
-            ExprKind::Lit(Literal::Int(n)) => *n > 0,
-            ExprKind::Lit(Literal::Float(n)) => *n > 0.0,
-            _ => false,
-        },
-        _ => false,
-    }
+    Ok(super::normalize::build_numeric_for(var, start, limit, step, body))
 }
 
 fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut names = Vec::new();
     let mut expl = Vec::new();
     let mut body = Vec::new();

@@ -3446,25 +3446,42 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
         };
         let right = walk_expression(right_pair)?;
         let op = parse_binop(&op_str);
-        let (l, r) = if op == BinOp::Concat {
-            // PHP `$a . $b` invokes `__toString` on objects. Wrap each
-            // operand in an IIFE that calls `__toString` when present:
-            //   ((v) => v && v.__toString ? v.__toString() : v)($x)
-            (
-                php_concat_operand_coerce(left, &span),
-                php_concat_operand_coerce(right, &span),
-            )
+        // PHP comparisons coerce numeric strings to numbers.
+        // Route >/< through PHP-specific helpers that do Number() coercion.
+        if matches!(op, BinOp::Gt | BinOp::Lt | BinOp::GtEq | BinOp::LtEq) {
+            let helper = match op {
+                BinOp::Gt => "__php_gt",
+                BinOp::Lt => "__php_lt",
+                BinOp::GtEq => "__php_gte",
+                BinOp::LtEq => "__php_lte",
+                _ => unreachable!(),
+            };
+            left = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident(helper)),
+                    args: vec![Argument::positional(left), Argument::positional(right)],
+                    optional: false,
+                },
+                span.clone(),
+            );
         } else {
-            (left, right)
-        };
-        left = Expression::with_span(
-            ExprKind::Binary {
-                op,
-                left: Box::new(l),
-                right: Box::new(r),
-            },
-            span.clone(),
-        );
+            let (l, r) = if op == BinOp::Concat {
+                (
+                    php_concat_operand_coerce(left, &span),
+                    php_concat_operand_coerce(right, &span),
+                )
+            } else {
+                (left, right)
+            };
+            left = Expression::with_span(
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(l),
+                    right: Box::new(r),
+                },
+                span.clone(),
+            );
+        }
     }
     Ok(left)
 }
@@ -6838,10 +6855,24 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             ));
         }
     }
-    // PHP `new stdClass()` → empty object literal `{}`
+    // PHP `new stdClass()` → object literal with __type stamp for get_class
     if let ExprKind::Ident(cn) = &class_expr.kind {
         if cn.trim_start_matches('\\').eq_ignore_ascii_case("stdClass") {
-            return Ok(Expression::with_span(ExprKind::Object(vec![]), span));
+            return Ok(Expression::with_span(
+                ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::with_span(
+                            ExprKind::Lit(Literal::Str("__type".into())),
+                            span.clone(),
+                        ),
+                        value: Expression::with_span(
+                            ExprKind::Lit(Literal::Str("stdClass".into())),
+                            span.clone(),
+                        ),
+                    },
+                ]),
+                span,
+            ));
         }
     }
     Ok(Expression::with_span(
@@ -10255,18 +10286,36 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // the JS path; stamped directly in the PHP ctor chunk), and the
         // class function carries its declared `name`.
         "get_class" if args.len() == 1 => {
+            // $obj.__type ?? $obj.constructor.name
+            let obj = arg(0)?;
+            let type_prop = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(obj.clone()),
+                    field: "__type".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
             let ctor = Expression::with_span(
                 ExprKind::Member {
-                    object: Box::new(arg(0)?),
+                    object: Box::new(obj),
                     field: "constructor".to_string(),
                     null_safe: false,
                 },
                 span.clone(),
             );
-            ExprKind::Member {
-                object: Box::new(ctor),
-                field: "name".to_string(),
-                null_safe: false,
+            let ctor_name = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(ctor),
+                    field: "name".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Binary {
+                op: BinOp::NullCoalesce,
+                left: Box::new(type_prop),
+                right: Box::new(ctor_name),
             }
         }
         // PHP `is_a($obj, "Name")` (literal class name) → `$obj instanceof Name`.

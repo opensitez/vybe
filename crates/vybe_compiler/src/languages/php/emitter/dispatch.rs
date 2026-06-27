@@ -77,6 +77,38 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
             chunks[current].emit_i32_const(1, line);
         }
+        "php.compare_gt" => super::numeric_adapter::emit_php_compare_gt(chunks, current, argc, line),
+        "php.compare_lt" => super::numeric_adapter::emit_php_compare_lt(chunks, current, argc, line),
+        "php.compare_gte" => {
+            use vybe_bytecode::opcode::Op;
+            let chunk = &mut chunks[current];
+            let b_slot = chunk.alloc_scratch(1);
+            let a_slot = chunk.alloc_scratch(1);
+            let number_fn = chunk.add_import("ecma:number", "Number");
+            chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+            chunk.emit_call(number_fn, 1, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            chunk.emit_call(number_fn, 1, line);
+            chunk.emit_op(Op::F64_GE, line);
+            crate::emitter::ops::emit_i32_to_bool(chunk, line);
+        }
+        "php.compare_lte" => {
+            use vybe_bytecode::opcode::Op;
+            let chunk = &mut chunks[current];
+            let b_slot = chunk.alloc_scratch(1);
+            let a_slot = chunk.alloc_scratch(1);
+            let number_fn = chunk.add_import("ecma:number", "Number");
+            chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+            chunk.emit_call(number_fn, 1, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            chunk.emit_call(number_fn, 1, line);
+            chunk.emit_op(Op::F64_LE, line);
+            crate::emitter::ops::emit_i32_to_bool(chunk, line);
+        }
         "php.intval" => {
             let num_idx = chunks[current].add_import("ecma:number", "Number");
             chunks[current].emit_call(num_idx, 1, line);

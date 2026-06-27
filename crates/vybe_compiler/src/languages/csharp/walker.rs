@@ -87,7 +87,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
     };
     rewrite_using_imports(&mut module);
-    rewrite_using_declarations(&mut module);
+    lower_csharp_using_declarations(&mut module.body);
+    rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_explicit_interface_accesses(&mut module);
     rewrite_record_uses(&mut module);
     rewrite_tuple_uses(&mut module);
@@ -2254,58 +2255,60 @@ fn rewrite_using_imports(module: &mut Module) {
     rewrite_using_imports_in_statements(&mut module.body, &aliases, &static_paths);
 }
 
-fn rewrite_using_declarations(module: &mut Module) {
-    rewrite_using_declarations_in_statements(&mut module.body);
-}
+// ── `using var` lowering — ECMA-334 §13.14 ─────────────────────────────────
+//
+// `using var x = expr; rest…` desugars in the walker (same layering as JS
+// `lower_using_declarations`) to explicit JS-shaped AST:
+//
+//   var x = expr;
+//   try { rest… } finally { if (x != null) x.Dispose(); }
+//
+// Block-form `using (var x = expr) { … }` keeps `StmtKind::Using` with a
+// non-empty body and still routes through the shared compiler try/finally
+// emitter. Only declaration-form `using var` is lowered here so `break` /
+// `continue` inside loops get correct structured-control-flow depths.
 
-fn rewrite_using_declarations_in_statements(body: &mut Vec<Statement>) {
-    for stmt in body.iter_mut() {
-        rewrite_using_declarations_in_statement(stmt);
-    }
-
-    let mut rewritten = Vec::with_capacity(body.len());
-    let mut remaining = std::mem::take(body).into_iter();
-    while let Some(mut stmt) = remaining.next() {
-        let is_using_decl = matches!(&stmt.kind, StmtKind::Using { body, .. } if body.is_empty());
-        if is_using_decl {
-            let mut tail: Vec<Statement> = remaining.collect();
-            rewrite_using_declarations_in_statements(&mut tail);
-            if let StmtKind::Using { body, .. } = &mut stmt.kind {
-                *body = tail;
-            }
-            rewritten.push(stmt);
-            *body = rewritten;
-            return;
+fn lower_csharp_using_declarations(body: &mut Vec<Statement>) {
+    for (i, s) in body.iter().enumerate() {
+        if matches!(&s.kind, StmtKind::Using { body, .. } if body.is_empty()) {
+            let mut tail: Vec<Statement> = body.drain(i + 1..).collect();
+            let marker = body.pop().expect("using marker");
+            let StmtKind::Using { var, resource, .. } = marker.kind else {
+                unreachable!()
+            };
+            lower_csharp_using_declarations(&mut tail);
+            body.extend(lower_one_csharp_using(&var, resource, tail));
+            break;
         }
-        rewritten.push(stmt);
     }
-    *body = rewritten;
+    for s in body.iter_mut() {
+        visit_csharp_stmt_lists_for_using(&mut s.kind, lower_csharp_using_declarations);
+    }
 }
 
-fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
-    match &mut stmt.kind {
+fn visit_csharp_stmt_lists_for_using(
+    kind: &mut StmtKind,
+    visit: fn(&mut Vec<Statement>),
+) {
+    match kind {
         StmtKind::Block(body)
         | StmtKind::NamespaceDecl { body, .. }
-        | StmtKind::FunctionDecl { body, .. } => {
-            rewrite_using_declarations_in_statements(body);
-        }
+        | StmtKind::FunctionDecl { body, .. } => visit(body),
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-                        rewrite_using_declarations_in_statement(stmt);
+                        visit_csharp_stmt_lists_for_using(&mut stmt.kind, visit);
                     }
-                    ClassMember::Constructor { body, .. } => {
-                        rewrite_using_declarations_in_statements(body);
-                    }
+                    ClassMember::Constructor { body, .. } => visit(body),
                     ClassMember::Property { getter, setter, .. } => {
                         if let Some(getter) = getter {
-                            rewrite_using_declarations_in_statements(getter);
+                            visit(getter);
                         }
                         if let Some(setter) = setter {
-                            rewrite_using_declarations_in_statements(&mut setter.body);
+                            visit(&mut setter.body);
                         }
                     }
                     _ => {}
@@ -2318,61 +2321,401 @@ fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
             else_body,
             ..
         } => {
-            rewrite_using_declarations_in_statements(then_body);
+            visit(then_body);
             for (_, elif_body) in elifs {
-                rewrite_using_declarations_in_statements(elif_body);
+                visit(elif_body);
             }
             if let Some(else_body) = else_body {
-                rewrite_using_declarations_in_statements(else_body);
+                visit(else_body);
             }
         }
         StmtKind::For { init, body, .. } => {
             if let Some(init) = init {
-                rewrite_using_declarations_in_statement(init);
+                visit_csharp_stmt_lists_for_using(&mut init.kind, visit);
             }
-            rewrite_using_declarations_in_statements(body);
+            visit(body);
         }
         StmtKind::ForIn {
             body, else_body, ..
         } => {
-            rewrite_using_declarations_in_statements(body);
+            visit(body);
             if let Some(else_body) = else_body {
-                rewrite_using_declarations_in_statements(else_body);
+                visit(else_body);
             }
         }
         StmtKind::While {
             body, else_body, ..
         } => {
-            rewrite_using_declarations_in_statements(body);
+            visit(body);
             if let Some(else_body) = else_body {
-                rewrite_using_declarations_in_statements(else_body);
+                visit(else_body);
             }
         }
         StmtKind::DoWhile { body, .. }
         | StmtKind::Using { body, .. }
-        | StmtKind::Lock { body, .. } => {
-            rewrite_using_declarations_in_statements(body);
-        }
+        | StmtKind::Lock { body, .. } => visit(body),
         StmtKind::Try {
             body,
             catches,
             finally,
             ..
         } => {
-            rewrite_using_declarations_in_statements(body);
+            visit(body);
             for catch in catches {
-                rewrite_using_declarations_in_statements(&mut catch.body);
+                visit(&mut catch.body);
             }
             if let Some(finally) = finally {
-                rewrite_using_declarations_in_statements(finally);
+                visit(finally);
             }
         }
         StmtKind::Switch { cases, default, .. } => {
             for case in cases {
-                rewrite_using_declarations_in_statements(&mut case.body);
+                visit(&mut case.body);
             }
             if let Some(default) = default {
-                rewrite_using_declarations_in_statements(default);
+                visit(default);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_one_csharp_using(
+    var: &str,
+    resource: Expression,
+    tail: Vec<Statement>,
+) -> Vec<Statement> {
+    let decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(var.to_string()),
+            type_hint: None,
+            init: Some(resource),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    let mut out = vec![decl];
+    out.extend(csharp_using_disposal_wrap(var, tail));
+    out
+}
+
+fn csharp_using_disposal_wrap(var: &str, tail: Vec<Statement>) -> Vec<Statement> {
+    let var_expr = Expression::ident(var);
+    let dispose_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(var_expr.clone()),
+            field: "Dispose".to_string(),
+            null_safe: false,
+        })),
+        args: vec![],
+        optional: false,
+    });
+    let finally_body = vec![Statement::new(StmtKind::If {
+        cond: Expression::new(ExprKind::Binary {
+            op: BinOp::StrictNotEq,
+            left: Box::new(var_expr),
+            right: Box::new(Expression::null()),
+        }),
+        then_body: vec![Statement::new(StmtKind::Expr(dispose_call))],
+        elifs: Vec::new(),
+        else_body: None,
+    })];
+    vec![Statement::new(StmtKind::Try {
+        body: tail,
+        catches: Vec::new(),
+        else_body: None,
+        finally: Some(finally_body),
+    })]
+}
+
+// ── HashSet / SortedSet set-algebra bool APIs ───────────────────────────────
+//
+// Host `ecma:set:isSubsetOf` returns i32 0/1; .NET `Console.WriteLine(bool)`
+// expects a real boolean (`True`/`False`). Fold self-comparisons in the walker
+// (avoids same-object host deadlock) and route everything else through a
+// `cond ? true : false` ternary so the stack carries JS bool values.
+
+fn rewrite_set_algebra_bool_calls(body: &mut [Statement]) {
+    for stmt in body.iter_mut() {
+        rewrite_set_algebra_bool_calls_in_stmt(stmt);
+    }
+}
+
+fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr),
+            cause: None,
+        } => rewrite_set_algebra_bool_calls_in_expr(expr),
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause: Some(cause),
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(expr);
+            rewrite_set_algebra_bool_calls_in_expr(cause);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_set_algebra_bool_calls_in_expr(init);
+                }
+            }
+        }
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::FunctionDecl { body, .. } => rewrite_set_algebra_bool_calls(body),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_set_algebra_bool_calls_in_stmt(stmt);
+                    }
+                    ClassMember::Constructor { body, .. } => rewrite_set_algebra_bool_calls(body),
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            rewrite_set_algebra_bool_calls(getter);
+                        }
+                        if let Some(setter) = setter {
+                            rewrite_set_algebra_bool_calls(&mut setter.body);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls(then_body);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_set_algebra_bool_calls_in_expr(elif_cond);
+                rewrite_set_algebra_bool_calls(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_set_algebra_bool_calls(else_body);
+            }
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            if let Some(init) = init {
+                rewrite_set_algebra_bool_calls_in_stmt(init);
+            }
+            if let Some(cond) = cond {
+                rewrite_set_algebra_bool_calls_in_expr(cond);
+            }
+            if let Some(update) = update {
+                rewrite_set_algebra_bool_calls_in_expr(update);
+            }
+            rewrite_set_algebra_bool_calls(body);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(iter);
+            rewrite_set_algebra_bool_calls(body);
+            if let Some(else_body) = else_body {
+                rewrite_set_algebra_bool_calls(else_body);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls(body);
+            if let Some(else_body) = else_body {
+                rewrite_set_algebra_bool_calls(else_body);
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls(body);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(resource);
+            rewrite_set_algebra_bool_calls(body);
+        }
+        StmtKind::Lock { expr, body, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(expr);
+            rewrite_set_algebra_bool_calls(body);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+            ..
+        } => {
+            rewrite_set_algebra_bool_calls(body);
+            for catch in catches {
+                rewrite_set_algebra_bool_calls(&mut catch.body);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_set_algebra_bool_calls(else_body);
+            }
+            if let Some(finally) = finally {
+                rewrite_set_algebra_bool_calls(finally);
+            }
+        }
+        StmtKind::Switch { expr, cases, default, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(expr);
+            for case in cases {
+                rewrite_set_algebra_bool_calls(&mut case.body);
+            }
+            if let Some(default) = default {
+                rewrite_set_algebra_bool_calls(default);
+            }
+        }
+        StmtKind::Labeled { body, .. } => rewrite_set_algebra_bool_calls_in_stmt(body),
+        _ => {}
+    }
+}
+
+fn is_set_algebra_bool_method(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "issubsetof"
+            | "issupersetof"
+            | "ispropersubsetof"
+            | "ispropersupersetof"
+            | "setequals"
+            | "overlaps"
+    )
+}
+
+fn expr_same_reference(a: &Expression, b: &Expression) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(na), ExprKind::Ident(nb)) => na == nb,
+        (ExprKind::This, ExprKind::This) => true,
+        (
+            ExprKind::Member {
+                object: oa,
+                field: fa,
+                ..
+            },
+            ExprKind::Member {
+                object: ob,
+                field: fb,
+                ..
+            },
+        ) => fa == fb && expr_same_reference(oa, ob),
+        _ => false,
+    }
+}
+
+fn try_fold_set_algebra_self_call(
+    object: &Expression,
+    method: &str,
+    arg: &Expression,
+) -> Option<Expression> {
+    if !expr_same_reference(object, arg) {
+        return None;
+    }
+    match method.to_ascii_lowercase().as_str() {
+        "issubsetof" | "issupersetof" | "setequals" => Some(Expression::bool(true)),
+        "ispropersubsetof" | "ispropersupersetof" => Some(Expression::bool(false)),
+        _ => None,
+    }
+}
+
+fn wrap_csharp_bool(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(expr),
+        then: Box::new(Expression::bool(true)),
+        else_: Box::new(Expression::bool(false)),
+    })
+}
+
+fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Spread(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Delete(inner) => rewrite_set_algebra_bool_calls_in_expr(inner),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right } => {
+            rewrite_set_algebra_bool_calls_in_expr(left);
+            rewrite_set_algebra_bool_calls_in_expr(right);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls_in_expr(then);
+            rewrite_set_algebra_bool_calls_in_expr(else_);
+        }
+        ExprKind::Member { object, .. } => rewrite_set_algebra_bool_calls_in_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(object);
+            rewrite_set_algebra_bool_calls_in_expr(index);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if is_set_algebra_bool_method(field) && args.len() == 1 {
+                    if let Some(folded) =
+                        try_fold_set_algebra_self_call(object, field, &args[0].value)
+                    {
+                        *expr = folded;
+                        return;
+                    }
+                    rewrite_set_algebra_bool_calls_in_expr(&mut args[0].value);
+                    let call =
+                        std::mem::replace(expr, Expression::new(ExprKind::Lit(Literal::Null)));
+                    *expr = wrap_csharp_bool(call);
+                    return;
+                }
+            }
+            rewrite_set_algebra_bool_calls_in_expr(callee);
+            for arg in args {
+                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value);
+            }
+        }
+        ExprKind::New { class, args, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(class);
+            for arg in args {
+                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_set_algebra_bool_calls_in_expr(expr),
+            LambdaBody::Block(stmts) => rewrite_set_algebra_bool_calls(stmts),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_set_algebra_bool_calls_in_expr(&mut item.value);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_set_algebra_bool_calls_in_expr(item);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { value, .. } => {
+                        rewrite_set_algebra_bool_calls_in_expr(value);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_set_algebra_bool_calls_in_expr(expr),
+                    ObjectProperty::Method { value, .. } => {
+                        rewrite_set_algebra_bool_calls_in_stmt(value);
+                    }
+                    _ => {}
+                }
             }
         }
         _ => {}

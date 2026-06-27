@@ -486,6 +486,10 @@ __php_strpos        = { emit = "intrinsic:php_strpos",          min_args = 2, ma
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
 __php_array_slice   = { emit = "intrinsic:php_array_slice",     min_args = 2, max_args = 4 }
 __php_print_expr    = { emit = "common:php.print_expr",          min_args = 1, max_args = 1 }
+__php_gt            = { emit = "common:php.compare_gt",          min_args = 2, max_args = 2 }
+__php_lt            = { emit = "common:php.compare_lt",          min_args = 2, max_args = 2 }
+__php_gte           = { emit = "common:php.compare_gte",         min_args = 2, max_args = 2 }
+__php_lte           = { emit = "common:php.compare_lte",         min_args = 2, max_args = 2 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
@@ -681,6 +685,8 @@ __php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args 
 PDO = ["common", "php.pdo_new"]
 
 [value_methods]
+
+toFixed          = { emit = "host:ecma:number:toFixed",           min_args = 0, max_args = 1 }
 
 query            = { emit = "common:php.pdo_query",              min_args = 1, max_args = 1 }
 exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }

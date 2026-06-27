@@ -87,41 +87,25 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 }
 
 pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // PHP is_float: true for any Value::F64, false for everything else.
+    // wasm:js-number.test returns true for F64 values.
+    // BigInt is NOT float. I32 is NOT float.
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
-    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
     let test_number = chunk.add_import("wasm:js-number", "test");
-    let number_is_integer = chunk.add_import("ecma:number", "isInteger");
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
 
     lset(chunk, v_slot, line);
 
+    // BigInt → false
     lget(chunk, v_slot, line);
     chunk.emit_call(test_bigint, 1, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
-
+    // Number (F64) → true
     lget(chunk, v_slot, line);
     chunk.emit_call(test_number, 1, line);
-    chunk.emit_if_value(line);
-    lget(chunk, v_slot, line);
-    chunk.emit_call(number_is_integer, 1, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    lget(chunk, v_slot, line);
-    chunk.emit_call(to_f64, 1, line);
-    chunk.emit_op(Op::F64_ABS, line);
-    push_const(chunk, Value::F64(9_223_372_036_854_774_784.0), line);
-    chunk.emit_op(Op::F64_GT, line);
-    crate::emitter::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::Bool(true), line);
-    chunk.emit_end(line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::Bool(false), line);
-    chunk.emit_end(line);
-
     chunk.emit_end(line);
 }
 
@@ -478,4 +462,40 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_FLOOR, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
+}
+
+/// PHP numeric comparison: coerce both sides to f64 via parseFloat,
+/// then compare as numbers. Handles `'10' > '9'` → true.
+/// Stack: [a, b] → [bool]
+pub fn emit_php_compare_gt(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = alloc_local(chunk);
+    let a_slot = alloc_local(chunk);
+    let number_fn = chunk.add_import("ecma:number", "Number");
+
+    lset(chunk, b_slot, line);
+    lset(chunk, a_slot, line);
+    lget(chunk, a_slot, line);
+    chunk.emit_call(number_fn, 1, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(number_fn, 1, line);
+    chunk.emit_op(Op::F64_GT, line);
+    crate::emitter::ops::emit_i32_to_bool(chunk, line);
+}
+
+/// PHP numeric comparison: less-than.
+pub fn emit_php_compare_lt(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = alloc_local(chunk);
+    let a_slot = alloc_local(chunk);
+    let number_fn = chunk.add_import("ecma:number", "Number");
+
+    lset(chunk, b_slot, line);
+    lset(chunk, a_slot, line);
+    lget(chunk, a_slot, line);
+    chunk.emit_call(number_fn, 1, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(number_fn, 1, line);
+    chunk.emit_op(Op::F64_LT, line);
+    crate::emitter::ops::emit_i32_to_bool(chunk, line);
 }
