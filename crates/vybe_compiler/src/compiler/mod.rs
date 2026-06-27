@@ -970,6 +970,77 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
     }
 }
 
+pub(crate) fn closures_in_body_reference_this(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| stmt_has_closure_with_this(s))
+}
+
+fn stmt_has_closure_with_this(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => expr_has_closure_with_this(e),
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| d.init.as_ref().is_some_and(expr_has_closure_with_this)),
+        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => expr_has_closure_with_this(value),
+        StmtKind::Block(stmts) => closures_in_body_reference_this(stmts),
+        StmtKind::If { cond, then_body, elifs, else_body, .. } => {
+            expr_has_closure_with_this(cond) || closures_in_body_reference_this(then_body)
+                || elifs.iter().any(|(c, b)| expr_has_closure_with_this(c) || closures_in_body_reference_this(b))
+                || else_body.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            expr_has_closure_with_this(cond) || closures_in_body_reference_this(body)
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            init.as_ref().is_some_and(|s| stmt_has_closure_with_this(s))
+                || cond.as_ref().is_some_and(expr_has_closure_with_this)
+                || update.as_ref().is_some_and(expr_has_closure_with_this)
+                || closures_in_body_reference_this(body)
+        }
+        StmtKind::ForIn { iter, body, .. } => expr_has_closure_with_this(iter) || closures_in_body_reference_this(body),
+        StmtKind::Try { body, catches, finally, .. } => {
+            closures_in_body_reference_this(body)
+                || catches.iter().any(|c| closures_in_body_reference_this(&c.body))
+                || finally.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+        }
+        StmtKind::Switch { expr, cases, default, .. } => {
+            expr_has_closure_with_this(expr)
+                || cases.iter().any(|c| closures_in_body_reference_this(&c.body))
+                || default.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+        }
+        StmtKind::Labeled { body, .. } => stmt_has_closure_with_this(body),
+        _ => false,
+    }
+}
+
+fn expr_has_closure_with_this(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Block(stmts) => body_contains_this(stmts),
+            LambdaBody::Expr(e) => expr_contains_this(e),
+        },
+        ExprKind::FunctionExpr(_) => false,
+        ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr) => expr_has_closure_with_this(expr),
+        ExprKind::Binary { left, right, .. } | ExprKind::Assign { target: left, value: right } => {
+            expr_has_closure_with_this(left) || expr_has_closure_with_this(right)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_has_closure_with_this(cond) || expr_has_closure_with_this(then) || expr_has_closure_with_this(else_)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            expr_has_closure_with_this(callee) || args.iter().any(|a| expr_has_closure_with_this(&a.value))
+        }
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => expr_has_closure_with_this(object),
+        ExprKind::Array(elems) => elems.iter().any(|e| expr_has_closure_with_this(&e.value)),
+        ExprKind::Object(props) => props.iter().any(|p| match p {
+            ObjectProperty::KeyValue { value, .. } => expr_has_closure_with_this(value),
+            _ => false,
+        }),
+        ExprKind::New { class, args } => {
+            expr_has_closure_with_this(class) || args.iter().any(|a| expr_has_closure_with_this(&a.value))
+        }
+        ExprKind::Sequence(exprs) => exprs.iter().any(expr_has_closure_with_this),
+        _ => false,
+    }
+}
+
 pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
         ExprKind::Lambda { params, body, .. } => {
@@ -15341,11 +15412,20 @@ impl Compiler {
                         && ((module == "ecma:array" && (func == "from" || func == "fromAsync"))
                             || (module == "ecma:iterator"
                                 && (func == "from" || func == "asyncFrom")));
+                    let async_drain = self.is_js_profile()
+                        && ((module == "ecma:array" && func == "fromAsync")
+                            || (module == "ecma:iterator" && func == "asyncFrom"));
                     if drain_first_arg && !args.is_empty() {
                         self.compile_expr(args[0])?;
-                        common::collections::emit_spread_iterable(
-                            &mut self.chunks, self.current, self.line,
-                        );
+                        if async_drain {
+                            common::generators::emit_drain_async_iterable(
+                                &mut self.chunks, self.current, self.line,
+                            );
+                        } else {
+                            common::collections::emit_spread_iterable(
+                                &mut self.chunks, self.current, self.line,
+                            );
+                        }
                         for a in args.iter().skip(1) {
                             self.compile_expr(a)?;
                         }

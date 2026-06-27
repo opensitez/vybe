@@ -1189,6 +1189,10 @@ fn is_shared_dynamic_global(name: &str, value: &Value) -> bool {
 fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, String> {
     let mut resolved = Vec::with_capacity(imports.len());
     for import in imports {
+        if import.module == "jspi" && import.name == "await" {
+            resolved.push(ImportTarget::JspiSuspend);
+            continue;
+        }
         if import.module == "wasm:string-constants" {
             resolved.push(ImportTarget::StringConst(std::sync::Arc::from(
                 import.name.as_str(),

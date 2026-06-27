@@ -1703,6 +1703,8 @@ impl Compiler {
                                 | "try"
                                 | "withResolvers"
                         )
+                    } else if matches!(&object.kind, ExprKind::Ident(name) if name == "Array") {
+                        field == "fromAsync"
                     } else {
                         matches!(field.as_str(), "then" | "catch" | "finally")
                             && self.expr_is_known_js_promise_like(object)
@@ -1792,8 +1794,6 @@ impl Compiler {
             return Ok(false);
         }
 
-        // All promise chain methods use wrapper chunks with JSPI
-        // await — the common emitter in emitter/promises.rs.
         let (arity, emit_fn): (u8, fn(&mut [Chunk], usize, u32)) = match field {
             "then" => (3, common::promises::emit_then),
             "catch" => (2, common::promises::emit_catch),

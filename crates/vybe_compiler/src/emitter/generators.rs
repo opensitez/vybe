@@ -537,6 +537,14 @@ pub fn emit_resume_dispatch(
 /// Stack before: [iterable]
 /// Stack after:  [array_of_values]
 pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_drain_iterable_inner(chunks, current, line, false);
+}
+
+pub fn emit_drain_async_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_drain_iterable_inner(chunks, current, line, true);
+}
+
+fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, async_iter: bool) {
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(1);
     let iter_fn_slot = chunk.alloc_scratch(1);
@@ -569,8 +577,27 @@ pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
 
-    // No "next" → get [Symbol.iterator] and call it
-    // §7.4.2 GetIterator: iter_fn = obj[@@iterator]
+    // No "next" → get iterator method
+    // §7.4.2 GetIterator: for async, try @@asyncIterator first
+    if async_iter {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        let async_sym = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("Symbol(@@asyncIterator)")));
+        chunk.emit_op_u16(Op::STRUCT_GET, async_sym, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        let async_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+        chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
+        chunk.emit_end(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+    }
+    // Sync: try @@iterator
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let sym_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("Symbol(@@iterator)")));
     chunk.emit_op_u16(Op::STRUCT_GET, sym_key, line);
@@ -585,6 +612,9 @@ pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::STRUCT_GET, iter_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
     chunk.emit_end(line);
+    if async_iter {
+        chunk.emit_end(line); // close the async-first if
+    }
 
     // No iterator → skip to end of this IF; the iterForOf fallback
     // after the IF handles array-likes and other non-iterables.
@@ -681,6 +711,10 @@ pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    if async_iter {
+        // §25.5.2.1: Await IteratorResult from async next()
+        super::functions::emit_await(chunk, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, step_slot, line);
 
     // step null → break

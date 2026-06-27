@@ -674,40 +674,51 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        // Shared env: if any locals/params in this function are captured by
-        // inner closures, create one shared array so all closures see the
-        // same mutable state.
+        if self.is_js_profile()
+            && crate::compiler::closures_in_body_reference_this(body)
+        {
+            let this_idx = self.str_const("__js_this");
+            self.emit_u16(Op::GLOBAL_GET, this_idx);
+            let this_local = self.define_local("__js_this");
+            self.emit_u16(Op::LOCAL_SET, this_local);
+            self.current_closure_captured_locals.insert("__js_this".to_string());
+        }
+
         if !self.current_closure_captured_locals.is_empty() {
+            let mut fn_scope_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            crate::compiler::collect_declared_names(body, &mut fn_scope_names);
             let mut captured_names: Vec<String> = self.current_closure_captured_locals
                 .iter()
+                .filter(|name| {
+                    fn_scope_names.contains(name.as_str())
+                        || parent_shared_env_names.iter().any(|n| n == name.as_str())
+                })
                 .cloned()
                 .collect();
             captured_names.sort();
-            let env_size = captured_names.len() as u16;
-            let line = self.line;
-            for _ in 0..env_size {
-                self.emit(Op::NULL);
-            }
-            self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
-            let env_slot = self.define_local("__shared_env");
-            self.emit_u16(Op::LOCAL_SET, env_slot);
-            self.shared_env_slot = Some(env_slot);
-            self.shared_env_names = captured_names.clone();
-            // Immediately store captured params (they already have values).
-            // For names from outer scopes (not declared locally), forward
-            // from parent's shared env. Names declared locally (var/let/const)
-            // will be stored later when compile_stmt processes the VarDecl.
-            let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-            crate::compiler::collect_declared_names(body, &mut local_decls);
-            for (idx, cap_name) in captured_names.iter().enumerate() {
-                if let Some(param_slot) = self.scope().resolve(cap_name) {
-                    self.emit_u16(Op::LOCAL_GET, param_slot);
-                    crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
-                } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
-                    if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
-                        let closure_env = self.closure_env_slot();
-                        crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+            if !captured_names.is_empty() {
+                let env_size = captured_names.len() as u16;
+                let line = self.line;
+                for _ in 0..env_size {
+                    self.emit(Op::NULL);
+                }
+                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                let env_slot = self.define_local("__shared_env");
+                self.emit_u16(Op::LOCAL_SET, env_slot);
+                self.shared_env_slot = Some(env_slot);
+                self.shared_env_names = captured_names.clone();
+                let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                crate::compiler::collect_declared_names(body, &mut local_decls);
+                for (idx, cap_name) in captured_names.iter().enumerate() {
+                    if let Some(param_slot) = self.scope().resolve(cap_name) {
+                        self.emit_u16(Op::LOCAL_GET, param_slot);
                         crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                    } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
+                        if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                            let closure_env = self.closure_env_slot();
+                            crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
+                            crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                        }
                     }
                 }
             }
@@ -1399,8 +1410,7 @@ impl Compiler {
 
             if ambient_this
                 && !is_static
-                && !cc.current_closure_captured_locals.is_empty()
-                && crate::compiler::body_contains_this(&m.body)
+                && crate::compiler::closures_in_body_reference_this(&m.body)
             {
                 let this_idx = cc.str_const("__js_this");
                 cc.emit_u16(Op::GLOBAL_GET, this_idx);
@@ -1416,10 +1426,11 @@ impl Compiler {
             if !cc.current_closure_captured_locals.is_empty() {
                 let mut captured_names: Vec<String> = cc.current_closure_captured_locals
                     .iter()
+                    .filter(|name| !cc.defined_globals.contains(name.as_str()))
                     .cloned()
                     .collect();
                 captured_names.sort();
-
+              if !captured_names.is_empty() {
                 let env_size = captured_names.len() as u16;
                 let line = cc.line;
                 for _ in 0..env_size {
@@ -1443,6 +1454,19 @@ impl Compiler {
                         crate::emitter::closures::emit_env_set(cc.chunk(), env_slot, idx as u16, line);
                     }
                 }
+              }
+            }
+
+            let async_try = if m.is_async && !m.is_generator && cc.is_js_profile() {
+                let line = cc.line;
+                Some(common::functions::emit_async_body_start(
+                    &mut cc.chunks[ci], line,
+                ))
+            } else {
+                None
+            };
+            if async_try.is_some() {
+                cc.active_async_try_depth += 1;
             }
 
             if is_ctor {
@@ -1488,6 +1512,23 @@ impl Compiler {
                     let line = cc.line;
                     common::functions::emit_function_epilogue(&mut cc.chunks[ci], line);
                 }
+            }
+
+            if async_try.is_some() {
+                cc.active_async_try_depth = cc.active_async_try_depth.saturating_sub(1);
+            }
+            if let Some(catch_jump) = async_try {
+                let line = cc.line;
+                let chunk = &mut cc.chunks[ci];
+                common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
+                let resolve_idx = cc.import("ecma:promise", "resolve");
+                cc.emit_host_call(resolve_idx, 1);
+                cc.emit(Op::RETURN);
+                let chunk = &mut cc.chunks[ci];
+                common::functions::patch_async_body_catch(chunk, catch_jump);
+                let reject_idx = cc.import("ecma:promise", "reject");
+                cc.emit_host_call(reject_idx, 1);
+                cc.emit(Op::RETURN);
             }
 
             cc.current_func_name = saved_fn;
