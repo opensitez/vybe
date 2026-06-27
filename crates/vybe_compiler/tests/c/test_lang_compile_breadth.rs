@@ -1,0 +1,36 @@
+//! Language compile breadth batch 2 — one syntax/semantic shape per test.
+
+use crate::helpers::*;
+
+c_compile_cases! {
+    lang_for_decl_in_init => { includes: ["<stdio.h>"], decls: "", body: "for(int i=0;i<1;i++){} return 0;" },
+    lang_while_break => { includes: ["<stdio.h>"], decls: "", body: "while(0){break;} return 0;" },
+    lang_do_while_continue => { includes: ["<stdio.h>"], decls: "", body: "int i=0; do{ if(++i<2) continue; break; } while(1); return i;" },
+    lang_switch_goto_case => { includes: ["<stdio.h>"], decls: "", body: "switch(1){case 1: goto L; L: return 1; } return 0;" },
+    lang_if_else_nested => { includes: ["<stdio.h>"], decls: "", body: "if(1) if(0) return 1; else return 2; return 0;" },
+    lang_ternary_nested => { includes: ["<stdio.h>"], decls: "", body: "return 1?2:3;" },
+    lang_comma_in_for => { includes: ["<stdio.h>"], decls: "", body: "for(int i=0,j=0;i<1;i++,j++){} return 0;" },
+    lang_struct_nested_anon => { includes: ["<stdio.h>"], decls: "struct S { struct { int x; } inner; };", body: "struct S s={.inner={1}}; return s.inner.x;" },
+    lang_union_in_struct => { includes: ["<stdio.h>"], decls: "struct S { union { int i; char c; } u; };", body: "struct S s; s.u.i=1; return s.u.i;" },
+    lang_enum_bitfield => { includes: ["<stdio.h>"], decls: "enum E { A=1 }; struct S { enum E e:2; };", body: "struct S s={A}; return s.e;" },
+    lang_pointer_to_function_returning_pointer => { includes: ["<stdio.h>"], decls: "int *f(void){ static int x=1; return &x; }", body: "int *(*fp)(void)=f; return *fp();" },
+    lang_array_of_function_pointers => { includes: ["<stdio.h>"], decls: "int f(int x){return x;} int (*tab[1])(int)={f};", body: "return tab[0](2);" },
+    lang_const_array_param => { includes: ["<stdio.h>"], decls: "int len(const int *a){return a[0];}", body: "int a[]={5}; return len(a);" },
+    lang_volatile_pointer => { includes: ["<stdio.h>"], decls: "", body: "volatile int v=1; volatile int *p=&v; return *p;" },
+    lang_restrict_pointer => { includes: ["<stdio.h>"], decls: "void copy(restrict int *d, restrict int *s){*d=*s;}", body: "int a=1,b=2; copy(&a,&b); return a;" },
+    lang_static_assert_type => { includes: ["<assert.h>"], decls: "_Static_assert(sizeof(char)==1,\"\");", body: "return 0;" },
+    lang_generic_default => { includes: ["<stdio.h>"], decls: "#define T(x) _Generic((x), int:1, default:0)", body: "return T(1.0);" },
+    lang_typeof_expr => { includes: ["<stdio.h>"], decls: "", body: "int x=1; typeof(x) y=2; return y;" },
+    lang_alignas_struct => { includes: ["<stdalign.h>"], decls: "struct alignas(16) S { char c; };", body: "struct S s; return sizeof(s)>=16;" },
+    lang_empty_struct => { includes: ["<stdio.h>"], decls: "struct E {};", body: "struct E e; return sizeof(e)>=1;" },
+    lang_zero_length_array_ext => { includes: ["<stdio.h>"], decls: "struct Z { int n; int a[0]; };", body: "return sizeof(struct Z);" },
+    lang_flexible_array => { includes: ["<stdlib.h>"], decls: "struct B { int n; char d[]; };", body: "struct B *b=malloc(sizeof(*b)+2); free(b); return 0;" },
+    lang_vla_parameter => { includes: ["<stdio.h>"], decls: "void f(int n, int a[n]){(void)a;}", body: "f(1,(int[]){1}); return 0;" },
+    lang_nested_function_statement => { includes: ["<stdio.h>"], decls: "", body: "return 0;" },
+    lang_label_at_end => { includes: ["<stdio.h>"], decls: "", body: "goto L; L: return 0;" },
+    lang_case_range_extension => { includes: ["<stdio.h>"], decls: "", body: "switch(2){ case 1 ... 3: return 1; } return 0;" },
+    lang_statement_expression_gnu => { includes: ["<stdio.h>"], decls: "", body: "int x=({int y=2; y+1;}); return x;" },
+    lang_attribute_unused => { includes: ["<stdio.h>"], decls: "__attribute__((unused)) static int u;", body: "return 0;" },
+    lang_attribute_packed => { includes: ["<stdio.h>"], decls: "struct __attribute__((packed)) P { char c; int n; };", body: "return sizeof(struct P);" },
+    lang_thread_local_static => { includes: ["<stdio.h>"], decls: "_Thread_local static int tls;", body: "tls=1; return tls;" },
+}

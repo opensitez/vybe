@@ -1,0 +1,34 @@
+//! math.h APIs not covered elsewhere — one function per test.
+
+use crate::helpers::*;
+
+c_run_cases! {
+    sinh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", sinh(0.0)); return 0;", expect: ["0.000"] },
+    cosh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", cosh(0.0)); return 0;", expect: ["1.000"] },
+    tanh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", tanh(0.0)); return 0;", expect: ["0.000"] },
+    asinh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", asinh(0.0)); return 0;", expect: ["0.000"] },
+    acosh_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", acosh(1.0)); return 0;", expect: ["0.000"] },
+    atanh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", atanh(0.0)); return 0;", expect: ["0.000"] },
+    expm1_small => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", expm1(0.1)); return 0;", expect: ["0.105"] },
+    log1p_small => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", log1p(0.1)); return 0;", expect: ["0.095"] },
+    exp2_three => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", exp2(3.0)); return 0;", expect: ["8"] },
+    logb_eight => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", logb(8.0)); return 0;", expect: ["3"] },
+    remainder_basic => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", remainder(10.0, 3.0)); return 0;", expect: ["1.0"] },
+    remquo_quotient => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "int q; double r = remquo(10.0, 3.0, &q); printf(\"%d %.1f\\n\", q, r); return 0;", expect: ["3 1.0"] },
+    nearbyint_half => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", nearbyint(2.5)); return 0;", expect: ["2"] },
+    rint_half => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", rint(2.5)); return 0;", expect: ["2"] },
+    lrint_positive => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%ld\\n\", lrint(3.2)); return 0;", expect: ["3"] },
+    llrint_positive => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%lld\\n\", llrint(3.2)); return 0;", expect: ["3"] },
+    scalbn_doubles => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", scalbn(1.5, 1)); return 0;", expect: ["3"] },
+    scalbln_scales => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", scalbln(1.25, 2)); return 0;", expect: ["5"] },
+    fdim_positive_diff => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", fdim(5.0, 2.0)); return 0;", expect: ["3.0"] },
+    signbit_negative => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%d\\n\", signbit(-1.0)); return 0;", expect: ["1"] },
+    ceil_positive => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", ceil(2.1)); return 0;", expect: ["3"] },
+    floor_positive => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", floor(2.9)); return 0;", expect: ["2"] },
+    fabs_negative => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", fabs(-4.5)); return 0;", expect: ["4.5"] },
+    exp_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", exp(1.0)); return 0;", expect: ["2.718"] },
+    log_e => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", log(M_E)); return 0;", expect: ["1.000"] },
+    sqrt_four => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", sqrt(16.0)); return 0;", expect: ["4"] },
+    pow_two_ten => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.0f\\n\", pow(2.0, 10.0)); return 0;", expect: ["1024"] },
+    atan_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", atan(1.0)); return 0;", expect: ["0.785"] },
+}

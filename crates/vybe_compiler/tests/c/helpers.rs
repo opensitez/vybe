@@ -3,6 +3,54 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+/// Build a complete C program from includes, declarations, and main body.
+pub fn program_src(includes: &[&str], declarations: &str, body: &str) -> String {
+    let mut src = String::new();
+    for include in includes {
+        src.push_str("#include ");
+        src.push_str(include);
+        src.push('\n');
+    }
+    if !declarations.is_empty() {
+        src.push_str(declarations);
+        if !declarations.ends_with('\n') {
+            src.push('\n');
+        }
+    }
+    src.push_str("int main() {\n");
+    src.push_str(body);
+    if !body.ends_with('\n') {
+        src.push('\n');
+    }
+    src.push_str("}\n");
+    src
+}
+
+#[macro_export]
+macro_rules! c_run_cases {
+    ($($name:ident => { includes: [$($inc:literal),* $(,)?], decls: $decls:expr, body: $body:expr, expect: [$($exp:expr),* $(,)?] }),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_program(&[$($inc),*], $decls, $body, &[$($exp),*]);
+            }
+        )*
+    };
+}
+
+#[macro_export]
+macro_rules! c_compile_cases {
+    ($($name:ident => { includes: [$($inc:literal),* $(,)?], decls: $decls:expr, body: $body:expr }),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                let src = $crate::helpers::program_src(&[$($inc),*], $decls, $body);
+                $crate::helpers::compile_ok(&src);
+            }
+        )*
+    };
+}
+
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::c::parse(src)?;
     let profile =
@@ -66,25 +114,7 @@ pub fn assert_outputs(src: &str, expected: &[&str]) {
 }
 
 pub fn assert_program(includes: &[&str], declarations: &str, body: &str, expected: &[&str]) {
-    let mut src = String::new();
-    for include in includes {
-        src.push_str("#include ");
-        src.push_str(include);
-        src.push('\n');
-    }
-    if !declarations.is_empty() {
-        src.push_str(declarations);
-        if !declarations.ends_with('\n') {
-            src.push('\n');
-        }
-    }
-    src.push_str("int main() {\n");
-    src.push_str(body);
-    if !body.ends_with('\n') {
-        src.push('\n');
-    }
-    src.push_str("}\n");
-    assert_outputs(&src, expected);
+    assert_outputs(&program_src(includes, declarations, body), expected);
 }
 
 pub fn parse_ok(src: &str) -> bool {
