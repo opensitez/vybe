@@ -31,7 +31,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     // The helper expects (fmt, args_array).  The compiler pushed the args
     // on the stack in order: [fmt, arg0, arg1, ...].
     // We need to pack args 1..N into an array first.
-    let push_idx = chunks[0].add_import("ecma:array", "push");
+    let push_idx = chunks[current].add_import("ecma:array", "push");
 
     // Allocate a local to hold the args array being built.
     let arr_slot = chunks[current].local_count;

@@ -1178,6 +1178,34 @@ fn call_ref_basic() {
     }
 }
 
+#[test]
+fn call_ref_preserves_array_argument() {
+    let mut script = Chunk::new("<script>");
+    let mut first_chunk = Chunk::new("first");
+    first_chunk.arity = 1;
+    first_chunk.local_count = 1;
+    first_chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    first_chunk.emit_i32_const(0, 0);
+    first_chunk.emit_op(Op::ARRAY_GET, 0);
+    first_chunk.emit_op(Op::RETURN, 0);
+
+    let array = Value::Object(Arc::new(std::sync::Mutex::new(Object::new_array(vec![
+        Value::F64(50.0),
+    ]))));
+    let c_array = script.add_constant(array);
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0);
+    script.emit_op_u16(Op::CONST, c_array, 0);
+    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op(Op::HALT, 0);
+
+    let result = run_chunks(vec![script, first_chunk]);
+    match result {
+        Value::F64(v) if v == 50.0 => {}
+        _ => panic!("Expected F64(50.0), got {:?}", result),
+    }
+}
+
 // ============================================================
 // Memory64
 // ============================================================

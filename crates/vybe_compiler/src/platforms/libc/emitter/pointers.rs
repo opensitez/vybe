@@ -68,6 +68,18 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     })
 }
 
+fn is_zero(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Lit(Literal::Int(0)))
+}
+
+fn binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    e(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Create a C array pointer over `base` starting at element `idx`.
@@ -104,10 +116,23 @@ pub fn carray_deref_write(ptr: Expression, val: Expression) -> Expression {
     })
 }
 
+/// Read `ptr[n]`: `ptr.__base[ptr.__idx + n]`.
+pub fn carray_indexed_read(ptr: Expression, n: Expression) -> Expression {
+    e(ExprKind::Index {
+        object: Box::new(member(ptr.clone(), CARRAY_BASE_KEY)),
+        index: Box::new(binary(BinOp::Add, member(ptr, CARRAY_IDX_KEY), n)),
+        null_safe: false,
+    })
+}
+
 /// Advance a pointer by `n` elements: new ptr with `__idx + n`.
 /// The base array is shared — no copy, so writes through the advanced
 /// pointer still affect the original array.
 pub fn carray_advance(ptr: Expression, n: Expression) -> Expression {
+    if is_zero(&n) {
+        return ptr;
+    }
+
     let new_idx = e(ExprKind::Binary {
         op: BinOp::Add,
         left: Box::new(member(ptr.clone(), CARRAY_IDX_KEY)),
@@ -123,13 +148,30 @@ pub fn carray_advance(ptr: Expression, n: Expression) -> Expression {
     ]))
 }
 
+/// Retreat a pointer by `n` elements: new ptr with `__idx - n`.
+pub fn carray_retreat(ptr: Expression, n: Expression) -> Expression {
+    if is_zero(&n) {
+        return ptr;
+    }
+
+    let new_idx = binary(BinOp::Sub, member(ptr.clone(), CARRAY_IDX_KEY), n);
+    e(ExprKind::Object(vec![
+        obj_prop(
+            REF_KIND_KEY,
+            e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))),
+        ),
+        obj_prop(CARRAY_BASE_KEY, member(ptr, CARRAY_BASE_KEY)),
+        obj_prop(CARRAY_IDX_KEY, new_idx),
+    ]))
+}
+
 /// Element distance between two pointers into the same array: `a.__idx - b.__idx`.
 pub fn carray_diff(a: Expression, b: Expression) -> Expression {
-    e(ExprKind::Binary {
-        op: BinOp::Sub,
-        left: Box::new(member(a, CARRAY_IDX_KEY)),
-        right: Box::new(member(b, CARRAY_IDX_KEY)),
-    })
+    binary(
+        BinOp::Sub,
+        member(a, CARRAY_IDX_KEY),
+        member(b, CARRAY_IDX_KEY),
+    )
 }
 
 /// In-place advance: emits `ptr.__idx += n` as an assignment expression.

@@ -185,7 +185,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
         if let Some(op) = Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) {
             if op == Op::CALL_REF {
                 // call_ref needs argc+1 temps (save args + table idx)
-                let call_argc = chunk.code.get(ip + 2).copied().unwrap_or(0) as u32;
+                let call_argc = chunk.code.get(ip + 4).copied().unwrap_or(0) as u32;
                 need = need.max(call_argc + 1);
             } else if op == Op::STR_INDEX_OF {
                 need = need.max(5); // need 5 temps
@@ -2493,7 +2493,7 @@ fn emit_vm_internal_op(
     }
 }
 
-/// Total instruction size: 2-byte opcode + operand bytes.
+/// Total instruction size: 4-byte opcode + operand bytes.
 pub fn opcode_size(op: Op, code: &[u8], ip: usize) -> usize {
     let base = 4;
     base + op.operand_format().size_in(code, ip + base)

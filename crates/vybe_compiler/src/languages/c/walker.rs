@@ -2068,9 +2068,19 @@ impl Walker {
                                 // zero-init can build the right shape: `Entry[4]`
                                 // (array of structs), `char data[]` (flexible),
                                 // `int m[2][3]` (multidim).
+                                // Also preserve pointer declarators:
+                                // `struct N *next` is a pointer slot, not an
+                                // embedded `struct N`, and must not recursively
+                                // zero-initialize itself.
+                                let pointer_prefix = decl_text
+                                    .find(&n)
+                                    .map(|i| decl_text[..i].chars().filter(|c| *c == '*').count())
+                                    .unwrap_or(0);
+                                let pointer_suffix = "*".repeat(pointer_prefix);
                                 let stored = match decl_text.find('[') {
-                                    Some(i) => format!("{}{}", ty, &decl_text[i..]),
-                                    None => ty.clone(),
+                                    Some(i) => format!("{}{}{}", ty, pointer_suffix, &decl_text[i..]),
+                                    None if pointer_suffix.is_empty() => ty.clone(),
+                                    None => format!("{}{}", ty, pointer_suffix),
                                 };
                                 field_types.insert(n, stored);
                             }
