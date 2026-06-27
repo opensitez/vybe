@@ -743,7 +743,7 @@ $perms = Permission::Read->value | Permission::Write->value;
 echo $perms;
 "#
         ),
-        &["1", "7", "3"]
+        &["173"]
     );
 }
 

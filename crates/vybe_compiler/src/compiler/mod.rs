@@ -304,6 +304,7 @@ pub struct Compiler {
     fortran_operator_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
     pub(crate) defined_classes: HashSet<String>,
+    pub(crate) abstract_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
     defined_class_methods: HashSet<String>,
@@ -1057,6 +1058,14 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
                 }
             }
         }
+        ExprKind::Await(inner) | ExprKind::Spread(inner) | ExprKind::Yield(Some(inner)) => {
+            collect_closure_captured_in_expr(inner, out);
+        }
+        ExprKind::New { class, args } => {
+            collect_closure_captured_in_expr(class, out);
+            for a in args { collect_closure_captured_in_expr(&a.value, out); }
+        }
+        ExprKind::Lit(_) | ExprKind::This | ExprKind::Super | ExprKind::Yield(None) => {}
         _ => {}
     }
 }
@@ -1617,6 +1626,7 @@ impl Compiler {
             fortran_operator_overloads: HashMap::new(),
             constructor_signatures: HashMap::new(),
             defined_classes: HashSet::new(),
+            abstract_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
@@ -11975,6 +11985,11 @@ impl Compiler {
             BindingPattern::Ident(name) => {
                 let slot = self.define_local(name);
                 self.emit_u16(Op::LOCAL_SET, slot);
+                if let (Some(env_slot), Some(idx)) = (self.shared_env_slot, self.shared_env_index(name)) {
+                    let l = self.line;
+                    self.emit_u16(Op::LOCAL_GET, slot);
+                    crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                }
             }
             BindingPattern::Object(props) => {
                 let obj_slot = self.define_local("__destruct_obj");
@@ -14556,16 +14571,11 @@ impl Compiler {
                 return Ok(true);
             }
 
-            if builtin_name == "intval" && (1..=2).contains(&args.len()) {
+            if builtin_name == "intval" && args.len() == 2 {
                 self.compile_expr(args[0])?;
-                if let Some(base) = args.get(1) {
-                    self.compile_expr(base)?;
-                    let parse_int = self.import("ecma:number", "parseInt");
-                    self.emit_host_call(parse_int, 2);
-                } else {
-                    let parse_int = self.import("ecma:number", "parseInt");
-                    self.emit_host_call(parse_int, 1);
-                }
+                self.compile_expr(args[1])?;
+                let parse_int = self.import("ecma:number", "parseInt");
+                self.emit_host_call(parse_int, 2);
                 return Ok(true);
             }
         }

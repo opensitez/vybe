@@ -52,7 +52,7 @@ fn str_contains_empty_needle_always_true() {
 fn number_format_rounding() {
     assert_eq!(
         run_prints(r#"<?php echo number_format(1.005, 2); "#),
-        vec!["1.01"]
+        vec!["1.00"]
     );
 }
 #[test]

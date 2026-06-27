@@ -230,21 +230,32 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
             else_body: None,
             finally: None,
         })],
-        JsPromiseChainKind::Finally => vec![Statement::new(StmtKind::Try {
-            body: vec![Statement::new(StmtKind::Return(Some(js_await(js_ident(
-                JS_PROMISE_CHAIN_INPUT,
-            )))))],
-            catches: vec![],
-            else_body: None,
-            finally: Some(vec![Statement::new(StmtKind::If {
-                cond: js_nullish_check(JS_PROMISE_CHAIN_ON_FINALLY),
-                then_body: vec![],
-                elifs: vec![],
-                else_body: Some(vec![Statement::new(StmtKind::Expr(js_await(
-                    js_call_ident(JS_PROMISE_CHAIN_ON_FINALLY, vec![]),
-                )))]),
-            })]),
-        })],
+        JsPromiseChainKind::Finally => {
+            // await __input; __onFinally?.(); return awaited value.
+            // Avoid try/finally + return which has async resumption issues.
+            let input_var = "__finally_val";
+            vec![
+                Statement::new(StmtKind::VarDecl {
+                    kind: crate::ast::VarDeclKind::Let,
+                    declarations: vec![crate::ast::VarDeclarator {
+                        pattern: crate::ast::BindingPattern::Ident(input_var.to_string()),
+                        init: Some(js_await(js_ident(JS_PROMISE_CHAIN_INPUT))),
+                        type_hint: None,
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                }),
+                Statement::new(StmtKind::If {
+                    cond: js_nullish_check(JS_PROMISE_CHAIN_ON_FINALLY),
+                    then_body: vec![],
+                    elifs: vec![],
+                    else_body: Some(vec![Statement::new(StmtKind::Expr(
+                        js_call_ident(JS_PROMISE_CHAIN_ON_FINALLY, vec![]),
+                    ))]),
+                }),
+                Statement::new(StmtKind::Return(Some(js_ident(input_var)))),
+            ]
+        }
     }
 }
 
@@ -1752,12 +1763,8 @@ impl Compiler {
             async_try,
             line,
         );
-        let resolve_idx = self.import("ecma:promise", "resolve");
-        self.emit_host_call(resolve_idx, 1);
         self.emit_return();
         common::functions::patch_async_body_catch(&mut self.chunks[self.current], async_try);
-        let reject_idx = self.import("ecma:promise", "reject");
-        self.emit_host_call(reject_idx, 1);
         self.emit_return();
 
         let ns = self.scope().next_slot;
@@ -1780,46 +1787,40 @@ impl Compiler {
         // Promise.prototype.then/catch/finally must enqueue PromiseJobs.
         // The previous async-wrapper fast path used JSPI await internally,
         // which is correct for `await` but eager for already-settled promises:
-        // fulfilled inputs unwrap immediately and run callbacks before the
-        // current task completes. Let the ecma:promise host implementation own
-        // reaction scheduling.
-        let _ = (object, field, arg_exprs);
-        return Ok(false);
-
-        #[allow(unreachable_code)]
         let is_promise_like = self.expr_is_known_js_promise_like(object);
         if !is_promise_like {
             return Ok(false);
         }
 
-        let kind = match field {
-            "then" if arg_exprs.len() <= 2 => JsPromiseChainKind::Then,
-            "catch" if arg_exprs.len() <= 1 => JsPromiseChainKind::Catch,
-            "finally" if arg_exprs.len() <= 1 => JsPromiseChainKind::Finally,
+        // All promise chain methods use wrapper chunks with JSPI
+        // await — the common emitter in emitter/promises.rs.
+        let (arity, emit_fn): (u8, fn(&mut [Chunk], usize, u32)) = match field {
+            "then" => (3, common::promises::emit_then),
+            "catch" => (2, common::promises::emit_catch),
+            "finally" => (2, common::promises::emit_finally),
             _ => return Ok(false),
         };
 
-        let wrapper_idx = self.compile_js_promise_chain_wrapper(kind)?;
+        let wrapper_idx = self.chunks.len();
+        let chunk = common::functions::create_function_chunk(
+            &format!("<promise_{}>", field), arity,
+        );
+        self.chunks.push(chunk);
+        emit_fn(&mut self.chunks, wrapper_idx, self.line);
         let line = self.line;
+        self.chunks[wrapper_idx].emit_op(Op::RETURN, line);
+        self.chunks[wrapper_idx].finalize_local_count(arity as u16);
+
         self.emit_u16(Op::REF_FUNC, wrapper_idx as u16);
         self.chunk().emit(0, line);
-        let wrapper_slot = self.define_local("__js_promise_chain_wrapper");
-        self.emit_u16(Op::LOCAL_SET, wrapper_slot);
-
-        let mut arg_slots = Vec::with_capacity(arg_exprs.len() + 1);
         self.compile_expr(object)?;
-        let promise_slot = self.define_local("__js_promise_chain_arg_0");
-        self.emit_u16(Op::LOCAL_SET, promise_slot);
-        arg_slots.push(promise_slot);
-
-        for (index, arg) in arg_exprs.iter().enumerate() {
+        for arg in arg_exprs {
             self.compile_expr(arg)?;
-            let arg_slot = self.define_local(&format!("__js_promise_chain_arg_{}", index + 1));
-            self.emit_u16(Op::LOCAL_SET, arg_slot);
-            arg_slots.push(arg_slot);
         }
-
-        self.emit_call_ref_with_arg_slots(wrapper_slot, None, &arg_slots);
+        for _ in arg_exprs.len()..(arity as usize - 1) {
+            self.emit(Op::NULL);
+        }
+        self.emit_u8(Op::CALL_REF, arity);
         Ok(true)
     }
 
@@ -7541,19 +7542,25 @@ impl Compiler {
                 if let Some(target_name) =
                     self.resolve_fortran_interface_target(name, &fortran_arg_exprs)
                 {
-                    let callee = if let Some(module_name) =
-                        self.enum_members.get(&self.canon(&target_name)).cloned()
-                    {
-                        Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::ident(&module_name)),
-                            field: target_name.clone(),
-                            null_safe: false,
-                        })
-                    } else {
-                        Expression::ident(&target_name)
-                    };
-                    self.compile_call(&callee, args)?;
-                    return Ok(());
+                    // Standalone `interface` blocks declare an external name
+                    // (e.g. `area_circle`) whose overload target is the same
+                    // symbol. Re-dispatching to that name loops forever; fall
+                    // through to the normal external-function path instead.
+                    if self.canon(&target_name) != self.canon(name) {
+                        let callee = if let Some(module_name) =
+                            self.enum_members.get(&self.canon(&target_name)).cloned()
+                        {
+                            Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(&module_name)),
+                                field: target_name.clone(),
+                                null_safe: false,
+                            })
+                        } else {
+                            Expression::ident(&target_name)
+                        };
+                        self.compile_call(&callee, args)?;
+                        return Ok(());
+                    }
                 }
             }
 
@@ -10651,6 +10658,7 @@ impl Compiler {
                 .cloned()
                 .collect();
             captured_names.sort();
+
             let env_size = captured_names.len() as u16;
             let line = self.line;
             for _ in 0..env_size {

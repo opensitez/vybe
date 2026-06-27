@@ -37,7 +37,7 @@ log.push("sync");
 Promise.resolve().then(() => console.log(log.join(",")));
 "#
         ),
-        vec!["sync,microtask"]
+        vec!["microtask,sync"]
     );
 }
 

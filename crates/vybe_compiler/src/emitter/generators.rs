@@ -518,3 +518,201 @@ pub fn emit_resume_dispatch(
 
     (resume_slot, result_slot)
 }
+
+/// Drain any iterable into an array using the ECMA-262 iterator protocol.
+///
+/// Implements §7.4.2 GetIterator + §7.4.4 IteratorNext + §7.4.5 IteratorStep:
+///   1. `iter_fn = obj[Symbol.iterator]`  (STRUCT_GET "Symbol(@@iterator)")
+///   2. `iter = iter_fn(obj)`             (CALL_REF 1 — passes receiver)
+///   3. `next_fn = iter.next`             (STRUCT_GET "next")
+///   4. loop: `step = next_fn(iter)` → check `step.done` → push `step.value`
+///
+/// TypeRegistry resolves `Symbol(@@iterator)` for built-in types:
+///   Array → ecma:array.values (§23.1.3.38)
+///   Map   → ecma:map.entries  (§24.1.3.12)
+///   Set   → ecma:set.values   (§24.2.3.11)
+///   String→ ecma:string.iterator (§22.1.5.1)
+/// Custom classes define `[Symbol.iterator]()` as an own property.
+///
+/// Stack before: [iterable]
+/// Stack after:  [array_of_values]
+pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(1);
+    let iter_fn_slot = chunk.alloc_scratch(1);
+    let iter_slot = chunk.alloc_scratch(1);
+    let next_fn_slot = chunk.alloc_scratch(1);
+    let step_slot = chunk.alloc_scratch(1);
+    let result_slot = chunk.alloc_scratch(1);
+    let done_slot = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    // result = []
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    // Outer block — BR 0 exits with result_slot on stack
+    let outer_block = chunk.emit_block(line);
+
+    // §25.1.2: If obj already has "next", it IS the iterator
+    // (%IteratorPrototype%[@@iterator]() returns this).
+    // Skip the [Symbol.iterator] call to avoid infinite chains
+    // (e.g. ArrayIterator has ObjectKind::Array → TypeRegistry
+    // would resolve values() as its @@iterator, creating a loop).
+    let next_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+
+    // No "next" → get [Symbol.iterator] and call it
+    // §7.4.2 GetIterator: iter_fn = obj[@@iterator]
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let sym_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("Symbol(@@iterator)")));
+    chunk.emit_op_u16(Op::STRUCT_GET, sym_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
+
+    // Fallback: walker-normalized "iterator" key for custom classes
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let iter_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("iterator")));
+    chunk.emit_op_u16(Op::STRUCT_GET, iter_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
+    chunk.emit_end(line);
+
+    // No iterator → skip to end of this IF; the iterForOf fallback
+    // after the IF handles array-likes and other non-iterables.
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
+
+    // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
+    let js_this_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iter_slot, line);
+
+    // iter null → exit
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_br_if(1, line); // BR outer_block
+
+    // Get next from the new iterator
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
+
+    chunk.emit_else(line);
+
+    // obj already has "next" — it IS the iterator (§25.1.2)
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iter_slot, line);
+
+    chunk.emit_end(line);
+
+    // no next → pure WASM array-like fallback (§23.1.2.1 step 5)
+    // Check for "length" property and iterate by numeric index.
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+
+    let length_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("length")));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, length_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line); // reuse done_slot for length
+    chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_br_if(1, line); // no length → exit outer_block (this-if=0, outer_block=1)
+
+    // Loop from 0 to length
+    let idx_slot = step_slot; // reuse step_slot for index counter
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    let al_block = chunk.emit_block(line);
+    let (al_loop, _) = chunk.emit_loop_s(line);
+    // if idx >= length → break
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_br_if(1, line); // exit al_block
+    // result.push(obj[idx]) — ARRAY_GET handles string coercion
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    // idx++
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunk.emit_br(0, line); // continue loop
+    chunk.emit_end(line);
+    chunk.patch_loop(al_loop);
+    chunk.emit_end(line);
+    chunk.patch_block(al_block);
+    chunk.emit_br(1, line); // exit outer_block with populated result
+    // Nesting: outer_block(1) → this-if(0). br(1) = outer_block.
+
+    chunk.emit_end(line); // end if(no next)
+
+    // §7.4.5 IteratorStep loop
+    let block_p = chunk.emit_block(line);
+    let (loop_p, _) = chunk.emit_loop_s(line);
+
+    // __js_this = iter; step = next_fn(iter)
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, step_slot, line);
+
+    // step null → break
+    chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_br_if(1, line);
+
+    // done = step.done; if truthy → break
+    chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
+    let done_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
+    chunk.emit_op_u16(Op::STRUCT_GET, done_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_br_if(1, line);
+
+    // result.push(step.value)
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
+    let value_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("value")));
+    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    crate::emitter::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}

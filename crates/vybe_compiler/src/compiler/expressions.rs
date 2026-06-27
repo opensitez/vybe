@@ -3145,6 +3145,16 @@ impl Compiler {
                     // This ensures `class Point { ... }` followed by `new Point()` calls
                     // the user constructor, not vybe:drawing::pointNew.
                     let canon_type = self.canon(type_name);
+                    if self.abstract_classes.contains(&canon_type) {
+                        let line = self.line;
+                        let chunk = self.chunk();
+                        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+                        chunk.emit_dup(line);
+                        chunk.emit_string_const(&format!("Cannot instantiate abstract class {}", type_name), line);
+                        crate::emitter::errors::emit_exception_new_finalize(chunk, "Error", line);
+                        chunk.emit_op(Op::THROW, line);
+                        return Ok(());
+                    }
                     if self.defined_classes.contains(&canon_type) {
                         let overload_global = format!("{}$arity{}", canon_type, args.len());
                         let ctor_global = if self.defined_globals.contains(&overload_global) {
@@ -3176,7 +3186,12 @@ impl Compiler {
                             self.emit_u16(Op::GLOBAL_GET, class_idx);
                             self.set_js_new_target_from_stack();
                         }
+                        let saved_this = self.save_js_this(&format!(
+                            "__js_prev_this_new_{}",
+                            self.chunks[self.current].local_count
+                        ));
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
+                        self.restore_js_this(saved_this);
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
@@ -5481,7 +5496,7 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    let compound = format!("{}.{}", class_name, member_name);
+                    let compound = self.canon(&format!("{}.{}", class_name, member_name));
                     if let Some(cv) = self.profile.lookup_constant(&compound) {
                         match cv {
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
@@ -5489,6 +5504,12 @@ impl Compiler {
                                 self.emit_const(Value::String(Arc::from(s.as_str())))
                             }
                         }
+                        return Ok(());
+                    }
+                    // User-defined class constant — resolve as a global
+                    if self.defined_globals.contains(&compound) {
+                        let idx = self.str_const(&compound);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                         return Ok(());
                     }
                 }

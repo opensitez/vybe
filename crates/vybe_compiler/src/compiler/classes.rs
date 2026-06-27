@@ -603,7 +603,6 @@ impl Compiler {
                     self.emit(Op::REF_IS_NULL);
                 }
                 let branch_line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                 self.chunks[self.current].emit_if(branch_line);
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot);
@@ -1366,6 +1365,8 @@ impl Compiler {
             let saved_rs = cc.current_result_slot.take();
             let saved_ref_out = cc.current_ref_out_params.take();
             let saved_member_static = cc.current_member_is_static;
+            let saved_shared_env_slot = cc.shared_env_slot.take();
+            let saved_shared_env_names = std::mem::take(&mut cc.shared_env_names);
             cc.current_result_slot = None;
             cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
             cc.current_member_is_static = is_static;
@@ -1389,11 +1390,46 @@ impl Compiler {
                         cc.emit(Op::REF_IS_NULL);
                     }
                     let branch_line = cc.line;
-                    crate::emitter::ops::emit_dyn_to_bool(cc.chunk(), branch_line);
                     cc.chunks[cc.current].emit_if(branch_line);
                     cc.compile_expr(default)?;
                     cc.emit_u16(Op::LOCAL_SET, slot);
                     cc.chunks[cc.current].emit_end(branch_line);
+                }
+            }
+
+            // Shared env for closures inside class methods: if the
+            // method body has inner closures that capture the method's
+            // locals, create a shared env array so mutations are visible
+            // across all closures (same mechanism as compile_lambda_direct).
+            if !cc.current_closure_captured_locals.is_empty() {
+                let mut captured_names: Vec<String> = cc.current_closure_captured_locals
+                    .iter()
+                    .cloned()
+                    .collect();
+                captured_names.sort();
+
+                let env_size = captured_names.len() as u16;
+                let line = cc.line;
+                for _ in 0..env_size {
+                    cc.emit(Op::NULL);
+                }
+                cc.chunks[cc.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                let env_slot = cc.define_local("__shared_env");
+                cc.emit_u16(Op::LOCAL_SET, env_slot);
+                cc.shared_env_slot = Some(env_slot);
+                cc.shared_env_names = captured_names.clone();
+
+                let mut local_decls: std::collections::HashSet<String> = user_params.iter().map(|p| p.name.clone()).collect();
+                if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+                    local_decls.insert(self_kw.clone());
+                }
+                crate::compiler::collect_declared_names(&m.body, &mut local_decls);
+
+                for (idx, cap_name) in captured_names.iter().enumerate() {
+                    if let Some(param_slot) = cc.scope().resolve(cap_name) {
+                        cc.emit_u16(Op::LOCAL_GET, param_slot);
+                        crate::emitter::closures::emit_env_set(cc.chunk(), env_slot, idx as u16, line);
+                    }
                 }
             }
 
@@ -1447,6 +1483,8 @@ impl Compiler {
             cc.current_ref_out_params = saved_ref_out;
             cc.current_member_is_static = saved_member_static;
             cc.current_closure_captured_locals = saved_closure_captured;
+            cc.shared_env_slot = saved_shared_env_slot;
+            cc.shared_env_names = saved_shared_env_names;
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
@@ -1793,8 +1831,8 @@ impl Compiler {
                     } else {
                         self.emit(Op::REF_IS_NULL);
                     }
+                    // Result is already I32(0/1) — no dyn_to_bool needed
                     let branch_line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                     self.chunks[self.current].emit_if(branch_line);
                     self.compile_expr(default)?;
                     self.emit_u16(Op::LOCAL_SET, slot);
@@ -1966,11 +2004,6 @@ impl Compiler {
                                     self.chunks[self.current].emit_if(line);
                                     self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
                                     self.emit(Op::REF_IS_NULL);
-                                    let branch_line = self.line;
-                                    crate::emitter::ops::emit_dyn_to_bool(
-                                        self.chunk(),
-                                        branch_line,
-                                    );
                                     self.emit(Op::I32_EQZ);
                                     self.chunks[self.current].emit_if(line);
                                     self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
@@ -2024,8 +2057,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, proto_local);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
                             self.emit(Op::REF_IS_NULL);
-                            let branch_line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                             self.emit(Op::I32_EQZ);
                             self.chunks[self.current].emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -2298,8 +2329,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, proto_local);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
                         self.emit(Op::REF_IS_NULL);
-                        let branch_line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                         self.emit(Op::I32_EQZ);
                         self.chunks[self.current].emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -2370,6 +2399,23 @@ impl Compiler {
                         line,
                     );
                 }
+                // Set __proto__ link for prototype-dispatch classes.
+                // Done just before return so this_slot is guaranteed valid.
+                if self.class_prototype_dispatch() {
+                    let proto_key = self.str_const("__proto__");
+                    self.emit_load_instance_proto(name);
+                    let tmp = self.define_local("__final_proto");
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit(Op::REF_IS_NULL);
+                    self.emit(Op::I32_EQZ);
+                    self.chunks[self.current].emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u16(Op::STRUCT_SET, proto_key);
+                    self.emit(Op::DROP);
+                    self.chunks[self.current].emit_end(line);
+                }
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
 
@@ -2402,6 +2448,12 @@ impl Compiler {
             self.define_local(&format!("__ctor_arg_{}", i));
         }
         let line = self.line;
+
+        // Abstract class: mark for compile-time check in `new` expressions.
+        if class.is_abstract {
+            self.abstract_classes.insert(self.canon(name));
+        }
+
         let js_ctor_relaxes_min_arity = self.is_js_profile();
         let helper_for_count = |count: usize| {
             ctor_helpers
@@ -2422,8 +2474,7 @@ impl Compiler {
             } else {
                 self.emit(Op::REF_IS_NULL);
             }
-            let branch_line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+            // Result is already I32(0/1) — no dyn_to_bool needed
             self.emit(Op::I32_EQZ);
             self.chunks[self.current].emit_if(line);
             if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(count) {
@@ -2495,8 +2546,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, parent_proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 self.emit(Op::REF_IS_NULL);
-                let branch_line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
                 self.emit(Op::I32_EQZ);
                 self.chunks[self.current].emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, proto_local);

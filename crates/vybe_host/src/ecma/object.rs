@@ -266,18 +266,17 @@ pub(crate) fn unwrap_fulfilled_promise(value: Value) -> Value {
 
 fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
     let raw_key = format!("@@{}", key);
+    let symbol_key = format!("Symbol.{}", key);
+    let symbol_paren_key = format!("Symbol(@@{})", key);
     let mut current = receiver.clone();
     for _ in 0..100 {
         let next_proto = {
             let lock = current.lock().unwrap();
-            if let Some(value) = lock.properties.get(key) {
-                if !matches!(value, Value::Null | Value::Undefined) {
-                    return Some(value.clone());
-                }
-            }
-            if let Some(value) = lock.properties.get(&raw_key) {
-                if !matches!(value, Value::Null | Value::Undefined) {
-                    return Some(value.clone());
+            for check_key in [key, raw_key.as_str(), symbol_key.as_str(), symbol_paren_key.as_str()] {
+                if let Some(value) = lock.properties.get(check_key) {
+                    if !matches!(value, Value::Null | Value::Undefined) {
+                        return Some(value.clone());
+                    }
                 }
             }
             match lock.properties.get("__proto__").cloned() {

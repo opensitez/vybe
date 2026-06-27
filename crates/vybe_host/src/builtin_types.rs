@@ -101,6 +101,10 @@ pub fn register_all(vm: &mut VM) {
             ("matchall", "ecma:regexp", "matchAll"),
             ("search", "ecma:regexp", "search"),
             ("replaceall", "ecma:regexp", "replaceAll"),
+            // §22.1.5.1: String.prototype[@@iterator]() — yields code points.
+            // Strings are opaque in WASM (wasm:js-string spec) so iteration
+            // requires a host function, same as charCodeAt/codePointAt.
+            ("symbol(@@iterator)", "ecma:string", "iterator"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -171,6 +175,8 @@ pub fn register_all(vm: &mut VM) {
             ("at", "ecma:array", "at"),
             ("copywithin", "ecma:array", "copyWithin"),
             ("entries", "ecma:array", "entries"),
+            // §23.1.3.38: Array.prototype[@@iterator] = Array.prototype.values
+            ("symbol(@@iterator)", "ecma:array", "values"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -520,7 +526,8 @@ pub fn register_all(vm: &mut VM) {
             ("clear", "clear"),
             ("entries", "entries"),
             ("forEach", "forEach"),
-            ("iterator", "entries"),
+            // §24.1.3.12: Map.prototype[@@iterator] = Map.prototype.entries
+            ("symbol(@@iterator)", "entries"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -552,7 +559,8 @@ pub fn register_all(vm: &mut VM) {
             ("clear", "clear"),
             ("entries", "entries"),
             ("forEach", "forEach"),
-            ("iterator", "values"),
+            // §24.2.3.11: Set.prototype[@@iterator] = Set.prototype.values
+            ("symbol(@@iterator)", "values"),
         ] {
             if let Some(idx) = h(vm, "ecma:set", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));

@@ -163,6 +163,7 @@ pub fn register(vm: &mut VM) {
     register_base64(vm);
     register_constructor(vm);
     register_adapters(vm);
+    register_iterator(vm);
 }
 
 // ── Adapter convenience methods ──────────────────────────────────
@@ -1384,6 +1385,24 @@ fn register_base64(vm: &mut VM) {
         "ecma:string",
         "toLocaleString",
         Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Undefined)),
+    );
+}
+
+/// §22.1.5.1 String.prototype[@@iterator]() — yields code points.
+/// Strings are opaque in WASM (wasm:js-string spec); iteration
+/// requires a host function, same as charCodeAt/codePointAt.
+fn register_iterator(vm: &mut VM) {
+    vm.register_host_fn(
+        "ecma:string",
+        "iterator",
+        Box::new(|_ctx, args| {
+            let s = s_arg(args, 0);
+            let chars: Vec<Value> = s
+                .chars()
+                .map(|c| Value::String(Arc::from(c.to_string().as_str())))
+                .collect();
+            crate::ecma::array::make_array_iterator(chars)
+        }),
     );
 }
 

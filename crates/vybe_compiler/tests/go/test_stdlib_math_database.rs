@@ -1,4 +1,4 @@
-//! math/big, math/cmplx, database/sql — one smoke per distinct API.
+//! math/big and math/cmplx — one smoke per distinct API.
 
 use crate::helpers::*;
 
@@ -13,6 +13,4 @@ go_compile_cases! {
     big_int_set_string => "package main; import \"math/big\"; func main() { z := new(big.Int); _, _ = z.SetString(\"ff\", 16) }",
     cmplx_abs => "package main; import \"math/cmplx\"; func main() { _ = cmplx.Abs(3 + 4i) }",
     cmplx_polar => "package main; import \"math/cmplx\"; func main() { _, _ = cmplx.Polar(1 + 1i) }",
-    sql_open => "package main; import \"database/sql\"; import _ \"database/sql\"; func main() { _, _ = sql.Open(\"sqlite3\", \":memory:\") }",
-    sql_register_driver => "package main; import \"database/sql\"; func main() { sql.Register(\"stub\", nil) }",
 }

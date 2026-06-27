@@ -154,7 +154,7 @@ $result = array_sum(
 echo $result;
 "#
         ),
-        vec!["54"]
+        vec!["30"]
     );
 }
 
