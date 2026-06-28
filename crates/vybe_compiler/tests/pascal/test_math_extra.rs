@@ -301,9 +301,7 @@ end."#
 #[test]
 fn sqrt_of_perfect_square_nine() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Sqrt(9.0):0:0); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Sqrt(9.0):0:0); end."#),
         &["3"]
     );
 }
@@ -311,9 +309,7 @@ fn sqrt_of_perfect_square_nine() {
 #[test]
 fn sqrt_of_two_approximate() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.3f', [Sqrt(2.0)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.3f', [Sqrt(2.0)])); end."#),
         &["1.414"]
     );
 }
@@ -321,9 +317,7 @@ fn sqrt_of_two_approximate() {
 #[test]
 fn int_returns_integer_part_of_real() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Int(3.9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Int(3.9)); end."#),
         &["3"]
     );
 }
@@ -331,9 +325,7 @@ fn int_returns_integer_part_of_real() {
 #[test]
 fn frac_returns_fractional_part() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.1f', [Frac(3.9)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.1f', [Frac(3.9)])); end."#),
         &["0.9"]
     );
 }
@@ -341,9 +333,7 @@ fn frac_returns_fractional_part() {
 #[test]
 fn round_half_up_positive() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Round(2.6)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Round(2.6)); end."#),
         &["3"]
     );
 }
@@ -351,9 +341,7 @@ fn round_half_up_positive() {
 #[test]
 fn trunc_toward_zero_negative() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Trunc(-2.9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Trunc(-2.9)); end."#),
         &["-2"]
     );
 }
@@ -361,9 +349,7 @@ fn trunc_toward_zero_negative() {
 #[test]
 fn abs_integer_negative() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Abs(-17)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Abs(-17)); end."#),
         &["17"]
     );
 }
@@ -371,9 +357,7 @@ fn abs_integer_negative() {
 #[test]
 fn abs_real_negative() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.1f', [Abs(-4.5)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.1f', [Abs(-4.5)])); end."#),
         &["4.5"]
     );
 }
@@ -381,9 +365,7 @@ fn abs_real_negative() {
 #[test]
 fn sqr_of_negative_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Sqr(-6)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Sqr(-6)); end."#),
         &["36"]
     );
 }
@@ -428,9 +410,7 @@ end."#
 #[test]
 fn mod_wrapping_positive_modulus() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(17 mod 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(17 mod 5); end."#),
         &["2"]
     );
 }
@@ -438,9 +418,7 @@ fn mod_wrapping_positive_modulus() {
 #[test]
 fn div_integer_division_truncates() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(17 div 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(17 div 5); end."#),
         &["3"]
     );
 }
@@ -448,9 +426,7 @@ fn div_integer_division_truncates() {
 #[test]
 fn sin_quarter_pi_one() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.3f', [Sin(Pi / 2.0)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.3f', [Sin(Pi / 2.0)])); end."#),
         &["1.000"]
     );
 }
@@ -458,9 +434,7 @@ fn sin_quarter_pi_one() {
 #[test]
 fn cos_pi_negative_one() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.0f', [Cos(Pi)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.0f', [Cos(Pi)])); end."#),
         &["-1"]
     );
 }
@@ -468,9 +442,7 @@ fn cos_pi_negative_one() {
 #[test]
 fn tan_zero_is_zero() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.1f', [Tan(0.0)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.1f', [Tan(0.0)])); end."#),
         &["0.0"]
     );
 }
@@ -478,9 +450,7 @@ fn tan_zero_is_zero() {
 #[test]
 fn deg_to_rad_converts_ninety() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.4f', [DegToRad(90.0)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.4f', [DegToRad(90.0)])); end."#),
         &["1.5708"]
     );
 }
@@ -488,9 +458,7 @@ fn deg_to_rad_converts_ninety() {
 #[test]
 fn rad_to_deg_converts_pi() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.1f', [RadToDeg(Pi)])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.1f', [RadToDeg(Pi)])); end."#),
         &["180.0"]
     );
 }
@@ -498,9 +466,7 @@ fn rad_to_deg_converts_pi() {
 #[test]
 fn power_function_integer_exponent() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Power(2.0, 10.0):0:0); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Power(2.0, 10.0):0:0); end."#),
         &["1024"]
     );
 }
@@ -508,9 +474,7 @@ fn power_function_integer_exponent() {
 #[test]
 fn min_of_two_integers() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Min(3, 8)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Min(3, 8)); end."#),
         &["3"]
     );
 }
@@ -518,9 +482,7 @@ fn min_of_two_integers() {
 #[test]
 fn max_of_two_integers() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Max(3, 8)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Max(3, 8)); end."#),
         &["8"]
     );
 }
@@ -528,9 +490,7 @@ fn max_of_two_integers() {
 #[test]
 fn inc_procedure_mutates_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n: Integer; begin n := 5; Inc(n, 2); WriteLn(n); end."#
-        ),
+        run_pascal(r#"program T; var n: Integer; begin n := 5; Inc(n, 2); WriteLn(n); end."#),
         &["7"]
     );
 }
@@ -538,9 +498,7 @@ fn inc_procedure_mutates_integer() {
 #[test]
 fn dec_procedure_mutates_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n: Integer; begin n := 5; Dec(n, 3); WriteLn(n); end."#
-        ),
+        run_pascal(r#"program T; var n: Integer; begin n := 5; Dec(n, 3); WriteLn(n); end."#),
         &["2"]
     );
 }
@@ -548,9 +506,7 @@ fn dec_procedure_mutates_integer() {
 #[test]
 fn abs_negative_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Abs(-9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Abs(-9)); end."#),
         &["9"]
     );
 }
@@ -558,9 +514,7 @@ fn abs_negative_integer() {
 #[test]
 fn sqrt_of_perfect_square() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Trunc(Sqrt(81.0))); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Trunc(Sqrt(81.0))); end."#),
         &["9"]
     );
 }
@@ -568,9 +522,7 @@ fn sqrt_of_perfect_square() {
 #[test]
 fn round_half_up_to_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Round(2.6)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Round(2.6)); end."#),
         &["3"]
     );
 }
@@ -578,9 +530,7 @@ fn round_half_up_to_integer() {
 #[test]
 fn trunc_toward_zero_for_positive() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Trunc(3.9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Trunc(3.9)); end."#),
         &["3"]
     );
 }
@@ -588,11 +538,7 @@ fn trunc_toward_zero_for_positive() {
 #[test]
 fn int_truncates_toward_zero() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Int(-3.9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Int(-3.9)); end."#),
         &["-3"]
     );
 }
-
-

@@ -323,9 +323,7 @@ end."#
 #[test]
 fn for_loop_variable_persists_after_loop() {
     assert_eq!(
-        run_pascal(
-            "program T; var i: Integer; begin for i := 1 to 3 do ; WriteLn(i); end."
-        ),
+        run_pascal("program T; var i: Integer; begin for i := 1 to 3 do ; WriteLn(i); end."),
         &["4"]
     );
 }
@@ -333,9 +331,7 @@ fn for_loop_variable_persists_after_loop() {
 #[test]
 fn for_downto_loop_variable_after_exit_value() {
     assert_eq!(
-        run_pascal(
-            "program T; var i: Integer; begin for i := 5 downto 1 do ; WriteLn(i); end."
-        ),
+        run_pascal("program T; var i: Integer; begin for i := 5 downto 1 do ; WriteLn(i); end."),
         &["0"]
     );
 }
@@ -474,9 +470,7 @@ end."#
 #[test]
 fn for_empty_body_still_advances_counter() {
     assert_eq!(
-        run_pascal(
-            "program T; var i: Integer; begin for i := 1 to 100 do ; WriteLn(i); end."
-        ),
+        run_pascal("program T; var i: Integer; begin for i := 1 to 100 do ; WriteLn(i); end."),
         &["101"]
     );
 }
@@ -918,9 +912,7 @@ end."#
 #[test]
 fn if_without_else_skips_false_branch() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if False then WriteLn('yes'); WriteLn('after'); end."#
-        ),
+        run_pascal(r#"program T; begin if False then WriteLn('yes'); WriteLn('after'); end."#),
         &["after"]
     );
 }
@@ -958,9 +950,7 @@ end."#
 #[test]
 fn if_not_inverts_boolean_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if not False then WriteLn('yes'); end."#
-        ),
+        run_pascal(r#"program T; begin if not False then WriteLn('yes'); end."#),
         &["yes"]
     );
 }
@@ -1118,5 +1108,3 @@ end."#
         &["1", "row", "1", "row"]
     );
 }
-
-

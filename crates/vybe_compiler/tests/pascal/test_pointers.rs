@@ -563,9 +563,7 @@ end."#
 #[test]
 fn assigned_returns_false_for_nil_pointer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var p: ^Integer; begin WriteLn(Assigned(p)); end."#
-        ),
+        run_pascal(r#"program T; var p: ^Integer; begin WriteLn(Assigned(p)); end."#),
         &["false"]
     );
 }
@@ -593,9 +591,7 @@ fn pointer_equality_same_address() {
 #[test]
 fn nil_pointer_compare_not_equal_assigned() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var p: ^Integer; begin WriteLn(p = nil); end."#
-        ),
+        run_pascal(r#"program T; var p: ^Integer; begin WriteLn(p = nil); end."#),
         &["true"]
     );
 }
@@ -609,5 +605,3 @@ fn dispose_sets_pointer_invalid_after_free() {
         &["ok"]
     );
 }
-
-

@@ -433,9 +433,7 @@ end."#
 #[test]
 fn assert_true_does_not_abort() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin Assert(True); WriteLn('ok'); end."#
-        ),
+        run_pascal(r#"program T; begin Assert(True); WriteLn('ok'); end."#),
         &["ok"]
     );
 }
@@ -515,5 +513,3 @@ end."#
         &["try", "finally"]
     );
 }
-
-

@@ -211,9 +211,7 @@ end."#
 #[test]
 fn copy_extracts_middle_substring() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Copy('abcdef', 2, 3)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Copy('abcdef', 2, 3)); end."#),
         &["bcd"]
     );
 }
@@ -221,9 +219,7 @@ fn copy_extracts_middle_substring() {
 #[test]
 fn length_counts_characters() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Length('pascal')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Length('pascal')); end."#),
         &["6"]
     );
 }
@@ -231,9 +227,7 @@ fn length_counts_characters() {
 #[test]
 fn pos_finds_substring_offset() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Pos('ca', 'pascal')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Pos('ca', 'pascal')); end."#),
         &["3"]
     );
 }
@@ -241,9 +235,7 @@ fn pos_finds_substring_offset() {
 #[test]
 fn pos_returns_zero_when_missing() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Pos('z', 'pascal')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Pos('z', 'pascal')); end."#),
         &["0"]
     );
 }
@@ -283,9 +275,7 @@ end."#
 #[test]
 fn uppercase_converts_ascii_letters() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(UpperCase('AbC')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(UpperCase('AbC')); end."#),
         &["ABC"]
     );
 }
@@ -293,9 +283,7 @@ fn uppercase_converts_ascii_letters() {
 #[test]
 fn lowercase_converts_ascii_letters() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(LowerCase('AbC')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(LowerCase('AbC')); end."#),
         &["abc"]
     );
 }
@@ -303,9 +291,7 @@ fn lowercase_converts_ascii_letters() {
 #[test]
 fn trim_removes_outer_spaces() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Trim('  hi  ')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Trim('  hi  ')); end."#),
         &["hi"]
     );
 }
@@ -313,9 +299,7 @@ fn trim_removes_outer_spaces() {
 #[test]
 fn string_concat_with_plus() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn('foo' + '-' + 'bar'); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn('foo' + '-' + 'bar'); end."#),
         &["foo-bar"]
     );
 }
@@ -323,9 +307,7 @@ fn string_concat_with_plus() {
 #[test]
 fn string_replace_substitutes_first_occurrence() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StringReplace('a-b-a', '-', '+', [])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StringReplace('a-b-a', '-', '+', [])); end."#),
         &["a+b-a"]
     );
 }
@@ -343,9 +325,7 @@ fn string_replace_all_occurrences_flag() {
 #[test]
 fn int_to_str_formats_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(IntToStr(1204)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(IntToStr(1204)); end."#),
         &["1204"]
     );
 }
@@ -353,9 +333,7 @@ fn int_to_str_formats_integer() {
 #[test]
 fn str_to_int_def_returns_default_on_invalid() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StrToIntDef('xy', 9)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StrToIntDef('xy', 9)); end."#),
         &["9"]
     );
 }
@@ -363,9 +341,7 @@ fn str_to_int_def_returns_default_on_invalid() {
 #[test]
 fn quoted_str_wraps_in_double_quotes() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(QuotedStr('hi')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(QuotedStr('hi')); end."#),
         &["\"hi\""]
     );
 }
@@ -373,9 +349,7 @@ fn quoted_str_wraps_in_double_quotes() {
 #[test]
 fn compare_text_case_insensitive_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(CompareText('AbC', 'abc')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(CompareText('AbC', 'abc')); end."#),
         &["0"]
     );
 }
@@ -383,9 +357,7 @@ fn compare_text_case_insensitive_equal() {
 #[test]
 fn same_text_ignores_case() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(SameText('Hello', 'hello')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(SameText('Hello', 'hello')); end."#),
         &["true"]
     );
 }
@@ -393,9 +365,7 @@ fn same_text_ignores_case() {
 #[test]
 fn format_inserts_multiple_placeholders() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%s=%d', ['x', 7])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%s=%d', ['x', 7])); end."#),
         &["x=7"]
     );
 }
@@ -403,9 +373,7 @@ fn format_inserts_multiple_placeholders() {
 #[test]
 fn string_of_char_repeats_character() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StringOfChar('*', 4)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StringOfChar('*', 4)); end."#),
         &["****"]
     );
 }
@@ -413,9 +381,7 @@ fn string_of_char_repeats_character() {
 #[test]
 fn trim_left_removes_leading_spaces_only() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(TrimLeft('  hi ')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(TrimLeft('  hi ')); end."#),
         &["hi "]
     );
 }
@@ -423,9 +389,7 @@ fn trim_left_removes_leading_spaces_only() {
 #[test]
 fn trim_right_removes_trailing_spaces_only() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(TrimRight(' hi  ')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(TrimRight(' hi  ')); end."#),
         &[" hi"]
     );
 }
@@ -433,9 +397,7 @@ fn trim_right_removes_trailing_spaces_only() {
 #[test]
 fn copy_string_subrange() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Copy('abcdef', 2, 3)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Copy('abcdef', 2, 3)); end."#),
         &["bcd"]
     );
 }
@@ -443,9 +405,7 @@ fn copy_string_subrange() {
 #[test]
 fn pos_finds_substring_index() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Pos('lo', 'hello')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Pos('lo', 'hello')); end."#),
         &["4"]
     );
 }
@@ -453,9 +413,7 @@ fn pos_finds_substring_index() {
 #[test]
 fn delete_removes_characters_from_string() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Delete('abcdef', 2, 2)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Delete('abcdef', 2, 2)); end."#),
         &["adef"]
     );
 }
@@ -463,9 +421,7 @@ fn delete_removes_characters_from_string() {
 #[test]
 fn insert_puts_text_at_position() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Insert('XX', 'ab', 2)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Insert('XX', 'ab', 2)); end."#),
         &["aXXb"]
     );
 }
@@ -473,12 +429,7 @@ fn insert_puts_text_at_position() {
 #[test]
 fn string_concatenation_with_plus() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn('foo' + 'bar'); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn('foo' + 'bar'); end."#),
         &["foobar"]
     );
 }
-
-
-

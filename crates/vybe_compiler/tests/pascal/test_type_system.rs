@@ -402,9 +402,7 @@ fn boolean_to_string() {
 #[test]
 fn high_returns_last_array_index() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a: array[0..4] of Integer; begin WriteLn(High(a)); end."#
-        ),
+        run_pascal(r#"program T; var a: array[0..4] of Integer; begin WriteLn(High(a)); end."#),
         &["4"]
     );
 }
@@ -412,9 +410,7 @@ fn high_returns_last_array_index() {
 #[test]
 fn low_returns_first_array_index() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a: array[1..5] of Integer; begin WriteLn(Low(a)); end."#
-        ),
+        run_pascal(r#"program T; var a: array[1..5] of Integer; begin WriteLn(Low(a)); end."#),
         &["1"]
     );
 }
@@ -432,9 +428,7 @@ fn ord_of_enum_value() {
 #[test]
 fn pred_of_char_steps_backward() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Pred('C')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Pred('C')); end."#),
         &["B"]
     );
 }
@@ -442,9 +436,7 @@ fn pred_of_char_steps_backward() {
 #[test]
 fn succ_of_char_steps_forward() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Succ('M')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Succ('M')); end."#),
         &["N"]
     );
 }
@@ -452,9 +444,7 @@ fn succ_of_char_steps_forward() {
 #[test]
 fn sizeof_integer_type() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(SizeOf(Integer)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(SizeOf(Integer)); end."#),
         &["4"]
     );
 }
@@ -462,9 +452,7 @@ fn sizeof_integer_type() {
 #[test]
 fn type_info_returns_runtime_type_data() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(TypeInfo(Integer) <> nil); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(TypeInfo(Integer) <> nil); end."#),
         &["true"]
     );
 }
@@ -472,9 +460,7 @@ fn type_info_returns_runtime_type_data() {
 #[test]
 fn variant_integer_stores_and_reads() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v: Variant; begin v := 42; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v: Variant; begin v := 42; WriteLn(v); end."#),
         &["42"]
     );
 }
@@ -482,9 +468,7 @@ fn variant_integer_stores_and_reads() {
 #[test]
 fn variant_string_stores_and_reads() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v: Variant; begin v := 'text'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v: Variant; begin v := 'text'; WriteLn(v); end."#),
         &["text"]
     );
 }
@@ -492,9 +476,7 @@ fn variant_string_stores_and_reads() {
 #[test]
 fn float_to_str_formats_real() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(FloatToStr(2.5)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(FloatToStr(2.5)); end."#),
         &["2.5"]
     );
 }
@@ -502,9 +484,7 @@ fn float_to_str_formats_real() {
 #[test]
 fn sizeof_byte_is_one() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(SizeOf(Byte)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(SizeOf(Byte)); end."#),
         &["1"]
     );
 }
@@ -522,9 +502,7 @@ fn high_low_on_static_array_bounds() {
 #[test]
 fn typecast_integer_to_char() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Char(65)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Char(65)); end."#),
         &["A"]
     );
 }
@@ -548,5 +526,3 @@ fn succ_advances_enum_value() {
         &["1"]
     );
 }
-
-

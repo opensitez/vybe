@@ -146,9 +146,7 @@ end."#
 #[test]
 fn typed_constant_string_immutable() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const Greeting: string = 'hi'; begin WriteLn(Greeting); end."#
-        ),
+        run_pascal(r#"program T; const Greeting: string = 'hi'; begin WriteLn(Greeting); end."#),
         &["hi"]
     );
 }
@@ -156,9 +154,7 @@ fn typed_constant_string_immutable() {
 #[test]
 fn typed_constant_real_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const PiApprox: Real = 3.25; begin WriteLn(PiApprox:0:2); end."#
-        ),
+        run_pascal(r#"program T; const PiApprox: Real = 3.25; begin WriteLn(PiApprox:0:2); end."#),
         &["3.25"]
     );
 }
@@ -166,9 +162,7 @@ fn typed_constant_real_value() {
 #[test]
 fn local_var_initialized_in_declaration() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n: Integer = 7; begin WriteLn(n); end."#
-        ),
+        run_pascal(r#"program T; var n: Integer = 7; begin WriteLn(n); end."#),
         &["7"]
     );
 }
@@ -205,9 +199,7 @@ fn const_expression_used_in_array_bounds() {
 #[test]
 fn minint_constant_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(MinInt); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(MinInt); end."#),
         &["-2147483648"]
     );
 }
@@ -225,10 +217,7 @@ fn multiple_vars_single_var_declaration() {
 #[test]
 fn byte_var_overflow_wrap_behavior() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var b: Byte; begin b := 255; b := b + 1; WriteLn(b); end."#
-        ),
+        run_pascal(r#"program T; var b: Byte; begin b := 255; b := b + 1; WriteLn(b); end."#),
         &["0"]
     );
 }
-
