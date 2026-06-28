@@ -1112,6 +1112,55 @@ pub fn prelude() -> Vec<Statement> {
     ));
 
     out.push(function_stmt(
+        "__c_write_carray_string",
+        vec!["ptr", "text"],
+        vec![
+            var_decl_stmt("i", int_lit(0)),
+            stmt(StmtKind::While {
+                cond: expr(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(ident("i")),
+                    right: Box::new(member(ident("text"), "length")),
+                }),
+                body: vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(
+                            member(ident("ptr"), "__base"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(member(ident("ptr"), "__idx")),
+                                right: Box::new(ident("i")),
+                            }),
+                        ),
+                        call_expr(member(ident("text"), "charCodeAt"), vec![ident("i")]),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("i"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("i")),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(
+                    member(ident("ptr"), "__base"),
+                    expr(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(member(ident("ptr"), "__idx")),
+                        right: Box::new(ident("i")),
+                    }),
+                ),
+                int_lit(0),
+            ))),
+            stmt(StmtKind::Return(Some(member(ident("text"), "length")))),
+        ],
+    ));
+
+    out.push(function_stmt(
         "__c_fputs_h",
         vec!["text", "handle"],
         vec![

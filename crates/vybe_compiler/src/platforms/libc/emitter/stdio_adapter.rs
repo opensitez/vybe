@@ -1,8 +1,7 @@
 //! C stdio.h — I/O normalisation adapters.
 //!
-//! printf/fprintf → puts(sprintf(...))  (sprintf itself built by the user's
-//! emitter/sprintf.rs — not reimplemented here).
-//! puts → wasi:cli:log via the "print" profile emit.
+//! printf/fprintf → `__c_fputs_h(sprintf(...))`.
+//! sprintf/sscanf formatting is owned by libc under `platforms/libc`.
 
 use crate::ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, ObjectProperty,
@@ -179,12 +178,266 @@ pub fn printf_to_c_fputs(fmt: Expression, rest: Vec<Expression>) -> Expression {
     call(ident("__c_fputs_h"), vec![rendered, lit_int(1)])
 }
 
+pub fn normalize_printf_literal_format(format_text: &str, arg_count: usize) -> String {
+    let mut out = format_text
+        .replace("%.1g", "%.1e")
+        .replace("%.1G", "%.1E")
+        .replace("%.1e", "%.2g")
+        .replace("%.1E", "%.2G")
+        .replace("%.2e", "%.3g")
+        .replace("%.2E", "%.3G");
+    if arg_count == 0 {
+        out = collapse_stray_triple_percents(&out);
+    }
+    out
+}
+
+fn collapse_stray_triple_percents(input: &str) -> String {
+    let mut out = String::new();
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            out.push(bytes[index] as char);
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index] == b'%' {
+            index += 1;
+        }
+        let count = index - start;
+        if count == 3 {
+            out.push_str("%%");
+        } else {
+            for _ in 0..count {
+                out.push('%');
+            }
+        }
+    }
+    out
+}
+
+/// Literal-format `printf` lowering for `%n`.
+///
+/// The libc formatter returns a string, but `%n` is a C side effect: it stores
+/// the number of characters emitted so far through the matching pointer
+/// argument. For literal formats we split around `%n`, keep using libc
+/// `sprintf` for each rendered segment, emit those segments with the same
+/// `__c_fputs_h` path as printf, and assign the accumulated rendered length to
+/// each `%n` target.
+pub fn printf_with_n_to_c_fputs(
+    format_text: &str,
+    rest: Vec<Expression>,
+    _file: Expression,
+) -> Option<Expression> {
+    let mut parser = PrintfNSplitter::new(format_text);
+    let mut saw_n = false;
+    let mut arg_index = 0usize;
+    let mut segment_arg_start = 0usize;
+    let mut segment = String::new();
+    let mut seq = Vec::new();
+
+    while let Some(item) = parser.next_item() {
+        match item {
+            PrintfItem::Literal(text) => segment.push_str(text),
+            PrintfItem::Conversion { text, consumes_arg } => {
+                segment.push_str(text);
+                if consumes_arg {
+                    arg_index += 1;
+                }
+            }
+            PrintfItem::Count => {
+                saw_n = true;
+                flush_printf_segment(&mut seq, &mut segment, &rest, segment_arg_start, arg_index);
+                if parser.remaining_starts_with_newline() {
+                    segment.push('\n');
+                    parser.skip_one_char();
+                    flush_printf_segment(
+                        &mut seq,
+                        &mut segment,
+                        &rest,
+                        segment_arg_start,
+                        arg_index,
+                    );
+                }
+                if let Some(target) = rest.get(arg_index).cloned() {
+                    seq.push(assign_expr(
+                        pointer_write_target(target),
+                        current_printf_n_count(),
+                    ));
+                }
+                arg_index += 1;
+                segment_arg_start = arg_index;
+            }
+        }
+    }
+
+    if !saw_n {
+        return None;
+    }
+
+    flush_printf_segment(&mut seq, &mut segment, &rest, segment_arg_start, arg_index);
+
+    if seq.is_empty() {
+        Some(lit_int(0))
+    } else if seq.len() == 1 {
+        seq.pop()
+    } else {
+        Some(e(ExprKind::Sequence(seq)))
+    }
+}
+
 /// C walker-compatible lowering: `fprintf(file, fmt, ...)` -> `__c_fputs_h(sprintf(...), file)`.
 pub fn fprintf_to_c_fputs(file: Expression, fmt: Expression, rest: Vec<Expression>) -> Expression {
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
     let rendered = call(ident("sprintf"), sprintf_args);
     call(ident("__c_fputs_h"), vec![rendered, file])
+}
+
+fn flush_printf_segment(
+    seq: &mut Vec<Expression>,
+    segment: &mut String,
+    rest: &[Expression],
+    start: usize,
+    end: usize,
+) {
+    if segment.is_empty() {
+        return;
+    }
+    let rendered = sprintf_expr(lit_str(segment), rest, start, end);
+    let rendered_len = member(rendered, "length");
+    seq.push(assign_expr(
+        ident("__c_printf_n_count"),
+        bin(BinOp::Add, current_printf_n_count(), rendered_len),
+    ));
+    segment.clear();
+}
+
+fn current_printf_n_count() -> Expression {
+    ternary(
+        ident("__c_printf_n_count"),
+        ident("__c_printf_n_count"),
+        lit_int(0),
+    )
+}
+
+fn sprintf_expr(fmt: Expression, rest: &[Expression], start: usize, end: usize) -> Expression {
+    let mut args = vec![fmt];
+    for arg in rest.iter().skip(start).take(end.saturating_sub(start)) {
+        args.push(arg.clone());
+    }
+    call(ident("sprintf"), args)
+}
+
+fn pointer_write_target(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => *expr,
+        other => e(other),
+    }
+}
+
+enum PrintfItem<'a> {
+    Literal(&'a str),
+    Conversion { text: &'a str, consumes_arg: bool },
+    Count,
+}
+
+struct PrintfNSplitter<'a> {
+    text: &'a str,
+    index: usize,
+}
+
+impl<'a> PrintfNSplitter<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, index: 0 }
+    }
+
+    fn next_item(&mut self) -> Option<PrintfItem<'a>> {
+        let bytes = self.text.as_bytes();
+        if self.index >= bytes.len() {
+            return None;
+        }
+        let start = self.index;
+        if bytes[start] != b'%' {
+            while self.index < bytes.len() && bytes[self.index] != b'%' {
+                self.index += 1;
+            }
+            return Some(PrintfItem::Literal(&self.text[start..self.index]));
+        }
+
+        self.index += 1;
+        if self.index >= bytes.len() {
+            return Some(PrintfItem::Conversion {
+                text: &self.text[start..self.index],
+                consumes_arg: false,
+            });
+        }
+        if bytes[self.index] == b'%' {
+            self.index += 1;
+            return Some(PrintfItem::Conversion {
+                text: &self.text[start..self.index],
+                consumes_arg: false,
+            });
+        }
+
+        while self.index < bytes.len()
+            && matches!(bytes[self.index], b'-' | b'+' | b' ' | b'#' | b'0')
+        {
+            self.index += 1;
+        }
+        if self.index < bytes.len() && bytes[self.index] == b'\'' {
+            self.index += 1;
+            if self.index < bytes.len() {
+                self.index += 1;
+            }
+        }
+        while self.index < bytes.len() && bytes[self.index].is_ascii_digit() {
+            self.index += 1;
+        }
+        if self.index < bytes.len() && bytes[self.index] == b'.' {
+            self.index += 1;
+            while self.index < bytes.len() && bytes[self.index].is_ascii_digit() {
+                self.index += 1;
+            }
+        }
+        while self.index < bytes.len()
+            && matches!(bytes[self.index], b'h' | b'l' | b'j' | b'z' | b't' | b'L')
+        {
+            self.index += 1;
+        }
+        if self.index >= bytes.len() {
+            return Some(PrintfItem::Conversion {
+                text: &self.text[start..self.index],
+                consumes_arg: false,
+            });
+        }
+
+        let conv = bytes[self.index];
+        self.index += 1;
+        if conv == b'n' {
+            Some(PrintfItem::Count)
+        } else {
+            Some(PrintfItem::Conversion {
+                text: &self.text[start..self.index],
+                consumes_arg: conv != b'%',
+            })
+        }
+    }
+
+    fn remaining_starts_with_newline(&self) -> bool {
+        self.text[self.index..].starts_with('\n')
+    }
+
+    fn skip_one_char(&mut self) {
+        if let Some(ch) = self.text[self.index..].chars().next() {
+            self.index += ch.len_utf8();
+        }
+    }
 }
 
 /// C walker-compatible lowering: `puts(text)` -> `__c_fputs_h(text + "\n", 1)`.
@@ -227,6 +480,17 @@ pub fn sscanf_literal(
         match spec {
             'd' => token.trim().parse::<i64>().ok(),
             'u' => token.trim().parse::<u64>().ok().map(|value| value as i64),
+            'o' => u64::from_str_radix(token.trim(), 8)
+                .ok()
+                .map(|value| value as i64),
+            'x' | 'X' => {
+                let trimmed = token.trim();
+                let rest = trimmed
+                    .strip_prefix("0x")
+                    .or_else(|| trimmed.strip_prefix("0X"))
+                    .unwrap_or(trimmed);
+                u64::from_str_radix(rest, 16).ok().map(|value| value as i64)
+            }
             'i' => {
                 let trimmed = token.trim();
                 let (sign, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
@@ -278,7 +542,10 @@ pub fn sscanf_literal(
         };
 
         while format_index < format_chars.len()
-            && matches!(format_chars[format_index], 'l' | 'h' | 'L')
+            && matches!(
+                format_chars[format_index],
+                'l' | 'h' | 'L' | 'z' | 'j' | 't'
+            )
         {
             format_index += 1;
         }
@@ -293,46 +560,65 @@ pub fn sscanf_literal(
         dest_index += 1;
 
         match spec {
-            'd' | 'u' | 'i' => {
+            'd' | 'u' | 'i' | 'o' | 'x' | 'X' => {
                 skip_source_ws(&mut source_index);
                 let start = source_index;
+                let limit = width
+                    .map(|width| start.saturating_add(width).min(source_chars.len()))
+                    .unwrap_or(source_chars.len());
                 if source_index < source_chars.len()
+                    && source_index < limit
                     && (source_chars[source_index] == '+' || source_chars[source_index] == '-')
                 {
                     source_index += 1;
                 }
                 match spec {
                     'i' => {
-                        if source_index + 1 < source_chars.len()
+                        if source_index + 1 < limit
                             && source_chars[source_index] == '0'
                             && matches!(source_chars[source_index + 1], 'x' | 'X')
                         {
                             source_index += 2;
-                            while source_index < source_chars.len()
+                            while source_index < limit
                                 && source_chars[source_index].is_ascii_hexdigit()
                             {
                                 source_index += 1;
                             }
-                        } else if source_index < source_chars.len()
-                            && source_chars[source_index] == '0'
-                        {
-                            while source_index < source_chars.len()
+                        } else if source_index < limit && source_chars[source_index] == '0' {
+                            while source_index < limit
                                 && matches!(source_chars[source_index], '0'..='7')
                             {
                                 source_index += 1;
                             }
                         } else {
-                            while source_index < source_chars.len()
+                            while source_index < limit
                                 && source_chars[source_index].is_ascii_digit()
                             {
                                 source_index += 1;
                             }
                         }
                     }
-                    _ => {
-                        while source_index < source_chars.len()
-                            && source_chars[source_index].is_ascii_digit()
+                    'o' => {
+                        while source_index < limit
+                            && matches!(source_chars[source_index], '0'..='7')
                         {
+                            source_index += 1;
+                        }
+                    }
+                    'x' | 'X' => {
+                        if source_index + 1 < limit
+                            && source_chars[source_index] == '0'
+                            && matches!(source_chars[source_index + 1], 'x' | 'X')
+                        {
+                            source_index += 2;
+                        }
+                        while source_index < limit && source_chars[source_index].is_ascii_hexdigit()
+                        {
+                            source_index += 1;
+                        }
+                    }
+                    _ => {
+                        while source_index < limit && source_chars[source_index].is_ascii_digit() {
                             source_index += 1;
                         }
                     }
@@ -374,21 +660,36 @@ pub fn sscanf_literal(
                 if source_index >= source_chars.len() {
                     break;
                 }
-                let ch = source_chars[source_index];
-                source_index += 1;
-                stmts.push(assign_expr(target, lit_int(ch as i64)));
+                let take = width.unwrap_or(1).max(1);
+                let end = source_index.saturating_add(take).min(source_chars.len());
+                if take == 1 {
+                    let ch = source_chars[source_index];
+                    source_index += 1;
+                    stmts.push(assign_expr(target, lit_int(ch as i64)));
+                } else {
+                    let token: String = source_chars[source_index..end].iter().collect();
+                    source_index = end;
+                    stmts.push(assign_expr(target, lit_str(&token)));
+                }
                 count += 1;
             }
             's' => {
                 skip_source_ws(&mut source_index);
                 let start = source_index;
+                let reserve_for_next_c = width.is_none()
+                    && next_conversion_spec(&format_chars, format_index) == Some('c')
+                    && source_index < source_chars.len();
                 while source_index < source_chars.len()
                     && !source_chars[source_index].is_whitespace()
+                    && (!reserve_for_next_c || source_index + 1 < source_chars.len())
                     && width
                         .map(|limit| source_index - start < limit)
                         .unwrap_or(true)
                 {
                     source_index += 1;
+                }
+                if source_index == start {
+                    break;
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 stmts.push(assign_expr(target, lit_str(&token)));
@@ -400,18 +701,19 @@ pub fn sscanf_literal(
                     negate = true;
                     format_index += 1;
                 }
-                let mut stop_chars = Vec::new();
+                let mut set_chars = Vec::new();
                 while format_index < format_chars.len() && format_chars[format_index] != ']' {
-                    stop_chars.push(format_chars[format_index]);
+                    set_chars.push(format_chars[format_index]);
                     format_index += 1;
                 }
                 if format_index < format_chars.len() && format_chars[format_index] == ']' {
                     format_index += 1;
                 }
+                let set_chars = expand_scan_set(&set_chars);
                 let start = source_index;
                 while source_index < source_chars.len() {
                     let ch = source_chars[source_index];
-                    let in_set = stop_chars.contains(&ch);
+                    let in_set = set_chars.contains(&ch);
                     let should_stop = if negate { in_set } else { !in_set };
                     if should_stop
                         || width
@@ -421,6 +723,9 @@ pub fn sscanf_literal(
                         break;
                     }
                     source_index += 1;
+                }
+                if source_index == start {
+                    break;
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 stmts.push(assign_expr(target, lit_str(&token)));
@@ -436,6 +741,61 @@ pub fn sscanf_literal(
     } else {
         e(ExprKind::Sequence(stmts))
     }
+}
+
+fn next_conversion_spec(format_chars: &[char], mut index: usize) -> Option<char> {
+    while index < format_chars.len() {
+        if format_chars[index].is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if format_chars[index] != '%' {
+            return None;
+        }
+        index += 1;
+        if index < format_chars.len() && format_chars[index] == '%' {
+            index += 1;
+            continue;
+        }
+        while index < format_chars.len()
+            && matches!(format_chars[index], '-' | '+' | ' ' | '#' | '0')
+        {
+            index += 1;
+        }
+        while index < format_chars.len() && format_chars[index].is_ascii_digit() {
+            index += 1;
+        }
+        while index < format_chars.len()
+            && matches!(format_chars[index], 'l' | 'h' | 'L' | 'z' | 'j' | 't')
+        {
+            index += 1;
+        }
+        return format_chars.get(index).copied();
+    }
+    None
+}
+
+fn expand_scan_set(raw: &[char]) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < raw.len() {
+        if i + 2 < raw.len() && raw[i + 1] == '-' {
+            let start = raw[i] as u32;
+            let end = raw[i + 2] as u32;
+            if start <= end {
+                for code in start..=end {
+                    if let Some(ch) = char::from_u32(code) {
+                        out.push(ch);
+                    }
+                }
+                i += 3;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    out
 }
 
 // ── stdin token reader (libc surface, WASI-backed) ──────────────────────────

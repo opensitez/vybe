@@ -377,7 +377,11 @@ int_literal = @{
 int_suffix = @{ ("u" | "U" | "l" | "L")+ }
 
 float_literal = @{
-    (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+ | ASCII_DIGIT+)
+    ("0x" | "0X")
+    ~ (ASCII_HEX_DIGIT+ ~ "." ~ ASCII_HEX_DIGIT* | "." ~ ASCII_HEX_DIGIT+ | ASCII_HEX_DIGIT+)
+    ~ (("p" | "P") ~ ("+" | "-")? ~ ASCII_DIGIT+)
+    ~ float_suffix?
+    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+ | ASCII_DIGIT+)
     ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)
     ~ float_suffix?
     | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+)

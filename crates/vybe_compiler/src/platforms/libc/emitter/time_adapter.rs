@@ -5,7 +5,9 @@
 //! same `__c_*_h` helpers without touching call sites. Shared by any
 //! libc-targeting front-end.
 
-use crate::ast::{ArrayElement, BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind, UnaryOp};
+use crate::ast::{
+    ArrayElement, BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind, UnaryOp,
+};
 use crate::platforms::libc::emitter::build::*;
 
 // ── call-site lowerings (walker maps `time(...)` etc. through these) ─────────
@@ -49,14 +51,20 @@ pub fn asctime(tm: Expression) -> Expression {
 pub fn ctime(t: Expression) -> Expression {
     call_expr(
         ident("__c_asctime_h"),
-        vec![call_expr(ident("__c_localtime_h"), vec![value_from_address_arg(t)])],
+        vec![call_expr(
+            ident("__c_localtime_h"),
+            vec![value_from_address_arg(t)],
+        )],
     )
 }
 
 /// The formatted-output string for `strftime(buf, size, fmt, tm)`. The caller
 /// copies this into `buf` and returns the generated length.
 pub fn strftime_output(fmt: Expression, tm: Expression) -> Expression {
-    call_expr(ident("__c_strftime_format_h"), vec![fmt, value_from_address_arg(tm)])
+    call_expr(
+        ident("__c_strftime_format_h"),
+        vec![fmt, value_from_address_arg(tm)],
+    )
 }
 
 // ── small AST builders ───────────────────────────────────────────────────────
@@ -221,8 +229,7 @@ fn month_name(full: bool) -> Expression {
             ])
         } else {
             array(&[
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
-                "Dec",
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ])
         },
         tm_field("tm_mon"),
@@ -268,12 +275,18 @@ fn computed_yday() -> Expression {
 }
 
 fn sunday_week_number() -> Expression {
-    div(add(sub(computed_yday(), tm_field("tm_wday")), int_lit(7)), int_lit(7))
+    div(
+        add(sub(computed_yday(), tm_field("tm_wday")), int_lit(7)),
+        int_lit(7),
+    )
 }
 
 fn monday_week_number() -> Expression {
     let monday_zero_wday = modulo(add(tm_field("tm_wday"), int_lit(6)), int_lit(7));
-    div(add(sub(computed_yday(), monday_zero_wday), int_lit(7)), int_lit(7))
+    div(
+        add(sub(computed_yday(), monday_zero_wday), int_lit(7)),
+        int_lit(7),
+    )
 }
 
 fn strftime_value_for_code(code: &str) -> Expression {
@@ -289,21 +302,35 @@ fn strftime_value_for_code(code: &str) -> Expression {
         "%a" => weekday_name(false),
         "%B" => month_name(true),
         "%b" | "%h" => month_name(false),
-        "%p" => ternary(gte(tm_field("tm_hour"), int_lit(12)), str_lit("PM"), str_lit("AM")),
+        "%p" => ternary(
+            gte(tm_field("tm_hour"), int_lit(12)),
+            str_lit("PM"),
+            str_lit("AM"),
+        ),
         "%I" => zero_padded(hour12(), 2),
         "%j" => zero_padded(add(tm_field("tm_yday"), int_lit(1)), 3),
         "%w" => call_name("__c_to_string_h", vec![tm_field("tm_wday")]),
         "%u" => call_name(
             "__c_to_string_h",
-            vec![ternary(eq(tm_field("tm_wday"), int_lit(0)), int_lit(7), tm_field("tm_wday"))],
+            vec![ternary(
+                eq(tm_field("tm_wday"), int_lit(0)),
+                int_lit(7),
+                tm_field("tm_wday"),
+            )],
         ),
         "%C" => zero_padded(div(year_full(), int_lit(100)), 2),
         "%F" => cat(
-            cat(cat(strftime_value_for_code("%Y"), str_lit("-")), strftime_value_for_code("%m")),
+            cat(
+                cat(strftime_value_for_code("%Y"), str_lit("-")),
+                strftime_value_for_code("%m"),
+            ),
             cat(str_lit("-"), strftime_value_for_code("%d")),
         ),
         "%D" => cat(
-            cat(cat(strftime_value_for_code("%m"), str_lit("/")), strftime_value_for_code("%d")),
+            cat(
+                cat(strftime_value_for_code("%m"), str_lit("/")),
+                strftime_value_for_code("%d"),
+            ),
             cat(str_lit("/"), strftime_value_for_code("%y")),
         ),
         "%R" => cat(
@@ -311,7 +338,10 @@ fn strftime_value_for_code(code: &str) -> Expression {
             strftime_value_for_code("%M"),
         ),
         "%T" => cat(
-            cat(cat(strftime_value_for_code("%H"), str_lit(":")), strftime_value_for_code("%M")),
+            cat(
+                cat(strftime_value_for_code("%H"), str_lit(":")),
+                strftime_value_for_code("%M"),
+            ),
             cat(str_lit(":"), strftime_value_for_code("%S")),
         ),
         "%e" => space_padded(tm_field("tm_mday"), 2),
@@ -329,11 +359,7 @@ fn strftime_value_for_code(code: &str) -> Expression {
 }
 
 fn strftime_return(format: &str, value: Expression) -> Statement {
-    if_stmt(
-        eq(ident("fmt"), str_lit(format)),
-        vec![ret(value)],
-        None,
-    )
+    if_stmt(eq(ident("fmt"), str_lit(format)), vec![ret(value)], None)
 }
 
 fn tm_struct_from_locals() -> Expression {
@@ -386,7 +412,11 @@ fn is_leap_body() -> Vec<Statement> {
         ternary(
             eq(modulo(ident("y"), int_lit(100)), int_lit(0)),
             int_lit(0),
-            ternary(eq(modulo(ident("y"), int_lit(4)), int_lit(0)), int_lit(1), int_lit(0)),
+            ternary(
+                eq(modulo(ident("y"), int_lit(4)), int_lit(0)),
+                int_lit(1),
+                int_lit(0),
+            ),
         ),
     ))]
 }
@@ -394,7 +424,11 @@ fn is_leap_body() -> Vec<Statement> {
 fn days_in_month_body() -> Vec<Statement> {
     vec![ret(ternary(
         eq(ident("m"), int_lit(1)),
-        ternary(eq(call_name("__c_is_leap_h", vec![ident("y")]), int_lit(1)), int_lit(29), int_lit(28)),
+        ternary(
+            eq(call_name("__c_is_leap_h", vec![ident("y")]), int_lit(1)),
+            int_lit(29),
+            int_lit(28),
+        ),
         ternary(
             eq(ident("m"), int_lit(3)),
             int_lit(30),
@@ -418,7 +452,13 @@ fn yday_body() -> Vec<Statement> {
         while_stmt(
             lt(ident("i"), ident("m")),
             vec![
-                assign_stmt(ident("d"), add(ident("d"), call_name("__c_dim_h", vec![ident("y"), ident("i")]))),
+                assign_stmt(
+                    ident("d"),
+                    add(
+                        ident("d"),
+                        call_name("__c_dim_h", vec![ident("y"), ident("i")]),
+                    ),
+                ),
                 assign_stmt(ident("i"), add(ident("i"), int_lit(1))),
             ],
         ),
@@ -438,17 +478,35 @@ fn gmtime_body() -> Vec<Statement> {
         var_decl_stmt("year", int_lit(1970)),
         var_decl_stmt("yday", ident("days")),
         while_stmt(
-            gte(ident("yday"), call_name("__c_days_in_year_h", vec![ident("year")])),
+            gte(
+                ident("yday"),
+                call_name("__c_days_in_year_h", vec![ident("year")]),
+            ),
             vec![
-                assign_stmt(ident("yday"), sub(ident("yday"), call_name("__c_days_in_year_h", vec![ident("year")]))),
+                assign_stmt(
+                    ident("yday"),
+                    sub(
+                        ident("yday"),
+                        call_name("__c_days_in_year_h", vec![ident("year")]),
+                    ),
+                ),
                 assign_stmt(ident("year"), add(ident("year"), int_lit(1))),
             ],
         ),
         var_decl_stmt("mon", int_lit(0)),
         while_stmt(
-            gte(ident("yday"), call_name("__c_dim_h", vec![ident("year"), ident("mon")])),
+            gte(
+                ident("yday"),
+                call_name("__c_dim_h", vec![ident("year"), ident("mon")]),
+            ),
             vec![
-                assign_stmt(ident("yday"), sub(ident("yday"), call_name("__c_dim_h", vec![ident("year"), ident("mon")]))),
+                assign_stmt(
+                    ident("yday"),
+                    sub(
+                        ident("yday"),
+                        call_name("__c_dim_h", vec![ident("year"), ident("mon")]),
+                    ),
+                ),
                 assign_stmt(ident("mon"), add(ident("mon"), int_lit(1))),
             ],
         ),
@@ -466,65 +524,140 @@ fn mktime_body() -> Vec<Statement> {
         var_decl_stmt("hour", tm_numeric_field("tm_hour")),
         var_decl_stmt("min", tm_numeric_field("tm_min")),
         var_decl_stmt("sec", tm_numeric_field("tm_sec")),
-        while_stmt(gte(ident("sec"), int_lit(60)), vec![
-            assign_stmt(ident("sec"), sub(ident("sec"), int_lit(60))),
-            assign_stmt(ident("min"), add(ident("min"), int_lit(1))),
-        ]),
-        while_stmt(lt(ident("sec"), int_lit(0)), vec![
-            assign_stmt(ident("sec"), add(ident("sec"), int_lit(60))),
-            assign_stmt(ident("min"), sub(ident("min"), int_lit(1))),
-        ]),
-        while_stmt(gte(ident("min"), int_lit(60)), vec![
-            assign_stmt(ident("min"), sub(ident("min"), int_lit(60))),
-            assign_stmt(ident("hour"), add(ident("hour"), int_lit(1))),
-        ]),
-        while_stmt(lt(ident("min"), int_lit(0)), vec![
-            assign_stmt(ident("min"), add(ident("min"), int_lit(60))),
-            assign_stmt(ident("hour"), sub(ident("hour"), int_lit(1))),
-        ]),
-        while_stmt(gte(ident("hour"), int_lit(24)), vec![
-            assign_stmt(ident("hour"), sub(ident("hour"), int_lit(24))),
-            assign_stmt(ident("mday"), add(ident("mday"), int_lit(1))),
-        ]),
-        while_stmt(lt(ident("hour"), int_lit(0)), vec![
-            assign_stmt(ident("hour"), add(ident("hour"), int_lit(24))),
-            assign_stmt(ident("mday"), sub(ident("mday"), int_lit(1))),
-        ]),
-        while_stmt(lt(ident("mon"), int_lit(0)), vec![
-            assign_stmt(ident("mon"), add(ident("mon"), int_lit(12))),
-            assign_stmt(ident("year"), sub(ident("year"), int_lit(1))),
-        ]),
-        while_stmt(gte(ident("mon"), int_lit(12)), vec![
-            assign_stmt(ident("mon"), sub(ident("mon"), int_lit(12))),
-            assign_stmt(ident("year"), add(ident("year"), int_lit(1))),
-        ]),
-        while_stmt(lte(ident("mday"), int_lit(0)), vec![
-            assign_stmt(ident("mon"), sub(ident("mon"), int_lit(1))),
-            while_stmt(lt(ident("mon"), int_lit(0)), vec![
+        while_stmt(
+            gte(ident("sec"), int_lit(60)),
+            vec![
+                assign_stmt(ident("sec"), sub(ident("sec"), int_lit(60))),
+                assign_stmt(ident("min"), add(ident("min"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            lt(ident("sec"), int_lit(0)),
+            vec![
+                assign_stmt(ident("sec"), add(ident("sec"), int_lit(60))),
+                assign_stmt(ident("min"), sub(ident("min"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            gte(ident("min"), int_lit(60)),
+            vec![
+                assign_stmt(ident("min"), sub(ident("min"), int_lit(60))),
+                assign_stmt(ident("hour"), add(ident("hour"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            lt(ident("min"), int_lit(0)),
+            vec![
+                assign_stmt(ident("min"), add(ident("min"), int_lit(60))),
+                assign_stmt(ident("hour"), sub(ident("hour"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            gte(ident("hour"), int_lit(24)),
+            vec![
+                assign_stmt(ident("hour"), sub(ident("hour"), int_lit(24))),
+                assign_stmt(ident("mday"), add(ident("mday"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            lt(ident("hour"), int_lit(0)),
+            vec![
+                assign_stmt(ident("hour"), add(ident("hour"), int_lit(24))),
+                assign_stmt(ident("mday"), sub(ident("mday"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            lt(ident("mon"), int_lit(0)),
+            vec![
                 assign_stmt(ident("mon"), add(ident("mon"), int_lit(12))),
                 assign_stmt(ident("year"), sub(ident("year"), int_lit(1))),
-            ]),
-            assign_stmt(ident("mday"), add(ident("mday"), call_name("__c_dim_h", vec![ident("year"), ident("mon")]))),
-        ]),
-        while_stmt(gt(ident("mday"), call_name("__c_dim_h", vec![ident("year"), ident("mon")])), vec![
-            assign_stmt(ident("mday"), sub(ident("mday"), call_name("__c_dim_h", vec![ident("year"), ident("mon")]))),
-            assign_stmt(ident("mon"), add(ident("mon"), int_lit(1))),
-            while_stmt(gte(ident("mon"), int_lit(12)), vec![
+            ],
+        ),
+        while_stmt(
+            gte(ident("mon"), int_lit(12)),
+            vec![
                 assign_stmt(ident("mon"), sub(ident("mon"), int_lit(12))),
                 assign_stmt(ident("year"), add(ident("year"), int_lit(1))),
-            ]),
-        ]),
+            ],
+        ),
+        while_stmt(
+            lte(ident("mday"), int_lit(0)),
+            vec![
+                assign_stmt(ident("mon"), sub(ident("mon"), int_lit(1))),
+                while_stmt(
+                    lt(ident("mon"), int_lit(0)),
+                    vec![
+                        assign_stmt(ident("mon"), add(ident("mon"), int_lit(12))),
+                        assign_stmt(ident("year"), sub(ident("year"), int_lit(1))),
+                    ],
+                ),
+                assign_stmt(
+                    ident("mday"),
+                    add(
+                        ident("mday"),
+                        call_name("__c_dim_h", vec![ident("year"), ident("mon")]),
+                    ),
+                ),
+            ],
+        ),
+        while_stmt(
+            gt(
+                ident("mday"),
+                call_name("__c_dim_h", vec![ident("year"), ident("mon")]),
+            ),
+            vec![
+                assign_stmt(
+                    ident("mday"),
+                    sub(
+                        ident("mday"),
+                        call_name("__c_dim_h", vec![ident("year"), ident("mon")]),
+                    ),
+                ),
+                assign_stmt(ident("mon"), add(ident("mon"), int_lit(1))),
+                while_stmt(
+                    gte(ident("mon"), int_lit(12)),
+                    vec![
+                        assign_stmt(ident("mon"), sub(ident("mon"), int_lit(12))),
+                        assign_stmt(ident("year"), add(ident("year"), int_lit(1))),
+                    ],
+                ),
+            ],
+        ),
         var_decl_stmt("days", int_lit(0)),
         var_decl_stmt("yy", int_lit(1970)),
-        while_stmt(lt(ident("yy"), ident("year")), vec![
-            assign_stmt(ident("days"), add(ident("days"), call_name("__c_days_in_year_h", vec![ident("yy")]))),
-            assign_stmt(ident("yy"), add(ident("yy"), int_lit(1))),
-        ]),
-        while_stmt(gt(ident("yy"), ident("year")), vec![
-            assign_stmt(ident("yy"), sub(ident("yy"), int_lit(1))),
-            assign_stmt(ident("days"), sub(ident("days"), call_name("__c_days_in_year_h", vec![ident("yy")]))),
-        ]),
-        var_decl_stmt("yday", call_name("__c_yday_h", vec![ident("year"), ident("mon"), ident("mday")])),
+        while_stmt(
+            lt(ident("yy"), ident("year")),
+            vec![
+                assign_stmt(
+                    ident("days"),
+                    add(
+                        ident("days"),
+                        call_name("__c_days_in_year_h", vec![ident("yy")]),
+                    ),
+                ),
+                assign_stmt(ident("yy"), add(ident("yy"), int_lit(1))),
+            ],
+        ),
+        while_stmt(
+            gt(ident("yy"), ident("year")),
+            vec![
+                assign_stmt(ident("yy"), sub(ident("yy"), int_lit(1))),
+                assign_stmt(
+                    ident("days"),
+                    sub(
+                        ident("days"),
+                        call_name("__c_days_in_year_h", vec![ident("yy")]),
+                    ),
+                ),
+            ],
+        ),
+        var_decl_stmt(
+            "yday",
+            call_name(
+                "__c_yday_h",
+                vec![ident("year"), ident("mon"), ident("mday")],
+            ),
+        ),
         assign_stmt(ident("days"), add(ident("days"), ident("yday"))),
         var_decl_stmt("wday", modulo(add(int_lit(4), ident("days")), int_lit(7))),
         assign_stmt(tm_field("tm_year"), sub(ident("year"), int_lit(1900))),
@@ -535,16 +668,22 @@ fn mktime_body() -> Vec<Statement> {
         assign_stmt(tm_field("tm_sec"), ident("sec")),
         assign_stmt(tm_field("tm_yday"), ident("yday")),
         assign_stmt(tm_field("tm_wday"), ident("wday")),
-        ret(add(mul(ident("days"), int_lit(86400)), add(mul(ident("hour"), int_lit(3600)), add(mul(ident("min"), int_lit(60)), ident("sec"))))),
+        ret(add(
+            mul(ident("days"), int_lit(86400)),
+            add(
+                mul(ident("hour"), int_lit(3600)),
+                add(mul(ident("min"), int_lit(60)), ident("sec")),
+            ),
+        )),
     ]
 }
 
 fn strftime_body() -> Vec<Statement> {
     let mut body = Vec::new();
     for code in [
-        "%Y", "%y", "%m", "%d", "%H", "%M", "%S", "%A", "%a", "%B", "%b", "%h", "%p", "%I",
-        "%j", "%w", "%u", "%C", "%F", "%D", "%R", "%T", "%e", "%l", "%k", "%%", "%V", "%G",
-        "%g", "%U", "%W", "%n", "%t",
+        "%Y", "%y", "%m", "%d", "%H", "%M", "%S", "%A", "%a", "%B", "%b", "%h", "%p", "%I", "%j",
+        "%w", "%u", "%C", "%F", "%D", "%R", "%T", "%e", "%l", "%k", "%%", "%V", "%G", "%g", "%U",
+        "%W", "%n", "%t",
     ] {
         body.push(strftime_return(code, strftime_value_for_code(code)));
     }
@@ -552,13 +691,22 @@ fn strftime_body() -> Vec<Statement> {
     body.push(strftime_return("%H:%M:%S", strftime_value_for_code("%T")));
     body.push(strftime_return(
         "%I %p",
-        cat(cat(strftime_value_for_code("%I"), str_lit(" ")), strftime_value_for_code("%p")),
+        cat(
+            cat(strftime_value_for_code("%I"), str_lit(" ")),
+            strftime_value_for_code("%p"),
+        ),
     ));
     body.push(strftime_return(
         "%Y%m%d%H%M%S",
         cat(
-            cat(cat(strftime_value_for_code("%Y"), strftime_value_for_code("%m")), strftime_value_for_code("%d")),
-            cat(cat(strftime_value_for_code("%H"), strftime_value_for_code("%M")), strftime_value_for_code("%S")),
+            cat(
+                cat(strftime_value_for_code("%Y"), strftime_value_for_code("%m")),
+                strftime_value_for_code("%d"),
+            ),
+            cat(
+                cat(strftime_value_for_code("%H"), strftime_value_for_code("%M")),
+                strftime_value_for_code("%S"),
+            ),
         ),
     ));
     body.push(strftime_return("", str_lit("")));
@@ -593,13 +741,21 @@ fn asctime_body() -> Vec<Statement> {
 
 pub fn runtime_helpers() -> Vec<Statement> {
     vec![
-        function_stmt("__c_time_h", vec!["out_ptr"], vec![ret(int_lit(1704067200))]),
+        function_stmt(
+            "__c_time_h",
+            vec!["out_ptr"],
+            vec![ret(int_lit(1704067200))],
+        ),
         function_stmt("__c_clock_h", vec![], vec![ret(int_lit(1))]),
         function_stmt("__c_is_leap_h", vec!["y"], is_leap_body()),
         function_stmt(
             "__c_days_in_year_h",
             vec!["y"],
-            vec![ret(ternary(eq(call_name("__c_is_leap_h", vec![ident("y")]), int_lit(1)), int_lit(366), int_lit(365)))],
+            vec![ret(ternary(
+                eq(call_name("__c_is_leap_h", vec![ident("y")]), int_lit(1)),
+                int_lit(366),
+                int_lit(365),
+            ))],
         ),
         function_stmt("__c_dim_h", vec!["y", "m"], days_in_month_body()),
         function_stmt("__c_yday_h", vec!["y", "m", "day"], yday_body()),

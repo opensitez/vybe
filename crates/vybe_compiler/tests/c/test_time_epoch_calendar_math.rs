@@ -205,7 +205,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=70,.tm_mon=0,.tm_mday=1,.tm_hour=23,.tm_min=59,.tm_sec=120}; mktime(&t); printf(\"%d %d %d\\n\", t.tm_mday, t.tm_hour, t.tm_min); return 0;",
-        expect: ["2 0 2"]
+        expect: ["2 0 1"]
     },
     time_t_zero_is_epoch => {
         includes: ["<stdio.h>", "<time.h>"],

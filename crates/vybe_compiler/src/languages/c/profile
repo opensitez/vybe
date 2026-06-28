@@ -3,7 +3,7 @@
 # Covers C99 core: functions, structs (as objects), arrays, pointers
 # (modeled as references), stdio/string/math/stdlib library functions.
 # C-specific runtime semantics (printf format codes) route through the
-# shared `__vybe_sprintf` formatter in the common emitter.
+# libc formatter under platforms/libc.
 
 [info]
 name = "c"
@@ -31,8 +31,8 @@ uses_normalize_class = false
 #   fprintf(f, fmt, args...)→ puts(sprintf(fmt, args...))  (stream dropped)
 #   sprintf(buf, fmt, args...)→ sprintf(fmt, args...)      (buf dropped)
 #   snprintf(buf,n,fmt,...) → sprintf(fmt, args...)
-# sprintf routes through the inline common emitter helper (no JS polyfill).
-"sprintf"  = { emit = "common:sprintf.format", min_args = 1, max_args = 255 }
+# sprintf routes through the libc inline emitter helper (no JS polyfill).
+"sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }
 "putchar"  = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 # Single code point → 1-char string. Used by libc adapters (e.g. decoding a

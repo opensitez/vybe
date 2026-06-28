@@ -228,7 +228,7 @@ c_run_cases! {
     strftime_early_morning_twelve_hour => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
-        body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=1}; char b[4]; strftime(b,sizeof(b),\"%I %p\",&t); printf(\"%s\\n\", b); return 0;",
+        body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=1}; char b[8]; strftime(b,sizeof(b),\"%I %p\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["01 AM"]
     },
     strftime_century_nineteen => {
@@ -277,7 +277,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6,.tm_yday=166}; char b[4]; strftime(b,sizeof(b),\"%U\",&t); printf(\"%s\\n\", b); return 0;",
-        expect: ["24"]
+        expect: ["23"]
     },
     strftime_percent_W_monday_week_number => {
         includes: ["<stdio.h>", "<time.h>"],

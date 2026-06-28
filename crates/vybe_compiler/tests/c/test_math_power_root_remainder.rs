@@ -18,7 +18,7 @@ c_run_cases! {
     cbrt_sixty_four => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(64.0)); return 0;", expect: ["4.0"] },
     cbrt_one_hundred_twenty_five => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(125.0)); return 0;", expect: ["5.0"] },
     cbrt_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(1.0)); return 0;", expect: ["1.0"] },
-    cbrt_negative_eight => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(-8.0)); return 0;", expect: ["1.0+1.7j"] },
+    cbrt_negative_eight => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(-8.0)); return 0;", expect: ["-2.0"] },
     cbrt_point_one_two_five => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", cbrt(0.125)); return 0;", expect: ["0.500"] },
     cbrt_two_hundred_sixteen => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", cbrt(216.0)); return 0;", expect: ["6.0"] },
     hypot_5_12 => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", hypot(5.0, 12.0)); return 0;", expect: ["13.0"] },
