@@ -26,26 +26,17 @@ fn list_imul_repeats() {
 
 #[test]
 fn list_imul_zero_clears() {
-    assert_eq!(
-        run_python_one("xs = [1, 2, 3]\nxs *= 0\nprint(xs)\n"),
-        "[]"
-    );
+    assert_eq!(run_python_one("xs = [1, 2, 3]\nxs *= 0\nprint(xs)\n"), "[]");
 }
 
 #[test]
 fn str_iadd_concatenates() {
-    assert_eq!(
-        run_python_one("s = 'a'\ns += 'bc'\nprint(s)\n"),
-        "abc"
-    );
+    assert_eq!(run_python_one("s = 'a'\ns += 'bc'\nprint(s)\n"), "abc");
 }
 
 #[test]
 fn str_imul_repeats() {
-    assert_eq!(
-        run_python_one("s = 'ab'\ns *= 3\nprint(s)\n"),
-        "ababab"
-    );
+    assert_eq!(run_python_one("s = 'ab'\ns *= 3\nprint(s)\n"), "ababab");
 }
 
 #[test]
@@ -58,66 +49,42 @@ fn str_imul_zero_empty() {
 
 #[test]
 fn int_iadd_increment() {
-    assert_eq!(
-        run_python_one("n = 10\nn += 5\nprint(n)\n"),
-        "15"
-    );
+    assert_eq!(run_python_one("n = 10\nn += 5\nprint(n)\n"), "15");
 }
 
 #[test]
 fn int_isub_decrement() {
-    assert_eq!(
-        run_python_one("n = 10\nn -= 3\nprint(n)\n"),
-        "7"
-    );
+    assert_eq!(run_python_one("n = 10\nn -= 3\nprint(n)\n"), "7");
 }
 
 #[test]
 fn int_imul_scale() {
-    assert_eq!(
-        run_python_one("n = 4\nn *= 3\nprint(n)\n"),
-        "12"
-    );
+    assert_eq!(run_python_one("n = 4\nn *= 3\nprint(n)\n"), "12");
 }
 
 #[test]
 fn int_ifloordiv_assign() {
-    assert_eq!(
-        run_python_one("n = 17\nn //= 5\nprint(n)\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("n = 17\nn //= 5\nprint(n)\n"), "3");
 }
 
 #[test]
 fn int_imod_assign() {
-    assert_eq!(
-        run_python_one("n = 17\nn %= 5\nprint(n)\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("n = 17\nn %= 5\nprint(n)\n"), "2");
 }
 
 #[test]
 fn int_ipow_assign() {
-    assert_eq!(
-        run_python_one("n = 2\nn **= 4\nprint(n)\n"),
-        "16"
-    );
+    assert_eq!(run_python_one("n = 2\nn **= 4\nprint(n)\n"), "16");
 }
 
 #[test]
 fn float_iadd() {
-    assert_eq!(
-        run_python_one("x = 1.5\nx += 2.5\nprint(x)\n"),
-        "4.0"
-    );
+    assert_eq!(run_python_one("x = 1.5\nx += 2.5\nprint(x)\n"), "4.0");
 }
 
 #[test]
 fn float_idiv_assign() {
-    assert_eq!(
-        run_python_one("x = 10.0\nx /= 4\nprint(x)\n"),
-        "2.5"
-    );
+    assert_eq!(run_python_one("x = 10.0\nx /= 4\nprint(x)\n"), "2.5");
 }
 
 #[test]
@@ -210,74 +177,47 @@ fn augmented_assign_on_dict_value() {
 
 #[test]
 fn augmented_assign_bitwise_and_int() {
-    assert_eq!(
-        run_python_one("n = 15\nn &= 10\nprint(n)\n"),
-        "10"
-    );
+    assert_eq!(run_python_one("n = 15\nn &= 10\nprint(n)\n"), "10");
 }
 
 #[test]
 fn augmented_assign_bitwise_or_int() {
-    assert_eq!(
-        run_python_one("n = 1\nn |= 8\nprint(n)\n"),
-        "9"
-    );
+    assert_eq!(run_python_one("n = 1\nn |= 8\nprint(n)\n"), "9");
 }
 
 #[test]
 fn augmented_assign_bitwise_xor_int() {
-    assert_eq!(
-        run_python_one("n = 12\nn ^= 10\nprint(n)\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("n = 12\nn ^= 10\nprint(n)\n"), "6");
 }
 
 #[test]
 fn augmented_assign_lshift() {
-    assert_eq!(
-        run_python_one("n = 1\nn <<= 3\nprint(n)\n"),
-        "8"
-    );
+    assert_eq!(run_python_one("n = 1\nn <<= 3\nprint(n)\n"), "8");
 }
 
 #[test]
 fn augmented_assign_rshift() {
-    assert_eq!(
-        run_python_one("n = 32\nn >>= 2\nprint(n)\n"),
-        "8"
-    );
+    assert_eq!(run_python_one("n = 32\nn >>= 2\nprint(n)\n"), "8");
 }
 
 #[test]
 fn list_iadd_self_reference_safe() {
-    assert_eq!(
-        run_python_one("xs = [1]\nxs += xs\nprint(xs)\n"),
-        "[1, 1]"
-    );
+    assert_eq!(run_python_one("xs = [1]\nxs += xs\nprint(xs)\n"), "[1, 1]");
 }
 
 #[test]
 fn str_imul_one_unchanged() {
-    assert_eq!(
-        run_python_one("s = 'abc'\ns *= 1\nprint(s)\n"),
-        "abc"
-    );
+    assert_eq!(run_python_one("s = 'abc'\ns *= 1\nprint(s)\n"), "abc");
 }
 
 #[test]
 fn int_iadd_negative_delta() {
-    assert_eq!(
-        run_python_one("n = 5\nn += -2\nprint(n)\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("n = 5\nn += -2\nprint(n)\n"), "3");
 }
 
 #[test]
 fn float_imul_assign() {
-    assert_eq!(
-        run_python_one("x = 2.0\nx *= 1.5\nprint(x)\n"),
-        "3.0"
-    );
+    assert_eq!(run_python_one("x = 2.0\nx *= 1.5\nprint(x)\n"), "3.0");
 }
 
 #[test]
@@ -291,7 +231,9 @@ fn list_imul_one_same_content() {
 #[test]
 fn augmented_assign_chained_on_attribute() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self):\n  self.n = 0\nc = C()\nc.n += 5\nc.n += 3\nprint(c.n)\n"),
+        run_python_one(
+            "class C:\n def __init__(self):\n  self.n = 0\nc = C()\nc.n += 5\nc.n += 3\nprint(c.n)\n"
+        ),
         "8"
     );
 }
@@ -314,8 +256,5 @@ fn set_iadd_alias_for_ior() {
 
 #[test]
 fn augmented_assign_expression_statement() {
-    assert_eq!(
-        run_python_one("n = 1\n(n := n)\nn += 1\nprint(n)\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("n = 1\n(n := n)\nn += 1\nprint(n)\n"), "2");
 }

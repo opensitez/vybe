@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn list_literal_basic() {
@@ -27,10 +27,7 @@ fn list_slice_step() {
 
 #[test]
 fn list_append_mutates() {
-    assert_eq!(
-        run_python_one("a = [1]\na.append(2)\nprint(a)\n"),
-        "[1, 2]"
-    );
+    assert_eq!(run_python_one("a = [1]\na.append(2)\nprint(a)\n"), "[1, 2]");
 }
 
 #[test]
@@ -51,18 +48,12 @@ fn list_insert_at_start() {
 
 #[test]
 fn list_pop_last() {
-    assert_eq!(
-        run_python_one("a = [1, 2]\nprint(a.pop())\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("a = [1, 2]\nprint(a.pop())\n"), "2");
 }
 
 #[test]
 fn list_pop_index() {
-    assert_eq!(
-        run_python_one("a = [1, 2, 3]\nprint(a.pop(0))\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("a = [1, 2, 3]\nprint(a.pop(0))\n"), "1");
 }
 
 #[test]
@@ -75,10 +66,7 @@ fn list_remove_first_match() {
 
 #[test]
 fn list_clear() {
-    assert_eq!(
-        run_python_one("a = [1, 2]\na.clear()\nprint(a)\n"),
-        "[]"
-    );
+    assert_eq!(run_python_one("a = [1, 2]\na.clear()\nprint(a)\n"), "[]");
 }
 
 #[test]
@@ -200,10 +188,7 @@ fn list_nested_access() {
 
 #[test]
 fn list_unpack_three() {
-    assert_eq!(
-        run_python_one("a, b, c = [1, 2, 3]\nprint(b)\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("a, b, c = [1, 2, 3]\nprint(b)\n"), "2");
 }
 
 #[test]
@@ -275,5 +260,8 @@ fn list_enumerate() {
 
 #[test]
 fn list_zip_two() {
-    assert_eq!(run_print("list(zip([1, 2], ['a', 'b']))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(zip([1, 2], ['a', 'b']))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }

@@ -1,13 +1,19 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn enumerate_basic_index_value() {
-    assert_eq!(run_print("list(enumerate(['a', 'b']))"), "[(0, 'a'), (1, 'b')]");
+    assert_eq!(
+        run_print("list(enumerate(['a', 'b']))"),
+        "[(0, 'a'), (1, 'b')]"
+    );
 }
 
 #[test]
 fn enumerate_with_start() {
-    assert_eq!(run_print("list(enumerate(['a', 'b'], start=1))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(enumerate(['a', 'b'], start=1))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }
 
 #[test]
@@ -22,13 +28,18 @@ fn enumerate_string_chars() {
 
 #[test]
 fn enumerate_range_values() {
-    assert_eq!(run_print("list(enumerate(range(3)))"), "[(0, 0), (1, 1), (2, 2)]");
+    assert_eq!(
+        run_print("list(enumerate(range(3)))"),
+        "[(0, 0), (1, 1), (2, 2)]"
+    );
 }
 
 #[test]
 fn enumerate_for_loop_unpack() {
     assert_eq!(
-        run_python_one("out = []\nfor i, v in enumerate(['x', 'y']):\n out.append(f'{i}:{v}')\nprint(out)\n"),
+        run_python_one(
+            "out = []\nfor i, v in enumerate(['x', 'y']):\n out.append(f'{i}:{v}')\nprint(out)\n"
+        ),
         "['0:x', '1:y']"
     );
 }
@@ -43,7 +54,10 @@ fn enumerate_next_manual() {
 
 #[test]
 fn zip_two_lists() {
-    assert_eq!(run_print("list(zip([1, 2], ['a', 'b']))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(zip([1, 2], ['a', 'b']))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }
 
 #[test]
@@ -72,7 +86,9 @@ fn zip_for_loop_unpack() {
 #[test]
 fn zip_strict_equal_lengths() {
     assert_eq!(
-        run_python_one("try:\n list(zip([1, 2], [1], strict=True))\nexcept ValueError:\n print('val')\n"),
+        run_python_one(
+            "try:\n list(zip([1, 2], [1], strict=True))\nexcept ValueError:\n print('val')\n"
+        ),
         "val"
     );
 }
@@ -103,7 +119,10 @@ fn map_with_zip_unpack() {
 
 #[test]
 fn dict_from_zip() {
-    assert_eq!(run_print("dict(zip(['a', 'b'], [1, 2]))"), "{'a': 1, 'b': 2}");
+    assert_eq!(
+        run_print("dict(zip(['a', 'b'], [1, 2]))"),
+        "{'a': 1, 'b': 2}"
+    );
 }
 
 #[test]
@@ -139,7 +158,10 @@ fn zip_tuple_input() {
 
 #[test]
 fn zip_string_chars() {
-    assert_eq!(run_print("list(zip('ab', 'xy'))"), "[('a', 'x'), ('b', 'y')]");
+    assert_eq!(
+        run_print("list(zip('ab', 'xy'))"),
+        "[('a', 'x'), ('b', 'y')]"
+    );
 }
 
 #[test]
@@ -169,7 +191,9 @@ fn enumerate_slice_materialized() {
 #[test]
 fn zip_unzip_via_star() {
     assert_eq!(
-        run_python_one("pairs = [(1, 'a'), (2, 'b')]\nnums, letters = zip(*pairs)\nprint(list(nums), list(letters))\n"),
+        run_python_one(
+            "pairs = [(1, 'a'), (2, 'b')]\nnums, letters = zip(*pairs)\nprint(list(nums), list(letters))\n"
+        ),
         "[1, 2] ['a', 'b']"
     );
 }
@@ -184,7 +208,10 @@ fn enumerate_parallel_lists() {
 
 #[test]
 fn zip_with_range() {
-    assert_eq!(run_print("list(zip(range(2), range(10, 12)))"), "[(0, 10), (1, 11)]");
+    assert_eq!(
+        run_print("list(zip(range(2), range(10, 12)))"),
+        "[(0, 10), (1, 11)]"
+    );
 }
 
 #[test]
@@ -222,17 +249,16 @@ fn zip_sum_columns() {
 #[test]
 fn enumerate_find_index_of_match() {
     assert_eq!(
-        run_python_one("target = 'y'\nidx = next(i for i, v in enumerate(['x', 'y']) if v == target)\nprint(idx)\n"),
+        run_python_one(
+            "target = 'y'\nidx = next(i for i, v in enumerate(['x', 'y']) if v == target)\nprint(idx)\n"
+        ),
         "1"
     );
 }
 
 #[test]
 fn zip_unequal_length_default_behavior() {
-    assert_eq!(
-        run_print("len(list(zip(range(5), range(2))))"),
-        "2"
-    );
+    assert_eq!(run_print("len(list(zip(range(5), range(2))))"), "2");
 }
 
 #[test]
@@ -274,10 +300,7 @@ fn enumerate_string_find_position() {
 
 #[test]
 fn zip_transpose_rows() {
-    assert_eq!(
-        run_print("list(zip([1, 2], [3, 4]))"),
-        "[(1, 3), (2, 4)]"
-    );
+    assert_eq!(run_print("list(zip([1, 2], [3, 4]))"), "[(1, 3), (2, 4)]");
 }
 
 #[test]

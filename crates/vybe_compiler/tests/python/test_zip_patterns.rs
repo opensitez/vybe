@@ -2,7 +2,10 @@ use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn zip_two_lists_pairs() {
-    assert_eq!(run_print("list(zip([1, 2], ['a', 'b']))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(zip([1, 2], ['a', 'b']))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }
 
 #[test]
@@ -25,7 +28,10 @@ fn zip_empty_list() {
 
 #[test]
 fn zip_with_range() {
-    assert_eq!(run_print("list(zip(range(3), 'abc'))"), "[(0, 'a'), (1, 'b'), (2, 'c')]");
+    assert_eq!(
+        run_print("list(zip(range(3), 'abc'))"),
+        "[(0, 'a'), (1, 'b'), (2, 'c')]"
+    );
 }
 
 #[test]
@@ -91,10 +97,7 @@ fn zip_single_iterable_returns_one_tuples() {
 
 #[test]
 fn zip_with_tuple_inputs() {
-    assert_eq!(
-        run_print("list(zip((1, 2), (3, 4)))"),
-        "[(1, 3), (2, 4)]"
-    );
+    assert_eq!(run_print("list(zip((1, 2), (3, 4)))"), "[(1, 3), (2, 4)]");
 }
 
 #[test]
@@ -153,7 +156,9 @@ fn zip_map_transpose_rows() {
 #[test]
 fn zip_with_strict_length_mismatch_raises() {
     assert_eq!(
-        run_python_one("try:\n list(zip([1, 2], [1], strict=True))\n print('ok')\nexcept ValueError:\n print('ValueError')\n"),
+        run_python_one(
+            "try:\n list(zip([1, 2], [1], strict=True))\n print('ok')\nexcept ValueError:\n print('ValueError')\n"
+        ),
         "ValueError"
     );
 }
@@ -193,7 +198,9 @@ fn zip_with_set_and_list_same_length() {
 #[test]
 fn zip_align_names_and_scores() {
     assert_eq!(
-        run_python_one("names = ['Ann', 'Bob']\nscores = [90, 85]\nprint(dict(zip(names, scores))['Bob'])\n"),
+        run_python_one(
+            "names = ['Ann', 'Bob']\nscores = [90, 85]\nprint(dict(zip(names, scores))['Bob'])\n"
+        ),
         "85"
     );
 }
@@ -275,7 +282,9 @@ fn zip_with_bytes_and_ints_length_mismatch() {
 #[test]
 fn zip_sorted_unique_keys_with_values() {
     assert_eq!(
-        run_python_one("d = {'b': 2, 'a': 1}\nprint(list(zip(sorted(d), [d[k] for k in sorted(d)])))\n"),
+        run_python_one(
+            "d = {'b': 2, 'a': 1}\nprint(list(zip(sorted(d), [d[k] for k in sorted(d)])))\n"
+        ),
         "[('a', 1), ('b', 2)]"
     );
 }
@@ -283,7 +292,9 @@ fn zip_sorted_unique_keys_with_values() {
 #[test]
 fn zip_parallel_accumulate_running_total() {
     assert_eq!(
-        run_python_one("total = 0\nfor v, delta in zip([1, 2, 3], [1, 1, 1]):\n total += v * delta\nprint(total)\n"),
+        run_python_one(
+            "total = 0\nfor v, delta in zip([1, 2, 3], [1, 1, 1]):\n total += v * delta\nprint(total)\n"
+        ),
         "6"
     );
 }

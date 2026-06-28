@@ -1,18 +1,27 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn set_comp_squares() {
-    assert_eq!(run_print("sorted({x * x for x in range(4)})"), "[0, 1, 4, 9]");
+    assert_eq!(
+        run_print("sorted({x * x for x in range(4)})"),
+        "[0, 1, 4, 9]"
+    );
 }
 
 #[test]
 fn set_comp_filtered_evens() {
-    assert_eq!(run_print("sorted({x for x in range(6) if x % 2 == 0})"), "[0, 2, 4]");
+    assert_eq!(
+        run_print("sorted({x for x in range(6) if x % 2 == 0})"),
+        "[0, 2, 4]"
+    );
 }
 
 #[test]
 fn set_comp_from_string_unique_chars() {
-    assert_eq!(run_print("sorted({c for c in 'banana'})"), "['a', 'b', 'n']");
+    assert_eq!(
+        run_print("sorted({c for c in 'banana'})"),
+        "['a', 'b', 'n']"
+    );
 }
 
 #[test]
@@ -41,10 +50,7 @@ fn set_comp_from_list_removes_dupes() {
 
 #[test]
 fn set_comp_modulo_classes() {
-    assert_eq!(
-        run_print("sorted({x % 3 for x in range(6)})"),
-        "[0, 1, 2]"
-    );
+    assert_eq!(run_print("sorted({x % 3 for x in range(6)})"), "[0, 1, 2]");
 }
 
 #[test]
@@ -121,10 +127,7 @@ fn set_comp_powers_of_two() {
 
 #[test]
 fn set_comp_division_results() {
-    assert_eq!(
-        run_print("sorted({x // 2 for x in range(5)})"),
-        "[0, 1, 2]"
-    );
+    assert_eq!(run_print("sorted({x // 2 for x in range(5)})"), "[0, 1, 2]");
 }
 
 #[test]
@@ -227,10 +230,7 @@ fn set_comp_tuple_elements_hashable() {
 
 #[test]
 fn set_comp_abs_values() {
-    assert_eq!(
-        run_print("sorted({abs(x) for x in [-2, -1, 1]})"),
-        "[1, 2]"
-    );
+    assert_eq!(run_print("sorted({abs(x) for x in [-2, -1, 1]})"), "[1, 2]");
 }
 
 #[test]
@@ -291,26 +291,17 @@ fn set_comp_all_positive() {
 
 #[test]
 fn set_comp_max_element() {
-    assert_eq!(
-        run_python_one("print(max({x for x in range(5)}))\n"),
-        "4"
-    );
+    assert_eq!(run_python_one("print(max({x for x in range(5)}))\n"), "4");
 }
 
 #[test]
 fn set_comp_min_element() {
-    assert_eq!(
-        run_python_one("print(min({x for x in range(5)}))\n"),
-        "0"
-    );
+    assert_eq!(run_python_one("print(min({x for x in range(5)}))\n"), "0");
 }
 
 #[test]
 fn set_comp_sum_elements() {
-    assert_eq!(
-        run_python_one("print(sum({x for x in range(4)}))\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("print(sum({x for x in range(4)}))\n"), "6");
 }
 
 #[test]
@@ -340,7 +331,9 @@ fn set_comp_proper_superset() {
 #[test]
 fn set_comp_disjoint() {
     assert_eq!(
-        run_python_one("a = {x for x in range(2)}\nb = {x for x in range(2, 4)}\nprint(a.isdisjoint(b))\n"),
+        run_python_one(
+            "a = {x for x in range(2)}\nb = {x for x in range(2, 4)}\nprint(a.isdisjoint(b))\n"
+        ),
         "True"
     );
 }

@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn none_singleton_print() {
@@ -175,15 +175,15 @@ fn if_truthy_branch() {
 
 #[test]
 fn if_falsy_branch() {
-    assert_eq!(
-        run_python_one("x = 0\nprint('yes' if x else 'no')\n"),
-        "no"
-    );
+    assert_eq!(run_python_one("x = 0\nprint('yes' if x else 'no')\n"), "no");
 }
 
 #[test]
 fn filter_none_removes_falsy() {
-    assert_eq!(run_print("list(filter(None, [0, 1, '', 'a', None]))"), "[1, 'a']");
+    assert_eq!(
+        run_print("list(filter(None, [0, 1, '', 'a', None]))"),
+        "[1, 'a']"
+    );
 }
 
 #[test]
@@ -208,26 +208,17 @@ fn any_with_truthy_true() {
 
 #[test]
 fn none_return_default() {
-    assert_eq!(
-        run_python_one("def f():\n pass\nprint(f())\n"),
-        "None"
-    );
+    assert_eq!(run_python_one("def f():\n pass\nprint(f())\n"), "None");
 }
 
 #[test]
 fn compare_none_with_is() {
-    assert_eq!(
-        run_python_one("x = None\nprint(x is None)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("x = None\nprint(x is None)\n"), "True");
 }
 
 #[test]
 fn compare_none_equality_safe() {
-    assert_eq!(
-        run_python_one("x = None\nprint(x == None)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("x = None\nprint(x == None)\n"), "True");
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python};
+use crate::helpers::{run_python, run_python_one};
 
 #[test]
 fn for_range_counts_zero_through_four() {
@@ -26,9 +26,7 @@ fn for_range_with_step_of_three() {
 
 #[test]
 fn for_range_empty_when_start_equals_stop() {
-    let out = run_python(
-        "for i in range(5, 5):\n    print(i)\nprint('done')\n",
-    );
+    let out = run_python("for i in range(5, 5):\n    print(i)\nprint('done')\n");
     assert_eq!(out, vec!["done"]);
 }
 
@@ -40,9 +38,7 @@ fn for_range_single_iteration() {
 
 #[test]
 fn for_range_accumulates_running_total() {
-    let out = run_python(
-        "total = 0\nfor i in range(1, 5):\n    total += i\nprint(total)\n",
-    );
+    let out = run_python("total = 0\nfor i in range(1, 5):\n    total += i\nprint(total)\n");
     assert_eq!(out, vec!["10"]);
 }
 
@@ -60,17 +56,15 @@ fn for_list_empty_iterable_prints_nothing() {
 
 #[test]
 fn for_list_break_stops_on_target_value() {
-    let out = run_python(
-        "for x in [1, 2, 3, 4, 5]:\n    if x == 3:\n        break\n    print(x)\n",
-    );
+    let out =
+        run_python("for x in [1, 2, 3, 4, 5]:\n    if x == 3:\n        break\n    print(x)\n");
     assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
 fn for_list_continue_skips_matching_value() {
-    let out = run_python(
-        "for x in [1, 2, 3, 4]:\n    if x == 2:\n        continue\n    print(x)\n",
-    );
+    let out =
+        run_python("for x in [1, 2, 3, 4]:\n    if x == 2:\n        continue\n    print(x)\n");
     assert_eq!(out, vec!["1", "3", "4"]);
 }
 
@@ -88,9 +82,7 @@ fn for_string_empty_skips_body() {
 
 #[test]
 fn for_string_builds_word_via_concatenation() {
-    let out = run_python(
-        "word = ''\nfor ch in 'hi':\n    word += ch\nprint(word)\n",
-    );
+    let out = run_python("word = ''\nfor ch in 'hi':\n    word += ch\nprint(word)\n");
     assert_eq!(out, vec!["hi"]);
 }
 
@@ -102,9 +94,7 @@ fn for_dict_keys_iterate_single_entry() {
 
 #[test]
 fn for_dict_items_unpack_key_and_value() {
-    let out = run_python(
-        "for key, value in {'a': 1, 'b': 2}.items():\n    print(key, value)\n",
-    );
+    let out = run_python("for key, value in {'a': 1, 'b': 2}.items():\n    print(key, value)\n");
     assert_eq!(out, vec!["a 1", "b 2"]);
 }
 
@@ -142,33 +132,26 @@ fn for_enumerate_over_string_characters() {
 
 #[test]
 fn for_break_exits_before_last_element() {
-    let out = run_python(
-        "for i in range(10):\n    if i == 3:\n        break\n    print(i)\n",
-    );
+    let out = run_python("for i in range(10):\n    if i == 3:\n        break\n    print(i)\n");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn for_break_on_first_iteration() {
-    let out = run_python(
-        "for i in range(5):\n    print(i)\n    break\nprint('after')\n",
-    );
+    let out = run_python("for i in range(5):\n    print(i)\n    break\nprint('after')\n");
     assert_eq!(out, vec!["0", "after"]);
 }
 
 #[test]
 fn for_continue_skips_even_numbers() {
-    let out = run_python(
-        "for i in range(6):\n    if i % 2 == 0:\n        continue\n    print(i)\n",
-    );
+    let out =
+        run_python("for i in range(6):\n    if i % 2 == 0:\n        continue\n    print(i)\n");
     assert_eq!(out, vec!["1", "3", "5"]);
 }
 
 #[test]
 fn for_continue_then_prints_remaining_values() {
-    let out = run_python(
-        "for i in range(5):\n    if i == 2:\n        continue\n    print(i)\n",
-    );
+    let out = run_python("for i in range(5):\n    if i == 2:\n        continue\n    print(i)\n");
     assert_eq!(out, vec!["0", "1", "3", "4"]);
 }
 
@@ -190,17 +173,13 @@ fn for_else_skipped_when_break_occurs() {
 
 #[test]
 fn for_else_runs_on_empty_range() {
-    let out = run_python(
-        "for x in range(0):\n    print(x)\nelse:\n    print('empty')\n",
-    );
+    let out = run_python("for x in range(0):\n    print(x)\nelse:\n    print('empty')\n");
     assert_eq!(out, vec!["empty"]);
 }
 
 #[test]
 fn for_nested_loops_print_cartesian_pairs() {
-    let out = run_python(
-        "for i in range(2):\n    for j in range(2):\n        print(i, j)\n",
-    );
+    let out = run_python("for i in range(2):\n    for j in range(2):\n        print(i, j)\n");
     assert_eq!(out, vec!["0 0", "0 1", "1 0", "1 1"]);
 }
 
@@ -298,9 +277,7 @@ fn for_list_nested_accumulates_products() {
 
 #[test]
 fn for_string_uppercase_transform_in_loop() {
-    let out = run_python(
-        "result = ''\nfor ch in 'ab':\n    result += ch.upper()\nprint(result)\n",
-    );
+    let out = run_python("result = ''\nfor ch in 'ab':\n    result += ch.upper()\nprint(result)\n");
     assert_eq!(out, vec!["AB"]);
 }
 
@@ -330,8 +307,5 @@ fn for_list_continue_skips_all_multiples_of_three() {
 
 #[test]
 fn run_python_one_for_range_len_via_sum() {
-    assert_eq!(
-        run_python_one("print(sum([1 for x in range(4)]))\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("print(sum([1 for x in range(4)]))\n"), "6");
 }

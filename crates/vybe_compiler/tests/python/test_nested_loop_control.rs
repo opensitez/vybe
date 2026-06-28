@@ -33,9 +33,7 @@ fn break_outer_via_flag_pattern() {
 #[test]
 fn for_else_runs_when_inner_never_breaks() {
     assert_eq!(
-        run_python_one(
-            "for i in range(2):\n for j in range(2):\n  pass\nelse:\n print('ok')\n"
-        ),
+        run_python_one("for i in range(2):\n for j in range(2):\n  pass\nelse:\n print('ok')\n"),
         "ok"
     );
 }

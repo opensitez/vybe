@@ -142,12 +142,18 @@ fn bytes_count_sub() {
 
 #[test]
 fn bytes_partition() {
-    assert_eq!(run_print("b'a.b.c'.partition(b'.')"), "(b'a', b'.', b'b.c')");
+    assert_eq!(
+        run_print("b'a.b.c'.partition(b'.')"),
+        "(b'a', b'.', b'b.c')"
+    );
 }
 
 #[test]
 fn bytes_rpartition() {
-    assert_eq!(run_print("b'a.b.c'.rpartition(b'.')"), "(b'a.b', b'.', b'c')");
+    assert_eq!(
+        run_print("b'a.b.c'.rpartition(b'.')"),
+        "(b'a.b', b'.', b'c')"
+    );
 }
 
 #[test]
@@ -157,10 +163,7 @@ fn bytes_startswith_tuple_options() {
 
 #[test]
 fn bytes_decode_errors_replace() {
-    assert_eq!(
-        run_print("b'\\xff'.decode('ascii', errors='replace')"),
-        ""
-    );
+    assert_eq!(run_print("b'\\xff'.decode('ascii', errors='replace')"), "");
 }
 
 #[test]
@@ -183,10 +186,7 @@ fn bytes_iterable_in_for_loop_sum() {
 
 #[test]
 fn bytes_list_comprehension_ord_values() {
-    assert_eq!(
-        run_print("[b for b in b'abc']"),
-        "[97, 98, 99]"
-    );
+    assert_eq!(run_print("[b for b in b'abc']"), "[97, 98, 99]");
 }
 
 #[test]

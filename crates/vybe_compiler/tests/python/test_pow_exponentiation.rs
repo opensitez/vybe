@@ -57,10 +57,7 @@ fn pow_modular_five_to_four_mod_thirteen() {
 
 #[test]
 fn exponentiation_assign() {
-    assert_eq!(
-        run_python_one("n = 3\nn **= 4\nprint(n)\n"),
-        "81"
-    );
+    assert_eq!(run_python_one("n = 3\nn **= 4\nprint(n)\n"), "81");
 }
 
 #[test]
@@ -85,10 +82,7 @@ fn pow_square_of_sum_in_parens() {
 
 #[test]
 fn pow_list_comprehension_squares() {
-    assert_eq!(
-        run_print("[n ** 2 for n in range(5)]"),
-        "[0, 1, 4, 9, 16]"
-    );
+    assert_eq!(run_print("[n ** 2 for n in range(5)]"), "[0, 1, 4, 9, 16]");
 }
 
 #[test]
@@ -98,10 +92,7 @@ fn pow_ten_to_positive_powers() {
 
 #[test]
 fn pow_three_to_zero_through_four() {
-    assert_eq!(
-        run_print("[3 ** n for n in range(5)]"),
-        "[1, 3, 9, 27, 81]"
-    );
+    assert_eq!(run_print("[3 ** n for n in range(5)]"), "[1, 3, 9, 27, 81]");
 }
 
 #[test]

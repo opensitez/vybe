@@ -2,12 +2,18 @@ use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn enumerate_default_starts_at_zero() {
-    assert_eq!(run_print("list(enumerate(['a', 'b']))"), "[(0, 'a'), (1, 'b')]");
+    assert_eq!(
+        run_print("list(enumerate(['a', 'b']))"),
+        "[(0, 'a'), (1, 'b')]"
+    );
 }
 
 #[test]
 fn enumerate_start_one() {
-    assert_eq!(run_print("list(enumerate(['a', 'b'], start=1))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(enumerate(['a', 'b'], start=1))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }
 
 #[test]
@@ -17,7 +23,10 @@ fn enumerate_start_negative() {
 
 #[test]
 fn enumerate_on_range() {
-    assert_eq!(run_print("list(enumerate(range(3)))"), "[(0, 0), (1, 1), (2, 2)]");
+    assert_eq!(
+        run_print("list(enumerate(range(3)))"),
+        "[(0, 0), (1, 1), (2, 2)]"
+    );
 }
 
 #[test]
@@ -35,7 +44,10 @@ fn enumerate_empty_iterable() {
 
 #[test]
 fn enumerate_start_large() {
-    assert_eq!(run_print("list(enumerate(['a'], start=100))"), "[(100, 'a')]");
+    assert_eq!(
+        run_print("list(enumerate(['a'], start=100))"),
+        "[(100, 'a')]"
+    );
 }
 
 #[test]
@@ -146,7 +158,9 @@ fn enumerate_for_else_not_triggered() {
 #[test]
 fn enumerate_break_keeps_partial() {
     assert_eq!(
-        run_python_one("out = []\nfor i, v in enumerate([1, 2, 3]):\n if i == 1:\n  break\n out.append(i)\nprint(out)\n"),
+        run_python_one(
+            "out = []\nfor i, v in enumerate([1, 2, 3]):\n if i == 1:\n  break\n out.append(i)\nprint(out)\n"
+        ),
         "[0]"
     );
 }
@@ -154,7 +168,9 @@ fn enumerate_break_keeps_partial() {
 #[test]
 fn enumerate_continue_skips_index() {
     assert_eq!(
-        run_python_one("out = []\nfor i, v in enumerate([1, 2, 3]):\n if i == 1:\n  continue\n out.append(i)\nprint(out)\n"),
+        run_python_one(
+            "out = []\nfor i, v in enumerate([1, 2, 3]):\n if i == 1:\n  continue\n out.append(i)\nprint(out)\n"
+        ),
         "[0, 2]"
     );
 }
@@ -170,7 +186,9 @@ fn enumerate_on_bytes_like_int_list() {
 #[test]
 fn enumerate_nested_loop_outer_index() {
     assert_eq!(
-        run_python_one("out = []\nfor i, row in enumerate([[1], [2, 3]]):\n out.append(i)\nprint(out)\n"),
+        run_python_one(
+            "out = []\nfor i, row in enumerate([[1], [2, 3]]):\n out.append(i)\nprint(out)\n"
+        ),
         "[0, 1]"
     );
 }
@@ -185,10 +203,7 @@ fn enumerate_start_negative_with_two_items() {
 
 #[test]
 fn enumerate_value_not_used() {
-    assert_eq!(
-        run_print("len([i for i, _ in enumerate('hello')])"),
-        "5"
-    );
+    assert_eq!(run_print("len([i for i, _ in enumerate('hello')])"), "5");
 }
 
 #[test]
@@ -201,8 +216,5 @@ fn enumerate_with_start_in_fstring() {
 
 #[test]
 fn enumerate_generator_expr_sum_indices() {
-    assert_eq!(
-        run_print("sum(i for i, _ in enumerate('abc'))"),
-        "3"
-    );
+    assert_eq!(run_print("sum(i for i, _ in enumerate('abc'))"), "3");
 }

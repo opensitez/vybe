@@ -47,7 +47,10 @@ fn augmented_mul_string_repeat() {
 
 #[test]
 fn augmented_add_list_extend_like() {
-    assert_eq!(run_python_one("a = [1]\na += [2, 3]\nprint(a)\n"), "[1, 2, 3]");
+    assert_eq!(
+        run_python_one("a = [1]\na += [2, 3]\nprint(a)\n"),
+        "[1, 2, 3]"
+    );
 }
 
 #[test]
@@ -117,26 +120,17 @@ fn augmented_div_assign_int_to_float() {
 
 #[test]
 fn augmented_add_tuple_creates_new() {
-    assert_eq!(
-        run_python_one("t = (1,)\nt += (2,)\nprint(t)\n"),
-        "(1, 2)"
-    );
+    assert_eq!(run_python_one("t = (1,)\nt += (2,)\nprint(t)\n"), "(1, 2)");
 }
 
 #[test]
 fn augmented_add_bytes_concat() {
-    assert_eq!(
-        run_python_one("b = b'a'\nb += b'b'\nprint(b)\n"),
-        "b'ab'"
-    );
+    assert_eq!(run_python_one("b = b'a'\nb += b'b'\nprint(b)\n"), "b'ab'");
 }
 
 #[test]
 fn augmented_mul_bytes_repeat() {
-    assert_eq!(
-        run_python_one("b = b'x'\nb *= 2\nprint(b)\n"),
-        "b'xx'"
-    );
+    assert_eq!(run_python_one("b = b'x'\nb *= 2\nprint(b)\n"), "b'xx'");
 }
 
 #[test]
@@ -173,7 +167,9 @@ fn augmented_pow_zero_exp() {
 #[test]
 fn augmented_add_on_attr() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self):\n  self.n = 1\nc = C()\nc.n += 2\nprint(c.n)\n"),
+        run_python_one(
+            "class C:\n def __init__(self):\n  self.n = 1\nc = C()\nc.n += 2\nprint(c.n)\n"
+        ),
         "3"
     );
 }
@@ -269,18 +265,12 @@ fn augmented_sub_complex() {
 
 #[test]
 fn augmented_mul_complex() {
-    assert_eq!(
-        run_python_one("z = 1 + 1j\nz *= 2\nprint(z)\n"),
-        "(2+2j)"
-    );
+    assert_eq!(run_python_one("z = 1 + 1j\nz *= 2\nprint(z)\n"), "(2+2j)");
 }
 
 #[test]
 fn augmented_div_complex() {
-    assert_eq!(
-        run_python_one("z = 4 + 4j\nz /= 2\nprint(z)\n"),
-        "(2+2j)"
-    );
+    assert_eq!(run_python_one("z = 4 + 4j\nz /= 2\nprint(z)\n"), "(2+2j)");
 }
 
 #[test]

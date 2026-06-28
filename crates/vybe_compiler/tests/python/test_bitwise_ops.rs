@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn bitwise_and() {
@@ -72,42 +72,27 @@ fn bitwise_toggle_flag() {
 
 #[test]
 fn bitwise_in_place_and() {
-    assert_eq!(
-        run_python_one("x = 15\nx &= 10\nprint(x)\n"),
-        "10"
-    );
+    assert_eq!(run_python_one("x = 15\nx &= 10\nprint(x)\n"), "10");
 }
 
 #[test]
 fn bitwise_in_place_or() {
-    assert_eq!(
-        run_python_one("x = 1\nx |= 2\nprint(x)\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("x = 1\nx |= 2\nprint(x)\n"), "3");
 }
 
 #[test]
 fn bitwise_in_place_xor() {
-    assert_eq!(
-        run_python_one("x = 5\nx ^= 3\nprint(x)\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("x = 5\nx ^= 3\nprint(x)\n"), "6");
 }
 
 #[test]
 fn bitwise_in_place_lshift() {
-    assert_eq!(
-        run_python_one("x = 2\nx <<= 3\nprint(x)\n"),
-        "16"
-    );
+    assert_eq!(run_python_one("x = 2\nx <<= 3\nprint(x)\n"), "16");
 }
 
 #[test]
 fn bitwise_in_place_rshift() {
-    assert_eq!(
-        run_python_one("x = 32\nx >>= 2\nprint(x)\n"),
-        "8"
-    );
+    assert_eq!(run_python_one("x = 32\nx >>= 2\nprint(x)\n"), "8");
 }
 
 #[test]
@@ -218,26 +203,17 @@ fn bitwise_not_small_number() {
 
 #[test]
 fn bitwise_or_assign_build_flags() {
-    assert_eq!(
-        run_python_one("f = 0\nf |= 1\nf |= 4\nprint(f)\n"),
-        "5"
-    );
+    assert_eq!(run_python_one("f = 0\nf |= 1\nf |= 4\nprint(f)\n"), "5");
 }
 
 #[test]
 fn bitwise_and_assign_keep_lower_two_bits() {
-    assert_eq!(
-        run_python_one("x = 0b110101\nx &= 0b11\nprint(x)\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("x = 0b110101\nx &= 0b11\nprint(x)\n"), "1");
 }
 
 #[test]
 fn bitwise_xor_assign_toggle_twice() {
-    assert_eq!(
-        run_python_one("x = 9\nx ^= 5\nx ^= 5\nprint(x)\n"),
-        "9"
-    );
+    assert_eq!(run_python_one("x = 9\nx ^= 5\nx ^= 5\nprint(x)\n"), "9");
 }
 
 #[test]

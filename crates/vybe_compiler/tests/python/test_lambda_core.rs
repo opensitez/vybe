@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn lambda_identity() {
@@ -7,7 +7,10 @@ fn lambda_identity() {
 
 #[test]
 fn lambda_add_two_args() {
-    assert_eq!(run_python_one("f = lambda a, b: a + b\nprint(f(2, 5))\n"), "7");
+    assert_eq!(
+        run_python_one("f = lambda a, b: a + b\nprint(f(2, 5))\n"),
+        "7"
+    );
 }
 
 #[test]
@@ -22,7 +25,10 @@ fn lambda_no_args() {
 
 #[test]
 fn lambda_default_arg() {
-    assert_eq!(run_python_one("f = lambda x, y=10: x + y\nprint(f(5))\n"), "15");
+    assert_eq!(
+        run_python_one("f = lambda x, y=10: x + y\nprint(f(5))\n"),
+        "15"
+    );
 }
 
 #[test]
@@ -147,10 +153,7 @@ fn lambda_nested_call() {
 
 #[test]
 fn lambda_tuple_return() {
-    assert_eq!(
-        run_python_one("f = lambda: (1, 2)\nprint(f())\n"),
-        "(1, 2)"
-    );
+    assert_eq!(run_python_one("f = lambda: (1, 2)\nprint(f())\n"), "(1, 2)");
 }
 
 #[test]
@@ -188,7 +191,9 @@ fn lambda_all_predicate() {
 #[test]
 fn lambda_reduce_style_manual() {
     assert_eq!(
-        run_python_one("acc = 0\nfor v in [1, 2, 3]:\n acc = (lambda a, b: a + b)(acc, v)\nprint(acc)\n"),
+        run_python_one(
+            "acc = 0\nfor v in [1, 2, 3]:\n acc = (lambda a, b: a + b)(acc, v)\nprint(acc)\n"
+        ),
         "6"
     );
 }
@@ -203,10 +208,7 @@ fn lambda_unpack_args() {
 
 #[test]
 fn lambda_with_none_return() {
-    assert_eq!(
-        run_python_one("f = lambda: None\nprint(f())\n"),
-        "None"
-    );
+    assert_eq!(run_python_one("f = lambda: None\nprint(f())\n"), "None");
 }
 
 #[test]
@@ -292,7 +294,9 @@ fn lambda_join_strings() {
 #[test]
 fn lambda_enumerate_build() {
     assert_eq!(
-        run_python_one("pairs = list(map(lambda t: t[0] + t[1], enumerate(['x', 'y'])))\nprint(pairs)\n"),
+        run_python_one(
+            "pairs = list(map(lambda t: t[0] + t[1], enumerate(['x', 'y'])))\nprint(pairs)\n"
+        ),
         "[0, 1]"
     );
 }
@@ -324,7 +328,9 @@ fn lambda_call_twice_stateless() {
 #[test]
 fn lambda_higher_order_returns_lambda() {
     assert_eq!(
-        run_python_one("def compose(f, g):\n return lambda x: f(g(x))\nprint(compose(lambda x: x+1, lambda x: x*2)(3))\n"),
+        run_python_one(
+            "def compose(f, g):\n return lambda x: f(g(x))\nprint(compose(lambda x: x+1, lambda x: x*2)(3))\n"
+        ),
         "7"
     );
 }

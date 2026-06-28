@@ -1,9 +1,11 @@
-use crate::helpers::{run_print, run_python_one, compile_ok};
+use crate::helpers::{compile_ok, run_print, run_python_one};
 
 #[test]
 fn time_time_returns_number() {
     assert_eq!(
-        run_python_one("import time\nv = time.time()\nprint(type(v).__name__ == 'float' or type(v).__name__ == 'int')\n"),
+        run_python_one(
+            "import time\nv = time.time()\nprint(type(v).__name__ == 'float' or type(v).__name__ == 'int')\n"
+        ),
         "True"
     );
 }
@@ -11,9 +13,7 @@ fn time_time_returns_number() {
 #[test]
 fn time_time_monotonic_non_decreasing_in_loop() {
     assert_eq!(
-        run_python_one(
-            "import time\na = time.time()\nb = time.time()\nprint(b >= a)\n"
-        ),
+        run_python_one("import time\na = time.time()\nb = time.time()\nprint(b >= a)\n"),
         "True"
     );
 }
@@ -39,19 +39,14 @@ fn time_module_has_time_attribute() {
 #[test]
 fn time_time_used_in_elapsed_calculation() {
     assert_eq!(
-        run_python_one(
-            "import time\nstart = 100.0\nend = 100.5\nprint(int((end - start) * 10))\n"
-        ),
+        run_python_one("import time\nstart = 100.0\nend = 100.5\nprint(int((end - start) * 10))\n"),
         "5"
     );
 }
 
 #[test]
 fn time_import_does_not_shadow_builtin_len() {
-    assert_eq!(
-        run_python_one("import time\nprint(len([1, 2, 3]))\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("import time\nprint(len([1, 2, 3]))\n"), "3");
 }
 
 #[test]
@@ -109,9 +104,7 @@ fn time_nested_function_calls_time() {
 #[test]
 fn time_sleep_inside_while_once() {
     assert_eq!(
-        run_python_one(
-            "import time\nn = 0\nwhile n < 1:\n time.sleep(0)\n n += 1\nprint(n)\n"
-        ),
+        run_python_one("import time\nn = 0\nwhile n < 1:\n time.sleep(0)\n n += 1\nprint(n)\n"),
         "1"
     );
 }

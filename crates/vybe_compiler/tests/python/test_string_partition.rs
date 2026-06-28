@@ -70,12 +70,18 @@ fn splitlines_no_trailing_empty_without_final_newline() {
 
 #[test]
 fn split_on_colon_for_path_like() {
-    assert_eq!(run_print("'usr:local:bin'.split(':')"), "['usr', 'local', 'bin']");
+    assert_eq!(
+        run_print("'usr:local:bin'.split(':')"),
+        "['usr', 'local', 'bin']"
+    );
 }
 
 #[test]
 fn rsplit_on_colon_once() {
-    assert_eq!(run_print("'usr:local:bin'.rsplit(':', 1)"), "['usr:local', 'bin']");
+    assert_eq!(
+        run_print("'usr:local:bin'.rsplit(':', 1)"),
+        "['usr:local', 'bin']"
+    );
 }
 
 #[test]
@@ -176,7 +182,10 @@ fn split_explicit_space_preserves_empty_tokens() {
 
 #[test]
 fn rpartition_multichar_last_occurrence() {
-    assert_eq!(run_print("'foo::bar::baz'.rpartition('::')"), "('foo::bar', '::', 'baz')");
+    assert_eq!(
+        run_print("'foo::bar::baz'.rpartition('::')"),
+        "('foo::bar', '::', 'baz')"
+    );
 }
 
 #[test]

@@ -1,18 +1,27 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn list_slice_start_stop() {
-    assert_eq!(run_python_one("x = [0, 1, 2, 3, 4]\nprint(x[1:4])\n"), "[1, 2, 3]");
+    assert_eq!(
+        run_python_one("x = [0, 1, 2, 3, 4]\nprint(x[1:4])\n"),
+        "[1, 2, 3]"
+    );
 }
 
 #[test]
 fn list_slice_from_start() {
-    assert_eq!(run_python_one("x = [10, 20, 30]\nprint(x[:2])\n"), "[10, 20]");
+    assert_eq!(
+        run_python_one("x = [10, 20, 30]\nprint(x[:2])\n"),
+        "[10, 20]"
+    );
 }
 
 #[test]
 fn list_slice_to_end() {
-    assert_eq!(run_python_one("x = [10, 20, 30]\nprint(x[1:])\n"), "[20, 30]");
+    assert_eq!(
+        run_python_one("x = [10, 20, 30]\nprint(x[1:])\n"),
+        "[20, 30]"
+    );
 }
 
 #[test]
@@ -22,22 +31,34 @@ fn list_slice_full_copy() {
 
 #[test]
 fn list_slice_negative_start() {
-    assert_eq!(run_python_one("x = [1, 2, 3, 4]\nprint(x[-3:-1])\n"), "[2, 3]");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3, 4]\nprint(x[-3:-1])\n"),
+        "[2, 3]"
+    );
 }
 
 #[test]
 fn list_slice_negative_stop() {
-    assert_eq!(run_python_one("x = [1, 2, 3, 4]\nprint(x[1:-1])\n"), "[2, 3]");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3, 4]\nprint(x[1:-1])\n"),
+        "[2, 3]"
+    );
 }
 
 #[test]
 fn list_slice_step_two() {
-    assert_eq!(run_python_one("x = [0, 1, 2, 3, 4, 5]\nprint(x[::2])\n"), "[0, 2, 4]");
+    assert_eq!(
+        run_python_one("x = [0, 1, 2, 3, 4, 5]\nprint(x[::2])\n"),
+        "[0, 2, 4]"
+    );
 }
 
 #[test]
 fn list_slice_reverse() {
-    assert_eq!(run_python_one("x = [1, 2, 3]\nprint(x[::-1])\n"), "[3, 2, 1]");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3]\nprint(x[::-1])\n"),
+        "[3, 2, 1]"
+    );
 }
 
 #[test]
@@ -110,12 +131,18 @@ fn str_index_negative() {
 
 #[test]
 fn tuple_slice_start_stop() {
-    assert_eq!(run_python_one("t = (1, 2, 3, 4)\nprint(t[1:3])\n"), "(2, 3)");
+    assert_eq!(
+        run_python_one("t = (1, 2, 3, 4)\nprint(t[1:3])\n"),
+        "(2, 3)"
+    );
 }
 
 #[test]
 fn tuple_slice_from_start() {
-    assert_eq!(run_python_one("t = (10, 20, 30)\nprint(t[:2])\n"), "(10, 20)");
+    assert_eq!(
+        run_python_one("t = (10, 20, 30)\nprint(t[:2])\n"),
+        "(10, 20)"
+    );
 }
 
 #[test]
@@ -130,17 +157,26 @@ fn tuple_slice_full() {
 
 #[test]
 fn tuple_slice_negative() {
-    assert_eq!(run_python_one("t = (1, 2, 3, 4)\nprint(t[-2:])\n"), "(3, 4)");
+    assert_eq!(
+        run_python_one("t = (1, 2, 3, 4)\nprint(t[-2:])\n"),
+        "(3, 4)"
+    );
 }
 
 #[test]
 fn tuple_slice_step() {
-    assert_eq!(run_python_one("t = (0, 1, 2, 3, 4)\nprint(t[::2])\n"), "(0, 2, 4)");
+    assert_eq!(
+        run_python_one("t = (0, 1, 2, 3, 4)\nprint(t[::2])\n"),
+        "(0, 2, 4)"
+    );
 }
 
 #[test]
 fn tuple_slice_reverse() {
-    assert_eq!(run_python_one("t = (1, 2, 3)\nprint(t[::-1])\n"), "(3, 2, 1)");
+    assert_eq!(
+        run_python_one("t = (1, 2, 3)\nprint(t[::-1])\n"),
+        "(3, 2, 1)"
+    );
 }
 
 #[test]
@@ -199,7 +235,10 @@ fn tuple_slice_negative_step() {
 
 #[test]
 fn list_slice_open_negative_start() {
-    assert_eq!(run_python_one("x = [1, 2, 3, 4]\nprint(x[-2:])\n"), "[3, 4]");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3, 4]\nprint(x[-2:])\n"),
+        "[3, 4]"
+    );
 }
 
 #[test]
@@ -209,5 +248,8 @@ fn str_slice_open_negative_start() {
 
 #[test]
 fn list_slice_len_after_slice() {
-    assert_eq!(run_python_one("x = [1, 2, 3, 4, 5]\nprint(len(x[1:4]))\n"), "3");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3, 4, 5]\nprint(len(x[1:4]))\n"),
+        "3"
+    );
 }

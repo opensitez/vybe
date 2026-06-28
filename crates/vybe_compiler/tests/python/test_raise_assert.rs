@@ -27,7 +27,9 @@ fn raise_runtime_error() {
 #[test]
 fn raise_without_args_in_except_reraises() {
     assert_eq!(
-        run_python_one("try:\n try:\n  raise ValueError('z')\n except ValueError:\n  raise\nexcept ValueError as e:\n print(str(e))\n"),
+        run_python_one(
+            "try:\n try:\n  raise ValueError('z')\n except ValueError:\n  raise\nexcept ValueError as e:\n print(str(e))\n"
+        ),
         "z"
     );
 }
@@ -35,7 +37,9 @@ fn raise_without_args_in_except_reraises() {
 #[test]
 fn raise_from_chain_cause() {
     assert_eq!(
-        run_python_one("try:\n try:\n  raise ValueError('inner')\n except ValueError as e:\n  raise RuntimeError('outer') from e\nexcept RuntimeError as e:\n print(str(e.__cause__))\n"),
+        run_python_one(
+            "try:\n try:\n  raise ValueError('inner')\n except ValueError as e:\n  raise RuntimeError('outer') from e\nexcept RuntimeError as e:\n print(str(e.__cause__))\n"
+        ),
         "inner"
     );
 }
@@ -74,10 +78,7 @@ fn raise_assertion_error_via_assert() {
 
 #[test]
 fn assert_true_passes() {
-    assert_eq!(
-        run_python_one("assert True\nprint('ok')\n"),
-        "ok"
-    );
+    assert_eq!(run_python_one("assert True\nprint('ok')\n"), "ok");
 }
 
 #[test]
@@ -99,7 +100,9 @@ fn assert_expression_form() {
 #[test]
 fn raise_in_function() {
     assert_eq!(
-        run_python_one("def f():\n raise ValueError('fn')\ntry:\n f()\nexcept ValueError as e:\n print(str(e))\n"),
+        run_python_one(
+            "def f():\n raise ValueError('fn')\ntry:\n f()\nexcept ValueError as e:\n print(str(e))\n"
+        ),
         "fn"
     );
 }
@@ -107,7 +110,9 @@ fn raise_in_function() {
 #[test]
 fn raise_if_condition() {
     assert_eq!(
-        run_python_one("x = -1\ntry:\n if x < 0:\n  raise ValueError('neg')\nexcept ValueError:\n print('neg')\n"),
+        run_python_one(
+            "x = -1\ntry:\n if x < 0:\n  raise ValueError('neg')\nexcept ValueError:\n print('neg')\n"
+        ),
         "neg"
     );
 }
@@ -115,7 +120,9 @@ fn raise_if_condition() {
 #[test]
 fn raise_custom_exception_subclass() {
     assert_eq!(
-        run_python_one("class MyErr(Exception):\n pass\ntry:\n raise MyErr('m')\nexcept MyErr as e:\n print(str(e))\n"),
+        run_python_one(
+            "class MyErr(Exception):\n pass\ntry:\n raise MyErr('m')\nexcept MyErr as e:\n print(str(e))\n"
+        ),
         "m"
     );
 }
@@ -123,7 +130,9 @@ fn raise_custom_exception_subclass() {
 #[test]
 fn raise_not_caught_by_wrong_type() {
     assert_eq!(
-        run_python_one("try:\n try:\n  raise TypeError('t')\n except ValueError:\n  print('wrong')\nexcept TypeError:\n print('right')\n"),
+        run_python_one(
+            "try:\n try:\n  raise TypeError('t')\n except ValueError:\n  print('wrong')\nexcept TypeError:\n print('right')\n"
+        ),
         "right"
     );
 }
@@ -187,7 +196,9 @@ fn raise_exception_base() {
 #[test]
 fn raise_in_loop_breaks_to_handler() {
     assert_eq!(
-        run_python_one("for i in range(2):\n try:\n  if i:\n   raise ValueError('loop')\n except ValueError:\n  print('caught')\n"),
+        run_python_one(
+            "for i in range(2):\n try:\n  if i:\n   raise ValueError('loop')\n except ValueError:\n  print('caught')\n"
+        ),
         "caught"
     );
 }
@@ -195,7 +206,9 @@ fn raise_in_loop_breaks_to_handler() {
 #[test]
 fn assert_in_function() {
     assert_eq!(
-        run_python_one("def f(x):\n assert x > 0\n return x\ntry:\n f(-1)\nexcept AssertionError:\n print('fail')\n"),
+        run_python_one(
+            "def f(x):\n assert x > 0\n return x\ntry:\n f(-1)\nexcept AssertionError:\n print('fail')\n"
+        ),
         "fail"
     );
 }
@@ -219,7 +232,9 @@ fn raise_string_old_style_not_valid() {
 #[test]
 fn raise_from_none_suppresses_context() {
     assert_eq!(
-        run_python_one("try:\n try:\n  raise ValueError('a')\n except ValueError as e:\n  raise RuntimeError('b') from None\nexcept RuntimeError as e:\n print(e.__cause__)\n"),
+        run_python_one(
+            "try:\n try:\n  raise ValueError('a')\n except ValueError as e:\n  raise RuntimeError('b') from None\nexcept RuntimeError as e:\n print(e.__cause__)\n"
+        ),
         "None"
     );
 }
@@ -243,7 +258,9 @@ fn raise_recursion_depth_style_manual() {
 #[test]
 fn raise_keyboard_interrupt_type() {
     assert_eq!(
-        run_python_one("try:\n raise KeyboardInterrupt\nexcept KeyboardInterrupt:\n print('kbd')\n"),
+        run_python_one(
+            "try:\n raise KeyboardInterrupt\nexcept KeyboardInterrupt:\n print('kbd')\n"
+        ),
         "kbd"
     );
 }
@@ -266,18 +283,12 @@ fn raise_system_exit_not_base_exception_handler() {
 
 #[test]
 fn assert_is_identity() {
-    assert_eq!(
-        run_python_one("a = []\nassert a is a\nprint('ok')\n"),
-        "ok"
-    );
+    assert_eq!(run_python_one("a = []\nassert a is a\nprint('ok')\n"), "ok");
 }
 
 #[test]
 fn assert_membership() {
-    assert_eq!(
-        run_python_one("assert 2 in [1, 2, 3]\nprint('ok')\n"),
-        "ok"
-    );
+    assert_eq!(run_python_one("assert 2 in [1, 2, 3]\nprint('ok')\n"), "ok");
 }
 
 #[test]
@@ -299,7 +310,9 @@ fn raise_empty_exception_args() {
 #[test]
 fn raise_tuple_args() {
     assert_eq!(
-        run_python_one("try:\n raise ValueError('a', 'b')\nexcept ValueError as e:\n print(len(e.args))\n"),
+        run_python_one(
+            "try:\n raise ValueError('a', 'b')\nexcept ValueError as e:\n print(len(e.args))\n"
+        ),
         "2"
     );
 }
@@ -315,7 +328,9 @@ fn assert_false_literal_fails() {
 #[test]
 fn raise_inside_finally_logged() {
     assert_eq!(
-        run_python_one("log = []\ntry:\n try:\n  raise ValueError\n except:\n  log.append('ex')\n finally:\n  log.append('fin')\nprint(log)\n"),
+        run_python_one(
+            "log = []\ntry:\n try:\n  raise ValueError\n except:\n  log.append('ex')\n finally:\n  log.append('fin')\nprint(log)\n"
+        ),
         "['ex', 'fin']"
     );
 }
@@ -323,7 +338,9 @@ fn raise_inside_finally_logged() {
 #[test]
 fn raise_unbound_local_error() {
     assert_eq!(
-        run_python_one("def f():\n print(x)\n x = 1\ntry:\n f()\nexcept UnboundLocalError:\n print('unbound')\n"),
+        run_python_one(
+            "def f():\n print(x)\n x = 1\ntry:\n f()\nexcept UnboundLocalError:\n print('unbound')\n"
+        ),
         "unbound"
     );
 }
@@ -331,7 +348,9 @@ fn raise_unbound_local_error() {
 #[test]
 fn raise_overflow_error_manual() {
     assert_eq!(
-        run_python_one("try:\n raise OverflowError('big')\nexcept OverflowError:\n print('over')\n"),
+        run_python_one(
+            "try:\n raise OverflowError('big')\nexcept OverflowError:\n print('over')\n"
+        ),
         "over"
     );
 }
@@ -347,7 +366,9 @@ fn assert_not_none() {
 #[test]
 fn raise_import_error() {
     assert_eq!(
-        run_python_one("try:\n raise ImportError('missing')\nexcept ImportError as e:\n print(str(e))\n"),
+        run_python_one(
+            "try:\n raise ImportError('missing')\nexcept ImportError as e:\n print(str(e))\n"
+        ),
         "missing"
     );
 }
@@ -355,7 +376,9 @@ fn raise_import_error() {
 #[test]
 fn raise_unicode_error_subclass() {
     assert_eq!(
-        run_python_one("try:\n raise UnicodeDecodeError('utf-8', b'\\xff', 0, 1, 'bad')\nexcept UnicodeDecodeError:\n print('uni')\n"),
+        run_python_one(
+            "try:\n raise UnicodeDecodeError('utf-8', b'\\xff', 0, 1, 'bad')\nexcept UnicodeDecodeError:\n print('uni')\n"
+        ),
         "uni"
     );
 }

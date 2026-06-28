@@ -1,8 +1,11 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn dict_comp_range_doubled_values() {
-    assert_eq!(run_print("{k: k * 2 for k in range(3)}"), "{0: 0, 1: 2, 2: 4}");
+    assert_eq!(
+        run_print("{k: k * 2 for k in range(3)}"),
+        "{0: 0, 1: 2, 2: 4}"
+    );
 }
 
 #[test]
@@ -84,10 +87,7 @@ fn dict_comp_empty_filter() {
 
 #[test]
 fn dict_comp_from_set_keys() {
-    assert_eq!(
-        run_print("{k: k * k for k in {1, 2}}"),
-        "{1: 1, 2: 4}"
-    );
+    assert_eq!(run_print("{k: k * k for k in {1, 2}}"), "{1: 1, 2: 4}");
 }
 
 #[test]
@@ -100,10 +100,7 @@ fn dict_comp_bool_keys() {
 
 #[test]
 fn dict_comp_value_list_comp() {
-    assert_eq!(
-        run_print("{k: [k] for k in range(2)}"),
-        "{0: [0], 1: [1]}"
-    );
+    assert_eq!(run_print("{k: [k] for k in range(2)}"), "{0: [0], 1: [1]}");
 }
 
 #[test]
@@ -140,10 +137,7 @@ fn dict_comp_keys_sorted() {
 
 #[test]
 fn dict_comp_duplicate_keys_last_wins() {
-    assert_eq!(
-        run_print("{1: 'a', 1: 'b'}"),
-        "{1: 'b'}"
-    );
+    assert_eq!(run_print("{1: 'a', 1: 'b'}"), "{1: 'b'}");
 }
 
 #[test]
@@ -164,18 +158,12 @@ fn dict_comp_filter_map_items() {
 
 #[test]
 fn dict_comp_string_digit_map() {
-    assert_eq!(
-        run_print("{c: int(c) for c in '12'}"),
-        "{'1': 1, '2': 2}"
-    );
+    assert_eq!(run_print("{c: int(c) for c in '12'}"), "{'1': 1, '2': 2}");
 }
 
 #[test]
 fn dict_comp_abs_values() {
-    assert_eq!(
-        run_print("{x: abs(x) for x in [-1, 2]}"),
-        "{-1: 1, 2: 2}"
-    );
+    assert_eq!(run_print("{x: abs(x) for x in [-1, 2]}"), "{-1: 1, 2: 2}");
 }
 
 #[test]
@@ -237,7 +225,9 @@ fn dict_comp_any_value_truthy() {
 #[test]
 fn dict_comp_all_keys_strings() {
     assert_eq!(
-        run_python_one("d = {str(i): i for i in range(2)}\nprint(all(isinstance(k, str) for k in d))\n"),
+        run_python_one(
+            "d = {str(i): i for i in range(2)}\nprint(all(isinstance(k, str) for k in d))\n"
+        ),
         "True"
     );
 }
@@ -252,10 +242,7 @@ fn dict_comp_from_split() {
 
 #[test]
 fn dict_comp_float_keys_cast_str() {
-    assert_eq!(
-        run_print("{str(x): x for x in [1.5]}"),
-        "{'1.5': 1.5}"
-    );
+    assert_eq!(run_print("{str(x): x for x in [1.5]}"), "{'1.5': 1.5}");
 }
 
 #[test]

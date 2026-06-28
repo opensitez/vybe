@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python, run_print};
+use crate::helpers::{run_print, run_python, run_python_one};
 
 #[test]
 fn str_upper_lowercase_letters() {
@@ -147,10 +147,7 @@ fn str_format_positional_indices() {
 
 #[test]
 fn str_format_literal_braces_escaped() {
-    assert_eq!(
-        run_python_one("print('{{ok}}'.format())\n"),
-        "{ok}"
-    );
+    assert_eq!(run_python_one("print('{{ok}}'.format())\n"), "{ok}");
 }
 
 #[test]
@@ -201,26 +198,17 @@ fn str_partition_before_part_when_found() {
 
 #[test]
 fn str_partition_after_part_when_missing() {
-    assert_eq!(
-        run_python_one("print('nosep'.partition('=')[2])\n"),
-        ""
-    );
+    assert_eq!(run_python_one("print('nosep'.partition('=')[2])\n"), "");
 }
 
 #[test]
 fn str_rpartition_splits_on_last_separator() {
-    assert_eq!(
-        run_python_one("print('a/b/c'.rpartition('/')[2])\n"),
-        "c"
-    );
+    assert_eq!(run_python_one("print('a/b/c'.rpartition('/')[2])\n"), "c");
 }
 
 #[test]
 fn str_rpartition_before_part_from_right() {
-    assert_eq!(
-        run_python_one("print('a/b/c'.rpartition('/')[0])\n"),
-        "a/b"
-    );
+    assert_eq!(run_python_one("print('a/b/c'.rpartition('/')[0])\n"), "a/b");
 }
 
 #[test]
@@ -235,12 +223,18 @@ fn str_removeprefix_no_match_returns_original() {
 
 #[test]
 fn str_removesuffix_strips_matching_suffix() {
-    assert_eq!(run_print("'archive.tar.gz'.removesuffix('.gz')"), "archive.tar");
+    assert_eq!(
+        run_print("'archive.tar.gz'.removesuffix('.gz')"),
+        "archive.tar"
+    );
 }
 
 #[test]
 fn str_removesuffix_no_match_returns_original() {
-    assert_eq!(run_print("'archive.tar.gz'.removesuffix('.zip')"), "archive.tar.gz");
+    assert_eq!(
+        run_print("'archive.tar.gz'.removesuffix('.zip')"),
+        "archive.tar.gz"
+    );
 }
 
 #[test]
@@ -268,10 +262,7 @@ fn str_encode_ascii_roundtrip_via_decode() {
 
 #[test]
 fn str_decode_ascii_from_byte_literal() {
-    assert_eq!(
-        run_python_one("print(b'ascii'.decode('ascii'))\n"),
-        "ascii"
-    );
+    assert_eq!(run_python_one("print(b'ascii'.decode('ascii'))\n"), "ascii");
 }
 
 #[test]

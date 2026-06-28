@@ -61,31 +61,25 @@ fn hash_tuple_of_ints() {
 
 #[test]
 fn id_same_object_equal() {
-    assert_eq!(
-        run_python_one("xs = []\nprint(id(xs) == id(xs))\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("xs = []\nprint(id(xs) == id(xs))\n"), "True");
 }
 
 #[test]
 fn id_distinct_objects_differ() {
-    assert_eq!(
-        run_python_one("print(id([]) == id([]))\n"),
-        "False"
-    );
+    assert_eq!(run_python_one("print(id([]) == id([]))\n"), "False");
 }
 
 #[test]
 fn id_small_ints_may_be_cached() {
-    assert_eq!(run_print("id(256) == id(256) or id(256) != id(256)"), "True");
+    assert_eq!(
+        run_print("id(256) == id(256) or id(256) != id(256)"),
+        "True"
+    );
 }
 
 #[test]
 fn id_used_in_is_comparison() {
-    assert_eq!(
-        run_python_one("a = object()\nprint(a is a)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("a = object()\nprint(a is a)\n"), "True");
 }
 
 #[test]
@@ -182,10 +176,7 @@ fn id_tuple_of_ids_unique_per_element() {
 
 #[test]
 fn hash_negative_int_allowed() {
-    assert_eq!(
-        run_python_one("print(isinstance(hash(-1), int))\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("print(isinstance(hash(-1), int))\n"), "True");
 }
 
 #[test]

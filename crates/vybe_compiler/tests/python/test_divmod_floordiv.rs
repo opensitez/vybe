@@ -97,26 +97,17 @@ fn modulo_with_floats() {
 
 #[test]
 fn divmod_unpack_in_assignment() {
-    assert_eq!(
-        run_python_one("q, r = divmod(17, 5)\nprint(q, r)\n"),
-        "3 2"
-    );
+    assert_eq!(run_python_one("q, r = divmod(17, 5)\nprint(q, r)\n"), "3 2");
 }
 
 #[test]
 fn floordiv_augmented_assign() {
-    assert_eq!(
-        run_python_one("n = 17\nn //= 5\nprint(n)\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("n = 17\nn //= 5\nprint(n)\n"), "3");
 }
 
 #[test]
 fn modulo_augmented_assign() {
-    assert_eq!(
-        run_python_one("n = 17\nn %= 5\nprint(n)\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("n = 17\nn %= 5\nprint(n)\n"), "2");
 }
 
 #[test]
@@ -181,7 +172,9 @@ fn modulo_in_list_comprehension() {
 #[test]
 fn divmod_in_loop_accumulator() {
     assert_eq!(
-        run_python_one("total = 0\nfor n in [10, 11, 12]:\n q, r = divmod(n, 3)\n total += r\nprint(total)\n"),
+        run_python_one(
+            "total = 0\nfor n in [10, 11, 12]:\n q, r = divmod(n, 3)\n total += r\nprint(total)\n"
+        ),
         "3"
     );
 }
@@ -206,10 +199,7 @@ fn floordiv_chained_with_multiplication() {
 
 #[test]
 fn modulo_alternating_parity() {
-    assert_eq!(
-        run_print("[n % 2 for n in range(6)]"),
-        "[0, 1, 0, 1, 0, 1]"
-    );
+    assert_eq!(run_print("[n % 2 for n in range(6)]"), "[0, 1, 0, 1, 0, 1]");
 }
 
 #[test]

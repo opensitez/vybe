@@ -73,7 +73,9 @@ fn json_dumps_nested_structure() {
 #[test]
 fn json_loads_nested_structure() {
     assert_eq!(
-        run_python_one("import json\nd = json.loads('{\"items\": [1, 2]}')\nprint(d['items'][1])\n"),
+        run_python_one(
+            "import json\nd = json.loads('{\"items\": [1, 2]}')\nprint(d['items'][1])\n"
+        ),
         "2"
     );
 }
@@ -111,7 +113,9 @@ fn json_loads_float() {
 #[test]
 fn json_roundtrip_tuple_becomes_list() {
     assert_eq!(
-        run_python_one("import json\ns = json.dumps([1, 2])\nprint(type(json.loads(s)).__name__)\n"),
+        run_python_one(
+            "import json\ns = json.dumps([1, 2])\nprint(type(json.loads(s)).__name__)\n"
+        ),
         "list"
     );
 }
@@ -134,18 +138,12 @@ fn json_loads_array_of_strings() {
 
 #[test]
 fn json_dumps_unicode_string() {
-    assert_eq!(
-        run_print("import json; json.dumps('é')"),
-        "\"é\""
-    );
+    assert_eq!(run_print("import json; json.dumps('é')"), "\"é\"");
 }
 
 #[test]
 fn json_loads_unicode_escape() {
-    assert_eq!(
-        run_print("import json; json.loads('\"\\\\u00e9\"')"),
-        "é"
-    );
+    assert_eq!(run_print("import json; json.loads('\"\\\\u00e9\"')"), "é");
 }
 
 #[test]
@@ -190,17 +188,16 @@ fn json_loads_list_of_bools() {
 #[test]
 fn json_double_roundtrip_stable() {
     assert_eq!(
-        run_python_one("import json\ns = json.dumps({'k': [1]})\nprint(json.dumps(json.loads(s)))\n"),
+        run_python_one(
+            "import json\ns = json.dumps({'k': [1]})\nprint(json.dumps(json.loads(s)))\n"
+        ),
         "{\"k\": [1]}"
     );
 }
 
 #[test]
 fn json_loads_whitespace_padding() {
-    assert_eq!(
-        run_print("import json; json.loads('  [1]  ')"),
-        "[1]"
-    );
+    assert_eq!(run_print("import json; json.loads('  [1]  ')"), "[1]");
 }
 
 #[test]
@@ -264,7 +261,9 @@ fn json_loads_empty_string() {
 #[test]
 fn json_list_comprehension_roundtrip() {
     assert_eq!(
-        run_python_one("import json\nvals = [json.loads(json.dumps(x)) for x in [1, 'a', None]]\nprint(vals)\n"),
+        run_python_one(
+            "import json\nvals = [json.loads(json.dumps(x)) for x in [1, 'a', None]]\nprint(vals)\n"
+        ),
         "[1, 'a', None]"
     );
 }

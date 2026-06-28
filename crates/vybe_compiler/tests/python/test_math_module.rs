@@ -2,10 +2,7 @@ use crate::helpers::run_python_one;
 
 #[test]
 fn math_sqrt() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.sqrt(9))\n"),
-        "3.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.sqrt(9))\n"), "3.0");
 }
 
 #[test]
@@ -18,18 +15,12 @@ fn math_pow() {
 
 #[test]
 fn math_floor() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.floor(3.7))\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.floor(3.7))\n"), "3");
 }
 
 #[test]
 fn math_ceil() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.ceil(3.2))\n"),
-        "4"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.ceil(3.2))\n"), "4");
 }
 
 #[test]
@@ -50,10 +41,7 @@ fn math_gcd() {
 
 #[test]
 fn math_lcm() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.lcm(4, 6))\n"),
-        "12"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.lcm(4, 6))\n"), "12");
 }
 
 #[test]
@@ -66,26 +54,17 @@ fn math_hypot() {
 
 #[test]
 fn math_sin_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.sin(0))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.sin(0))\n"), "0.0");
 }
 
 #[test]
 fn math_cos_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.cos(0))\n"),
-        "1.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.cos(0))\n"), "1.0");
 }
 
 #[test]
 fn math_tan_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.tan(0))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.tan(0))\n"), "0.0");
 }
 
 #[test]
@@ -106,10 +85,7 @@ fn math_log10() {
 
 #[test]
 fn math_log2() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.log2(8))\n"),
-        "3.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.log2(8))\n"), "3.0");
 }
 
 #[test]
@@ -138,10 +114,7 @@ fn math_fabs() {
 
 #[test]
 fn math_trunc() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.trunc(3.9))\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.trunc(3.9))\n"), "3");
 }
 
 #[test]
@@ -314,18 +287,12 @@ fn math_exp_one() {
 
 #[test]
 fn math_asin_bound() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.asin(0))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.asin(0))\n"), "0.0");
 }
 
 #[test]
 fn math_acos_bound() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.acos(1))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.acos(1))\n"), "0.0");
 }
 
 #[test]
@@ -338,26 +305,17 @@ fn math_atan2() {
 
 #[test]
 fn math_sinh_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.sinh(0))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.sinh(0))\n"), "0.0");
 }
 
 #[test]
 fn math_cosh_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.cosh(0))\n"),
-        "1.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.cosh(0))\n"), "1.0");
 }
 
 #[test]
 fn math_tanh_zero() {
-    assert_eq!(
-        run_python_one("import math\nprint(math.tanh(0))\n"),
-        "0.0"
-    );
+    assert_eq!(run_python_one("import math\nprint(math.tanh(0))\n"), "0.0");
 }
 
 #[test]

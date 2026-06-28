@@ -59,7 +59,9 @@ fn match_mapping_exact_key() {
 #[test]
 fn match_class_pattern_positional() {
     assert_eq!(
-        run_python_one("class P:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = P(1, 2)\nmatch p:\n case P(x, y):\n  print(x, y)\n"),
+        run_python_one(
+            "class P:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = P(1, 2)\nmatch p:\n case P(x, y):\n  print(x, y)\n"
+        ),
         "1 2"
     );
 }
@@ -91,7 +93,9 @@ fn match_tuple_pattern() {
 #[test]
 fn match_first_case_wins() {
     assert_eq!(
-        run_python_one("x = 1\nmatch x:\n case 1:\n  print('first')\n case 1:\n  print('second')\n"),
+        run_python_one(
+            "x = 1\nmatch x:\n case 1:\n  print('first')\n case 1:\n  print('second')\n"
+        ),
         "first"
     );
 }
@@ -99,7 +103,9 @@ fn match_first_case_wins() {
 #[test]
 fn match_no_case_raises() {
     assert_eq!(
-        run_python_one("x = 1\nmatch x:\n case 2:\n  print('no')\ntry:\n match x:\n  case 2:\n   pass\nexcept:\n print('unmatched')\n"),
+        run_python_one(
+            "x = 1\nmatch x:\n case 2:\n  print('no')\ntry:\n match x:\n  case 2:\n   pass\nexcept:\n print('unmatched')\n"
+        ),
         "unmatched"
     );
 }
@@ -147,7 +153,9 @@ fn match_empty_list() {
 #[test]
 fn match_dict_two_keys() {
     assert_eq!(
-        run_python_one("d = {'a': 1, 'b': 2}\nmatch d:\n case {'a': av, 'b': bv}:\n  print(av + bv)\n"),
+        run_python_one(
+            "d = {'a': 1, 'b': 2}\nmatch d:\n case {'a': av, 'b': bv}:\n  print(av + bv)\n"
+        ),
         "3"
     );
 }
@@ -155,7 +163,9 @@ fn match_dict_two_keys() {
 #[test]
 fn match_dict_rest_pattern() {
     assert_eq!(
-        run_python_one("d = {'a': 1, 'b': 2}\nmatch d:\n case {'a': av, **rest}:\n  print(av, 'b' in rest)\n"),
+        run_python_one(
+            "d = {'a': 1, 'b': 2}\nmatch d:\n case {'a': av, **rest}:\n  print(av, 'b' in rest)\n"
+        ),
         "1 True"
     );
 }
@@ -171,7 +181,9 @@ fn match_int_and_str_or() {
 #[test]
 fn match_guard_false_falls_through() {
     assert_eq!(
-        run_python_one("x = 1\nmatch x:\n case n if n > 5:\n  print('big')\n case _:\n  print('small')\n"),
+        run_python_one(
+            "x = 1\nmatch x:\n case n if n > 5:\n  print('big')\n case _:\n  print('small')\n"
+        ),
         "small"
     );
 }
@@ -179,7 +191,9 @@ fn match_guard_false_falls_through() {
 #[test]
 fn match_on_enum_like_strings() {
     assert_eq!(
-        run_python_one("state = 'ready'\nmatch state:\n case 'ready' | 'running':\n  print('ok')\n"),
+        run_python_one(
+            "state = 'ready'\nmatch state:\n case 'ready' | 'running':\n  print('ok')\n"
+        ),
         "ok"
     );
 }
@@ -203,7 +217,9 @@ fn match_negative_int() {
 #[test]
 fn match_in_function() {
     assert_eq!(
-        run_python_one("def label(n):\n match n:\n  case 0:\n   return 'zero'\n  case _:\n   return 'other'\nprint(label(0))\n"),
+        run_python_one(
+            "def label(n):\n match n:\n  case 0:\n   return 'zero'\n  case _:\n   return 'other'\nprint(label(0))\n"
+        ),
         "zero"
     );
 }
@@ -211,7 +227,9 @@ fn match_in_function() {
 #[test]
 fn match_with_return_in_case() {
     assert_eq!(
-        run_python_one("def f(x):\n match x:\n  case 1:\n   return 'a'\n  case _:\n   return 'b'\nprint(f(2))\n"),
+        run_python_one(
+            "def f(x):\n match x:\n  case 1:\n   return 'a'\n  case _:\n   return 'b'\nprint(f(2))\n"
+        ),
         "b"
     );
 }
@@ -243,7 +261,9 @@ fn match_star_starts_with_zero() {
 #[test]
 fn match_multiple_types_wildcard() {
     assert_eq!(
-        run_python_one("def show(x):\n match x:\n  case str():\n   return 's'\n  case int():\n   return 'i'\n  case _:\n   return 'o'\nprint(show(3), show('a'))\n"),
+        run_python_one(
+            "def show(x):\n match x:\n  case str():\n   return 's'\n  case int():\n   return 'i'\n  case _:\n   return 'o'\nprint(show(3), show('a'))\n"
+        ),
         "i s"
     );
 }
@@ -251,7 +271,9 @@ fn match_multiple_types_wildcard() {
 #[test]
 fn match_class_attr_pattern() {
     assert_eq!(
-        run_python_one("class P:\n def __init__(self, x):\n  self.x = x\np = P(4)\nmatch p:\n case P(x=x) if x > 0:\n  print(x)\n"),
+        run_python_one(
+            "class P:\n def __init__(self, x):\n  self.x = x\np = P(4)\nmatch p:\n case P(x=x) if x > 0:\n  print(x)\n"
+        ),
         "4"
     );
 }
@@ -259,7 +281,9 @@ fn match_class_attr_pattern() {
 #[test]
 fn match_nested_match() {
     assert_eq!(
-        run_python_one("x = (1, 2)\nmatch x:\n case (a, b):\n  match b:\n   case 2:\n    print('two')\n"),
+        run_python_one(
+            "x = (1, 2)\nmatch x:\n case (a, b):\n  match b:\n   case 2:\n    print('two')\n"
+        ),
         "two"
     );
 }
@@ -331,7 +355,9 @@ fn match_break_in_loop() {
 #[test]
 fn match_continue_in_loop() {
     assert_eq!(
-        run_python_one("out = []\nfor v in [1, 2, 3]:\n match v:\n  case 2:\n   continue\n out.append(v)\nprint(out)\n"),
+        run_python_one(
+            "out = []\nfor v in [1, 2, 3]:\n match v:\n  case 2:\n   continue\n out.append(v)\nprint(out)\n"
+        ),
         "[1, 3]"
     );
 }
@@ -347,7 +373,9 @@ fn match_tuple_of_lists() {
 #[test]
 fn match_string_prefix_style() {
     assert_eq!(
-        run_python_one("s = 'error: msg'\nmatch s:\n case str() if s.startswith('error'):\n  print('err')\n"),
+        run_python_one(
+            "s = 'error: msg'\nmatch s:\n case str() if s.startswith('error'):\n  print('err')\n"
+        ),
         "err"
     );
 }

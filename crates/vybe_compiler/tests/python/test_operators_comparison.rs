@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn eq_integers_same_value() {
@@ -147,10 +147,7 @@ fn is_not_different_objects() {
 
 #[test]
 fn is_same_list_reference() {
-    assert_eq!(
-        run_python_one("a = [1, 2]\nb = a\nprint(a is b)\n"),
-        "true"
-    );
+    assert_eq!(run_python_one("a = [1, 2]\nb = a\nprint(a is b)\n"), "true");
 }
 
 #[test]

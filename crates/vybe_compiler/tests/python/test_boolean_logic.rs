@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python, run_print};
+use crate::helpers::{run_print, run_python, run_python_one};
 
 #[test]
 fn and_both_true_returns_true() {
@@ -53,9 +53,7 @@ fn not_false_returns_true() {
 #[test]
 fn and_short_circuit_skips_right_operand() {
     assert_eq!(
-        run_python(
-            "def boom():\n    print('boom')\n    return True\nprint(False and boom())\n",
-        ),
+        run_python("def boom():\n    print('boom')\n    return True\nprint(False and boom())\n",),
         vec!["false"]
     );
 }
@@ -63,9 +61,7 @@ fn and_short_circuit_skips_right_operand() {
 #[test]
 fn or_short_circuit_skips_right_operand() {
     assert_eq!(
-        run_python(
-            "def boom():\n    print('boom')\n    return True\nprint(True or boom())\n",
-        ),
+        run_python("def boom():\n    print('boom')\n    return True\nprint(True or boom())\n",),
         vec!["true"]
     );
 }

@@ -243,9 +243,7 @@ fn decorator_property_like_cache() {
 #[test]
 fn decorator_identity_no_op() {
     assert_eq!(
-        run_python_one(
-            "def identity(f):\n return f\n@identity\ndef f():\n return 7\nprint(f())\n"
-        ),
+        run_python_one("def identity(f):\n return f\n@identity\ndef f():\n return 7\nprint(f())\n"),
         "7"
     );
 }

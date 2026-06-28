@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn bytes_literal_ascii() {
@@ -184,12 +184,18 @@ fn bytes_iter_values() {
 
 #[test]
 fn bytes_partition() {
-    assert_eq!(run_print("b'a-b-c'.partition(b'-')"), "(b'a', b'-', b'b-c')");
+    assert_eq!(
+        run_print("b'a-b-c'.partition(b'-')"),
+        "(b'a', b'-', b'b-c')"
+    );
 }
 
 #[test]
 fn bytes_rpartition() {
-    assert_eq!(run_print("b'a-b-c'.rpartition(b'-')"), "(b'a-b', b'-', b'c')");
+    assert_eq!(
+        run_print("b'a-b-c'.rpartition(b'-')"),
+        "(b'a-b', b'-', b'c')"
+    );
 }
 
 #[test]

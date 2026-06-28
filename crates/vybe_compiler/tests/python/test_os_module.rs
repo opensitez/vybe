@@ -75,7 +75,9 @@ fn os_path_isdir_false_for_missing() {
 #[test]
 fn os_path_abspath_relative() {
     assert_eq!(
-        run_python_one("import os\np = os.path.abspath('vybe_rel.txt')\nprint(p.endswith('vybe_rel.txt'))\n"),
+        run_python_one(
+            "import os\np = os.path.abspath('vybe_rel.txt')\nprint(p.endswith('vybe_rel.txt'))\n"
+        ),
         "True"
     );
 }
@@ -107,7 +109,9 @@ fn os_path_dirname_root_file() {
 #[test]
 fn os_getcwd_returns_nonempty_string() {
     assert_eq!(
-        run_python_one("import os\ncwd = os.getcwd()\nprint(isinstance(cwd, str) and len(cwd) > 0)\n"),
+        run_python_one(
+            "import os\ncwd = os.getcwd()\nprint(isinstance(cwd, str) and len(cwd) > 0)\n"
+        ),
         "True"
     );
 }
@@ -178,10 +182,7 @@ fn os_path_isfile_current_dir_false() {
 
 #[test]
 fn os_import_succeeds() {
-    assert_eq!(
-        run_python_one("import os\nprint(os.__name__)\n"),
-        "os"
-    );
+    assert_eq!(run_python_one("import os\nprint(os.__name__)\n"), "os");
 }
 
 #[test]
@@ -243,7 +244,9 @@ fn os_path_join_absolute_second_segment() {
 #[test]
 fn os_path_exists_after_join_missing() {
     assert_eq!(
-        run_python_one("import os\np = os.path.join('missing', 'vybe', 'ghost.txt')\nprint(os.path.exists(p))\n"),
+        run_python_one(
+            "import os\np = os.path.join('missing', 'vybe', 'ghost.txt')\nprint(os.path.exists(p))\n"
+        ),
         "False"
     );
 }
@@ -251,7 +254,9 @@ fn os_path_exists_after_join_missing() {
 #[test]
 fn os_path_isfile_with_joined_path() {
     assert_eq!(
-        run_python_one("import os\np = os.path.join('nope', 'file.txt')\nprint(os.path.isfile(p))\n"),
+        run_python_one(
+            "import os\np = os.path.join('nope', 'file.txt')\nprint(os.path.isfile(p))\n"
+        ),
         "False"
     );
 }
@@ -291,7 +296,9 @@ fn os_path_join_with_dot() {
 #[test]
 fn os_path_abspath_joined() {
     assert_eq!(
-        run_python_one("import os\np = os.path.abspath(os.path.join('a', 'b.txt'))\nprint(p.endswith('a/b.txt') or p.endswith('a\\\\b.txt'))\n"),
+        run_python_one(
+            "import os\np = os.path.abspath(os.path.join('a', 'b.txt'))\nprint(p.endswith('a/b.txt') or p.endswith('a\\\\b.txt'))\n"
+        ),
         "True"
     );
 }
@@ -307,7 +314,9 @@ fn os_listdir_type_has_length() {
 #[test]
 fn os_path_operations_chain() {
     assert_eq!(
-        run_python_one("import os\np = os.path.join('x', 'y.txt')\nprint(os.path.basename(p), os.path.splitext(p)[1])\n"),
+        run_python_one(
+            "import os\np = os.path.join('x', 'y.txt')\nprint(os.path.basename(p), os.path.splitext(p)[1])\n"
+        ),
         "y.txt .txt"
     );
 }
@@ -315,7 +324,9 @@ fn os_path_operations_chain() {
 #[test]
 fn os_path_dirname_of_joined() {
     assert_eq!(
-        run_python_one("import os\np = os.path.join('dir', 'sub', 'f.py')\nprint(os.path.dirname(p))\n"),
+        run_python_one(
+            "import os\np = os.path.join('dir', 'sub', 'f.py')\nprint(os.path.dirname(p))\n"
+        ),
         "dir/sub"
     );
 }
@@ -323,7 +334,9 @@ fn os_path_dirname_of_joined() {
 #[test]
 fn os_getcwd_matches_abspath_dot_parent() {
     assert_eq!(
-        run_python_one("import os\ncwd = os.getcwd()\nprint(cwd == os.path.abspath('.') or len(cwd) > 0)\n"),
+        run_python_one(
+            "import os\ncwd = os.getcwd()\nprint(cwd == os.path.abspath('.') or len(cwd) > 0)\n"
+        ),
         "True"
     );
 }

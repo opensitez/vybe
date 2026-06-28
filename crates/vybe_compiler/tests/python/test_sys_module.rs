@@ -2,10 +2,7 @@ use crate::helpers::run_python_one;
 
 #[test]
 fn sys_import_name() {
-    assert_eq!(
-        run_python_one("import sys\nprint(sys.__name__)\n"),
-        "sys"
-    );
+    assert_eq!(run_python_one("import sys\nprint(sys.__name__)\n"), "sys");
 }
 
 #[test]
@@ -75,7 +72,9 @@ fn sys_version_is_string() {
 #[test]
 fn sys_has_stdin_stdout_stderr() {
     assert_eq!(
-        run_python_one("import sys\nprint(hasattr(sys, 'stdin') and hasattr(sys, 'stdout') and hasattr(sys, 'stderr'))\n"),
+        run_python_one(
+            "import sys\nprint(hasattr(sys, 'stdin') and hasattr(sys, 'stdout') and hasattr(sys, 'stderr'))\n"
+        ),
         "True"
     );
 }
@@ -123,7 +122,9 @@ fn sys_getrecursionlimit_positive() {
 #[test]
 fn sys_setrecursionlimit_roundtrip() {
     assert_eq!(
-        run_python_one("import sys\nold = sys.getrecursionlimit()\nsys.setrecursionlimit(old)\nprint(sys.getrecursionlimit() == old)\n"),
+        run_python_one(
+            "import sys\nold = sys.getrecursionlimit()\nsys.setrecursionlimit(old)\nprint(sys.getrecursionlimit() == old)\n"
+        ),
         "True"
     );
 }
@@ -131,7 +132,9 @@ fn sys_setrecursionlimit_roundtrip() {
 #[test]
 fn sys_intern_reuses_string() {
     assert_eq!(
-        run_python_one("import sys\na = sys.intern('vybe')\nb = sys.intern('vybe')\nprint(a is b)\n"),
+        run_python_one(
+            "import sys\na = sys.intern('vybe')\nb = sys.intern('vybe')\nprint(a is b)\n"
+        ),
         "True"
     );
 }
@@ -147,7 +150,9 @@ fn sys_exc_info_outside_except() {
 #[test]
 fn sys_exc_info_inside_except() {
     assert_eq!(
-        run_python_one("import sys\ntry:\n raise ValueError('x')\nexcept ValueError:\n t, v, tb = sys.exc_info()\n print(t.__name__, str(v))\n"),
+        run_python_one(
+            "import sys\ntry:\n raise ValueError('x')\nexcept ValueError:\n t, v, tb = sys.exc_info()\n print(t.__name__, str(v))\n"
+        ),
         "ValueError x"
     );
 }
@@ -155,7 +160,9 @@ fn sys_exc_info_inside_except() {
 #[test]
 fn sys_exception_in_except_block() {
     assert_eq!(
-        run_python_one("import sys\ntry:\n raise TypeError('t')\nexcept TypeError as e:\n print(sys.exception() is e)\n"),
+        run_python_one(
+            "import sys\ntry:\n raise TypeError('t')\nexcept TypeError as e:\n print(sys.exception() is e)\n"
+        ),
         "True"
     );
 }
@@ -211,7 +218,9 @@ fn sys_implementation_name() {
 #[test]
 fn sys_argv_copy_independent() {
     assert_eq!(
-        run_python_one("import sys\na = sys.argv\na.append('extra')\nprint(len(sys.argv) == len(a) - 1 or 'extra' not in sys.argv)\n"),
+        run_python_one(
+            "import sys\na = sys.argv\na.append('extra')\nprint(len(sys.argv) == len(a) - 1 or 'extra' not in sys.argv)\n"
+        ),
         "True"
     );
 }
@@ -243,7 +252,9 @@ fn sys_modules_records_imported_os() {
 #[test]
 fn sys_path_insert_and_restore() {
     assert_eq!(
-        run_python_one("import sys\nold = list(sys.path)\nsys.path.insert(0, '/tmp/vybe-test')\nprint(sys.path[0] == '/tmp/vybe-test')\nsys.path[:] = old\n"),
+        run_python_one(
+            "import sys\nold = list(sys.path)\nsys.path.insert(0, '/tmp/vybe-test')\nprint(sys.path[0] == '/tmp/vybe-test')\nsys.path[:] = old\n"
+        ),
         "True"
     );
 }
@@ -347,7 +358,9 @@ fn sys_unraisablehook_callable() {
 #[test]
 fn sys_orig_argv_list() {
     assert_eq!(
-        run_python_one("import sys\nprint(isinstance(getattr(sys, 'orig_argv', sys.argv), list))\n"),
+        run_python_one(
+            "import sys\nprint(isinstance(getattr(sys, 'orig_argv', sys.argv), list))\n"
+        ),
         "True"
     );
 }

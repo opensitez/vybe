@@ -25,26 +25,17 @@ fn frozenset_union_with_set() {
 
 #[test]
 fn frozenset_intersection_with_set() {
-    assert_eq!(
-        run_print("frozenset([1, 2, 3]) & {2, 4}"),
-        "frozenset({2})"
-    );
+    assert_eq!(run_print("frozenset([1, 2, 3]) & {2, 4}"), "frozenset({2})");
 }
 
 #[test]
 fn frozenset_difference() {
-    assert_eq!(
-        run_print("frozenset([1, 2, 3]) - {2}"),
-        "frozenset({1, 3})"
-    );
+    assert_eq!(run_print("frozenset([1, 2, 3]) - {2}"), "frozenset({1, 3})");
 }
 
 #[test]
 fn frozenset_symmetric_difference() {
-    assert_eq!(
-        run_print("frozenset([1, 2]) ^ {2, 3}"),
-        "frozenset({1, 3})"
-    );
+    assert_eq!(run_print("frozenset([1, 2]) ^ {2, 3}"), "frozenset({1, 3})");
 }
 
 #[test]
@@ -173,15 +164,14 @@ fn frozenset_repr_stable() {
 #[test]
 fn set_of_frozenset_and_set_rejected_if_mixed_unhashable() {
     assert_eq!(
-        run_python_one("try:\n {frozenset([1]), [2]}\n print('ok')\nexcept TypeError:\n print('TypeError')\n"),
+        run_python_one(
+            "try:\n {frozenset([1]), [2]}\n print('ok')\nexcept TypeError:\n print('TypeError')\n"
+        ),
         "TypeError"
     );
 }
 
 #[test]
 fn frozenset_nested_in_tuple() {
-    assert_eq!(
-        run_print("(frozenset([1]), 2)"),
-        "(frozenset({1}), 2)"
-    );
+    assert_eq!(run_print("(frozenset([1]), 2)"), "(frozenset({1}), 2)");
 }

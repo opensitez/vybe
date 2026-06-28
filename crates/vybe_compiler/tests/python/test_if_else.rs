@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python, run_print};
+use crate::helpers::{run_print, run_python, run_python_one};
 
 #[test]
 fn if_true_branch_prints_yes() {
@@ -170,7 +170,9 @@ fn condition_with_and_both_true() {
 
 #[test]
 fn condition_with_and_one_false() {
-    let out = run_python("a = 3\nb = -1\nif a > 0 and b > 0:\n    print('both')\nelse:\n    print('not both')\n");
+    let out = run_python(
+        "a = 3\nb = -1\nif a > 0 and b > 0:\n    print('both')\nelse:\n    print('not both')\n",
+    );
     assert_eq!(out, vec!["not both"]);
 }
 
@@ -182,7 +184,9 @@ fn condition_with_or_one_true() {
 
 #[test]
 fn condition_with_or_both_false() {
-    let out = run_python("a = -1\nb = -2\nif a > 0 or b > 0:\n    print('either')\nelse:\n    print('neither')\n");
+    let out = run_python(
+        "a = -1\nb = -2\nif a > 0 or b > 0:\n    print('either')\nelse:\n    print('neither')\n",
+    );
     assert_eq!(out, vec!["neither"]);
 }
 
@@ -200,9 +204,7 @@ fn condition_with_not_inverts_false() {
 
 #[test]
 fn condition_combines_and_or_not() {
-    let out = run_python(
-        "x = 5\nif (x > 0 and x < 10) or not (x == 3):\n    print('match')\n",
-    );
+    let out = run_python("x = 5\nif (x > 0 and x < 10) or not (x == 3):\n    print('match')\n");
     assert_eq!(out, vec!["match"]);
 }
 
@@ -234,15 +236,14 @@ fn if_with_less_equal_chain() {
 
 #[test]
 fn if_with_less_equal_chain_outside() {
-    let out = run_python("n = 15\nif 1 <= n <= 10:\n    print('in range')\nelse:\n    print('out')\n");
+    let out =
+        run_python("n = 15\nif 1 <= n <= 10:\n    print('in range')\nelse:\n    print('out')\n");
     assert_eq!(out, vec!["out"]);
 }
 
 #[test]
 fn if_elif_without_final_else() {
-    let out = run_python(
-        "x = 2\nif x > 10:\n    print('big')\nelif x > 1:\n    print('small')\n",
-    );
+    let out = run_python("x = 2\nif x > 10:\n    print('big')\nelif x > 1:\n    print('small')\n");
     assert_eq!(out, vec!["small"]);
 }
 

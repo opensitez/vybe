@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn dict_literal_two_keys() {
@@ -22,10 +22,7 @@ fn dict_get_missing_default() {
 
 #[test]
 fn dict_setitem_new_key() {
-    assert_eq!(
-        run_python_one("d = {}\nd['a'] = 1\nprint(d)\n"),
-        "{'a': 1}"
-    );
+    assert_eq!(run_python_one("d = {}\nd['a'] = 1\nprint(d)\n"), "{'a': 1}");
 }
 
 #[test]
@@ -64,10 +61,7 @@ fn dict_values_view() {
 
 #[test]
 fn dict_items_view() {
-    assert_eq!(
-        run_print("sorted({'a': 1}.items())"),
-        "[('a', 1)]"
-    );
+    assert_eq!(run_print("sorted({'a': 1}.items())"), "[('a', 1)]");
 }
 
 #[test]
@@ -95,10 +89,7 @@ fn dict_copy_shallow() {
 
 #[test]
 fn dict_clear() {
-    assert_eq!(
-        run_python_one("d = {'a': 1}\nd.clear()\nprint(d)\n"),
-        "{}"
-    );
+    assert_eq!(run_python_one("d = {'a': 1}\nd.clear()\nprint(d)\n"), "{}");
 }
 
 #[test]
@@ -108,7 +99,10 @@ fn dict_from_pairs() {
 
 #[test]
 fn dict_from_keys() {
-    assert_eq!(run_print("dict.fromkeys(['a', 'b'], 0)"), "{'a': 0, 'b': 0}");
+    assert_eq!(
+        run_print("dict.fromkeys(['a', 'b'], 0)"),
+        "{'a': 0, 'b': 0}"
+    );
 }
 
 #[test]
@@ -274,7 +268,9 @@ fn dict_max_key_by_value() {
 #[test]
 fn dict_items_unpack_in_for() {
     assert_eq!(
-        run_python_one("total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nprint(total)\n"),
+        run_python_one(
+            "total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nprint(total)\n"
+        ),
         "3"
     );
 }

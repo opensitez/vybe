@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python};
+use crate::helpers::{run_python, run_python_one};
 
 #[test]
 fn try_except_catches_zero_division() {
@@ -59,7 +59,9 @@ fn try_except_finally_always_runs() {
 #[test]
 fn try_except_finally_on_exception() {
     assert_eq!(
-        run_python_one("try:\n 1/0\nexcept ZeroDivisionError:\n print('ex')\nfinally:\n print('fin')\n"),
+        run_python_one(
+            "try:\n 1/0\nexcept ZeroDivisionError:\n print('ex')\nfinally:\n print('fin')\n"
+        ),
         "ex\nfin"
     );
 }
@@ -83,7 +85,9 @@ fn try_except_exception_base_type() {
 #[test]
 fn try_except_as_binds_message() {
     assert_eq!(
-        run_python_one("try:\n raise ValueError('oops')\nexcept ValueError as e:\n print(str(e))\n"),
+        run_python_one(
+            "try:\n raise ValueError('oops')\nexcept ValueError as e:\n print(str(e))\n"
+        ),
         "oops"
     );
 }
@@ -131,7 +135,7 @@ fn try_except_nested_outer_catches() {
 #[test]
 fn try_except_reraise_not_caught_by_wrong_type() {
     let lines = run_python(
-        "try:\n try:\n  raise ValueError('x')\n except TypeError:\n  print('wrong')\nexcept ValueError:\n print('right')\n"
+        "try:\n try:\n  raise ValueError('x')\n except TypeError:\n  print('wrong')\nexcept ValueError:\n print('right')\n",
     );
     assert_eq!(lines, vec!["right"]);
 }
@@ -139,7 +143,9 @@ fn try_except_reraise_not_caught_by_wrong_type() {
 #[test]
 fn try_except_else_skipped_on_exception() {
     assert_eq!(
-        run_python_one("try:\n 1/0\nexcept ZeroDivisionError:\n print('ex')\nelse:\n print('else')\n"),
+        run_python_one(
+            "try:\n 1/0\nexcept ZeroDivisionError:\n print('ex')\nelse:\n print('else')\n"
+        ),
         "ex"
     );
 }
@@ -163,7 +169,9 @@ fn try_except_return_in_except() {
 #[test]
 fn try_except_break_in_try() {
     assert_eq!(
-        run_python_one("for i in range(3):\n try:\n  if i == 1:\n   break\n except:\n  pass\nprint(i)\n"),
+        run_python_one(
+            "for i in range(3):\n try:\n  if i == 1:\n   break\n except:\n  pass\nprint(i)\n"
+        ),
         "1"
     );
 }
@@ -303,7 +311,9 @@ fn try_except_catch_after_successful_try_block() {
 #[test]
 fn try_except_function_call_in_try() {
     assert_eq!(
-        run_python_one("def boom():\n raise ValueError('fn')\ntry:\n boom()\nexcept ValueError:\n print('fn')\n"),
+        run_python_one(
+            "def boom():\n raise ValueError('fn')\ntry:\n boom()\nexcept ValueError:\n print('fn')\n"
+        ),
         "fn"
     );
 }
@@ -321,7 +331,9 @@ fn try_except_loop_with_periodic_errors() {
 #[test]
 fn try_except_base_exception_not_caught_by_exception() {
     assert_eq!(
-        run_python_one("try:\n raise KeyboardInterrupt\nexcept Exception:\n print('exc')\nexcept BaseException:\n print('base')\n"),
+        run_python_one(
+            "try:\n raise KeyboardInterrupt\nexcept Exception:\n print('exc')\nexcept BaseException:\n print('base')\n"
+        ),
         "base"
     );
 }
@@ -329,7 +341,9 @@ fn try_except_base_exception_not_caught_by_exception() {
 #[test]
 fn try_except_specific_before_general() {
     assert_eq!(
-        run_python_one("try:\n int('x')\nexcept ValueError:\n print('specific')\nexcept Exception:\n print('general')\n"),
+        run_python_one(
+            "try:\n int('x')\nexcept ValueError:\n print('specific')\nexcept Exception:\n print('general')\n"
+        ),
         "specific"
     );
 }

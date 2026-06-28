@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn tuple_literal_two_elements() {
@@ -174,7 +174,10 @@ fn tuple_swap_via_unpack() {
 
 #[test]
 fn tuple_zip_result() {
-    assert_eq!(run_print("list(zip([1, 2], ['a', 'b']))"), "[(1, 'a'), (2, 'b')]");
+    assert_eq!(
+        run_print("list(zip([1, 2], ['a', 'b']))"),
+        "[(1, 'a'), (2, 'b')]"
+    );
 }
 
 #[test]

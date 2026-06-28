@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn json_dumps_dict_sorted_keys_style() {
@@ -82,7 +82,9 @@ fn json_loads_number_float() {
 #[test]
 fn re_search_finds_digits() {
     assert_eq!(
-        run_python_one("import re\nm = re.search(r'\\d+', 'ab12cd')\nprint(m.group() if m else 'none')\n"),
+        run_python_one(
+            "import re\nm = re.search(r'\\d+', 'ab12cd')\nprint(m.group() if m else 'none')\n"
+        ),
         "12"
     );
 }
@@ -90,7 +92,9 @@ fn re_search_finds_digits() {
 #[test]
 fn re_search_no_match() {
     assert_eq!(
-        run_python_one("import re\nm = re.search(r'\\d+', 'abc')\nprint('none' if m is None else m.group())\n"),
+        run_python_one(
+            "import re\nm = re.search(r'\\d+', 'abc')\nprint('none' if m is None else m.group())\n"
+        ),
         "none"
     );
 }
@@ -162,7 +166,9 @@ fn re_split_maxsplit() {
 #[test]
 fn re_search_group_index() {
     assert_eq!(
-        run_python_one("import re\nm = re.search(r'(\\d+)(\\d+)', 'ab1234')\nprint(m.group(2) if m else '')\n"),
+        run_python_one(
+            "import re\nm = re.search(r'(\\d+)(\\d+)', 'ab1234')\nprint(m.group(2) if m else '')\n"
+        ),
         "34"
     );
 }
@@ -260,7 +266,9 @@ fn re_findall_multichar_classes() {
 #[test]
 fn re_sub_function_replacement() {
     assert_eq!(
-        run_python_one("import re\nprint(re.sub(r'\\d+', lambda m: str(int(m.group()) * 2), 'a3b10'))\n"),
+        run_python_one(
+            "import re\nprint(re.sub(r'\\d+', lambda m: str(int(m.group()) * 2), 'a3b10'))\n"
+        ),
         "a6b20"
     );
 }
@@ -268,7 +276,9 @@ fn re_sub_function_replacement() {
 #[test]
 fn json_nested_roundtrip() {
     assert_eq!(
-        run_python_one("import json\nobj = {'items': [1, {'k': 'v'}]}\nprint(json.loads(json.dumps(obj))['items'][1]['k'])\n"),
+        run_python_one(
+            "import json\nobj = {'items': [1, {'k': 'v'}]}\nprint(json.loads(json.dumps(obj))['items'][1]['k'])\n"
+        ),
         "v"
     );
 }

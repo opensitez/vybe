@@ -22,7 +22,10 @@ fn sorted_single_element_unchanged() {
 
 #[test]
 fn sorted_strings_alphabetical() {
-    assert_eq!(run_print("sorted(['banana', 'apple', 'cherry'])"), "['apple', 'banana', 'cherry']");
+    assert_eq!(
+        run_print("sorted(['banana', 'apple', 'cherry'])"),
+        "['apple', 'banana', 'cherry']"
+    );
 }
 
 #[test]
@@ -55,7 +58,10 @@ fn sorted_tuple_input_returns_list() {
 
 #[test]
 fn sorted_range_object_via_list() {
-    assert_eq!(run_print("sorted(list(range(5, 0, -1)))"), "[1, 2, 3, 4, 5]");
+    assert_eq!(
+        run_print("sorted(list(range(5, 0, -1)))"),
+        "[1, 2, 3, 4, 5]"
+    );
 }
 
 #[test]
@@ -198,10 +204,7 @@ fn list_sort_returns_none() {
 
 #[test]
 fn sorted_key_abs_on_negatives() {
-    assert_eq!(
-        run_print("sorted([-3, 1, -2], key=abs)"),
-        "[1, -2, -3]"
-    );
+    assert_eq!(run_print("sorted([-3, 1, -2], key=abs)"), "[1, -2, -3]");
 }
 
 #[test]
@@ -229,7 +232,10 @@ fn sum_of_range_list() {
 
 #[test]
 fn sorted_bool_values_false_before_true() {
-    assert_eq!(run_print("sorted([True, False, True])"), "[False, False, True]");
+    assert_eq!(
+        run_print("sorted([True, False, True])"),
+        "[False, False, True]"
+    );
 }
 
 #[test]

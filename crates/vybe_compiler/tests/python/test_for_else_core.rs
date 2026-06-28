@@ -11,7 +11,9 @@ fn for_else_runs_when_loop_completes() {
 #[test]
 fn for_else_skipped_on_break() {
     assert_eq!(
-        run_python_one("for x in range(5):\n if x == 2:\n  break\nelse:\n print('no')\nprint('yes')\n"),
+        run_python_one(
+            "for x in range(5):\n if x == 2:\n  break\nelse:\n print('no')\nprint('yes')\n"
+        ),
         "yes"
     );
 }
@@ -27,7 +29,9 @@ fn for_else_runs_on_empty_iterable() {
 #[test]
 fn for_else_finds_no_match_sets_flag() {
     assert_eq!(
-        run_python_one("found = False\nfor x in [1, 3, 5]:\n if x == 2:\n  found = True\n  break\nelse:\n print('missing')\nprint(found)\n"),
+        run_python_one(
+            "found = False\nfor x in [1, 3, 5]:\n if x == 2:\n  found = True\n  break\nelse:\n print('missing')\nprint(found)\n"
+        ),
         "missing\nFalse"
     );
 }
@@ -35,7 +39,9 @@ fn for_else_finds_no_match_sets_flag() {
 #[test]
 fn for_else_break_on_match_skips_else() {
     assert_eq!(
-        run_python_one("for x in [1, 2, 3]:\n if x == 2:\n  print('hit')\n  break\nelse:\n print('else')\n"),
+        run_python_one(
+            "for x in [1, 2, 3]:\n if x == 2:\n  print('hit')\n  break\nelse:\n print('else')\n"
+        ),
         "hit"
     );
 }
@@ -43,7 +49,9 @@ fn for_else_break_on_match_skips_else() {
 #[test]
 fn for_else_search_pattern_success() {
     assert_eq!(
-        run_python_one("target = 7\nfor n in [1, 3, 5, 7, 9]:\n if n == target:\n  print('found')\n  break\nelse:\n print('not found')\n"),
+        run_python_one(
+            "target = 7\nfor n in [1, 3, 5, 7, 9]:\n if n == target:\n  print('found')\n  break\nelse:\n print('not found')\n"
+        ),
         "found"
     );
 }
@@ -51,7 +59,9 @@ fn for_else_search_pattern_success() {
 #[test]
 fn for_else_search_pattern_failure() {
     assert_eq!(
-        run_python_one("target = 4\nfor n in [1, 3, 5]:\n if n == target:\n  print('found')\n  break\nelse:\n print('not found')\n"),
+        run_python_one(
+            "target = 4\nfor n in [1, 3, 5]:\n if n == target:\n  print('found')\n  break\nelse:\n print('not found')\n"
+        ),
         "not found"
     );
 }
@@ -83,7 +93,9 @@ fn for_else_over_dict_keys() {
 #[test]
 fn for_else_over_dict_items() {
     assert_eq!(
-        run_python_one("total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nelse:\n print(total)\n"),
+        run_python_one(
+            "total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nelse:\n print(total)\n"
+        ),
         "6"
     );
 }
@@ -91,7 +103,9 @@ fn for_else_over_dict_items() {
 #[test]
 fn for_else_nested_outer_runs() {
     assert_eq!(
-        run_python_one("for i in range(2):\n for j in range(2):\n  pass\n else:\n  print(j)\nelse:\n print('outer')\n"),
+        run_python_one(
+            "for i in range(2):\n for j in range(2):\n  pass\n else:\n  print(j)\nelse:\n print('outer')\n"
+        ),
         "1\n1\nouter"
     );
 }
@@ -99,7 +113,9 @@ fn for_else_nested_outer_runs() {
 #[test]
 fn for_else_inner_break_does_not_trigger_outer_else() {
     assert_eq!(
-        run_python_one("for i in range(2):\n for j in range(3):\n  if j == 1:\n   break\n else:\n  print('inner')\nelse:\n print('outer')\n"),
+        run_python_one(
+            "for i in range(2):\n for j in range(3):\n  if j == 1:\n   break\n else:\n  print('inner')\nelse:\n print('outer')\n"
+        ),
         "outer"
     );
 }
@@ -115,7 +131,9 @@ fn for_else_with_range_step() {
 #[test]
 fn for_else_prime_check_small_composite() {
     assert_eq!(
-        run_python_one("n = 9\nfor d in range(2, n):\n if n % d == 0:\n  print('composite')\n  break\nelse:\n print('prime')\n"),
+        run_python_one(
+            "n = 9\nfor d in range(2, n):\n if n % d == 0:\n  print('composite')\n  break\nelse:\n print('prime')\n"
+        ),
         "composite"
     );
 }
@@ -123,7 +141,9 @@ fn for_else_prime_check_small_composite() {
 #[test]
 fn for_else_prime_check_small_prime() {
     assert_eq!(
-        run_python_one("n = 7\nfor d in range(2, n):\n if n % d == 0:\n  print('composite')\n  break\nelse:\n print('prime')\n"),
+        run_python_one(
+            "n = 7\nfor d in range(2, n):\n if n % d == 0:\n  print('composite')\n  break\nelse:\n print('prime')\n"
+        ),
         "prime"
     );
 }
@@ -131,7 +151,9 @@ fn for_else_prime_check_small_prime() {
 #[test]
 fn for_else_first_duplicate_finder() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3, 2, 4]\nseen = set()\nfor x in xs:\n if x in seen:\n  print('dup', x)\n  break\n seen.add(x)\nelse:\n print('unique')\n"),
+        run_python_one(
+            "xs = [1, 2, 3, 2, 4]\nseen = set()\nfor x in xs:\n if x in seen:\n  print('dup', x)\n  break\n seen.add(x)\nelse:\n print('unique')\n"
+        ),
         "dup 2"
     );
 }
@@ -139,7 +161,9 @@ fn for_else_first_duplicate_finder() {
 #[test]
 fn for_else_all_unique_list() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3]\nseen = set()\nfor x in xs:\n if x in seen:\n  print('dup')\n  break\n seen.add(x)\nelse:\n print('unique')\n"),
+        run_python_one(
+            "xs = [1, 2, 3]\nseen = set()\nfor x in xs:\n if x in seen:\n  print('dup')\n  break\n seen.add(x)\nelse:\n print('unique')\n"
+        ),
         "unique"
     );
 }
@@ -147,7 +171,9 @@ fn for_else_all_unique_list() {
 #[test]
 fn for_else_enumerate_manual_search() {
     assert_eq!(
-        run_python_one("words = ['cat', 'dog', 'bird']\nfor i in range(len(words)):\n if words[i] == 'dog':\n  print(i)\n  break\nelse:\n print(-1)\n"),
+        run_python_one(
+            "words = ['cat', 'dog', 'bird']\nfor i in range(len(words)):\n if words[i] == 'dog':\n  print(i)\n  break\nelse:\n print(-1)\n"
+        ),
         "1"
     );
 }
@@ -163,7 +189,9 @@ fn for_else_zip_iteration_complete() {
 #[test]
 fn for_else_list_comprehension_alternative_any() {
     assert_eq!(
-        run_python_one("xs = [2, 4, 6]\nfor x in xs:\n if x % 2 == 1:\n  print('odd')\n  break\nelse:\n print('all even')\n"),
+        run_python_one(
+            "xs = [2, 4, 6]\nfor x in xs:\n if x % 2 == 1:\n  print('odd')\n  break\nelse:\n print('all even')\n"
+        ),
         "all even"
     );
 }
@@ -171,7 +199,9 @@ fn for_else_list_comprehension_alternative_any() {
 #[test]
 fn for_else_finds_odd_element() {
     assert_eq!(
-        run_python_one("xs = [2, 4, 5]\nfor x in xs:\n if x % 2 == 1:\n  print('odd')\n  break\nelse:\n print('all even')\n"),
+        run_python_one(
+            "xs = [2, 4, 5]\nfor x in xs:\n if x % 2 == 1:\n  print('odd')\n  break\nelse:\n print('all even')\n"
+        ),
         "odd"
     );
 }
@@ -211,7 +241,9 @@ fn for_else_single_iteration_no_break() {
 #[test]
 fn for_else_validates_all_predicates() {
     assert_eq!(
-        run_python_one("nums = [2, 4, 8]\nfor n in nums:\n if n < 0:\n  break\nelse:\n print('ok')\n"),
+        run_python_one(
+            "nums = [2, 4, 8]\nfor n in nums:\n if n < 0:\n  break\nelse:\n print('ok')\n"
+        ),
         "ok"
     );
 }
@@ -219,7 +251,9 @@ fn for_else_validates_all_predicates() {
 #[test]
 fn for_else_predicate_fails_triggers_break() {
     assert_eq!(
-        run_python_one("nums = [2, -1, 8]\nfor n in nums:\n if n < 0:\n  print('bad')\n  break\nelse:\n print('ok')\n"),
+        run_python_one(
+            "nums = [2, -1, 8]\nfor n in nums:\n if n < 0:\n  print('bad')\n  break\nelse:\n print('ok')\n"
+        ),
         "bad"
     );
 }
@@ -227,7 +261,9 @@ fn for_else_predicate_fails_triggers_break() {
 #[test]
 fn for_else_reads_file_lines_pattern() {
     assert_eq!(
-        run_python_one("lines = ['ok', 'done']\nfor line in lines:\n if line == 'error':\n  print('fail')\n  break\nelse:\n print('pass')\n"),
+        run_python_one(
+            "lines = ['ok', 'done']\nfor line in lines:\n if line == 'error':\n  print('fail')\n  break\nelse:\n print('pass')\n"
+        ),
         "pass"
     );
 }
@@ -235,7 +271,9 @@ fn for_else_reads_file_lines_pattern() {
 #[test]
 fn for_else_reads_file_lines_error_line() {
     assert_eq!(
-        run_python_one("lines = ['ok', 'error']\nfor line in lines:\n if line == 'error':\n  print('fail')\n  break\nelse:\n print('pass')\n"),
+        run_python_one(
+            "lines = ['ok', 'error']\nfor line in lines:\n if line == 'error':\n  print('fail')\n  break\nelse:\n print('pass')\n"
+        ),
         "fail"
     );
 }
@@ -243,7 +281,9 @@ fn for_else_reads_file_lines_error_line() {
 #[test]
 fn for_else_generator_exhausted() {
     assert_eq!(
-        run_python_one("def gen():\n yield 1\n yield 2\nfor x in gen():\n pass\nelse:\n print('gen')\n"),
+        run_python_one(
+            "def gen():\n yield 1\n yield 2\nfor x in gen():\n pass\nelse:\n print('gen')\n"
+        ),
         "gen"
     );
 }
@@ -251,7 +291,9 @@ fn for_else_generator_exhausted() {
 #[test]
 fn for_else_with_return_in_function() {
     assert_eq!(
-        run_python_one("def f():\n for x in range(2):\n  if x == 5:\n   break\n else:\n  return 'done'\n return 'skip'\nprint(f())\n"),
+        run_python_one(
+            "def f():\n for x in range(2):\n  if x == 5:\n   break\n else:\n  return 'done'\n return 'skip'\nprint(f())\n"
+        ),
         "done"
     );
 }
@@ -259,7 +301,9 @@ fn for_else_with_return_in_function() {
 #[test]
 fn for_else_while_emulated_via_for_range() {
     assert_eq!(
-        run_python_one("n = 3\nfor _ in range(100):\n n -= 1\n if n <= 0:\n  break\nelse:\n print('limit')\nprint(n)\n"),
+        run_python_one(
+            "n = 3\nfor _ in range(100):\n n -= 1\n if n <= 0:\n  break\nelse:\n print('limit')\nprint(n)\n"
+        ),
         "0"
     );
 }
@@ -267,7 +311,9 @@ fn for_else_while_emulated_via_for_range() {
 #[test]
 fn for_else_membership_all_present() {
     assert_eq!(
-        run_python_one("need = 'ae'\nword = 'cat'\nfor ch in need:\n if ch not in word:\n  print('missing')\n  break\nelse:\n print('has all')\n"),
+        run_python_one(
+            "need = 'ae'\nword = 'cat'\nfor ch in need:\n if ch not in word:\n  print('missing')\n  break\nelse:\n print('has all')\n"
+        ),
         "missing"
     );
 }
@@ -275,7 +321,9 @@ fn for_else_membership_all_present() {
 #[test]
 fn for_else_sorted_unique_check() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3]\nfor i in range(1, len(xs)):\n if xs[i] < xs[i-1]:\n  print('unsorted')\n  break\nelse:\n print('sorted')\n"),
+        run_python_one(
+            "xs = [1, 2, 3]\nfor i in range(1, len(xs)):\n if xs[i] < xs[i-1]:\n  print('unsorted')\n  break\nelse:\n print('sorted')\n"
+        ),
         "sorted"
     );
 }
@@ -283,7 +331,9 @@ fn for_else_sorted_unique_check() {
 #[test]
 fn for_else_unsorted_detected() {
     assert_eq!(
-        run_python_one("xs = [1, 3, 2]\nfor i in range(1, len(xs)):\n if xs[i] < xs[i-1]:\n  print('unsorted')\n  break\nelse:\n print('sorted')\n"),
+        run_python_one(
+            "xs = [1, 3, 2]\nfor i in range(1, len(xs)):\n if xs[i] < xs[i-1]:\n  print('unsorted')\n  break\nelse:\n print('sorted')\n"
+        ),
         "unsorted"
     );
 }
@@ -307,7 +357,9 @@ fn for_else_over_reversed_range_list() {
 #[test]
 fn for_else_count_until_threshold() {
     assert_eq!(
-        run_python_one("count = 0\nfor _ in range(10):\n count += 1\n if count == 3:\n  break\nelse:\n print('full')\nprint(count)\n"),
+        run_python_one(
+            "count = 0\nfor _ in range(10):\n count += 1\n if count == 3:\n  break\nelse:\n print('full')\nprint(count)\n"
+        ),
         "3"
     );
 }
@@ -315,7 +367,9 @@ fn for_else_count_until_threshold() {
 #[test]
 fn for_else_count_completes_full_range() {
     assert_eq!(
-        run_python_one("count = 0\nfor _ in range(3):\n count += 1\nelse:\n print('full')\nprint(count)\n"),
+        run_python_one(
+            "count = 0\nfor _ in range(3):\n count += 1\nelse:\n print('full')\nprint(count)\n"
+        ),
         "full\n3"
     );
 }
@@ -331,7 +385,9 @@ fn for_else_with_pass_only_body() {
 #[test]
 fn for_else_nested_break_only_inner_else_skipped() {
     assert_eq!(
-        run_python_one("for i in range(2):\n for j in range(2):\n  if j == 0:\n   break\n else:\n  print('inner-else')\nelse:\n print('outer-else')\n"),
+        run_python_one(
+            "for i in range(2):\n for j in range(2):\n  if j == 0:\n   break\n else:\n  print('inner-else')\nelse:\n print('outer-else')\n"
+        ),
         "outer-else"
     );
 }
@@ -339,7 +395,9 @@ fn for_else_nested_break_only_inner_else_skipped() {
 #[test]
 fn for_else_find_substring_position() {
     assert_eq!(
-        run_python_one("hay = 'hello'\nneedle = 'll'\nfor i in range(len(hay) - len(needle) + 1):\n if hay[i:i+len(needle)] == needle:\n  print(i)\n  break\nelse:\n print(-1)\n"),
+        run_python_one(
+            "hay = 'hello'\nneedle = 'll'\nfor i in range(len(hay) - len(needle) + 1):\n if hay[i:i+len(needle)] == needle:\n  print(i)\n  break\nelse:\n print(-1)\n"
+        ),
         "2"
     );
 }
@@ -347,7 +405,9 @@ fn for_else_find_substring_position() {
 #[test]
 fn for_else_substring_not_found() {
     assert_eq!(
-        run_python_one("hay = 'hello'\nneedle = 'zz'\nfor i in range(len(hay) - len(needle) + 1):\n if hay[i:i+len(needle)] == needle:\n  print(i)\n  break\nelse:\n print(-1)\n"),
+        run_python_one(
+            "hay = 'hello'\nneedle = 'zz'\nfor i in range(len(hay) - len(needle) + 1):\n if hay[i:i+len(needle)] == needle:\n  print(i)\n  break\nelse:\n print(-1)\n"
+        ),
         "-1"
     );
 }

@@ -11,7 +11,9 @@ fn class_instance_attribute() {
 #[test]
 fn class_method_returns_self_field() {
     assert_eq!(
-        run_python_one("class Counter:\n def __init__(self):\n  self.n = 0\n c = Counter()\nprint(c.n)\n"),
+        run_python_one(
+            "class Counter:\n def __init__(self):\n  self.n = 0\n c = Counter()\nprint(c.n)\n"
+        ),
         "0"
     );
 }
@@ -19,7 +21,9 @@ fn class_method_returns_self_field() {
 #[test]
 fn class_init_sets_fields() {
     assert_eq!(
-        run_python_one("class Point:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = Point(1, 2)\nprint(p.x, p.y)\n"),
+        run_python_one(
+            "class Point:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = Point(1, 2)\nprint(p.x, p.y)\n"
+        ),
         "1 2"
     );
 }
@@ -27,7 +31,9 @@ fn class_init_sets_fields() {
 #[test]
 fn class_method_on_instance() {
     assert_eq!(
-        run_python_one("class Greeter:\n def hi(self):\n  return 'hi'\ng = Greeter()\nprint(g.hi())\n"),
+        run_python_one(
+            "class Greeter:\n def hi(self):\n  return 'hi'\ng = Greeter()\nprint(g.hi())\n"
+        ),
         "hi"
     );
 }
@@ -35,17 +41,16 @@ fn class_method_on_instance() {
 #[test]
 fn class_method_mutates_state() {
     assert_eq!(
-        run_python_one("class Acc:\n def __init__(self):\n  self.v = 0\n def inc(self):\n  self.v += 1\na = Acc()\na.inc()\nprint(a.v)\n"),
+        run_python_one(
+            "class Acc:\n def __init__(self):\n  self.v = 0\n def inc(self):\n  self.v += 1\na = Acc()\na.inc()\nprint(a.v)\n"
+        ),
         "1"
     );
 }
 
 #[test]
 fn class_class_attribute_shared() {
-    assert_eq!(
-        run_python_one("class C:\n tag = 'x'\nprint(C.tag)\n"),
-        "x"
-    );
+    assert_eq!(run_python_one("class C:\n tag = 'x'\nprint(C.tag)\n"), "x");
 }
 
 #[test]
@@ -91,7 +96,9 @@ fn class_equality_default_by_identity() {
 #[test]
 fn class_custom_eq() {
     assert_eq!(
-        run_python_one("class V:\n def __init__(self, n):\n  self.n = n\n def __eq__(self, o):\n  return self.n == o.n\nprint(V(1) == V(1))\n"),
+        run_python_one(
+            "class V:\n def __init__(self, n):\n  self.n = n\n def __eq__(self, o):\n  return self.n == o.n\nprint(V(1) == V(1))\n"
+        ),
         "True"
     );
 }
@@ -99,7 +106,9 @@ fn class_custom_eq() {
 #[test]
 fn class_property_style_getter() {
     assert_eq!(
-        run_python_one("class R:\n def __init__(self, x):\n  self._x = x\n def get(self):\n  return self._x\nr = R(3)\nprint(r.get())\n"),
+        run_python_one(
+            "class R:\n def __init__(self, x):\n  self._x = x\n def get(self):\n  return self._x\nr = R(3)\nprint(r.get())\n"
+        ),
         "3"
     );
 }
@@ -107,7 +116,9 @@ fn class_property_style_getter() {
 #[test]
 fn class_static_method_call() {
     assert_eq!(
-        run_python_one("class U:\n @staticmethod\n def twice(x):\n  return x * 2\nprint(U.twice(4))\n"),
+        run_python_one(
+            "class U:\n @staticmethod\n def twice(x):\n  return x * 2\nprint(U.twice(4))\n"
+        ),
         "8"
     );
 }
@@ -115,7 +126,9 @@ fn class_static_method_call() {
 #[test]
 fn class_classmethod_factory() {
     assert_eq!(
-        run_python_one("class A:\n @classmethod\n def make(cls):\n  return cls()\nprint(isinstance(A.make(), A))\n"),
+        run_python_one(
+            "class A:\n @classmethod\n def make(cls):\n  return cls()\nprint(isinstance(A.make(), A))\n"
+        ),
         "True"
     );
 }
@@ -123,7 +136,9 @@ fn class_classmethod_factory() {
 #[test]
 fn class_inheritance_method_override() {
     assert_eq!(
-        run_python_one("class B:\n def f(self):\n  return 1\nclass D(B):\n def f(self):\n  return 2\nprint(D().f())\n"),
+        run_python_one(
+            "class B:\n def f(self):\n  return 1\nclass D(B):\n def f(self):\n  return 2\nprint(D().f())\n"
+        ),
         "2"
     );
 }
@@ -131,7 +146,9 @@ fn class_inheritance_method_override() {
 #[test]
 fn class_inheritance_super_call() {
     assert_eq!(
-        run_python_one("class B:\n def f(self):\n  return 1\nclass D(B):\n def f(self):\n  return super().f() + 1\nprint(D().f())\n"),
+        run_python_one(
+            "class B:\n def f(self):\n  return 1\nclass D(B):\n def f(self):\n  return super().f() + 1\nprint(D().f())\n"
+        ),
         "2"
     );
 }
@@ -163,7 +180,9 @@ fn class_method_with_default_arg() {
 #[test]
 fn class_iter_simple() {
     assert_eq!(
-        run_python_one("class R:\n def __init__(self, xs):\n  self.xs = xs\n def __iter__(self):\n  return iter(self.xs)\nprint(list(R([1, 2])))\n"),
+        run_python_one(
+            "class R:\n def __init__(self, xs):\n  self.xs = xs\n def __iter__(self):\n  return iter(self.xs)\nprint(list(R([1, 2])))\n"
+        ),
         "[1, 2]"
     );
 }
@@ -187,7 +206,9 @@ fn class_bool_dunder() {
 #[test]
 fn class_contains_dunder() {
     assert_eq!(
-        run_python_one("class B:\n def __contains__(self, item):\n  return item == 1\nprint(1 in B())\n"),
+        run_python_one(
+            "class B:\n def __contains__(self, item):\n  return item == 1\nprint(1 in B())\n"
+        ),
         "True"
     );
 }
@@ -211,7 +232,9 @@ fn class_call_dunder() {
 #[test]
 fn class_multiple_instances_independent() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self):\n  self.v = []\na, b = C(), C()\na.v.append(1)\nprint(b.v)\n"),
+        run_python_one(
+            "class C:\n def __init__(self):\n  self.v = []\na, b = C(), C()\na.v.append(1)\nprint(b.v)\n"
+        ),
         "[]"
     );
 }
@@ -243,7 +266,9 @@ fn class_nested_class() {
 #[test]
 fn class_instance_dict_dynamic() {
     assert_eq!(
-        run_python_one("class C:\n pass\nc = C()\nc.x = 1\nc.y = 2\nprint(sorted(c.__dict__.keys()))\n"),
+        run_python_one(
+            "class C:\n pass\nc = C()\nc.x = 1\nc.y = 2\nprint(sorted(c.__dict__.keys()))\n"
+        ),
         "['x', 'y']"
     );
 }
@@ -267,7 +292,9 @@ fn class_issubclass_check() {
 #[test]
 fn class_method_returns_new_instance() {
     assert_eq!(
-        run_python_one("class B:\n def copy(self):\n  return B()\nprint(isinstance(B().copy(), B))\n"),
+        run_python_one(
+            "class B:\n def copy(self):\n  return B()\nprint(isinstance(B().copy(), B))\n"
+        ),
         "True"
     );
 }
@@ -283,7 +310,9 @@ fn class_del_method_optional() {
 #[test]
 fn class_repr_with_fields() {
     assert_eq!(
-        run_python_one("class P:\n def __init__(self, x):\n  self.x = x\n def __repr__(self):\n  return f'P({self.x})'\nprint(repr(P(2)))\n"),
+        run_python_one(
+            "class P:\n def __init__(self, x):\n  self.x = x\n def __repr__(self):\n  return f'P({self.x})'\nprint(repr(P(2)))\n"
+        ),
         "P(2)"
     );
 }
@@ -299,7 +328,9 @@ fn class_comparison_not_implemented_false() {
 #[test]
 fn class_richcompare_lt() {
     assert_eq!(
-        run_python_one("class N:\n def __init__(self, v):\n  self.v = v\n def __lt__(self, o):\n  return self.v < o.v\nprint(N(1) < N(2))\n"),
+        run_python_one(
+            "class N:\n def __init__(self, v):\n  self.v = v\n def __lt__(self, o):\n  return self.v < o.v\nprint(N(1) < N(2))\n"
+        ),
         "True"
     );
 }
@@ -307,7 +338,9 @@ fn class_richcompare_lt() {
 #[test]
 fn class_hash_disabled_by_default() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self):\n  self.x = 1\ntry:\n hash(C())\nexcept TypeError:\n print('no')\n"),
+        run_python_one(
+            "class C:\n def __init__(self):\n  self.x = 1\ntry:\n hash(C())\nexcept TypeError:\n print('no')\n"
+        ),
         "no"
     );
 }
@@ -315,7 +348,9 @@ fn class_hash_disabled_by_default() {
 #[test]
 fn class_explicit_hash() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self, x):\n  self.x = x\n def __hash__(self):\n  return hash(self.x)\nprint(hash(C(1)) == hash(C(1)))\n"),
+        run_python_one(
+            "class C:\n def __init__(self, x):\n  self.x = x\n def __hash__(self):\n  return hash(self.x)\nprint(hash(C(1)) == hash(C(1)))\n"
+        ),
         "True"
     );
 }
@@ -323,7 +358,9 @@ fn class_explicit_hash() {
 #[test]
 fn class_dataclass_style_manual() {
     assert_eq!(
-        run_python_one("class P:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = P(1, 2)\nprint(p.x + p.y)\n"),
+        run_python_one(
+            "class P:\n def __init__(self, x, y):\n  self.x = x\n  self.y = y\np = P(1, 2)\nprint(p.x + p.y)\n"
+        ),
         "3"
     );
 }
@@ -331,7 +368,9 @@ fn class_dataclass_style_manual() {
 #[test]
 fn class_method_chaining() {
     assert_eq!(
-        run_python_one("class B:\n def __init__(self):\n  self.n = 0\n def inc(self):\n  self.n += 1\n  return self\nprint(B().inc().inc().n)\n"),
+        run_python_one(
+            "class B:\n def __init__(self):\n  self.n = 0\n def inc(self):\n  self.n += 1\n  return self\nprint(B().inc().inc().n)\n"
+        ),
         "2"
     );
 }
@@ -339,7 +378,9 @@ fn class_method_chaining() {
 #[test]
 fn class_super_init_chain() {
     assert_eq!(
-        run_python_one("class B:\n def __init__(self):\n  self.a = 1\nclass D(B):\n def __init__(self):\n  super().__init__()\n  self.b = 2\nd = D()\nprint(d.a, d.b)\n"),
+        run_python_one(
+            "class B:\n def __init__(self):\n  self.a = 1\nclass D(B):\n def __init__(self):\n  super().__init__()\n  self.b = 2\nd = D()\nprint(d.a, d.b)\n"
+        ),
         "1 2"
     );
 }

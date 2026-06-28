@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn list_comp_squares_basic() {
@@ -7,7 +7,10 @@ fn list_comp_squares_basic() {
 
 #[test]
 fn list_comp_filters_evens() {
-    assert_eq!(run_print("[x for x in range(6) if x % 2 == 0]"), "[0, 2, 4]");
+    assert_eq!(
+        run_print("[x for x in range(6) if x % 2 == 0]"),
+        "[0, 2, 4]"
+    );
 }
 
 #[test]
@@ -56,12 +59,18 @@ fn list_comp_enumerate_style() {
 
 #[test]
 fn list_comp_zip_pairs() {
-    assert_eq!(run_print("[a + b for a, b in zip([1, 2], [10, 20])]"), "[11, 22]");
+    assert_eq!(
+        run_print("[a + b for a, b in zip([1, 2], [10, 20])]"),
+        "[11, 22]"
+    );
 }
 
 #[test]
 fn list_comp_nested_matrix_rows() {
-    assert_eq!(run_print("[[j for j in range(2)] for i in range(2)]"), "[[0, 1], [0, 1]]");
+    assert_eq!(
+        run_print("[[j for j in range(2)] for i in range(2)]"),
+        "[[0, 1], [0, 1]]"
+    );
 }
 
 #[test]
@@ -79,7 +88,10 @@ fn list_comp_truthy_strings() {
 
 #[test]
 fn list_comp_length_filter() {
-    assert_eq!(run_print("[w for w in ['hi', 'hey', 'yo'] if len(w) == 2]"), "['hi', 'yo']");
+    assert_eq!(
+        run_print("[w for w in ['hi', 'hey', 'yo'] if len(w) == 2]"),
+        "['hi', 'yo']"
+    );
 }
 
 #[test]
@@ -115,7 +127,10 @@ fn list_comp_negative_indices_via_enumerate() {
 
 #[test]
 fn list_comp_from_split_words() {
-    assert_eq!(run_print("[w for w in 'a,b,c'.split(',')]"), "['a', 'b', 'c']");
+    assert_eq!(
+        run_print("[w for w in 'a,b,c'.split(',')]"),
+        "['a', 'b', 'c']"
+    );
 }
 
 #[test]
@@ -151,7 +166,10 @@ fn list_comp_on_set_source_sorted() {
 
 #[test]
 fn list_comp_string_digits_only() {
-    assert_eq!(run_print("[c for c in 'a1b2' if c.isdigit()]"), "['1', '2']");
+    assert_eq!(
+        run_print("[c for c in 'a1b2' if c.isdigit()]"),
+        "['1', '2']"
+    );
 }
 
 #[test]
@@ -212,10 +230,7 @@ fn list_comp_bool_coercion_filter() {
 
 #[test]
 fn list_comp_chars_upper_filtered() {
-    assert_eq!(
-        run_print("[c.upper() for c in 'ab' if c != 'b']"),
-        "['A']"
-    );
+    assert_eq!(run_print("[c.upper() for c in 'ab' if c != 'b']"), "['A']");
 }
 
 #[test]

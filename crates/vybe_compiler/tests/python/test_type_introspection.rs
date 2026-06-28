@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn type_int_name() {
@@ -145,18 +145,12 @@ fn vars_on_object_dict() {
 
 #[test]
 fn id_same_object_equal() {
-    assert_eq!(
-        run_python_one("x = []\nprint(id(x) == id(x))\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("x = []\nprint(id(x) == id(x))\n"), "True");
 }
 
 #[test]
 fn id_diff_objects() {
-    assert_eq!(
-        run_python_one("print(id([]) == id([]))\n"),
-        "False"
-    );
+    assert_eq!(run_python_one("print(id([]) == id([]))\n"), "False");
 }
 
 #[test]

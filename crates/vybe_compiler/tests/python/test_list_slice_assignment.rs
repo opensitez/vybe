@@ -203,9 +203,7 @@ fn slice_assign_preserves_unrelated_indices() {
 #[test]
 fn slice_assign_in_function_mutates_caller_list() {
     assert_eq!(
-        run_python_one(
-            "def patch(xs):\n xs[1:3] = [0, 0]\na = [1, 2, 3, 4]\npatch(a)\nprint(a)\n"
-        ),
+        run_python_one("def patch(xs):\n xs[1:3] = [0, 0]\na = [1, 2, 3, 4]\npatch(a)\nprint(a)\n"),
         "[1, 0, 0, 4]"
     );
 }

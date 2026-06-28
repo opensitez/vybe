@@ -1,11 +1,8 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn function_return_literal() {
-    assert_eq!(
-        run_python_one("def f():\n return 42\nprint(f())\n"),
-        "42"
-    );
+    assert_eq!(run_python_one("def f():\n return 42\nprint(f())\n"), "42");
 }
 
 #[test]
@@ -50,10 +47,7 @@ fn function_early_return() {
 
 #[test]
 fn function_no_explicit_return_gives_none() {
-    assert_eq!(
-        run_python_one("def f():\n pass\nprint(f())\n"),
-        "None"
-    );
+    assert_eq!(run_python_one("def f():\n pass\nprint(f())\n"), "None");
 }
 
 #[test]
@@ -67,7 +61,9 @@ fn function_local_shadows_parameter() {
 #[test]
 fn nested_function_closure() {
     assert_eq!(
-        run_python_one("def outer(x):\n def inner():\n  return x\n return inner()\nprint(outer(9))\n"),
+        run_python_one(
+            "def outer(x):\n def inner():\n  return x\n return inner()\nprint(outer(9))\n"
+        ),
         "9"
     );
 }
@@ -75,7 +71,9 @@ fn nested_function_closure() {
 #[test]
 fn nested_function_calls_outer_param() {
     assert_eq!(
-        run_python_one("def outer(a, b):\n def inner():\n  return a * b\n return inner()\nprint(outer(3, 4))\n"),
+        run_python_one(
+            "def outer(a, b):\n def inner():\n  return a * b\n return inner()\nprint(outer(3, 4))\n"
+        ),
         "12"
     );
 }
@@ -83,7 +81,9 @@ fn nested_function_calls_outer_param() {
 #[test]
 fn function_recursion_factorial() {
     assert_eq!(
-        run_python_one("def fact(n):\n if n <= 1:\n  return 1\n return n * fact(n - 1)\nprint(fact(5))\n"),
+        run_python_one(
+            "def fact(n):\n if n <= 1:\n  return 1\n return n * fact(n - 1)\nprint(fact(5))\n"
+        ),
         "120"
     );
 }
@@ -91,7 +91,9 @@ fn function_recursion_factorial() {
 #[test]
 fn function_recursion_fibonacci() {
     assert_eq!(
-        run_python_one("def fib(n):\n if n < 2:\n  return n\n return fib(n-1) + fib(n-2)\nprint(fib(6))\n"),
+        run_python_one(
+            "def fib(n):\n if n < 2:\n  return n\n return fib(n-1) + fib(n-2)\nprint(fib(6))\n"
+        ),
         "8"
     );
 }
@@ -225,7 +227,9 @@ fn function_return_conditional_type() {
 #[test]
 fn function_local_list_accumulator() {
     assert_eq!(
-        run_python_one("def build():\n out = []\n for i in range(3):\n  out.append(i)\n return out\nprint(build())\n"),
+        run_python_one(
+            "def build():\n out = []\n for i in range(3):\n  out.append(i)\n return out\nprint(build())\n"
+        ),
         "[0, 1, 2]"
     );
 }
@@ -249,7 +253,9 @@ fn function_rebind_parameter_does_not_affect_caller() {
 #[test]
 fn function_name_in_own_body_recursive() {
     assert_eq!(
-        run_python_one("def countdown(n):\n if n <= 0:\n  return 'done'\n return countdown(n - 1)\nprint(countdown(2))\n"),
+        run_python_one(
+            "def countdown(n):\n if n <= 0:\n  return 'done'\n return countdown(n - 1)\nprint(countdown(2))\n"
+        ),
         "done"
     );
 }
@@ -257,7 +263,9 @@ fn function_name_in_own_body_recursive() {
 #[test]
 fn function_with_while_loop_body() {
     assert_eq!(
-        run_python_one("def first_gt(threshold):\n n = 0\n while n <= threshold:\n  n += 1\n return n\nprint(first_gt(3))\n"),
+        run_python_one(
+            "def first_gt(threshold):\n n = 0\n while n <= threshold:\n  n += 1\n return n\nprint(first_gt(3))\n"
+        ),
         "4"
     );
 }
@@ -265,7 +273,9 @@ fn function_with_while_loop_body() {
 #[test]
 fn function_with_for_loop_sum() {
     assert_eq!(
-        run_python_one("def sum_range(n):\n total = 0\n for i in range(n):\n  total += i\n return total\nprint(sum_range(4))\n"),
+        run_python_one(
+            "def sum_range(n):\n total = 0\n for i in range(n):\n  total += i\n return total\nprint(sum_range(4))\n"
+        ),
         "6"
     );
 }
@@ -273,7 +283,9 @@ fn function_with_for_loop_sum() {
 #[test]
 fn function_returns_boolean() {
     assert_eq!(
-        run_python_one("def is_empty(xs):\n return len(xs) == 0\nprint(is_empty([]), is_empty([1]))\n"),
+        run_python_one(
+            "def is_empty(xs):\n return len(xs) == 0\nprint(is_empty([]), is_empty([1]))\n"
+        ),
         "True False"
     );
 }
@@ -321,7 +333,9 @@ fn function_string_format_in_return() {
 #[test]
 fn function_multiple_return_paths_same_type() {
     assert_eq!(
-        run_python_one("def abs_val(x):\n if x < 0:\n  return -x\n return x\nprint(abs_val(-3), abs_val(2))\n"),
+        run_python_one(
+            "def abs_val(x):\n if x < 0:\n  return -x\n return x\nprint(abs_val(-3), abs_val(2))\n"
+        ),
         "3 2"
     );
 }
@@ -329,7 +343,9 @@ fn function_multiple_return_paths_same_type() {
 #[test]
 fn function_inner_redefines_outer_name_locally() {
     assert_eq!(
-        run_python_one("def outer():\n x = 1\n def inner():\n  x = 2\n  return x\n return inner()\nprint(outer())\n"),
+        run_python_one(
+            "def outer():\n x = 1\n def inner():\n  x = 2\n  return x\n return inner()\nprint(outer())\n"
+        ),
         "2"
     );
 }
@@ -337,7 +353,9 @@ fn function_inner_redefines_outer_name_locally() {
 #[test]
 fn function_read_outer_without_nonlocal() {
     assert_eq!(
-        run_python_one("def outer():\n x = 5\n def inner():\n  return x + 1\n return inner()\nprint(outer())\n"),
+        run_python_one(
+            "def outer():\n x = 5\n def inner():\n  return x + 1\n return inner()\nprint(outer())\n"
+        ),
         "6"
     );
 }

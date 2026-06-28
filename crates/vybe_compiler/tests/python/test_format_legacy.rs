@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn percent_format_basic() {
@@ -176,7 +176,9 @@ fn format_method_nested_field() {
 #[test]
 fn format_method_attr_access() {
     assert_eq!(
-        run_python_one("class P:\n def __init__(self):\n  self.x = 9\nprint('{0.x}'.format(P()))\n"),
+        run_python_one(
+            "class P:\n def __init__(self):\n  self.x = 9\nprint('{0.x}'.format(P()))\n"
+        ),
         "9"
     );
 }
@@ -223,7 +225,10 @@ fn percent_format_empty_tuple() {
 
 #[test]
 fn format_method_repeat_template() {
-    assert_eq!(run_print("'-'.join(['{:02d}'.format(x) for x in range(3)])"), "00-01-02");
+    assert_eq!(
+        run_print("'-'.join(['{:02d}'.format(x) for x in range(3)])"),
+        "00-01-02"
+    );
 }
 
 #[test]

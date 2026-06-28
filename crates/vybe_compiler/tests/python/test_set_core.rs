@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn set_literal_unique() {
@@ -36,18 +36,12 @@ fn set_discard_missing() {
 
 #[test]
 fn set_pop_arbitrary() {
-    assert_eq!(
-        run_python_one("s = {9}\nprint(s.pop())\n"),
-        "9"
-    );
+    assert_eq!(run_python_one("s = {9}\nprint(s.pop())\n"), "9");
 }
 
 #[test]
 fn set_clear() {
-    assert_eq!(
-        run_python_one("s = {1, 2}\ns.clear()\nprint(s)\n"),
-        "set()"
-    );
+    assert_eq!(run_python_one("s = {1, 2}\ns.clear()\nprint(s)\n"), "set()");
 }
 
 #[test]
@@ -262,7 +256,10 @@ fn set_difference_method() {
 
 #[test]
 fn set_symmetric_difference_method() {
-    assert_eq!(run_print("sorted({1, 2}.symmetric_difference({2, 3}))"), "[1, 3]");
+    assert_eq!(
+        run_print("sorted({1, 2}.symmetric_difference({2, 3}))"),
+        "[1, 3]"
+    );
 }
 
 #[test]

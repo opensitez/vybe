@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn unpack_tuple_to_variables() {
@@ -44,10 +44,7 @@ fn unpack_star_at_end() {
 
 #[test]
 fn unpack_star_only() {
-    assert_eq!(
-        run_python_one("*all, = [1, 2]\nprint(all)\n"),
-        "[1, 2]"
-    );
+    assert_eq!(run_python_one("*all, = [1, 2]\nprint(all)\n"), "[1, 2]");
 }
 
 #[test]
@@ -108,50 +105,32 @@ fn unpack_function_return_tuple() {
 
 #[test]
 fn unpack_ignores_with_underscore() {
-    assert_eq!(
-        run_python_one("a, _, c = (1, 2, 3)\nprint(a, c)\n"),
-        "1 3"
-    );
+    assert_eq!(run_python_one("a, _, c = (1, 2, 3)\nprint(a, c)\n"), "1 3");
 }
 
 #[test]
 fn unpack_extended_iterable_unrolling() {
-    assert_eq!(
-        run_print("[*range(3)]"),
-        "[0, 1, 2]"
-    );
+    assert_eq!(run_print("[*range(3)]"), "[0, 1, 2]");
 }
 
 #[test]
 fn unpack_merge_lists() {
-    assert_eq!(
-        run_print("[*[1, 2], *[3]]"),
-        "[1, 2, 3]"
-    );
+    assert_eq!(run_print("[*[1, 2], *[3]]"), "[1, 2, 3]");
 }
 
 #[test]
 fn unpack_in_list_literal_middle() {
-    assert_eq!(
-        run_print("[0, *range(2), 9]"),
-        "[0, 0, 1, 9]"
-    );
+    assert_eq!(run_print("[0, *range(2), 9]"), "[0, 0, 1, 9]");
 }
 
 #[test]
 fn unpack_in_tuple_literal() {
-    assert_eq!(
-        run_print("(*(1, 2), 3)"),
-        "(1, 2, 3)"
-    );
+    assert_eq!(run_print("(*(1, 2), 3)"), "(1, 2, 3)");
 }
 
 #[test]
 fn unpack_in_set_literal() {
-    assert_eq!(
-        run_print("sorted({*'ab', *'bc'})"),
-        "['a', 'b', 'c']"
-    );
+    assert_eq!(run_print("sorted({*'ab', *'bc'})"), "['a', 'b', 'c']");
 }
 
 #[test]
@@ -161,18 +140,12 @@ fn unpack_string_to_list() {
 
 #[test]
 fn unpack_dict_merge_literals() {
-    assert_eq!(
-        run_print("{**{'a': 1}, **{'b': 2}}"),
-        "{'a': 1, 'b': 2}"
-    );
+    assert_eq!(run_print("{**{'a': 1}, **{'b': 2}}"), "{'a': 1, 'b': 2}");
 }
 
 #[test]
 fn unpack_dict_merge_override() {
-    assert_eq!(
-        run_print("{**{'a': 1}, **{'a': 2}}"),
-        "{'a': 2}"
-    );
+    assert_eq!(run_print("{**{'a': 1}, **{'a': 2}}"), "{'a': 2}");
 }
 
 #[test]
@@ -201,18 +174,12 @@ fn unpack_mixed_positional_and_keyword() {
 
 #[test]
 fn unpack_nested_star_in_list() {
-    assert_eq!(
-        run_print("[*[1, 2], *[3, *[4]]]"),
-        "[1, 2, 3, 4]"
-    );
+    assert_eq!(run_print("[*[1, 2], *[3, *[4]]]"), "[1, 2, 3, 4]");
 }
 
 #[test]
 fn unpack_from_generator() {
-    assert_eq!(
-        run_print("[*(x for x in range(2))]"),
-        "[0, 1]"
-    );
+    assert_eq!(run_print("[*(x for x in range(2))]"), "[0, 1]");
 }
 
 #[test]
@@ -258,7 +225,9 @@ fn unpack_parallel_assignment_chain() {
 #[test]
 fn unpack_from_os_walk_style_pairs() {
     assert_eq!(
-        run_python_one("pairs = [('a', 1), ('b', 2)]\nout = []\nfor k, v in pairs:\n out.append(k + str(v))\nprint(out)\n"),
+        run_python_one(
+            "pairs = [('a', 1), ('b', 2)]\nout = []\nfor k, v in pairs:\n out.append(k + str(v))\nprint(out)\n"
+        ),
         "['a1', 'b2']"
     );
 }
@@ -266,7 +235,9 @@ fn unpack_from_os_walk_style_pairs() {
 #[test]
 fn unpack_matrix_rows() {
     assert_eq!(
-        run_python_one("rows = [(1, 2), (3, 4)]\ns = 0\nfor x, y in rows:\n s += x + y\nprint(s)\n"),
+        run_python_one(
+            "rows = [(1, 2), (3, 4)]\ns = 0\nfor x, y in rows:\n s += x + y\nprint(s)\n"
+        ),
         "10"
     );
 }
@@ -297,18 +268,12 @@ fn unpack_dict_in_function_params() {
 
 #[test]
 fn unpack_list_comp_with_star() {
-    assert_eq!(
-        run_print("[*['a'], *['b']]"),
-        "['a', 'b']"
-    );
+    assert_eq!(run_print("[*['a'], *['b']]"), "['a', 'b']");
 }
 
 #[test]
 fn unpack_tuple_of_lists_flatten() {
-    assert_eq!(
-        run_print("[*([1, 2]), *([3])]"),
-        "[1, 2, 3]"
-    );
+    assert_eq!(run_print("[*([1, 2]), *([3])]"), "[1, 2, 3]");
 }
 
 #[test]
@@ -322,7 +287,9 @@ fn unpack_assign_from_split() {
 #[test]
 fn unpack_head_tail_recursive_style() {
     assert_eq!(
-        run_python_one("def sum_list(xs):\n if not xs:\n  return 0\n head, *tail = xs\n return head + sum_list(tail)\nprint(sum_list([1, 2, 3]))\n"),
+        run_python_one(
+            "def sum_list(xs):\n if not xs:\n  return 0\n head, *tail = xs\n return head + sum_list(tail)\nprint(sum_list([1, 2, 3]))\n"
+        ),
         "6"
     );
 }
@@ -345,8 +312,5 @@ fn unpack_from_zip_single_row() {
 
 #[test]
 fn unpack_empty_star_list() {
-    assert_eq!(
-        run_python_one("a, *rest = [1]\nprint(rest)\n"),
-        "[]"
-    );
+    assert_eq!(run_python_one("a, *rest = [1]\nprint(rest)\n"), "[]");
 }

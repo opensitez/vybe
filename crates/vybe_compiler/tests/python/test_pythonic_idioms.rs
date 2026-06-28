@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn ternary_conditional_expression_basic() {
@@ -48,7 +48,9 @@ fn walrus_in_comprehension_filter() {
 #[test]
 fn walrus_while_read_lines_pattern() {
     assert_eq!(
-        run_python_one("lines = iter(['a', ''])\nout = []\nwhile (line := next(lines, '')):\n out.append(line)\nprint(out)\n"),
+        run_python_one(
+            "lines = iter(['a', ''])\nout = []\nwhile (line := next(lines, '')):\n out.append(line)\nprint(out)\n"
+        ),
         "['a']"
     );
 }
@@ -157,10 +159,7 @@ fn generator_expr_in_max() {
 
 #[test]
 fn generator_expr_in_min() {
-    assert_eq!(
-        run_python_one("print(min(x for x in [3, 1, 2]))\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("print(min(x for x in [3, 1, 2]))\n"), "1");
 }
 
 #[test]
@@ -201,10 +200,7 @@ fn double_star_call_unpack_dict() {
 
 #[test]
 fn chained_assignment_integers() {
-    assert_eq!(
-        run_python_one("a = b = c = 0\na = 1\nprint(b, c)\n"),
-        "0 0"
-    );
+    assert_eq!(run_python_one("a = b = c = 0\na = 1\nprint(b, c)\n"), "0 0");
 }
 
 #[test]

@@ -163,9 +163,7 @@ fn with_exit_no_exception_exc_is_none() {
 #[test]
 fn with_contextlib_nullcontext() {
     assert_eq!(
-        run_python_one(
-            "from contextlib import nullcontext\nwith nullcontext() as x:\n print(x)\n"
-        ),
+        run_python_one("from contextlib import nullcontext\nwith nullcontext() as x:\n print(x)\n"),
         "None"
     );
 }

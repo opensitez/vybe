@@ -222,18 +222,12 @@ fn ord_of_digit_zero() {
 
 #[test]
 fn chr_of_newline() {
-    assert_eq!(
-        run_print("repr(chr(10))"),
-        "'\\n'"
-    );
+    assert_eq!(run_print("repr(chr(10))"), "'\\n'");
 }
 
 #[test]
 fn int_roundtrip_hex_string() {
-    assert_eq!(
-        run_print("int(hex(200), 0)"),
-        "200"
-    );
+    assert_eq!(run_print("int(hex(200), 0)"), "200");
 }
 
 #[test]

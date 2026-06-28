@@ -50,10 +50,7 @@ fn re_findall_words() {
 
 #[test]
 fn re_sub_replace_once() {
-    assert_eq!(
-        run_print("import re; re.sub('a', 'x', 'aba')"),
-        "xbx"
-    );
+    assert_eq!(run_print("import re; re.sub('a', 'x', 'aba')"), "xbx");
 }
 
 #[test]
@@ -123,7 +120,9 @@ fn re_findall_empty_pattern_matches_empty() {
 #[test]
 fn re_sub_function_replacement() {
     assert_eq!(
-        run_python_one("import re\nprint(re.sub(r'\\d+', lambda m: str(int(m.group(0)) * 2), 'a3b'))\n"),
+        run_python_one(
+            "import re\nprint(re.sub(r'\\d+', lambda m: str(int(m.group(0)) * 2), 'a3b'))\n"
+        ),
         "a6b"
     );
 }
@@ -146,18 +145,12 @@ fn re_search_dot_matches_any_char() {
 
 #[test]
 fn re_findall_anchored_start() {
-    assert_eq!(
-        run_print("import re; re.findall('^a', 'ab ac')"),
-        "['a']"
-    );
+    assert_eq!(run_print("import re; re.findall('^a', 'ab ac')"), "['a']");
 }
 
 #[test]
 fn re_sub_no_match_unchanged() {
-    assert_eq!(
-        run_print("import re; re.sub('z', 'Z', 'abc')"),
-        "abc"
-    );
+    assert_eq!(run_print("import re; re.sub('z', 'Z', 'abc')"), "abc");
 }
 
 #[test]
@@ -234,10 +227,7 @@ fn re_search_none_bool_false() {
 
 #[test]
 fn re_findall_on_empty_string() {
-    assert_eq!(
-        run_print("import re; re.findall('x', '')"),
-        "[]"
-    );
+    assert_eq!(run_print("import re; re.findall('x', '')"), "[]");
 }
 
 #[test]

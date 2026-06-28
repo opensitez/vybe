@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn walrus_in_if_condition() {
@@ -26,18 +26,12 @@ fn walrus_in_comprehension_filter() {
 
 #[test]
 fn walrus_assign_and_use_same_line() {
-    assert_eq!(
-        run_python_one("print((a := 5) + 1)\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("print((a := 5) + 1)\n"), "6");
 }
 
 #[test]
 fn walrus_in_expression_list() {
-    assert_eq!(
-        run_python_one("print([(b := 2), b])\n"),
-        "[2, 2]"
-    );
+    assert_eq!(run_python_one("print([(b := 2), b])\n"), "[2, 2]");
 }
 
 #[test]
@@ -67,7 +61,9 @@ fn walrus_regex_search_style() {
 #[test]
 fn walrus_sum_accumulator_pattern() {
     assert_eq!(
-        run_python_one("total = 0\nnums = [1, 2, 3]\nwhile nums and (total := total + nums.pop()):\n pass\nprint(total)\n"),
+        run_python_one(
+            "total = 0\nnums = [1, 2, 3]\nwhile nums and (total := total + nums.pop()):\n pass\nprint(total)\n"
+        ),
         "6"
     );
 }
@@ -82,26 +78,17 @@ fn walrus_in_assert() {
 
 #[test]
 fn walrus_nested_parentheses() {
-    assert_eq!(
-        run_python_one("print(((v := 10)))\n"),
-        "10"
-    );
+    assert_eq!(run_python_one("print(((v := 10)))\n"), "10");
 }
 
 #[test]
 fn walrus_in_fstring_not_allowed_use_prior() {
-    assert_eq!(
-        run_python_one("(n := 4)\nprint(f'{n}')\n"),
-        "4"
-    );
+    assert_eq!(run_python_one("(n := 4)\nprint(f'{n}')\n"), "4");
 }
 
 #[test]
 fn walrus_list_comp_value_reuse() {
-    assert_eq!(
-        run_print("[(s := str(i)) for i in range(2)]"),
-        "['0', '1']"
-    );
+    assert_eq!(run_print("[(s := str(i)) for i in range(2)]"), "['0', '1']");
 }
 
 #[test]
@@ -130,10 +117,7 @@ fn walrus_generator_expression() {
 
 #[test]
 fn walrus_multiple_in_tuple_unpack() {
-    assert_eq!(
-        run_python_one("print((a := 1, b := 2))\n"),
-        "(1, 2)"
-    );
+    assert_eq!(run_python_one("print((a := 1, b := 2))\n"), "(1, 2)");
 }
 
 #[test]
@@ -194,10 +178,7 @@ fn walrus_list_get_with_default() {
 
 #[test]
 fn walrus_reuse_in_same_expression() {
-    assert_eq!(
-        run_python_one("print((k := 3) + k)\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("print((k := 3) + k)\n"), "6");
 }
 
 #[test]
@@ -219,7 +200,9 @@ fn walrus_in_boolean_or() {
 #[test]
 fn walrus_for_loop_read() {
     assert_eq!(
-        run_python_one("pairs = [('a', 1)]\nfor k, v in pairs:\n if (label := k + str(v)):\n  print(label)\n"),
+        run_python_one(
+            "pairs = [('a', 1)]\nfor k, v in pairs:\n if (label := k + str(v)):\n  print(label)\n"
+        ),
         "a1"
     );
 }
@@ -227,7 +210,9 @@ fn walrus_for_loop_read() {
 #[test]
 fn walrus_while_read_lines_style() {
     assert_eq!(
-        run_python_one("lines = iter(['x', ''])\nout = []\nwhile (line := next(lines, '')):\n out.append(line)\nprint(out)\n"),
+        run_python_one(
+            "lines = iter(['x', ''])\nout = []\nwhile (line := next(lines, '')):\n out.append(line)\nprint(out)\n"
+        ),
         "['x']"
     );
 }
@@ -242,26 +227,17 @@ fn walrus_match_guard_style_manual() {
 
 #[test]
 fn walrus_assign_none() {
-    assert_eq!(
-        run_python_one("print((x := None) is None)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("print((x := None) is None)\n"), "True");
 }
 
 #[test]
 fn walrus_assign_list() {
-    assert_eq!(
-        run_python_one("print(len(xs := [1, 2, 3]))\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("print(len(xs := [1, 2, 3]))\n"), "3");
 }
 
 #[test]
 fn walrus_assign_dict() {
-    assert_eq!(
-        run_python_one("print((d := {'a': 1})['a'])\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("print((d := {'a': 1})['a'])\n"), "1");
 }
 
 #[test]
@@ -274,34 +250,22 @@ fn walrus_in_try_block() {
 
 #[test]
 fn walrus_comprehension_nested() {
-    assert_eq!(
-        run_print("[(a := x) + 1 for x in range(2)]"),
-        "[1, 2]"
-    );
+    assert_eq!(run_print("[(a := x) + 1 for x in range(2)]"), "[1, 2]");
 }
 
 #[test]
 fn walrus_negative_number() {
-    assert_eq!(
-        run_python_one("print((n := -5) + 10)\n"),
-        "5"
-    );
+    assert_eq!(run_python_one("print((n := -5) + 10)\n"), "5");
 }
 
 #[test]
 fn walrus_float_value() {
-    assert_eq!(
-        run_python_one("print((f := 2.5) * 2)\n"),
-        "5.0"
-    );
+    assert_eq!(run_python_one("print((f := 2.5) * 2)\n"), "5.0");
 }
 
 #[test]
 fn walrus_string_concat() {
-    assert_eq!(
-        run_python_one("print((s := 'a') + 'b')\n"),
-        "ab"
-    );
+    assert_eq!(run_python_one("print((s := 'a') + 'b')\n"), "ab");
 }
 
 #[test]
@@ -314,10 +278,7 @@ fn walrus_identity_check() {
 
 #[test]
 fn walrus_membership_result() {
-    assert_eq!(
-        run_python_one("print((found := 2 in [1, 2, 3]))\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("print((found := 2 in [1, 2, 3]))\n"), "True");
 }
 
 #[test]
@@ -338,24 +299,15 @@ fn walrus_len_in_condition() {
 
 #[test]
 fn walrus_pow_computation() {
-    assert_eq!(
-        run_python_one("print((p := 2 ** 3))\n"),
-        "8"
-    );
+    assert_eq!(run_python_one("print((p := 2 ** 3))\n"), "8");
 }
 
 #[test]
 fn walrus_modulo_computation() {
-    assert_eq!(
-        run_python_one("print((r := 10 % 3))\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("print((r := 10 % 3))\n"), "1");
 }
 
 #[test]
 fn walrus_floor_div() {
-    assert_eq!(
-        run_python_one("print((q := 7 // 2))\n"),
-        "3"
-    );
+    assert_eq!(run_python_one("print((q := 7 // 2))\n"), "3");
 }

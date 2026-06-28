@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn precedence_mul_over_add() {
@@ -125,18 +125,12 @@ fn precedence_conditional_low() {
 
 #[test]
 fn precedence_lambda_body_binds_tight() {
-    assert_eq!(
-        run_python_one("f = lambda: 1 + 2 * 3\nprint(f())\n"),
-        "7"
-    );
+    assert_eq!(run_python_one("f = lambda: 1 + 2 * 3\nprint(f())\n"), "7");
 }
 
 #[test]
 fn precedence_list_comp_over_conditional() {
-    assert_eq!(
-        run_print("[x for x in range(3) if x]"),
-        "[1, 2]"
-    );
+    assert_eq!(run_print("[x for x in range(3) if x]"), "[1, 2]");
 }
 
 #[test]
@@ -149,10 +143,7 @@ fn precedence_star_unpack_low_in_call() {
 
 #[test]
 fn precedence_walrus_over_conditional() {
-    assert_eq!(
-        run_python_one("print(1 if (n := 2) else 0)\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("print(1 if (n := 2) else 0)\n"), "1");
 }
 
 #[test]

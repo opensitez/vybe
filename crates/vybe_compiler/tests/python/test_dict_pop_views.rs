@@ -18,10 +18,7 @@ fn dict_pop_existing_key() {
 
 #[test]
 fn dict_pop_missing_with_default() {
-    assert_eq!(
-        run_python_one("d = {}\nprint(d.pop('z', 99))\n"),
-        "99"
-    );
+    assert_eq!(run_python_one("d = {}\nprint(d.pop('z', 99))\n"), "99");
 }
 
 #[test]
@@ -76,10 +73,7 @@ fn dict_setdefault_keeps_existing() {
 
 #[test]
 fn dict_clear_empties() {
-    assert_eq!(
-        run_python_one("d = {'a': 1}\nd.clear()\nprint(d)\n"),
-        "{}"
-    );
+    assert_eq!(run_python_one("d = {'a': 1}\nd.clear()\nprint(d)\n"), "{}");
 }
 
 #[test]
@@ -92,12 +86,18 @@ fn dict_copy_is_shallow() {
 
 #[test]
 fn dict_fromkeys_default_none() {
-    assert_eq!(run_print("dict.fromkeys(['a', 'b'])"), "{'a': None, 'b': None}");
+    assert_eq!(
+        run_print("dict.fromkeys(['a', 'b'])"),
+        "{'a': None, 'b': None}"
+    );
 }
 
 #[test]
 fn dict_fromkeys_custom_value() {
-    assert_eq!(run_print("dict.fromkeys(['a', 'b'], 0)"), "{'a': 0, 'b': 0}");
+    assert_eq!(
+        run_print("dict.fromkeys(['a', 'b'], 0)"),
+        "{'a': 0, 'b': 0}"
+    );
 }
 
 #[test]
@@ -121,7 +121,9 @@ fn dict_popitem_on_single_item() {
 #[test]
 fn dict_items_unpack_in_for_loop() {
     assert_eq!(
-        run_python_one("total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nprint(total)\n"),
+        run_python_one(
+            "total = 0\nfor k, v in {'a': 1, 'b': 2}.items():\n total += v\nprint(total)\n"
+        ),
         "3"
     );
 }
@@ -170,18 +172,12 @@ fn dict_comprehension_filter_items() {
 
 #[test]
 fn dict_nested_access() {
-    assert_eq!(
-        run_print("{'outer': {'inner': 7}}['outer']['inner']"),
-        "7"
-    );
+    assert_eq!(run_print("{'outer': {'inner': 7}}['outer']['inner']"), "7");
 }
 
 #[test]
 fn dict_values_list_sum() {
-    assert_eq!(
-        run_print("sum({'a': 1, 'b': 2, 'c': 3}.values())"),
-        "6"
-    );
+    assert_eq!(run_print("sum({'a': 1, 'b': 2, 'c': 3}.values())"), "6");
 }
 
 #[test]
@@ -264,8 +260,5 @@ fn dict_setdefault_return_on_insert() {
 
 #[test]
 fn dict_view_iterable_in_list() {
-    assert_eq!(
-        run_print("list({'a': 1, 'b': 2}.values())"),
-        "[1, 2]"
-    );
+    assert_eq!(run_print("list({'a': 1, 'b': 2}.values())"), "[1, 2]");
 }

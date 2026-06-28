@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn arithmetic_add_integers() {
@@ -120,18 +120,12 @@ fn arithmetic_tuple_repeat() {
 
 #[test]
 fn arithmetic_in_place_add_list() {
-    assert_eq!(
-        run_python_one("a = [1]\na += [2]\nprint(a)\n"),
-        "[1, 2]"
-    );
+    assert_eq!(run_python_one("a = [1]\na += [2]\nprint(a)\n"), "[1, 2]");
 }
 
 #[test]
 fn arithmetic_in_place_mul_list() {
-    assert_eq!(
-        run_python_one("a = [1]\na *= 3\nprint(a)\n"),
-        "[1, 1, 1]"
-    );
+    assert_eq!(run_python_one("a = [1]\na *= 3\nprint(a)\n"), "[1, 1, 1]");
 }
 
 #[test]

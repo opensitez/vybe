@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn is_same_object() {
@@ -37,10 +37,7 @@ fn is_false_singleton() {
 
 #[test]
 fn is_variable_self() {
-    assert_eq!(
-        run_python_one("x = []\nprint(x is x)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("x = []\nprint(x is x)\n"), "True");
 }
 
 #[test]
@@ -82,10 +79,7 @@ fn is_string_interned_literal() {
 
 #[test]
 fn is_not_none_check() {
-    assert_eq!(
-        run_python_one("x = None\nprint(x is not None)\n"),
-        "False"
-    );
+    assert_eq!(run_python_one("x = None\nprint(x is not None)\n"), "False");
 }
 
 #[test]
@@ -129,10 +123,7 @@ fn is_not_bound_method_different_instances() {
 
 #[test]
 fn is_aliased_list() {
-    assert_eq!(
-        run_python_one("a = [1]\nb = a\nprint(a is b)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("a = [1]\nb = a\nprint(a is b)\n"), "True");
 }
 
 #[test]
@@ -174,7 +165,9 @@ fn is_empty_string_interned() {
 #[test]
 fn is_in_if_identity_check() {
     assert_eq!(
-        run_python_one("sentinel = object()\nvalue = sentinel\nprint('same' if value is sentinel else 'diff')\n"),
+        run_python_one(
+            "sentinel = object()\nvalue = sentinel\nprint('same' if value is sentinel else 'diff')\n"
+        ),
         "same"
     );
 }
@@ -182,17 +175,16 @@ fn is_in_if_identity_check() {
 #[test]
 fn is_not_in_filter() {
     assert_eq!(
-        run_python_one("a = [1, 2]\nb = a\npairs = [(a, b), ([1], [1])]\nprint(sum(1 for x, y in pairs if x is y))\n"),
+        run_python_one(
+            "a = [1, 2]\nb = a\npairs = [(a, b), ([1], [1])]\nprint(sum(1 for x, y in pairs if x is y))\n"
+        ),
         "1"
     );
 }
 
 #[test]
 fn is_class_object_singleton() {
-    assert_eq!(
-        run_python_one("class A:\n pass\nprint(A is A)\n"),
-        "True"
-    );
+    assert_eq!(run_python_one("class A:\n pass\nprint(A is A)\n"), "True");
 }
 
 #[test]
@@ -270,7 +262,9 @@ fn is_function_default_arg_mutable_trap() {
 #[test]
 fn is_cell_in_closure() {
     assert_eq!(
-        run_python_one("def outer():\n x = []\n def inner():\n  return x\n a = inner()\n b = inner()\n print(a is b)\nprint(outer())\n"),
+        run_python_one(
+            "def outer():\n x = []\n def inner():\n  return x\n a = inner()\n b = inner()\n print(a is b)\nprint(outer())\n"
+        ),
         "True"
     );
 }

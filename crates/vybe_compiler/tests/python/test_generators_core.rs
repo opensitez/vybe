@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_print};
+use crate::helpers::{run_print, run_python_one};
 
 #[test]
 fn generator_yield_single() {
@@ -35,7 +35,9 @@ fn generator_next_manual() {
 #[test]
 fn generator_stop_iteration() {
     assert_eq!(
-        run_python_one("def g():\n return\n yield 1\ntry:\n next(g())\nexcept StopIteration:\n print('stop')\n"),
+        run_python_one(
+            "def g():\n return\n yield 1\ntry:\n next(g())\nexcept StopIteration:\n print('stop')\n"
+        ),
         "stop"
     );
 }
@@ -51,7 +53,9 @@ fn generator_send_not_required_basic() {
 #[test]
 fn generator_yield_from_subgenerator() {
     assert_eq!(
-        run_python_one("def inner():\n yield 2\ndef outer():\n yield 1\n yield from inner()\n yield 3\nprint(list(outer()))\n"),
+        run_python_one(
+            "def inner():\n yield 2\ndef outer():\n yield 1\n yield from inner()\n yield 3\nprint(list(outer()))\n"
+        ),
         "[1, 2, 3]"
     );
 }
@@ -106,26 +110,17 @@ fn generator_lazy_not_materialized_until_iter() {
 
 #[test]
 fn generator_list_materialize() {
-    assert_eq!(
-        run_print("list(x + 1 for x in range(3))"),
-        "[1, 2, 3]"
-    );
+    assert_eq!(run_print("list(x + 1 for x in range(3))"), "[1, 2, 3]");
 }
 
 #[test]
 fn generator_tuple_materialize() {
-    assert_eq!(
-        run_print("tuple(x for x in range(2))"),
-        "(0, 1)"
-    );
+    assert_eq!(run_print("tuple(x for x in range(2))"), "(0, 1)");
 }
 
 #[test]
 fn generator_set_materialize() {
-    assert_eq!(
-        run_print("sorted({x for x in [3, 1, 2, 1]})"),
-        "[1, 2, 3]"
-    );
+    assert_eq!(run_print("sorted({x for x in [3, 1, 2, 1]})"), "[1, 2, 3]");
 }
 
 #[test]
@@ -147,7 +142,9 @@ fn generator_yield_none_explicit() {
 #[test]
 fn generator_return_value_captured_in_stopiteration() {
     assert_eq!(
-        run_python_one("def g():\n yield 1\n return 99\nit = g()\nprint(next(it))\ntry:\n next(it)\nexcept StopIteration as e:\n print(e.value)\n"),
+        run_python_one(
+            "def g():\n yield 1\n return 99\nit = g()\nprint(next(it))\ntry:\n next(it)\nexcept StopIteration as e:\n print(e.value)\n"
+        ),
         "1\n99"
     );
 }
@@ -155,7 +152,9 @@ fn generator_return_value_captured_in_stopiteration() {
 #[test]
 fn generator_nested_yield() {
     assert_eq!(
-        run_python_one("def g():\n def inner():\n  yield 2\n yield 1\n yield from inner()\nprint(list(g()))\n"),
+        run_python_one(
+            "def g():\n def inner():\n  yield 2\n yield 1\n yield from inner()\nprint(list(g()))\n"
+        ),
         "[1, 2]"
     );
 }
@@ -163,7 +162,9 @@ fn generator_nested_yield() {
 #[test]
 fn generator_in_for_loop() {
     assert_eq!(
-        run_python_one("def g():\n yield 'a'\n yield 'b'\nout = ''\nfor ch in g():\n out += ch\nprint(out)\n"),
+        run_python_one(
+            "def g():\n yield 'a'\n yield 'b'\nout = ''\nfor ch in g():\n out += ch\nprint(out)\n"
+        ),
         "ab"
     );
 }
@@ -171,7 +172,9 @@ fn generator_in_for_loop() {
 #[test]
 fn generator_break_stops_iteration() {
     assert_eq!(
-        run_python_one("def g():\n for i in range(5):\n  yield i\ncount = 0\nfor _ in g():\n count += 1\n if count == 2:\n  break\nprint(count)\n"),
+        run_python_one(
+            "def g():\n for i in range(5):\n  yield i\ncount = 0\nfor _ in g():\n count += 1\n if count == 2:\n  break\nprint(count)\n"
+        ),
         "2"
     );
 }
@@ -219,7 +222,9 @@ fn generator_map_on_genexp() {
 #[test]
 fn generator_fibonacci_style() {
     assert_eq!(
-        run_python_one("def fib():\n a, b = 0, 1\n while a < 10:\n  yield a\n  a, b = b, a + b\nprint(list(fib()))\n"),
+        run_python_one(
+            "def fib():\n a, b = 0, 1\n while a < 10:\n  yield a\n  a, b = b, a + b\nprint(list(fib()))\n"
+        ),
         "[0, 1, 1, 2, 3, 5, 8]"
     );
 }
@@ -227,7 +232,9 @@ fn generator_fibonacci_style() {
 #[test]
 fn generator_count_with_sentinel() {
     assert_eq!(
-        run_python_one("def count(n):\n while n > 0:\n  yield n\n  n -= 1\nprint(list(count(3)))\n"),
+        run_python_one(
+            "def count(n):\n while n > 0:\n  yield n\n  n -= 1\nprint(list(count(3)))\n"
+        ),
         "[3, 2, 1]"
     );
 }
@@ -235,7 +242,9 @@ fn generator_count_with_sentinel() {
 #[test]
 fn generator_read_file_lines_style() {
     assert_eq!(
-        run_python_one("def lines():\n for s in ['a', 'b']:\n  yield s.upper()\nprint(list(lines()))\n"),
+        run_python_one(
+            "def lines():\n for s in ['a', 'b']:\n  yield s.upper()\nprint(list(lines()))\n"
+        ),
         "['A', 'B']"
     );
 }
@@ -259,7 +268,9 @@ fn generator_yield_from_range() {
 #[test]
 fn generator_close_raises_generator_exit() {
     assert_eq!(
-        run_python_one("def g():\n try:\n  yield 1\n finally:\n  print('fin')\nit = g()\nprint(next(it))\nit.close()\n"),
+        run_python_one(
+            "def g():\n try:\n  yield 1\n finally:\n  print('fin')\nit = g()\nprint(next(it))\nit.close()\n"
+        ),
         "1\nfin"
     );
 }
@@ -267,7 +278,9 @@ fn generator_close_raises_generator_exit() {
 #[test]
 fn generator_throw_into_generator() {
     assert_eq!(
-        run_python_one("def g():\n try:\n  yield 1\n except ValueError:\n  yield 'recovered'\nit = g()\nprint(next(it))\nprint(it.throw(ValueError))\n"),
+        run_python_one(
+            "def g():\n try:\n  yield 1\n except ValueError:\n  yield 'recovered'\nit = g()\nprint(next(it))\nprint(it.throw(ValueError))\n"
+        ),
         "1\nrecovered"
     );
 }
@@ -322,10 +335,7 @@ fn generator_join_strings() {
 
 #[test]
 fn generator_min_of_genexp() {
-    assert_eq!(
-        run_python_one("print(min(x for x in [3, 1, 2]))\n"),
-        "1"
-    );
+    assert_eq!(run_python_one("print(min(x for x in [3, 1, 2]))\n"), "1");
 }
 
 #[test]
@@ -347,7 +357,9 @@ fn generator_bool_on_gen_object() {
 #[test]
 fn generator_len_not_supported() {
     assert_eq!(
-        run_python_one("g = (x for x in range(3))\ntry:\n len(g)\nexcept TypeError:\n print('no')\n"),
+        run_python_one(
+            "g = (x for x in range(3))\ntry:\n len(g)\nexcept TypeError:\n print('no')\n"
+        ),
         "no"
     );
 }

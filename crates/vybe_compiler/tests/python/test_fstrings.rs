@@ -57,7 +57,10 @@ fn fstring_nested_quotes() {
 
 #[test]
 fn fstring_dict_access() {
-    assert_eq!(run_python_one("d = {'k': 'v'}\nprint(f\"{d['k']}\")\n"), "v");
+    assert_eq!(
+        run_python_one("d = {'k': 'v'}\nprint(f\"{d['k']}\")\n"),
+        "v"
+    );
 }
 
 #[test]
@@ -77,10 +80,7 @@ fn fstring_equals_str_conversion() {
 
 #[test]
 fn fstring_multiline_expression() {
-    assert_eq!(
-        run_python_one("x = 2\ny = 3\nprint(f'{x * y}')\n"),
-        "6"
-    );
+    assert_eq!(run_python_one("x = 2\ny = 3\nprint(f'{x * y}')\n"), "6");
 }
 
 #[test]
@@ -130,7 +130,10 @@ fn fstring_none_value() {
 
 #[test]
 fn fstring_concatenated_parts() {
-    assert_eq!(run_python_one("name = 'py'\nprint(f'hello ' + f'{name}')\n"), "hello py");
+    assert_eq!(
+        run_python_one("name = 'py'\nprint(f'hello ' + f'{name}')\n"),
+        "hello py"
+    );
 }
 
 #[test]
@@ -153,17 +156,26 @@ fn fstring_with_percent_inside_expression() {
 
 #[test]
 fn fstring_datetime_like_manual() {
-    assert_eq!(run_python_one("y, m, d = 2024, 5, 9\nprint(f'{y}-{m:02d}-{d:02d}')\n"), "2024-05-09");
+    assert_eq!(
+        run_python_one("y, m, d = 2024, 5, 9\nprint(f'{y}-{m:02d}-{d:02d}')\n"),
+        "2024-05-09"
+    );
 }
 
 #[test]
 fn fstring_json_like_fragment() {
-    assert_eq!(run_python_one("k, v = 'a', 1\nprint(f'\"{k}\": {v}')\n"), "\"a\": 1");
+    assert_eq!(
+        run_python_one("k, v = 'a', 1\nprint(f'\"{k}\": {v}')\n"),
+        "\"a\": 1"
+    );
 }
 
 #[test]
 fn fstring_equality_in_expression() {
-    assert_eq!(run_python_one("print(f'{'yes' if 1 == 1 else 'no'}')\n"), "yes");
+    assert_eq!(
+        run_python_one("print(f'{'yes' if 1 == 1 else 'no'}')\n"),
+        "yes"
+    );
 }
 
 #[test]
@@ -173,10 +185,7 @@ fn fstring_length_in_expression() {
 
 #[test]
 fn fstring_strip_after_format() {
-    assert_eq!(
-        run_python_one("print(f'{'ab':>5}'.strip())\n"),
-        "ab"
-    );
+    assert_eq!(run_python_one("print(f'{'ab':>5}'.strip())\n"), "ab");
 }
 
 #[test]
@@ -196,10 +205,7 @@ fn fstring_tuple_display() {
 
 #[test]
 fn fstring_set_display_sorted() {
-    assert_eq!(
-        run_python_one("print(f'{sorted({1, 2})}')\n"),
-        "[1, 2]"
-    );
+    assert_eq!(run_python_one("print(f'{sorted({1, 2})}')\n"), "[1, 2]");
 }
 
 #[test]
@@ -209,7 +215,10 @@ fn fstring_list_display() {
 
 #[test]
 fn fstring_backslash_in_literal_part() {
-    assert_eq!(run_python_one("print(f'line\\nnext {1}')\n"), "line\nnext 1");
+    assert_eq!(
+        run_python_one("print(f'line\\nnext {1}')\n"),
+        "line\nnext 1"
+    );
 }
 
 #[test]
@@ -234,10 +243,7 @@ fn fstring_parenthesized_expression() {
 
 #[test]
 fn fstring_multiple_format_specs() {
-    assert_eq!(
-        run_python_one("print(f'{1:>3}|{2:<3}')\n"),
-        "  1|2  "
-    );
+    assert_eq!(run_python_one("print(f'{1:>3}|{2:<3}')\n"), "  1|2  ");
 }
 
 #[test]

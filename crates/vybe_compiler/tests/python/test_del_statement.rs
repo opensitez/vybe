@@ -98,10 +98,7 @@ fn del_nested_list_item() {
 
 #[test]
 fn del_set_variable() {
-    assert_eq!(
-        run_python_one("s = {1, 2}\ndel s\nprint('ok')\n"),
-        "ok"
-    );
+    assert_eq!(run_python_one("s = {1, 2}\ndel s\nprint('ok')\n"), "ok");
 }
 
 #[test]
@@ -123,7 +120,9 @@ fn del_class_attribute_from_instance_dict_only() {
 #[test]
 fn del_class_attribute_from_class() {
     assert_eq!(
-        run_python_one("class C:\n x = 1\ndel C.x\ntry:\n print(C.x)\nexcept AttributeError:\n print('attr')\n"),
+        run_python_one(
+            "class C:\n x = 1\ndel C.x\ntry:\n print(C.x)\nexcept AttributeError:\n print('attr')\n"
+        ),
         "attr"
     );
 }
@@ -138,10 +137,7 @@ fn del_subclass_attr_shadow() {
 
 #[test]
 fn del_after_pop_equivalent() {
-    assert_eq!(
-        run_python_one("a = [1, 2]\na.pop()\nprint(a)\n"),
-        "[1]"
-    );
+    assert_eq!(run_python_one("a = [1, 2]\na.pop()\nprint(a)\n"), "[1]");
 }
 
 #[test]
@@ -162,18 +158,12 @@ fn del_string_item_not_allowed() {
 
 #[test]
 fn del_list_all_via_slice() {
-    assert_eq!(
-        run_python_one("a = [1, 2, 3]\ndel a[:]\nprint(a)\n"),
-        "[]"
-    );
+    assert_eq!(run_python_one("a = [1, 2, 3]\ndel a[:]\nprint(a)\n"), "[]");
 }
 
 #[test]
 fn del_dict_clear_vs_del() {
-    assert_eq!(
-        run_python_one("d = {'a': 1}\ndel d['a']\nprint(d)\n"),
-        "{}"
-    );
+    assert_eq!(run_python_one("d = {'a': 1}\ndel d['a']\nprint(d)\n"), "{}");
 }
 
 #[test]
@@ -187,7 +177,9 @@ fn del_in_function_local() {
 #[test]
 fn del_global_name() {
     assert_eq!(
-        run_python_one("g = 1\ndef f():\n global g\n del g\nf()\ntry:\n print(g)\nexcept NameError:\n print('gone')\n"),
+        run_python_one(
+            "g = 1\ndef f():\n global g\n del g\nf()\ntry:\n print(g)\nexcept NameError:\n print('gone')\n"
+        ),
         "gone"
     );
 }
@@ -195,7 +187,9 @@ fn del_global_name() {
 #[test]
 fn del_nonlocal_name() {
     assert_eq!(
-        run_python_one("def outer():\n x = 1\n def inner():\n  nonlocal x\n  del x\n inner()\n try:\n  return x\n except NameError:\n  return 'gone'\nprint(outer())\n"),
+        run_python_one(
+            "def outer():\n x = 1\n def inner():\n  nonlocal x\n  del x\n inner()\n try:\n  return x\n except NameError:\n  return 'gone'\nprint(outer())\n"
+        ),
         "gone"
     );
 }
@@ -211,7 +205,9 @@ fn del_list_negative_index() {
 #[test]
 fn del_dict_item_in_loop() {
     assert_eq!(
-        run_python_one("d = {'a': 1, 'b': 2}\nfor k in list(d):\n if k == 'a':\n  del d[k]\nprint(d)\n"),
+        run_python_one(
+            "d = {'a': 1, 'b': 2}\nfor k in list(d):\n if k == 'a':\n  del d[k]\nprint(d)\n"
+        ),
         "{'b': 2}"
     );
 }
@@ -219,7 +215,9 @@ fn del_dict_item_in_loop() {
 #[test]
 fn del_attr_error_on_missing() {
     assert_eq!(
-        run_python_one("class C:\n pass\ntry:\n del C.missing\nexcept AttributeError:\n print('attr')\n"),
+        run_python_one(
+            "class C:\n pass\ntry:\n del C.missing\nexcept AttributeError:\n print('attr')\n"
+        ),
         "attr"
     );
 }
@@ -227,7 +225,9 @@ fn del_attr_error_on_missing() {
 #[test]
 fn del_package_submodule_style_attr() {
     assert_eq!(
-        run_python_one("class M:\n value = 1\ndel M.value\ntry:\n print(M.value)\nexcept AttributeError:\n print('ok')\n"),
+        run_python_one(
+            "class M:\n value = 1\ndel M.value\ntry:\n print(M.value)\nexcept AttributeError:\n print('ok')\n"
+        ),
         "ok"
     );
 }
@@ -250,16 +250,15 @@ fn del_comprehension_temp_not_applicable() {
 
 #[test]
 fn del_two_step_rebind() {
-    assert_eq!(
-        run_python_one("a = [1]\nb = a\ndel a\nprint(b)\n"),
-        "[1]"
-    );
+    assert_eq!(run_python_one("a = [1]\nb = a\ndel a\nprint(b)\n"), "[1]");
 }
 
 #[test]
 fn del_property_custom_deleter() {
     assert_eq!(
-        run_python_one("class C:\n def __init__(self):\n  self._x = 1\n @property\n def x(self):\n  return self._x\n @x.deleter\n def x(self):\n  del self._x\nc = C()\ndel c.x\nprint(hasattr(c, '_x'))\n"),
+        run_python_one(
+            "class C:\n def __init__(self):\n  self._x = 1\n @property\n def x(self):\n  return self._x\n @x.deleter\n def x(self):\n  del self._x\nc = C()\ndel c.x\nprint(hasattr(c, '_x'))\n"
+        ),
         "False"
     );
 }
@@ -274,10 +273,7 @@ fn del_item_from_custom_mapping() {
 
 #[test]
 fn del_last_reference_allows_gc() {
-    assert_eq!(
-        run_python_one("a = [1]\ndel a\nprint('ok')\n"),
-        "ok"
-    );
+    assert_eq!(run_python_one("a = [1]\ndel a\nprint('ok')\n"), "ok");
 }
 
 #[test]
@@ -306,10 +302,7 @@ fn del_extended_slice() {
 
 #[test]
 fn del_rebind_after_del_name() {
-    assert_eq!(
-        run_python_one("x = 1\ndel x\nx = 2\nprint(x)\n"),
-        "2"
-    );
+    assert_eq!(run_python_one("x = 1\ndel x\nx = 2\nprint(x)\n"), "2");
 }
 
 #[test]
@@ -323,7 +316,9 @@ fn del_empty_dict_key_error() {
 #[test]
 fn del_bytearray_item() {
     assert_eq!(
-        run_python_one("try:\n ba = bytearray(b'ab')\n del ba[0]\n print(ba)\nexcept:\n print('err')\n"),
+        run_python_one(
+            "try:\n ba = bytearray(b'ab')\n del ba[0]\n print(ba)\nexcept:\n print('err')\n"
+        ),
         "bytearray(b'b')"
     );
 }
@@ -339,7 +334,9 @@ fn del_module_level_list_item() {
 #[test]
 fn del_chained_attr() {
     assert_eq!(
-        run_python_one("class A:\n def __init__(self):\n  self.b = {'k': 1}\na = A()\ndel a.b['k']\nprint(a.b)\n"),
+        run_python_one(
+            "class A:\n def __init__(self):\n  self.b = {'k': 1}\na = A()\ndel a.b['k']\nprint(a.b)\n"
+        ),
         "{}"
     );
 }

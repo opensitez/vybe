@@ -137,10 +137,7 @@ fn complex_equality_real_parts_only_differs() {
 
 #[test]
 fn complex_sum_of_conjugates_is_real() {
-    assert_eq!(
-        run_print("(3+4j) + (3-4j)"),
-        "(6+0j)"
-    );
+    assert_eq!(run_print("(3+4j) + (3-4j)"), "(6+0j)");
 }
 
 #[test]
