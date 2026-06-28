@@ -67,6 +67,8 @@ struct Walker {
     char_pointers: HashSet<String>,
     /// char arrays initialized from C string literals, not explicit char-code buffers.
     char_string_arrays: HashSet<String>,
+    /// char buffers known to hold initialized string bytes at declaration time.
+    initialized_char_buffers: HashSet<String>,
     /// char pointer variable -> (base string/array variable, element offset)
     char_pointer_offsets: HashMap<String, (String, Expression)>,
     /// char pointer variable -> struct variable whose address it stores from `(char*)&obj`.
@@ -1829,11 +1831,7 @@ impl Walker {
                         .iter()
                         .filter_map(|el| {
                             if let ExprKind::Lit(Literal::Int(code)) = &el.value.kind {
-                                if *code == 0 {
-                                    None
-                                } else {
-                                    char::from_u32(*code as u32)
-                                }
+                                char::from_u32(*code as u32)
                             } else {
                                 None
                             }
@@ -1857,6 +1855,15 @@ impl Walker {
                 )
             {
                 emitted_type_hint = "char*".to_string();
+            }
+            if is_char_type
+                && !is_pointer_decl
+                && matches!(
+                    init.as_ref().map(|i| &i.kind),
+                    Some(ExprKind::Lit(Literal::Str(_)))
+                )
+            {
+                self.initialized_char_buffers.insert(name.clone());
             }
             if is_char_type && !is_pointer_decl && !was_array_decl {
                 if let Some(init_expr) = init.clone() {
@@ -3767,6 +3774,250 @@ impl Walker {
         expr(ExprKind::Lit(Literal::Null))
     }
 
+    fn rewrite_memccpy(
+        &mut self,
+        dst: Expression,
+        src: Expression,
+        ch: Expression,
+        bytes: Expression,
+    ) -> Expression {
+        let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) else {
+            return expr(ExprKind::Lit(Literal::Null));
+        };
+        self.char_pointers.insert(dst_name.clone());
+        let needle = char_assignment_value_to_string(ch);
+        let src_prefix = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(src.clone()),
+                field: "substring".to_string(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(int_lit(0)),
+                Argument::positional(bytes.clone()),
+            ],
+            optional: false,
+        });
+        let idx = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(src_prefix),
+                field: "indexOf".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(needle)],
+            optional: false,
+        });
+        let found = expr(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(idx.clone()),
+            right: Box::new(int_lit(0)),
+        });
+        let count = expr(ExprKind::Ternary {
+            cond: Box::new(found.clone()),
+            then: Box::new(expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(idx),
+                right: Box::new(int_lit(1)),
+            })),
+            else_: Box::new(bytes),
+        });
+        let copied = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(src),
+                field: "substring".to_string(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(int_lit(0)),
+                Argument::positional(count.clone()),
+            ],
+            optional: false,
+        });
+        let base = ident(&dst_name);
+        if is_zero_int_expr(&dst_offset) {
+            let write = expr(ExprKind::Assign {
+                target: Box::new(base.clone()),
+                value: Box::new(copied),
+            });
+            let found_ptr = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base),
+                    field: "slice".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(count)],
+                optional: false,
+            });
+            return expr(ExprKind::Sequence(vec![
+                write,
+                expr(ExprKind::Ternary {
+                    cond: Box::new(found),
+                    then: Box::new(found_ptr),
+                    else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
+                }),
+            ]));
+        }
+        let prefix = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(base.clone()),
+                field: "substring".to_string(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(int_lit(0)),
+                Argument::positional(dst_offset.clone()),
+            ],
+            optional: false,
+        });
+        let end_offset = expr(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(dst_offset),
+            right: Box::new(count.clone()),
+        });
+        let suffix = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(base.clone()),
+                field: "substring".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(end_offset.clone())],
+            optional: false,
+        });
+        let updated = expr(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(prefix),
+                right: Box::new(copied),
+            })),
+            right: Box::new(suffix),
+        });
+        let write = expr(ExprKind::Assign {
+            target: Box::new(base.clone()),
+            value: Box::new(updated),
+        });
+        let found_ptr = expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(base),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(end_offset)],
+            optional: false,
+        });
+        expr(ExprKind::Sequence(vec![
+            write,
+            expr(ExprKind::Ternary {
+                cond: Box::new(found),
+                then: Box::new(found_ptr),
+                else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
+            }),
+        ]))
+    }
+
+    fn strncpy_copied_bytes(&self, src: Expression, n: &Expression) -> Expression {
+        let Some(count) = self.byte_count_to_usize(n) else {
+            return expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(src),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(int_lit(0)),
+                    Argument::positional(n.clone()),
+                ],
+                optional: false,
+            });
+        };
+        if let ExprKind::Lit(Literal::Str(text)) = &src.kind {
+            let mut copied: String = text.chars().take(count).collect();
+            let copied_len = copied.chars().count();
+            if copied_len < count {
+                copied.push_str(&"\0".repeat(count - copied_len));
+            }
+            return str_lit(&copied);
+        }
+        expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(src),
+                field: "substring".to_string(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(int_lit(0)),
+                Argument::positional(n.clone()),
+            ],
+            optional: false,
+        })
+    }
+
+    fn rewrite_strncpy(&mut self, dest: Expression, src: Expression, n: Expression) -> Expression {
+        if is_zero_int_expr(&n) {
+            return dest;
+        }
+        let copied = self.strncpy_copied_bytes(src, &n);
+        if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dest) {
+            self.char_pointers.insert(dst_name.clone());
+            let was_initialized = self.initialized_char_buffers.contains(&dst_name);
+            self.initialized_char_buffers.insert(dst_name.clone());
+            let base = ident(&dst_name);
+            if is_zero_int_expr(&dst_offset) && !was_initialized {
+                return expr(ExprKind::Assign {
+                    target: Box::new(base),
+                    value: Box::new(copied),
+                });
+            }
+            let prefix = if is_zero_int_expr(&dst_offset) {
+                str_lit("")
+            } else {
+                expr(ExprKind::Call {
+                    callee: Box::new(expr(ExprKind::Member {
+                        object: Box::new(base.clone()),
+                        field: "substring".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![
+                        Argument::positional(int_lit(0)),
+                        Argument::positional(dst_offset.clone()),
+                    ],
+                    optional: false,
+                })
+            };
+            let suffix_start = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(dst_offset),
+                right: Box::new(n),
+            });
+            let suffix = expr(ExprKind::Call {
+                callee: Box::new(expr(ExprKind::Member {
+                    object: Box::new(base.clone()),
+                    field: "substring".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(suffix_start)],
+                optional: false,
+            });
+            let updated = expr(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(expr(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(prefix),
+                    right: Box::new(copied),
+                })),
+                right: Box::new(suffix),
+            });
+            return expr(ExprKind::Assign {
+                target: Box::new(base),
+                value: Box::new(updated),
+            });
+        }
+        expr(ExprKind::Assign {
+            target: Box::new(dest),
+            value: Box::new(copied),
+        })
+    }
+
     fn walk_conditional(&mut self, pair: Pair<Rule>) -> Expression {
         let mut it = pair.into_inner();
         let cond = self.walk_binary(it.next().unwrap());
@@ -4651,6 +4902,42 @@ impl Walker {
             } else {
                 false
             };
+            if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                if let Some((base, right_offset)) = char_suffix_base_offset(&right) {
+                    if let Some(left_offset) = string_search_result_offset(&left, &ident(&base)) {
+                        let eq = expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(left_offset),
+                            right: Box::new(right_offset),
+                        });
+                        return if matches!(op, BinOp::Eq) {
+                            eq
+                        } else {
+                            expr(ExprKind::Unary {
+                                op: UnaryOp::Not,
+                                expr: Box::new(eq),
+                            })
+                        };
+                    }
+                }
+                if let Some((base, left_offset)) = char_suffix_base_offset(&left) {
+                    if let Some(right_offset) = string_search_result_offset(&right, &ident(&base)) {
+                        let eq = expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(left_offset),
+                            right: Box::new(right_offset),
+                        });
+                        return if matches!(op, BinOp::Eq) {
+                            eq
+                        } else {
+                            expr(ExprKind::Unary {
+                                op: UnaryOp::Not,
+                                expr: Box::new(eq),
+                            })
+                        };
+                    }
+                }
+            }
             if !matches!(op, BinOp::Add | BinOp::Sub) {
                 return expr(ExprKind::Binary { op, left, right });
             }
@@ -6922,22 +7209,7 @@ impl Walker {
                 "strncpy" => {
                     let mut it = args.into_iter();
                     if let (Some(dest), Some(src), Some(n)) = (it.next(), it.next(), it.next()) {
-                        let clipped = expr(ExprKind::Call {
-                            callee: Box::new(expr(ExprKind::Member {
-                                object: Box::new(src.value),
-                                field: "substring".to_string(),
-                                null_safe: false,
-                            })),
-                            args: vec![
-                                Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
-                                Argument::positional(n.value),
-                            ],
-                            optional: false,
-                        });
-                        return expr(ExprKind::Assign {
-                            target: Box::new(dest.value),
-                            value: Box::new(clipped),
-                        });
+                        return self.rewrite_strncpy(dest.value, src.value, n.value);
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -7001,7 +7273,7 @@ impl Walker {
                         });
                         let concat = expr(ExprKind::Binary {
                             op: BinOp::Add,
-                            left: Box::new(dest.value.clone()),
+                            left: Box::new(c_string_visible(dest.value.clone())),
                             right: Box::new(clipped),
                         });
                         return expr(ExprKind::Assign {
@@ -7587,6 +7859,15 @@ impl Walker {
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
+                "memccpy" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dst), Some(src), Some(ch), Some(bytes)) =
+                        (it.next(), it.next(), it.next(), it.next())
+                    {
+                        return self.rewrite_memccpy(dst.value, src.value, ch.value, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
                 "memset" => {
                     let mut it = args.into_iter();
                     if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next())
@@ -7597,9 +7878,56 @@ impl Walker {
                 }
                 "memchr" => {
                     let mut it = args.into_iter();
-                    if let (Some(buf), Some(ch), Some(_bytes)) = (it.next(), it.next(), it.next()) {
+                    if let (Some(buf), Some(ch), Some(bytes)) = (it.next(), it.next(), it.next()) {
                         let needle = char_assignment_value_to_string(ch.value);
-                        return strchr_expr(buf.value, needle);
+                        return memchr_expr(buf.value, needle, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memmem" => {
+                    let mut it = args.into_iter();
+                    if let (Some(hay), Some(hay_len), Some(needle), Some(needle_len)) =
+                        (it.next(), it.next(), it.next(), it.next())
+                    {
+                        return memmem_expr(
+                            hay.value,
+                            hay_len.value,
+                            needle.value,
+                            needle_len.value,
+                        );
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memrchr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(buf), Some(ch), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                        let needle = char_assignment_value_to_string(ch.value);
+                        return memrchr_expr(buf.value, needle, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                "memcmp" => {
+                    let mut it = args.into_iter();
+                    if let (Some(a), Some(b), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                        return memcmp_expr(a.value, b.value, bytes.value);
+                    }
+                    return int_lit(0);
+                }
+                "strndup" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(n)) = (it.next(), it.next()) {
+                        return expr(ExprKind::Call {
+                            callee: Box::new(expr(ExprKind::Member {
+                                object: Box::new(s.value),
+                                field: "substring".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![
+                                Argument::positional(int_lit(0)),
+                                Argument::positional(n.value),
+                            ],
+                            optional: false,
+                        });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -9682,6 +10010,178 @@ fn strchr_expr(s: Expression, needle: Expression) -> Expression {
     })
 }
 
+fn memchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
+    let clipped = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(s.clone()),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(bytes),
+        ],
+        optional: false,
+    });
+    let idx_call = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(clipped),
+            field: "indexOf".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(needle)],
+        optional: false,
+    });
+    expr(ExprKind::Ternary {
+        cond: Box::new(expr(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(idx_call.clone()),
+            right: Box::new(int_lit(0)),
+        })),
+        then: Box::new(expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(s),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(idx_call)],
+            optional: false,
+        })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
+    })
+}
+
+fn memrchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
+    let clipped = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(s.clone()),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(bytes),
+        ],
+        optional: false,
+    });
+    let idx_call = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(clipped),
+            field: "lastIndexOf".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(needle)],
+        optional: false,
+    });
+    expr(ExprKind::Ternary {
+        cond: Box::new(expr(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(idx_call.clone()),
+            right: Box::new(int_lit(0)),
+        })),
+        then: Box::new(expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(s),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(idx_call)],
+            optional: false,
+        })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
+    })
+}
+
+fn memcmp_expr(a: Expression, b: Expression, bytes: Expression) -> Expression {
+    let left = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(a),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(bytes.clone()),
+        ],
+        optional: false,
+    });
+    let right = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(b),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(bytes),
+        ],
+        optional: false,
+    });
+    expr(ExprKind::Call {
+        callee: Box::new(ident("strcmp")),
+        args: vec![Argument::positional(left), Argument::positional(right)],
+        optional: false,
+    })
+}
+
+fn memmem_expr(
+    haystack: Expression,
+    hay_len: Expression,
+    needle: Expression,
+    needle_len: Expression,
+) -> Expression {
+    let hay = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(haystack.clone()),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(hay_len),
+        ],
+        optional: false,
+    });
+    let ndl = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(needle),
+            field: "substring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(int_lit(0)),
+            Argument::positional(needle_len),
+        ],
+        optional: false,
+    });
+    let idx_call = expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Member {
+            object: Box::new(hay),
+            field: "indexOf".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(ndl)],
+        optional: false,
+    });
+    expr(ExprKind::Ternary {
+        cond: Box::new(expr(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(idx_call.clone()),
+            right: Box::new(int_lit(0)),
+        })),
+        then: Box::new(expr(ExprKind::Call {
+            callee: Box::new(expr(ExprKind::Member {
+                object: Box::new(haystack),
+                field: "slice".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(idx_call)],
+            optional: false,
+        })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
+    })
+}
+
 fn c_string_visible(s: Expression) -> Expression {
     expr(ExprKind::Index {
         object: Box::new(expr(ExprKind::Call {
@@ -9874,6 +10374,35 @@ fn string_search_result_offset(left: &Expression, right: &Expression) -> Option<
     }
 
     extract_offset(left, right)
+}
+
+fn char_suffix_base_offset(value: &Expression) -> Option<(String, Expression)> {
+    match &value.kind {
+        ExprKind::Ident(name) => Some((name.clone(), int_lit(0))),
+        ExprKind::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+        } => {
+            let ExprKind::Ident(base) = &left.kind else {
+                return None;
+            };
+            Some((base.clone(), (**right).clone()))
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            if (field != "substring" && field != "slice") || args.len() != 1 {
+                return None;
+            }
+            let ExprKind::Ident(base) = &object.kind else {
+                return None;
+            };
+            Some((base.clone(), args[0].value.clone()))
+        }
+        _ => None,
+    }
 }
 
 fn is_putchar_zero_call(e: &Expression) -> bool {
