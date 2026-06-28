@@ -3,23 +3,34 @@ use super::helpers::run_csharp;
 
 #[test]
 fn math_abs_for_negative_double() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(System.Math.Abs(-3.7));"#), &["3.7"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine(System.Math.Abs(-3.7));"#),
+        &["3.7"]
+    );
 }
 
 #[test]
 fn math_floor_rounds_toward_negative_infinity() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(System.Math.Floor(2.9));"#), &["2"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine(System.Math.Floor(2.9));"#),
+        &["2"]
+    );
 }
 
 #[test]
 fn math_ceiling_rounds_toward_positive_infinity() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(System.Math.Ceiling(2.1));"#), &["3"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine(System.Math.Ceiling(2.1));"#),
+        &["3"]
+    );
 }
 
 #[test]
 fn math_round_midpoint_away_from_zero() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine(System.Math.Round(2.5,System.MidpointRounding.AwayFromZero));"#),
+        run_csharp(
+            r#"Console.WriteLine(System.Math.Round(2.5,System.MidpointRounding.AwayFromZero));"#
+        ),
         &["3"]
     );
 }
@@ -34,7 +45,10 @@ fn math_round_midpoint_to_even_banker_rounding() {
 
 #[test]
 fn math_log2_of_power_of_two() {
-    assert_eq!(run_csharp(r#"Console.WriteLine((int)System.Math.Log2(8));"#), &["3"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine((int)System.Math.Log2(8));"#),
+        &["3"]
+    );
 }
 
 #[test]

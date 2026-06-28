@@ -20,8 +20,10 @@ fn join_with_empty_separator_concatenates() {
 #[test]
 fn split_removes_empty_entries_option() {
     assert_eq!(
-        run_csharp(r#"var parts="a,,b,,c".Split(',',System.StringSplitOptions.RemoveEmptyEntries);
-Console.WriteLine(parts.Length);"#),
+        run_csharp(
+            r#"var parts="a,,b,,c".Split(',',System.StringSplitOptions.RemoveEmptyEntries);
+Console.WriteLine(parts.Length);"#
+        ),
         &["3"]
     );
 }
@@ -29,8 +31,10 @@ Console.WriteLine(parts.Length);"#),
 #[test]
 fn split_trim_entries_option() {
     assert_eq!(
-        run_csharp(r#"var parts=" a , b , c ".Split(',',System.StringSplitOptions.TrimEntries);
-Console.WriteLine(parts[1]);"#),
+        run_csharp(
+            r#"var parts=" a , b , c ".Split(',',System.StringSplitOptions.TrimEntries);
+Console.WriteLine(parts[1]);"#
+        ),
         &["b"]
     );
 }
@@ -38,8 +42,10 @@ Console.WriteLine(parts[1]);"#),
 #[test]
 fn split_on_string_delimiter() {
     assert_eq!(
-        run_csharp(r#"var parts="one::two::three".Split("::");
-Console.WriteLine(parts.Length); Console.WriteLine(parts[2]);"#),
+        run_csharp(
+            r#"var parts="one::two::three".Split("::");
+Console.WriteLine(parts.Length); Console.WriteLine(parts[2]);"#
+        ),
         &["3", "three"]
     );
 }

@@ -29,22 +29,34 @@ fn math_multiple() {
 
 #[test]
 fn math_ceiling_rounds_positive_fraction_upward() {
-    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Ceiling(2.1));"), "3");
+    assert_eq!(
+        run_csharp_one("Console.WriteLine(System.Math.Ceiling(2.1));"),
+        "3"
+    );
 }
 
 #[test]
 fn math_round_midpoint_to_even_for_half_values() {
-    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Round(2.5));"), "2");
+    assert_eq!(
+        run_csharp_one("Console.WriteLine(System.Math.Round(2.5));"),
+        "2"
+    );
 }
 
 #[test]
 fn math_max_selects_larger_of_two_doubles() {
-    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Max(1.5, 2.5));"), "2.5");
+    assert_eq!(
+        run_csharp_one("Console.WriteLine(System.Math.Max(1.5, 2.5));"),
+        "2.5"
+    );
 }
 
 #[test]
 fn math_clamp_restricts_value_to_inclusive_bounds() {
-    assert_eq!(run_csharp_one("Console.WriteLine(System.Math.Clamp(10, 0, 5));"), "5");
+    assert_eq!(
+        run_csharp_one("Console.WriteLine(System.Math.Clamp(10, 0, 5));"),
+        "5"
+    );
 }
 
 #[test]

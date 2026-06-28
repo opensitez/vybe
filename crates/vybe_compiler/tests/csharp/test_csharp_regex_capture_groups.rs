@@ -4,7 +4,9 @@ use super::helpers::run_csharp;
 #[test]
 fn regex_is_match_reports_success_for_literal_pattern() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine(System.Text.RegularExpressions.Regex.IsMatch("abc123", @"\d+"));"#),
+        run_csharp(
+            r#"Console.WriteLine(System.Text.RegularExpressions.Regex.IsMatch("abc123", @"\d+"));"#
+        ),
         &["True"]
     );
 }

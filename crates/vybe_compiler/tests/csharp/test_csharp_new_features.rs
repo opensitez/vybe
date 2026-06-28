@@ -74,10 +74,7 @@ Console.WriteLine(Sqrt(16));"#
 
 #[test]
 fn implicit_usings_allow_console_without_explicit_using() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine(42);"#),
-        &["42"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine(42);"#), &["42"]);
 }
 
 #[test]

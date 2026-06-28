@@ -13,7 +13,9 @@ fn decimal_addition_preserves_fractional_sum_without_binary_drift() {
 #[test]
 fn decimal_subtraction_yields_exact_difference_for_currency_style_values() {
     assert_eq!(
-        run_csharp(r#"decimal price = 19.99m; decimal discount = 4.50m; Console.WriteLine(price - discount);"#),
+        run_csharp(
+            r#"decimal price = 19.99m; decimal discount = 4.50m; Console.WriteLine(price - discount);"#
+        ),
         &["15.49"]
     );
 }
@@ -73,10 +75,7 @@ Console.WriteLine(high > low);
 
 #[test]
 fn decimal_modulo_returns_remainder_for_non_integer_division() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine(10.5m % 3m);"#),
-        &["1.5"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine(10.5m % 3m);"#), &["1.5"]);
 }
 
 #[test]

@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn sum_with_selector_projects_before_summing() {
     assert_eq!(
-        run_csharp(r#"var words=new[]{"hello","world","foo"};
-Console.WriteLine(words.Sum(w=>w.Length));"#),
+        run_csharp(
+            r#"var words=new[]{"hello","world","foo"};
+Console.WriteLine(words.Sum(w=>w.Length));"#
+        ),
         &["13"]
     );
 }
@@ -13,8 +15,10 @@ Console.WriteLine(words.Sum(w=>w.Length));"#),
 #[test]
 fn average_of_integer_sequence_returns_double() {
     assert_eq!(
-        run_csharp(r#"double avg=new[]{1,2,3,4,5}.Average();
-Console.WriteLine(avg);"#),
+        run_csharp(
+            r#"double avg=new[]{1,2,3,4,5}.Average();
+Console.WriteLine(avg);"#
+        ),
         &["3"]
     );
 }
@@ -22,8 +26,10 @@ Console.WriteLine(avg);"#),
 #[test]
 fn min_with_custom_selector() {
     assert_eq!(
-        run_csharp(r#"var words=new[]{"cat","elephant","ox"};
-Console.WriteLine(words.Min(w=>w.Length));"#),
+        run_csharp(
+            r#"var words=new[]{"cat","elephant","ox"};
+Console.WriteLine(words.Min(w=>w.Length));"#
+        ),
         &["2"]
     );
 }
@@ -31,8 +37,10 @@ Console.WriteLine(words.Min(w=>w.Length));"#),
 #[test]
 fn max_by_returns_whole_element_not_just_key() {
     assert_eq!(
-        run_csharp(r#"var words=new[]{"cat","elephant","ox"};
-Console.WriteLine(words.MaxBy(w=>w.Length));"#),
+        run_csharp(
+            r#"var words=new[]{"cat","elephant","ox"};
+Console.WriteLine(words.MaxBy(w=>w.Length));"#
+        ),
         &["elephant"]
     );
 }
@@ -56,8 +64,10 @@ fn count_with_predicate_counts_matching() {
 #[test]
 fn long_count_works_on_large_range() {
     assert_eq!(
-        run_csharp(r#"long c=Enumerable.Range(0,1000).LongCount();
-Console.WriteLine(c);"#),
+        run_csharp(
+            r#"long c=Enumerable.Range(0,1000).LongCount();
+Console.WriteLine(c);"#
+        ),
         &["1000"]
     );
 }

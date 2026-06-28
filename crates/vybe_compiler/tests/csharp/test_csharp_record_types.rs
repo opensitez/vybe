@@ -4,7 +4,9 @@ use super::helpers::run_csharp;
 #[test]
 fn positional_record_constructor_sets_properties() {
     assert_eq!(
-        run_csharp(r#"record Point(int X, int Y); var p = new Point(3,4); Console.WriteLine(p.X); Console.WriteLine(p.Y);"#),
+        run_csharp(
+            r#"record Point(int X, int Y); var p = new Point(3,4); Console.WriteLine(p.X); Console.WriteLine(p.Y);"#
+        ),
         &["3", "4"]
     );
 }

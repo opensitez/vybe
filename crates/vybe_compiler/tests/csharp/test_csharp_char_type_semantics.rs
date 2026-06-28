@@ -49,18 +49,12 @@ Console.WriteLine(left == right);
 
 #[test]
 fn char_comparison_uses_numeric_code_unit_ordering() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine('A' < 'B');"#),
-        &["True"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine('A' < 'B');"#), &["True"]);
 }
 
 #[test]
 fn char_subtraction_yields_difference_of_code_units() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine('D' - 'A');"#),
-        &["3"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine('D' - 'A');"#), &["3"]);
 }
 
 #[test]

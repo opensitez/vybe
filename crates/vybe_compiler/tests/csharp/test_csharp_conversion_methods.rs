@@ -3,14 +3,19 @@ use super::helpers::run_csharp;
 
 #[test]
 fn convert_to_int32_from_string() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(System.Convert.ToInt32("99"));"#), &["99"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine(System.Convert.ToInt32("99"));"#),
+        &["99"]
+    );
 }
 
 #[test]
 fn convert_to_double_from_int() {
     assert_eq!(
-        run_csharp(r#"double d=System.Convert.ToDouble(7);
-Console.WriteLine(d);"#),
+        run_csharp(
+            r#"double d=System.Convert.ToDouble(7);
+Console.WriteLine(d);"#
+        ),
         &["7"]
     );
 }
@@ -50,8 +55,10 @@ fn convert_to_char_from_int_gives_unicode_char() {
 #[test]
 fn convert_change_type_dynamically_converts_to_target_type() {
     assert_eq!(
-        run_csharp(r#"object result=System.Convert.ChangeType("42",typeof(int));
-Console.WriteLine(result);"#),
+        run_csharp(
+            r#"object result=System.Convert.ChangeType("42",typeof(int));
+Console.WriteLine(result);"#
+        ),
         &["42"]
     );
 }

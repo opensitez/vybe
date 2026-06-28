@@ -111,7 +111,9 @@ fn substring_extracts_region_by_start_and_length() {
 #[test]
 fn to_upper_lower_changes_case_of_all_letters() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine("Hello".ToUpper()); Console.WriteLine("Hello".ToLower());"#),
+        run_csharp(
+            r#"Console.WriteLine("Hello".ToUpper()); Console.WriteLine("Hello".ToLower());"#
+        ),
         &["HELLO", "hello"]
     );
 }
@@ -145,8 +147,5 @@ Console.WriteLine(r < 0 || r > 0);"#
 
 #[test]
 fn string_chars_indexer_reads_individual_character() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine("hello"[1]);"#),
-        &["e"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine("hello"[1]);"#), &["e"]);
 }

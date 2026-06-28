@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn string_join_with_ienumerable_source() {
     assert_eq!(
-        run_csharp(r#"var nums=Enumerable.Range(1,5);
-Console.WriteLine(string.Join("-",nums));"#),
+        run_csharp(
+            r#"var nums=Enumerable.Range(1,5);
+Console.WriteLine(string.Join("-",nums));"#
+        ),
         &["1-2-3-4-5"]
     );
 }
@@ -37,7 +39,9 @@ fn string_format_left_align_with_negative_width() {
 #[test]
 fn string_contains_with_string_comparison_case_insensitive() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine("Hello World".Contains("world",System.StringComparison.OrdinalIgnoreCase));"#),
+        run_csharp(
+            r#"Console.WriteLine("Hello World".Contains("world",System.StringComparison.OrdinalIgnoreCase));"#
+        ),
         &["True"]
     );
 }
@@ -45,11 +49,13 @@ fn string_contains_with_string_comparison_case_insensitive() {
 #[test]
 fn string_replace_specific_occurrence_via_stringbuilder() {
     assert_eq!(
-        run_csharp(r#"string s="aababc";
+        run_csharp(
+            r#"string s="aababc";
 var sb=new System.Text.StringBuilder(s);
 int idx=s.IndexOf("ab",1);
 sb.Remove(idx,2).Insert(idx,"XX");
-Console.WriteLine(sb.ToString());"#),
+Console.WriteLine(sb.ToString());"#
+        ),
         &["aaXXbc"]
     );
 }

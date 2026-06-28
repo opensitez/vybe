@@ -4,9 +4,11 @@ use super::helpers::run_csharp;
 #[test]
 fn string_builder_chained_appends_produce_correct_result() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder();
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder();
 sb.Append("a").Append("b").Append("c");
-Console.WriteLine(sb.ToString());"#),
+Console.WriteLine(sb.ToString());"#
+        ),
         &["abc"]
     );
 }
@@ -14,9 +16,11 @@ Console.WriteLine(sb.ToString());"#),
 #[test]
 fn string_builder_append_line_adds_newline_separator() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder();
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder();
 sb.AppendLine("line1").AppendLine("line2");
-Console.WriteLine(sb.ToString().Trim().Replace("\r\n","\n"));"#),
+Console.WriteLine(sb.ToString().Trim().Replace("\r\n","\n"));"#
+        ),
         &["line1\nline2"]
     );
 }
@@ -24,9 +28,11 @@ Console.WriteLine(sb.ToString().Trim().Replace("\r\n","\n"));"#),
 #[test]
 fn string_builder_capacity_grows_automatically() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder(4);
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder(4);
 for(int i=0;i<100;i++) sb.Append('x');
-Console.WriteLine(sb.Length);"#),
+Console.WriteLine(sb.Length);"#
+        ),
         &["100"]
     );
 }
@@ -34,8 +40,10 @@ Console.WriteLine(sb.Length);"#),
 #[test]
 fn string_builder_index_access_reads_character() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder("hello");
-Console.WriteLine(sb[1]);"#),
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder("hello");
+Console.WriteLine(sb[1]);"#
+        ),
         &["e"]
     );
 }
@@ -43,9 +51,11 @@ Console.WriteLine(sb[1]);"#),
 #[test]
 fn string_builder_index_write_mutates_character() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder("hello");
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder("hello");
 sb[0]='H';
-Console.WriteLine(sb.ToString());"#),
+Console.WriteLine(sb.ToString());"#
+        ),
         &["Hello"]
     );
 }
@@ -53,8 +63,10 @@ Console.WriteLine(sb.ToString());"#),
 #[test]
 fn string_builder_to_string_substring_overload() {
     assert_eq!(
-        run_csharp(r#"var sb=new System.Text.StringBuilder("hello world");
-Console.WriteLine(sb.ToString(6,5));"#),
+        run_csharp(
+            r#"var sb=new System.Text.StringBuilder("hello world");
+Console.WriteLine(sb.ToString(6,5));"#
+        ),
         &["world"]
     );
 }

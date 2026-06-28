@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn verbatim_string_preserves_backslashes() {
     assert_eq!(
-        run_csharp(r#"string path=@"C:\Users\test\file.txt";
-Console.WriteLine(path.Contains(@"\"));"#),
+        run_csharp(
+            r#"string path=@"C:\Users\test\file.txt";
+Console.WriteLine(path.Contains(@"\"));"#
+        ),
         &["True"]
     );
 }
@@ -45,8 +47,10 @@ fn unicode_escape_produces_correct_character() {
 #[test]
 fn raw_string_literal_contains_embedded_quotes_without_escaping() {
     assert_eq!(
-        run_csharp(r####"string s="""She said "hello" to him.""";
-Console.WriteLine(s.Contains("\"hello\""));"####),
+        run_csharp(
+            r####"string s="""She said "hello" to him.""";
+Console.WriteLine(s.Contains("\"hello\""));"####
+        ),
         &["True"]
     );
 }

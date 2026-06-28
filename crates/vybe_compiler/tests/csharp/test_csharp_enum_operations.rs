@@ -4,7 +4,9 @@ use super::helpers::run_csharp;
 #[test]
 fn enum_value_assigned_and_compared() {
     assert_eq!(
-        run_csharp(r#"enum Color{Red,Green,Blue} var c=Color.Green; Console.WriteLine(c==Color.Green);"#),
+        run_csharp(
+            r#"enum Color{Red,Green,Blue} var c=Color.Green; Console.WriteLine(c==Color.Green);"#
+        ),
         &["True"]
     );
 }
@@ -12,7 +14,9 @@ fn enum_value_assigned_and_compared() {
 #[test]
 fn enum_tostring_returns_member_name() {
     assert_eq!(
-        run_csharp(r#"enum Status{Pending,Active,Done} Console.WriteLine(Status.Active.ToString());"#),
+        run_csharp(
+            r#"enum Status{Pending,Active,Done} Console.WriteLine(Status.Active.ToString());"#
+        ),
         &["Active"]
     );
 }
@@ -20,7 +24,9 @@ fn enum_tostring_returns_member_name() {
 #[test]
 fn enum_cast_to_underlying_int_type() {
     assert_eq!(
-        run_csharp(r#"enum Priority{Low=1,Medium=2,High=3} Console.WriteLine((int)Priority.High);"#),
+        run_csharp(
+            r#"enum Priority{Low=1,Medium=2,High=3} Console.WriteLine((int)Priority.High);"#
+        ),
         &["3"]
     );
 }

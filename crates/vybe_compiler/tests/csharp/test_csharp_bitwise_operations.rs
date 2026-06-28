@@ -8,7 +8,10 @@ fn bitwise_and_masks_bits() {
 
 #[test]
 fn bitwise_or_sets_bits() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(0b1100 | 0b0011);"#), &["15"]);
+    assert_eq!(
+        run_csharp(r#"Console.WriteLine(0b1100 | 0b0011);"#),
+        &["15"]
+    );
 }
 
 #[test]
@@ -18,7 +21,10 @@ fn bitwise_xor_toggles_differing_bits() {
 
 #[test]
 fn bitwise_not_inverts_all_bits_of_byte() {
-    assert_eq!(run_csharp(r#"byte b = 0b11110000; Console.WriteLine((byte)(~b));"#), &["15"]);
+    assert_eq!(
+        run_csharp(r#"byte b = 0b11110000; Console.WriteLine((byte)(~b));"#),
+        &["15"]
+    );
 }
 
 #[test]
@@ -38,12 +44,18 @@ fn signed_right_shift_preserves_sign_bit_for_negative() {
 
 #[test]
 fn compound_bitwise_and_assign_updates_in_place() {
-    assert_eq!(run_csharp(r#"int x = 0b1111; x &= 0b0101; Console.WriteLine(x);"#), &["5"]);
+    assert_eq!(
+        run_csharp(r#"int x = 0b1111; x &= 0b0101; Console.WriteLine(x);"#),
+        &["5"]
+    );
 }
 
 #[test]
 fn compound_or_assign_sets_bits_in_place() {
-    assert_eq!(run_csharp(r#"int x = 0b1000; x |= 0b0011; Console.WriteLine(x);"#), &["11"]);
+    assert_eq!(
+        run_csharp(r#"int x = 0b1000; x |= 0b0011; Console.WriteLine(x);"#),
+        &["11"]
+    );
 }
 
 #[test]

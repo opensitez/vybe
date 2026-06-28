@@ -4,7 +4,8 @@ use super::helpers::run_csharp;
 #[test]
 fn switch_expression_with_when_guard() {
     assert_eq!(
-        run_csharp(r#"string Classify(int n)=>n switch{
+        run_csharp(
+            r#"string Classify(int n)=>n switch{
     int x when x<0=>"negative",
     0=>"zero",
     int x when x%2==0=>"even",
@@ -12,7 +13,8 @@ fn switch_expression_with_when_guard() {
 Console.WriteLine(Classify(-5));
 Console.WriteLine(Classify(0));
 Console.WriteLine(Classify(4));
-Console.WriteLine(Classify(7));"#),
+Console.WriteLine(Classify(7));"#
+        ),
         &["negative", "zero", "even", "odd"]
     );
 }
@@ -20,12 +22,14 @@ Console.WriteLine(Classify(7));"#),
 #[test]
 fn nested_tuple_pattern_matches_pair_of_conditions() {
     assert_eq!(
-        run_csharp(r#"string Combo(bool a,bool b)=>(a,b) switch{
+        run_csharp(
+            r#"string Combo(bool a,bool b)=>(a,b) switch{
     (true,true)=>"both",
     (true,false)=>"left",
     (false,true)=>"right",
     _=>"none"};
-Console.WriteLine(Combo(true,false));"#),
+Console.WriteLine(Combo(true,false));"#
+        ),
         &["left"]
     );
 }
@@ -33,7 +37,8 @@ Console.WriteLine(Combo(true,false));"#),
 #[test]
 fn list_pattern_matches_exact_element_count() {
     assert_eq!(
-        run_csharp(r#"string Check(int[] a)=>a switch{
+        run_csharp(
+            r#"string Check(int[] a)=>a switch{
     []=>"empty",
     [_]=>"single",
     [_,_]=>"pair",
@@ -41,7 +46,8 @@ fn list_pattern_matches_exact_element_count() {
 Console.WriteLine(Check(new int[]{}));
 Console.WriteLine(Check(new[]{1}));
 Console.WriteLine(Check(new[]{1,2}));
-Console.WriteLine(Check(new[]{1,2,3}));"#),
+Console.WriteLine(Check(new[]{1,2,3}));"#
+        ),
         &["empty", "single", "pair", "many"]
     );
 }
@@ -49,7 +55,8 @@ Console.WriteLine(Check(new[]{1,2,3}));"#),
 #[test]
 fn relational_and_pattern_combines_bounds_check() {
     assert_eq!(
-        run_csharp(r#"string Grade(int n)=>n switch{
+        run_csharp(
+            r#"string Grade(int n)=>n switch{
     >=90=>"A",
     >=70 and <90=>"B",
     >=50 and <70=>"C",
@@ -57,7 +64,8 @@ fn relational_and_pattern_combines_bounds_check() {
 Console.WriteLine(Grade(95));
 Console.WriteLine(Grade(75));
 Console.WriteLine(Grade(55));
-Console.WriteLine(Grade(30));"#),
+Console.WriteLine(Grade(30));"#
+        ),
         &["A", "B", "C", "F"]
     );
 }
@@ -65,7 +73,8 @@ Console.WriteLine(Grade(30));"#),
 #[test]
 fn type_pattern_in_switch_expression_dispatches_to_subclass() {
     assert_eq!(
-        run_csharp(r#"abstract class Expr{}
+        run_csharp(
+            r#"abstract class Expr{}
 class Num:Expr{public int V;}
 class Add:Expr{public Expr L,R;}
 int Eval(Expr e)=>e switch{
@@ -73,7 +82,8 @@ int Eval(Expr e)=>e switch{
     Add a=>Eval(a.L)+Eval(a.R),
     _=>throw new System.Exception()};
 var tree=new Add{L=new Num{V=3},R=new Add{L=new Num{V=4},R=new Num{V=5}}};
-Console.WriteLine(Eval(tree));"#),
+Console.WriteLine(Eval(tree));"#
+        ),
         &["12"]
     );
 }
@@ -81,11 +91,13 @@ Console.WriteLine(Eval(tree));"#),
 #[test]
 fn or_pattern_matches_one_of_several_values() {
     assert_eq!(
-        run_csharp(r#"string Weekend(string day)=>day switch{
+        run_csharp(
+            r#"string Weekend(string day)=>day switch{
     "Saturday" or "Sunday"=>"weekend",
     _=>"weekday"};
 Console.WriteLine(Weekend("Saturday"));
-Console.WriteLine(Weekend("Monday"));"#),
+Console.WriteLine(Weekend("Monday"));"#
+        ),
         &["weekend", "weekday"]
     );
 }

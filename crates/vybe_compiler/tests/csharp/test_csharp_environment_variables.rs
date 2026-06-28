@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn set_and_get_environment_variable_roundtrip() {
     assert_eq!(
-        run_csharp(r#"System.Environment.SetEnvironmentVariable("VYBE_TEST_KEY","hello");
-Console.WriteLine(System.Environment.GetEnvironmentVariable("VYBE_TEST_KEY"));"#),
+        run_csharp(
+            r#"System.Environment.SetEnvironmentVariable("VYBE_TEST_KEY","hello");
+Console.WriteLine(System.Environment.GetEnvironmentVariable("VYBE_TEST_KEY"));"#
+        ),
         &["hello"]
     );
 }
@@ -13,9 +15,11 @@ Console.WriteLine(System.Environment.GetEnvironmentVariable("VYBE_TEST_KEY"));"#
 #[test]
 fn deleting_environment_variable_makes_it_null() {
     assert_eq!(
-        run_csharp(r#"System.Environment.SetEnvironmentVariable("VYBE_DEL_KEY","x");
+        run_csharp(
+            r#"System.Environment.SetEnvironmentVariable("VYBE_DEL_KEY","x");
 System.Environment.SetEnvironmentVariable("VYBE_DEL_KEY",null);
-Console.WriteLine(System.Environment.GetEnvironmentVariable("VYBE_DEL_KEY")==null);"#),
+Console.WriteLine(System.Environment.GetEnvironmentVariable("VYBE_DEL_KEY")==null);"#
+        ),
         &["True"]
     );
 }

@@ -35,10 +35,7 @@ fn ternary_operator_inside_interpolation() {
 
 #[test]
 fn alignment_specifier_pads_right_aligned() {
-    assert_eq!(
-        run_csharp(r#"Console.WriteLine($"{"x",5}");"#),
-        &["    x"]
-    );
+    assert_eq!(run_csharp(r#"Console.WriteLine($"{"x",5}");"#), &["    x"]);
 }
 
 #[test]

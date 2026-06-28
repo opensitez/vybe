@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn task_run_executes_lambda_on_thread_pool() {
     assert_eq!(
-        run_csharp(r#"var t=System.Threading.Tasks.Task.Run(()=>42);
-Console.WriteLine(t.Result);"#),
+        run_csharp(
+            r#"var t=System.Threading.Tasks.Task.Run(()=>42);
+Console.WriteLine(t.Result);"#
+        ),
         &["42"]
     );
 }
@@ -13,9 +15,11 @@ Console.WriteLine(t.Result);"#),
 #[test]
 fn cancellation_token_is_cancelled_after_cancel_called() {
     assert_eq!(
-        run_csharp(r#"var cts=new System.Threading.CancellationTokenSource();
+        run_csharp(
+            r#"var cts=new System.Threading.CancellationTokenSource();
 cts.Cancel();
-Console.WriteLine(cts.Token.IsCancellationRequested);"#),
+Console.WriteLine(cts.Token.IsCancellationRequested);"#
+        ),
         &["True"]
     );
 }
@@ -23,12 +27,14 @@ Console.WriteLine(cts.Token.IsCancellationRequested);"#),
 #[test]
 fn task_cancelled_when_token_is_cancelled_before_await() {
     assert_eq!(
-        run_csharp(r#"var cts=new System.Threading.CancellationTokenSource();
+        run_csharp(
+            r#"var cts=new System.Threading.CancellationTokenSource();
 cts.Cancel();
 string result="ok";
 try{System.Threading.Tasks.Task.Delay(1000,cts.Token).Wait();}
 catch(System.AggregateException){result="cancelled";}
-Console.WriteLine(result);"#),
+Console.WriteLine(result);"#
+        ),
         &["cancelled"]
     );
 }
@@ -36,10 +42,12 @@ Console.WriteLine(result);"#),
 #[test]
 fn when_any_returns_first_completed_task() {
     assert_eq!(
-        run_csharp(r#"async System.Threading.Tasks.Task<int> Fast()=>await System.Threading.Tasks.Task.FromResult(1);
+        run_csharp(
+            r#"async System.Threading.Tasks.Task<int> Fast()=>await System.Threading.Tasks.Task.FromResult(1);
 async System.Threading.Tasks.Task<int> Slow(){await System.Threading.Tasks.Task.Delay(1000);return 2;}
 var winner=await System.Threading.Tasks.Task.WhenAny(Fast(),Slow());
-Console.WriteLine(winner.Result);"#),
+Console.WriteLine(winner.Result);"#
+        ),
         &["1"]
     );
 }
@@ -47,11 +55,13 @@ Console.WriteLine(winner.Result);"#),
 #[test]
 fn task_continuation_runs_after_completion() {
     assert_eq!(
-        run_csharp(r#"int result=0;
+        run_csharp(
+            r#"int result=0;
 System.Threading.Tasks.Task.Run(()=>7)
     .ContinueWith(t=>result=t.Result*2)
     .Wait();
-Console.WriteLine(result);"#),
+Console.WriteLine(result);"#
+        ),
         &["14"]
     );
 }
@@ -59,10 +69,12 @@ Console.WriteLine(result);"#),
 #[test]
 fn task_from_exception_rethrows_on_await() {
     assert_eq!(
-        run_csharp(r#"string msg="";
+        run_csharp(
+            r#"string msg="";
 var t=System.Threading.Tasks.Task.FromException(new System.Exception("boom"));
 try{t.Wait();}catch(System.AggregateException ae){msg=ae.InnerException.Message;}
-Console.WriteLine(msg);"#),
+Console.WriteLine(msg);"#
+        ),
         &["boom"]
     );
 }
@@ -70,8 +82,10 @@ Console.WriteLine(msg);"#),
 #[test]
 fn task_completed_task_already_in_ran_to_completion_state() {
     assert_eq!(
-        run_csharp(r#"var t=System.Threading.Tasks.Task.CompletedTask;
-Console.WriteLine(t.IsCompleted);"#),
+        run_csharp(
+            r#"var t=System.Threading.Tasks.Task.CompletedTask;
+Console.WriteLine(t.IsCompleted);"#
+        ),
         &["True"]
     );
 }

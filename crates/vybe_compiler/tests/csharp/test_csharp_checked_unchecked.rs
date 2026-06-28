@@ -4,10 +4,12 @@ use super::helpers::run_csharp;
 #[test]
 fn checked_block_throws_on_int_overflow() {
     assert_eq!(
-        run_csharp(r#"string r="ok";
+        run_csharp(
+            r#"string r="ok";
 try{checked{int x=int.MaxValue;x++;}}
 catch(System.OverflowException){r="overflow";}
-Console.WriteLine(r);"#),
+Console.WriteLine(r);"#
+        ),
         &["overflow"]
     );
 }
@@ -15,8 +17,10 @@ Console.WriteLine(r);"#),
 #[test]
 fn unchecked_block_wraps_silently_on_int_overflow() {
     assert_eq!(
-        run_csharp(r#"unchecked{int x=int.MaxValue; x++; Console.WriteLine(x==int.MinValue);}
-"#),
+        run_csharp(
+            r#"unchecked{int x=int.MaxValue; x++; Console.WriteLine(x==int.MinValue);}
+"#
+        ),
         &["True"]
     );
 }
@@ -24,10 +28,12 @@ fn unchecked_block_wraps_silently_on_int_overflow() {
 #[test]
 fn checked_expression_throws_on_byte_overflow() {
     assert_eq!(
-        run_csharp(r#"string r="";
+        run_csharp(
+            r#"string r="";
 try{byte b=checked((byte)256);}
 catch(System.OverflowException){r="ov";}
-Console.WriteLine(r);"#),
+Console.WriteLine(r);"#
+        ),
         &["ov"]
     );
 }
@@ -43,8 +49,10 @@ fn unchecked_expression_wraps_byte_overflow() {
 #[test]
 fn default_arithmetic_is_unchecked_for_performance() {
     assert_eq!(
-        run_csharp(r#"int x=int.MaxValue; x++;
-Console.WriteLine(x==int.MinValue);"#),
+        run_csharp(
+            r#"int x=int.MaxValue; x++;
+Console.WriteLine(x==int.MinValue);"#
+        ),
         &["True"]
     );
 }
@@ -52,10 +60,12 @@ Console.WriteLine(x==int.MinValue);"#),
 #[test]
 fn checked_multiply_throws_on_overflow() {
     assert_eq!(
-        run_csharp(r#"string r="";
+        run_csharp(
+            r#"string r="";
 try{checked{int x=int.MaxValue*2;}}
 catch(System.OverflowException){r="ov";}
-Console.WriteLine(r);"#),
+Console.WriteLine(r);"#
+        ),
         &["ov"]
     );
 }

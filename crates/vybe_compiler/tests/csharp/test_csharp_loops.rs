@@ -79,7 +79,9 @@ Console.WriteLine(total);
 #[test]
 fn continue_skips_rest_of_body_and_re_evaluates_condition() {
     assert_eq!(
-        run_csharp(r#"int s=0; for(int i=0;i<5;i++) { if(i%2==0) continue; s+=i; } Console.WriteLine(s);"#),
+        run_csharp(
+            r#"int s=0; for(int i=0;i<5;i++) { if(i%2==0) continue; s+=i; } Console.WriteLine(s);"#
+        ),
         &["4"]
     );
 }

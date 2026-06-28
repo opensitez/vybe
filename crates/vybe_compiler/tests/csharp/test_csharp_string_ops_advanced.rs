@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn split_with_multiple_delimiters() {
     assert_eq!(
-        run_csharp(r#"var parts="a,b;c".Split(new char[]{',',';'});
-Console.WriteLine(parts.Length); Console.WriteLine(parts[2]);"#),
+        run_csharp(
+            r#"var parts="a,b;c".Split(new char[]{',',';'});
+Console.WriteLine(parts.Length); Console.WriteLine(parts[2]);"#
+        ),
         &["3", "c"]
     );
 }
@@ -13,8 +15,10 @@ Console.WriteLine(parts.Length); Console.WriteLine(parts[2]);"#),
 #[test]
 fn split_with_max_count_limits_resulting_segments() {
     assert_eq!(
-        run_csharp(r#"var parts="a:b:c:d".Split(':',2);
-Console.WriteLine(parts.Length); Console.WriteLine(parts[1]);"#),
+        run_csharp(
+            r#"var parts="a:b:c:d".Split(':',2);
+Console.WriteLine(parts.Length); Console.WriteLine(parts[1]);"#
+        ),
         &["2", "b:c:d"]
     );
 }
@@ -54,8 +58,10 @@ fn string_repeat_via_new_string_ctor() {
 #[test]
 fn string_to_char_array_roundtrip() {
     assert_eq!(
-        run_csharp(r#"char[] chars="abc".ToCharArray();
-Console.WriteLine(new string(chars));"#),
+        run_csharp(
+            r#"char[] chars="abc".ToCharArray();
+Console.WriteLine(new string(chars));"#
+        ),
         &["abc"]
     );
 }

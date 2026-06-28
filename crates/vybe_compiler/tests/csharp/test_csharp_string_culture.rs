@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn string_compare_invariant_culture_ignores_locale() {
     assert_eq!(
-        run_csharp(r#"int r=string.Compare("hello","HELLO",System.StringComparison.InvariantCultureIgnoreCase);
-Console.WriteLine(r==0);"#),
+        run_csharp(
+            r#"int r=string.Compare("hello","HELLO",System.StringComparison.InvariantCultureIgnoreCase);
+Console.WriteLine(r==0);"#
+        ),
         &["True"]
     );
 }
@@ -29,8 +31,10 @@ fn to_lower_with_invariant_culture() {
 #[test]
 fn ordinal_comparison_is_byte_by_byte() {
     assert_eq!(
-        run_csharp(r#"int r=string.CompareOrdinal("a","A");
-Console.WriteLine(r>0);"#),
+        run_csharp(
+            r#"int r=string.CompareOrdinal("a","A");
+Console.WriteLine(r>0);"#
+        ),
         &["True"]
     );
 }
@@ -38,7 +42,9 @@ Console.WriteLine(r>0);"#),
 #[test]
 fn string_equals_ordinal_ignores_locale_specific_rules() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine("Abc".Equals("abc",System.StringComparison.OrdinalIgnoreCase));"#),
+        run_csharp(
+            r#"Console.WriteLine("Abc".Equals("abc",System.StringComparison.OrdinalIgnoreCase));"#
+        ),
         &["True"]
     );
 }
@@ -46,8 +52,10 @@ fn string_equals_ordinal_ignores_locale_specific_rules() {
 #[test]
 fn invariant_culture_tostring_for_double_uses_dot_separator() {
     assert_eq!(
-        run_csharp(r#"double d=1.5;
-Console.WriteLine(d.ToString(System.Globalization.CultureInfo.InvariantCulture));"#),
+        run_csharp(
+            r#"double d=1.5;
+Console.WriteLine(d.ToString(System.Globalization.CultureInfo.InvariantCulture));"#
+        ),
         &["1.5"]
     );
 }

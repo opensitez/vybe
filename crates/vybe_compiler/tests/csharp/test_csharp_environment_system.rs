@@ -20,8 +20,10 @@ fn environment_processor_count_is_positive() {
 #[test]
 fn environment_get_environment_variable_returns_null_for_unknown() {
     assert_eq!(
-        run_csharp(r#"var v=System.Environment.GetEnvironmentVariable("__VYBE_NOSUCH_VAR__123");
-Console.WriteLine(v==null);"#),
+        run_csharp(
+            r#"var v=System.Environment.GetEnvironmentVariable("__VYBE_NOSUCH_VAR__123");
+Console.WriteLine(v==null);"#
+        ),
         &["True"]
     );
 }
@@ -29,8 +31,10 @@ Console.WriteLine(v==null);"#),
 #[test]
 fn gc_collect_runs_without_error() {
     assert_eq!(
-        run_csharp(r#"System.GC.Collect();
-Console.WriteLine("ok");"#),
+        run_csharp(
+            r#"System.GC.Collect();
+Console.WriteLine("ok");"#
+        ),
         &["ok"]
     );
 }

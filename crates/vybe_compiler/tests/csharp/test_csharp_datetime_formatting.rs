@@ -49,9 +49,7 @@ Console.WriteLine(d.Year); Console.WriteLine(d.Month); Console.WriteLine(d.Day);
 #[test]
 fn try_parse_returns_false_for_invalid_string() {
     assert_eq!(
-        run_csharp(
-            r#"Console.WriteLine(System.DateTime.TryParse("not-a-date", out _));"#
-        ),
+        run_csharp(r#"Console.WriteLine(System.DateTime.TryParse("not-a-date", out _));"#),
         &["False"]
     );
 }
