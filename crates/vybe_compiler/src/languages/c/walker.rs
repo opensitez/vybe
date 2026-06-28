@@ -6695,12 +6695,24 @@ impl Walker {
                     }
                     return int_lit(0);
                 }
+                "asctime" => {
+                    if let Some(tm) = args.into_iter().next() {
+                        return time_adapter::asctime(tm.value);
+                    }
+                    return str_lit("");
+                }
+                "ctime" => {
+                    if let Some(t) = args.into_iter().next() {
+                        return time_adapter::ctime(t.value);
+                    }
+                    return str_lit("");
+                }
                 "strftime" => {
                     let mut it = args.into_iter();
-                    if let (Some(buf), Some(size), Some(fmt), Some(_tm)) =
+                    if let (Some(buf), Some(size), Some(fmt), Some(tm)) =
                         (it.next(), it.next(), it.next(), it.next())
                     {
-                        let out = time_adapter::strftime_output(fmt.value);
+                        let out = time_adapter::strftime_output(fmt.value, tm.value);
                         return call_expr(
                             expr(ExprKind::Lambda {
                                 params: vec![],
