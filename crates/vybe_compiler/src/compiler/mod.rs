@@ -88,6 +88,7 @@ struct PendingClass {
     parent: Option<String>,
     enclosing_class: Option<String>,
     fields: Vec<String>,
+    field_storage_names: HashMap<String, String>,
     is_value_type: bool,
     instance_member_names: Vec<String>,
     instance_pointer_method_names: Vec<String>,
@@ -2636,6 +2637,7 @@ impl Compiler {
                 parent: None,
                 enclosing_class: self.current_class.clone(),
                 fields,
+                field_storage_names: HashMap::new(),
                 is_value_type: true,
                 instance_member_names,
                 instance_pointer_method_names,
@@ -2731,6 +2733,7 @@ impl Compiler {
                 parent: None,
                 enclosing_class: self.current_class.clone(),
                 fields: Vec::new(),
+                field_storage_names: HashMap::new(),
                 is_value_type: false,
                 instance_member_names: Vec::new(),
                 instance_pointer_method_names: Vec::new(),
@@ -3678,6 +3681,48 @@ impl Compiler {
         }
 
         self.js_member_storage_name(field)
+    }
+
+    fn php_property_storage_name_for_class(&self, class_name: &str, field: &str) -> Option<String> {
+        if !self.is_php_profile() {
+            return None;
+        }
+        let class_key = self.canon(class_name);
+        self.pending_classes
+            .get(&class_key)
+            .and_then(|pending| pending.field_storage_names.get(&self.canon(field)).cloned())
+    }
+
+    fn php_property_storage_name_for_receiver(
+        &self,
+        receiver: &Expression,
+        field: &str,
+    ) -> Option<String> {
+        if !self.is_php_profile() {
+            return None;
+        }
+        let self_kw = self.profile.self_keyword.as_str();
+        match &receiver.kind {
+            ExprKind::This => self
+                .current_class
+                .as_deref()
+                .and_then(|class_name| self.php_property_storage_name_for_class(class_name, field)),
+            ExprKind::Ident(name)
+                if name == self_kw || name == "$this" || name.eq_ignore_ascii_case(self_kw) =>
+            {
+                self.current_class
+                    .as_deref()
+                    .and_then(|class_name| self.php_property_storage_name_for_class(class_name, field))
+            }
+            ExprKind::Ident(name) => self
+                .lookup_var_type_hint(name)
+                .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                .and_then(|class_name| self.php_property_storage_name_for_class(&class_name, field)),
+            _ => self
+                .infer_expr_type_hint(receiver)
+                .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(&type_hint))
+                .and_then(|class_name| self.php_property_storage_name_for_class(&class_name, field)),
+        }
     }
 
     fn js_private_member_access_forbidden(&self, field: &str) -> bool {
@@ -4901,6 +4946,7 @@ impl Compiler {
                 parent,
                 enclosing_class: self.current_class.clone(),
                 fields: Vec::new(),
+                field_storage_names: HashMap::new(),
                 is_value_type: false,
                 instance_member_names: Vec::new(),
                 instance_pointer_method_names: Vec::new(),
@@ -4923,6 +4969,11 @@ impl Compiler {
     /// the handler is wired must NOT break dispatch.
     ///
     pub(crate) fn canon(&self, name: &str) -> String {
+        let name = if self.is_php_profile() {
+            name.strip_prefix('$').unwrap_or(name)
+        } else {
+            name
+        };
         if self.case_sensitive {
             name.to_string()
         } else {
@@ -12379,7 +12430,9 @@ impl Compiler {
                         self.compile_expr(object)?;
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
-                        let field_name = self.js_member_storage_name(field);
+                        let field_name = self
+                            .php_property_storage_name_for_receiver(object, field)
+                            .unwrap_or_else(|| self.js_member_storage_name(field));
                         let idx = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
@@ -12414,7 +12467,9 @@ impl Compiler {
                 }
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp);
-                let field_name = self.js_member_storage_name(field);
+                let field_name = self
+                    .php_property_storage_name_for_receiver(object, field)
+                    .unwrap_or_else(|| self.js_member_storage_name(field));
                 if self.profile.name == "fortran" {
                     if let ExprKind::Index {
                         object: collection_owner,
@@ -12954,7 +13009,9 @@ impl Compiler {
                         if !*null_safe {
                             let recv_tmp = self.define_local("__php_index_member_recv");
                             let coll_tmp = self.define_local("__php_index_member_coll");
-                            let field_name = self.canon(field);
+                            let field_name = self
+                                .php_property_storage_name_for_receiver(recv, field)
+                                .unwrap_or_else(|| self.canon(field));
 
                             self.compile_expr(recv)?;
                             self.emit_u16(Op::LOCAL_SET, recv_tmp);

@@ -5694,6 +5694,9 @@ fn apply_postfix(
             // PHP 5.5 `ClassName::class` resolves to the class-name string at
             // compile time. Normalize to a string literal.
             if name == "class" {
+                if matches!(receiver.kind, ExprKind::This) {
+                    return Ok(php_called_class_expr(&span));
+                }
                 if let ExprKind::Ident(cn) = &receiver.kind {
                     return Ok(Expression::with_span(
                         ExprKind::Lit(Literal::Str(cn.trim_start_matches('\\').to_string())),
@@ -6488,7 +6491,7 @@ fn php_first_class_callable_lambda(callee: Expression, optional: bool, span: &Sp
             params: vec![mk_param("a"), mk_param("b"), mk_param("c"), mk_param("d")],
             body: LambdaBody::Expr(Box::new(body_call)),
             is_async: false,
-            captures: vec!["__fcc_target".to_string()],
+            captures: vec![],
         },
         span.clone(),
     );
@@ -7446,6 +7449,72 @@ fn literal_key_name(expr: &Expression) -> Option<String> {
 fn is_php_this_expr(expr: &Expression) -> bool {
     matches!(&expr.kind, ExprKind::This)
         || matches!(&expr.kind, ExprKind::Ident(name) if name == "$this")
+}
+
+fn php_called_class_expr(span: &Span) -> Expression {
+    let this_e = Expression::with_span(ExprKind::This, span.clone());
+    let typeof_this =
+        Expression::with_span(ExprKind::TypeOf(Box::new(this_e.clone())), span.clone());
+    let fn_str = Expression::with_span(
+        ExprKind::Lit(Literal::Str("function".to_string())),
+        span.clone(),
+    );
+    let is_static_call = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(typeof_this),
+            right: Box::new(fn_str),
+        },
+        span.clone(),
+    );
+    let ctor_name = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(this_e.clone()),
+            field: "name".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let type_prop = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(this_e.clone()),
+            field: "__type".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let instance_ctor = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(this_e),
+            field: "constructor".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let instance_ctor_name = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(instance_ctor),
+            field: "name".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let instance_name = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::NullCoalesce,
+            left: Box::new(type_prop),
+            right: Box::new(instance_ctor_name),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(is_static_call),
+            then: Box::new(ctor_name),
+            else_: Box::new(instance_name),
+        },
+        span.clone(),
+    )
 }
 
 fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -10318,6 +10387,7 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 right: Box::new(ctor_name),
             }
         }
+        "get_called_class" if args.is_empty() => php_called_class_expr(&span).kind,
         // PHP `is_a($obj, "Name")` (literal class name) → `$obj instanceof Name`.
         "is_a" if args.len() == 2 => {
             if let ExprKind::Lit(Literal::Str(class_name)) = &args[1].value.kind {

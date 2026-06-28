@@ -969,6 +969,28 @@ impl Compiler {
         // from instance_fields / static_fields, then add backing fields
         // for auto-properties. Reads NormalClass directly; no longer
         // iterates the reconstructed member list.
+        let php_method_names: std::collections::HashSet<String> = if self.is_php_profile() {
+            class
+                .instance_methods
+                .iter()
+                .map(|method| self.canon(&method.source_name))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let mut field_storage_names: HashMap<String, String> = HashMap::new();
+        let php_field_storage_name = |compiler: &Self,
+                                      field_name: &str,
+                                      method_names: &std::collections::HashSet<String>|
+         -> String {
+            let canon = compiler.canon(field_name);
+            if compiler.is_php_profile() && method_names.contains(&canon) {
+                format!("__php_prop_{}", canon)
+            } else {
+                compiler.js_member_storage_name_for_class(&class.name, field_name)
+            }
+        };
+
         let mut fields: Vec<String> = Vec::new();
         let mut field_inits: Vec<(
             String,
@@ -983,7 +1005,10 @@ impl Compiler {
             Option<Vec<Expression>>,
         )> = Vec::new();
         for f in &class.instance_fields {
-            let fname = self.js_member_storage_name_for_class(&class.name, &f.name);
+            let fname = php_field_storage_name(self, &f.name, &php_method_names);
+            if fname != self.canon(&f.name) {
+                field_storage_names.insert(self.canon(&f.name), fname.clone());
+            }
             fields.push(fname.clone());
             field_inits.push((
                 fname,
@@ -1007,7 +1032,10 @@ impl Compiler {
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
                 let pname_canon =
-                    self.js_member_storage_name_for_class(&class.name, auto_field_name);
+                    php_field_storage_name(self, auto_field_name, &php_method_names);
+                if pname_canon != self.canon(auto_field_name) {
+                    field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
+                }
                 if p.is_static {
                     if !static_field_inits
                         .iter()
@@ -1046,7 +1074,12 @@ impl Compiler {
             .filter_map(|f| {
                 f.type_hint.as_ref().map(|t| {
                     (
-                        self.js_member_storage_name_for_class(&class.name, &f.name),
+                        field_storage_names
+                            .get(&self.canon(&f.name))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.js_member_storage_name_for_class(&class.name, &f.name)
+                            }),
                         Self::normalize_type_hint(t),
                     )
                 })
@@ -1092,6 +1125,7 @@ impl Compiler {
                 parent: parent.clone(),
                 enclosing_class: self.current_class.clone(),
                 fields: fields.clone(),
+                field_storage_names,
                 is_value_type: class.is_value_type,
                 instance_member_names: class
                     .instance_methods
@@ -2443,7 +2477,13 @@ impl Compiler {
                     name,
                     line,
                 );
-                for interface_name in self.reflection_interfaces(name) {
+                let mut interface_names = class.interfaces.clone();
+                interface_names.extend(self.reflection_interfaces(name));
+                let mut seen_interfaces = std::collections::HashSet::new();
+                for interface_name in interface_names {
+                    if !seen_interfaces.insert(self.canon(&interface_name)) {
+                        continue;
+                    }
                     common::classes::emit_instanceof_chain(
                         &mut self.chunks,
                         self.current,

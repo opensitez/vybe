@@ -2333,7 +2333,9 @@ impl Compiler {
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let field_name = self.canon(field);
+                    let field_name = self
+                        .php_property_storage_name_for_receiver(object, field)
+                        .unwrap_or_else(|| self.canon(field));
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_GET, idx);
                     self.chunk().emit_else(line);
@@ -2355,7 +2357,9 @@ impl Compiler {
                     self.emit(Op::NULL);
                     self.chunk().emit_end(line);
                 } else {
-                    let field_name = self.canon(field);
+                    let field_name = self
+                        .php_property_storage_name_for_receiver(object, field)
+                        .unwrap_or_else(|| self.canon(field));
                     if matches!(self.profile.name.as_str(), "csharp" | "vb")
                         && self.profile.namespaces.use_dotnet
                         && field.as_str() != field_name
