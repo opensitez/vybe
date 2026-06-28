@@ -116,9 +116,7 @@ fn boolean_variable_controls_branch() {
 
 #[test]
 fn logical_not_inverts_condition() {
-    let out = run_main(
-        "boolean flag = false; if (!flag) { System.out.println(\"inverted\"); }",
-    );
+    let out = run_main("boolean flag = false; if (!flag) { System.out.println(\"inverted\"); }");
     assert_eq!(out, vec!["inverted"]);
 }
 
@@ -216,9 +214,8 @@ fn string_is_empty_condition() {
 
 #[test]
 fn string_length_in_condition() {
-    let out = run_main(
-        r#"String s = "hello"; if (s.length() == 5) { System.out.println("five"); }"#,
-    );
+    let out =
+        run_main(r#"String s = "hello"; if (s.length() == 5) { System.out.println("five"); }"#);
     assert_eq!(out, vec!["five"]);
 }
 

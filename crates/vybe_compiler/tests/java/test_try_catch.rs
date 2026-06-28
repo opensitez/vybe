@@ -2,7 +2,9 @@ use crate::helpers::{run_in_main, run_main};
 
 #[test]
 fn try_body_runs_when_no_exception_thrown() {
-    let out = run_main("try { System.out.println(\"ok\"); } catch (RuntimeException e) { System.out.println(\"no\"); }");
+    let out = run_main(
+        "try { System.out.println(\"ok\"); } catch (RuntimeException e) { System.out.println(\"no\"); }",
+    );
     assert_eq!(out, vec!["ok"]);
 }
 
@@ -32,7 +34,9 @@ fn finally_runs_after_catch_handles_exception() {
 
 #[test]
 fn finally_skipped_when_no_exception_and_no_finally_clause() {
-    let out = run_main("try { System.out.println(\"only\"); } catch (RuntimeException e) { System.out.println(\"skip\"); }");
+    let out = run_main(
+        "try { System.out.println(\"only\"); } catch (RuntimeException e) { System.out.println(\"skip\"); }",
+    );
     assert_eq!(out, vec!["only"]);
 }
 

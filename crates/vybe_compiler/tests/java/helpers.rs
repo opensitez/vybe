@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, Value, VM};
+use vybe_bytecode::{HostContext, VM, Value};
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::java::parse(src)?;

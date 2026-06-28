@@ -138,9 +138,7 @@ fn switch_fallthrough_runs_three_consecutive_cases() {
 
 #[test]
 fn switch_default_only_arm_executes() {
-    let out = run_main(
-        "int x = 50; switch (x) { default: System.out.println(\"only\"); }",
-    );
+    let out = run_main("int x = 50; switch (x) { default: System.out.println(\"only\"); }");
     assert_eq!(out, vec!["only"]);
 }
 

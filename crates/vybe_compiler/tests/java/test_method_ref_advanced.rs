@@ -162,9 +162,8 @@ fn method_ref_in_stream_sorted_uses_natural_string_order() {
 
 #[test]
 fn method_ref_in_stream_for_each_prints_each_string() {
-    let out = run_main(
-        "java.util.Arrays.asList(\"x\", \"y\").stream().forEach(System.out::println);",
-    );
+    let out =
+        run_main("java.util.Arrays.asList(\"x\", \"y\").stream().forEach(System.out::println);");
     assert_eq!(out, vec!["x", "y"]);
 }
 
@@ -194,9 +193,7 @@ fn method_ref_in_comparator_comparing_sorts_by_length() {
 
 #[test]
 fn method_ref_list_for_each_with_println_reference() {
-    let out = run_main(
-        "java.util.Arrays.asList(1, 2, 3).forEach(System.out::println);",
-    );
+    let out = run_main("java.util.Arrays.asList(1, 2, 3).forEach(System.out::println);");
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 

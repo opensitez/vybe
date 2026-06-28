@@ -131,7 +131,10 @@ fn generic_method_returns_first_of_two_values() {
             static <T> T first(T a, T b) { return a; }
         }
     "#;
-    let out = run_in_main("System.out.println(Pick.first(\"left\", \"right\"));", types);
+    let out = run_in_main(
+        "System.out.println(Pick.first(\"left\", \"right\"));",
+        types,
+    );
     assert_eq!(out, vec!["left"]);
 }
 

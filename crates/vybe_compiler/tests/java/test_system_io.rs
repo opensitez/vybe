@@ -122,17 +122,13 @@ fn printf_hex_uppercase_placeholder() {
 
 #[test]
 fn get_property_missing_key_is_null() {
-    let out = run_main(
-        r#"System.out.println(System.getProperty("vybe.missing.property.key"));"#,
-    );
+    let out = run_main(r#"System.out.println(System.getProperty("vybe.missing.property.key"));"#);
     assert_eq!(out, vec!["null"]);
 }
 
 #[test]
 fn get_property_missing_key_equals_null() {
-    let out = run_main(
-        r#"System.out.println(System.getProperty("vybe.absent.key") == null);"#,
-    );
+    let out = run_main(r#"System.out.println(System.getProperty("vybe.absent.key") == null);"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -154,8 +150,7 @@ fn get_property_on_known_style_key_returns_string_or_null() {
 
 #[test]
 fn println_printf_and_print_can_mix_in_sequence() {
-    let out = run_main(
-        r#"System.out.print("["); System.out.printf("%d", 5); System.out.println("]");"#,
-    );
+    let out =
+        run_main(r#"System.out.print("["); System.out.printf("%d", 5); System.out.println("]");"#);
     assert_eq!(out, vec!["[", "5", "5]"]);
 }

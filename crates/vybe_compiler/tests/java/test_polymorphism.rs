@@ -33,10 +33,7 @@ fn virtual_dispatch_through_grandparent_reference() {
         static class B extends A { String id() { return "B"; } }
         static class C extends B { String id() { return "C"; } }
     "#;
-    let out = run_in_main(
-        "A ref = new C(); System.out.println(ref.id());",
-        types,
-    );
+    let out = run_in_main("A ref = new C(); System.out.println(ref.id());", types);
     assert_eq!(out, vec!["C"]);
 }
 
@@ -202,10 +199,7 @@ fn super_method_not_called_when_overridden() {
         static class Base { String id() { return "base"; } }
         static class Child extends Base { String id() { return "child"; } }
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.id());",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.id());", types);
     assert_eq!(out, vec!["child"]);
 }
 
@@ -215,10 +209,7 @@ fn super_method_called_explicitly_from_override() {
         static class Base { String id() { return "base"; } }
         static class Child extends Base { String id() { return super.id() + "-child"; } }
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.id());",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.id());", types);
     assert_eq!(out, vec!["base-child"]);
 }
 
@@ -241,10 +232,7 @@ fn cross_hierarchy_instanceof_false() {
         static class A {}
         static class B {}
     "#;
-    let out = run_in_main(
-        "A a = new A(); System.out.println(a instanceof B);",
-        types,
-    );
+    let out = run_in_main("A a = new A(); System.out.println(a instanceof B);", types);
     assert_eq!(out, vec!["false"]);
 }
 
@@ -281,10 +269,7 @@ fn double_dispatch_pattern_two_levels() {
         static class B extends A { String id() { return super.id() + "B"; } }
         static class C extends B { String id() { return super.id() + "C"; } }
     "#;
-    let out = run_in_main(
-        "A ref = new C(); System.out.println(ref.id());",
-        types,
-    );
+    let out = run_in_main("A ref = new C(); System.out.println(ref.id());", types);
     assert_eq!(out, vec!["ABC"]);
 }
 
@@ -389,10 +374,7 @@ fn override_with_wider_behavior() {
         static class Base { int step() { return 1; } }
         static class Child extends Base { int step() { return super.step() + 2; } }
     "#;
-    let out = run_in_main(
-        "Base b = new Child(); System.out.println(b.step());",
-        types,
-    );
+    let out = run_in_main("Base b = new Child(); System.out.println(b.step());", types);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -403,10 +385,7 @@ fn parent_field_shadow_child_field_distinct() {
         static class Parent extends Grand { int depth = 2; }
         static class Child extends Parent {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.depth);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.depth);", types);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -419,10 +398,7 @@ fn virtual_method_called_from_parent_method() {
         }
         static class Child extends Base { String core() { return "child"; } }
     "#;
-    let out = run_in_main(
-        "Base b = new Child(); System.out.println(b.wrap());",
-        types,
-    );
+    let out = run_in_main("Base b = new Child(); System.out.println(b.wrap());", types);
     assert_eq!(out, vec!["[child]"]);
 }
 
@@ -436,9 +412,7 @@ fn pattern_instanceof_string_in_guard() {
 
 #[test]
 fn array_instanceof_check() {
-    let out = run_main(
-        "Object o = new int[3]; System.out.println(o instanceof int[]);",
-    );
+    let out = run_main("Object o = new int[3]; System.out.println(o instanceof int[]);");
     assert_eq!(out, vec!["true"]);
 }
 
@@ -482,10 +456,7 @@ fn multilevel_override_deepest_wins() {
         static class B extends A { int n() { return 2; } }
         static class C extends B { int n() { return 3; } }
     "#;
-    let out = run_in_main(
-        "A ref = new C(); System.out.println(ref.n());",
-        types,
-    );
+    let out = run_in_main("A ref = new C(); System.out.println(ref.n());", types);
     assert_eq!(out, vec!["3"]);
 }
 

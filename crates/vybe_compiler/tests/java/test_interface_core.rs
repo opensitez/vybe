@@ -306,10 +306,7 @@ fn class_implements_interface_with_void_method() {
             public void accept(int n) { System.out.println(n); }
         }
     "#;
-    let out = run_in_main(
-        "Sink s = new PrintSink(); s.accept(42);",
-        types,
-    );
+    let out = run_in_main("Sink s = new PrintSink(); s.accept(42);", types);
     assert_eq!(out, vec!["42"]);
 }
 

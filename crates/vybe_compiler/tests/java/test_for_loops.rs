@@ -78,9 +78,7 @@ fn classic_for_condition_uses_comparison_expression() {
 
 #[test]
 fn loop_variable_not_visible_after_for_loop() {
-    let out = run_main(
-        "for (int i = 0; i < 2; i++) {} int x = 7; System.out.println(x);",
-    );
+    let out = run_main("for (int i = 0; i < 2; i++) {} int x = 7; System.out.println(x);");
     assert_eq!(out, vec!["7"]);
 }
 
@@ -94,9 +92,7 @@ fn inner_for_shadows_outer_loop_variable() {
 
 #[test]
 fn enhanced_for_iterates_int_array_elements() {
-    let out = run_main(
-        "int[] nums = {10, 20, 30}; for (int v : nums) { System.out.println(v); }",
-    );
+    let out = run_main("int[] nums = {10, 20, 30}; for (int v : nums) { System.out.println(v); }");
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
@@ -148,9 +144,8 @@ fn nested_for_three_levels() {
 
 #[test]
 fn break_exits_classic_for_early() {
-    let out = run_main(
-        "for (int i = 0; i < 10; i++) { if (i == 3) break; System.out.println(i); }",
-    );
+    let out =
+        run_main("for (int i = 0; i < 10; i++) { if (i == 3) break; System.out.println(i); }");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
@@ -196,9 +191,7 @@ fn continue_skips_remaining_body_statements() {
 
 #[test]
 fn for_with_if_inside_filters_output() {
-    let out = run_main(
-        "for (int i = 0; i < 6; i++) { if (i > 2) { System.out.println(i); } }",
-    );
+    let out = run_main("for (int i = 0; i < 6; i++) { if (i > 2) { System.out.println(i); } }");
     assert_eq!(out, vec!["3", "4", "5"]);
 }
 
@@ -226,9 +219,8 @@ fn classic_for_with_negative_start_counts_up() {
 
 #[test]
 fn break_after_printing_last_allowed_value() {
-    let out = run_main(
-        "for (int i = 0; i < 100; i++) { System.out.println(i); if (i == 2) break; }",
-    );
+    let out =
+        run_main("for (int i = 0; i < 100; i++) { System.out.println(i); if (i == 2) break; }");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 

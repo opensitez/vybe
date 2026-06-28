@@ -116,17 +116,14 @@ fn string_variable_equality_true_for_same_literal_text() {
 
 #[test]
 fn string_equals_compares_matching_content() {
-    let out = run_main(
-        r#"String a = "java"; String b = "java"; System.out.println(a.equals(b));"#,
-    );
+    let out = run_main(r#"String a = "java"; String b = "java"; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn string_equals_rejects_different_content() {
-    let out = run_main(
-        r#"String a = "java"; String b = "kotlin"; System.out.println(a.equals(b));"#,
-    );
+    let out =
+        run_main(r#"String a = "java"; String b = "kotlin"; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["false"]);
 }
 

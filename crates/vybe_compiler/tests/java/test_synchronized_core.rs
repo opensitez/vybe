@@ -124,7 +124,10 @@ fn synchronized_block_nested_on_same_lock_is_reentrant() {
             }
         }
     "#;
-    let out = run_in_main("Reentrant r = new Reentrant(); r.enter(); System.out.println(r.depth);", types);
+    let out = run_in_main(
+        "Reentrant r = new Reentrant(); r.enter(); System.out.println(r.depth);",
+        types,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -140,7 +143,10 @@ fn synchronized_method_reentrant_from_same_thread() {
             synchronized void inner() { hits++; }
         }
     "#;
-    let out = run_in_main("Reentrant r = new Reentrant(); r.outer(); System.out.println(r.hits);", types);
+    let out = run_in_main(
+        "Reentrant r = new Reentrant(); r.outer(); System.out.println(r.hits);",
+        types,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -222,7 +228,10 @@ fn synchronized_block_on_explicit_lock_field() {
             }
         }
     "#;
-    let out = run_in_main("Gate g = new Gate(); g.openGate(); System.out.println(g.isOpen());", types);
+    let out = run_in_main(
+        "Gate g = new Gate(); g.openGate(); System.out.println(g.isOpen());",
+        types,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -508,7 +517,10 @@ fn synchronized_method_empty_body_still_acquires_lock() {
             synchronized void touch() { }
         }
     "#;
-    let out = run_in_main("Touch t = new Touch(); t.touch(); System.out.println(\"ok\");", types);
+    let out = run_in_main(
+        "Touch t = new Touch(); t.touch(); System.out.println(\"ok\");",
+        types,
+    );
     assert_eq!(out, vec!["ok"]);
 }
 
@@ -524,7 +536,10 @@ fn synchronized_block_two_nested_scopes_same_monitor() {
             }
         }
     "#;
-    let out = run_in_main("Track t = new Track(); t.run(); System.out.println(t.a + t.b);", types);
+    let out = run_in_main(
+        "Track t = new Track(); t.run(); System.out.println(t.a + t.b);",
+        types,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
@@ -626,7 +641,10 @@ fn synchronized_method_called_recursively_from_same_thread() {
             }
         }
     "#;
-    let out = run_in_main("Factorial f = new Factorial(); System.out.println(f.fact(4));", types);
+    let out = run_in_main(
+        "Factorial f = new Factorial(); System.out.println(f.fact(4));",
+        types,
+    );
     assert_eq!(out, vec!["24"]);
 }
 
@@ -639,7 +657,10 @@ fn synchronized_block_guarding_boolean_toggle() {
             synchronized boolean state() { return on; }
         }
     "#;
-    let out = run_in_main("Toggle t = new Toggle(); t.flip(); t.flip(); System.out.println(t.state());", types);
+    let out = run_in_main(
+        "Toggle t = new Toggle(); t.flip(); t.flip(); System.out.println(t.state());",
+        types,
+    );
     assert_eq!(out, vec!["false"]);
 }
 

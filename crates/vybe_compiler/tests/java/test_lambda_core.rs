@@ -74,9 +74,7 @@ fn method_reference_to_instance_to_upper_case() {
 
 #[test]
 fn lambda_passed_to_list_foreach() {
-    let out = run_main(
-        "java.util.Arrays.asList(1, 2, 3).forEach(n -> System.out.println(n));",
-    );
+    let out = run_main("java.util.Arrays.asList(1, 2, 3).forEach(n -> System.out.println(n));");
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
@@ -210,9 +208,7 @@ fn lambda_with_explicit_return_in_block_body() {
 
 #[test]
 fn runnable_lambda_executes_print_side_effect() {
-    let out = run_main(
-        "Runnable r = () -> System.out.println(\"run\"); r.run();",
-    );
+    let out = run_main("Runnable r = () -> System.out.println(\"run\"); r.run();");
     assert_eq!(out, vec!["run"]);
 }
 

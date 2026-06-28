@@ -18,17 +18,13 @@ fn objects_equals_one_null_returns_false() {
 
 #[test]
 fn objects_equals_same_string_content_returns_true() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.equals("java", "java"));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.equals("java", "java"));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_equals_different_strings_returns_false() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.equals("a", "b"));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.equals("a", "b"));"#);
     assert_eq!(out, vec!["false"]);
 }
 
@@ -42,17 +38,13 @@ fn objects_equals_symmetric_for_integers() {
 
 #[test]
 fn objects_equals_self_reference_returns_true() {
-    let out = run_main(
-        r#"String s = "self"; System.out.println(java.util.Objects.equals(s, s));"#,
-    );
+    let out = run_main(r#"String s = "self"; System.out.println(java.util.Objects.equals(s, s));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_hash_single_argument_nonzero() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.hash("solo") != 0);"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.hash("solo") != 0);"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -74,9 +66,7 @@ fn objects_hash_order_matters_for_pair() {
 
 #[test]
 fn objects_hash_null_argument_allowed() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.hash((Object) null));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.hash((Object) null));");
     assert_eq!(out.len(), 1);
 }
 
@@ -90,9 +80,8 @@ fn objects_hash_three_fields_differs_from_two() {
 
 #[test]
 fn objects_require_non_null_returns_argument() {
-    let out = run_main(
-        r#"String s = java.util.Objects.requireNonNull("safe"); System.out.println(s);"#,
-    );
+    let out =
+        run_main(r#"String s = java.util.Objects.requireNonNull("safe"); System.out.println(s);"#);
     assert_eq!(out, vec!["safe"]);
 }
 
@@ -124,49 +113,37 @@ fn objects_require_non_null_message_included_in_exception() {
 
 #[test]
 fn objects_is_null_true_for_null() {
-    let out = run_main(
-        "String s = null; System.out.println(java.util.Objects.isNull(s));",
-    );
+    let out = run_main("String s = null; System.out.println(java.util.Objects.isNull(s));");
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_is_null_false_for_value() {
-    let out = run_main(
-        r#"String s = "x"; System.out.println(java.util.Objects.isNull(s));"#,
-    );
+    let out = run_main(r#"String s = "x"; System.out.println(java.util.Objects.isNull(s));"#);
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn objects_non_null_false_for_null() {
-    let out = run_main(
-        "String s = null; System.out.println(java.util.Objects.nonNull(s));",
-    );
+    let out = run_main("String s = null; System.out.println(java.util.Objects.nonNull(s));");
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn objects_non_null_true_for_value() {
-    let out = run_main(
-        r#"String s = "x"; System.out.println(java.util.Objects.nonNull(s));"#,
-    );
+    let out = run_main(r#"String s = "x"; System.out.println(java.util.Objects.nonNull(s));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_compare_ascending_integers() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.compare(1, 3, (a, b) -> a - b));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.compare(1, 3, (a, b) -> a - b));");
     assert_eq!(out, vec!["-2"]);
 }
 
 #[test]
 fn objects_compare_descending_integers() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.compare(5, 2, (a, b) -> b - a));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.compare(5, 2, (a, b) -> b - a));");
     assert_eq!(out, vec!["-3"]);
 }
 
@@ -180,25 +157,19 @@ fn objects_compare_equal_values_zero() {
 
 #[test]
 fn objects_compare_first_null_negative_without_comparator_call() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.compare(null, \"z\", (a, b) -> 0));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.compare(null, \"z\", (a, b) -> 0));");
     assert_eq!(out, vec!["-1"]);
 }
 
 #[test]
 fn objects_compare_second_null_positive_without_comparator_call() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.compare("z", null, (a, b) -> 0));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.compare("z", null, (a, b) -> 0));"#);
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn objects_compare_both_null_zero() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.compare(null, null, (a, b) -> 0));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.compare(null, null, (a, b) -> 0));");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -220,17 +191,13 @@ fn objects_to_string_uses_value_when_non_null() {
 
 #[test]
 fn objects_to_string_single_arg_non_null() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.toString("plain"));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.toString("plain"));"#);
     assert_eq!(out, vec!["plain"]);
 }
 
 #[test]
 fn objects_to_string_single_arg_null_prints_null() {
-    let out = run_main(
-        "String s = null; System.out.println(java.util.Objects.toString(s));",
-    );
+    let out = run_main("String s = null; System.out.println(java.util.Objects.toString(s));");
     assert_eq!(out, vec!["null"]);
 }
 
@@ -252,9 +219,7 @@ fn objects_hash_integer_wrapper_matches_repeat() {
 
 #[test]
 fn objects_equals_empty_strings() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.equals("", ""));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.equals("", ""));"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -285,9 +250,7 @@ fn objects_compare_strings_lexicographic() {
 
 #[test]
 fn objects_to_string_fallback_empty_string() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.toString(null, ""));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.toString(null, ""));"#);
     assert_eq!(out, vec![""]);
 }
 
@@ -309,25 +272,19 @@ fn objects_equals_after_concatenation() {
 
 #[test]
 fn objects_to_string_on_integer_calls_value_of() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.toString(99));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.toString(99));");
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn objects_equals_boolean_boxed_values() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.equals(Boolean.TRUE, Boolean.TRUE));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.equals(Boolean.TRUE, Boolean.TRUE));");
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_compare_with_natural_integer_order() {
-    let out = run_main(
-        "System.out.println(java.util.Objects.compare(10, 10, Integer::compare));",
-    );
+    let out = run_main("System.out.println(java.util.Objects.compare(10, 10, Integer::compare));");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -357,8 +314,7 @@ fn objects_is_null_used_in_conditional_branch() {
 
 #[test]
 fn objects_to_string_fallback_on_integer_null_reference() {
-    let out = run_main(
-        "Integer n = null; System.out.println(java.util.Objects.toString(n, \"none\"));",
-    );
+    let out =
+        run_main("Integer n = null; System.out.println(java.util.Objects.toString(n, \"none\"));");
     assert_eq!(out, vec!["none"]);
 }

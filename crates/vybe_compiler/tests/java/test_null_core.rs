@@ -8,9 +8,8 @@ fn null_reference_prints_null() {
 
 #[test]
 fn null_equality_only_matches_null() {
-    let out = run_main(
-        "String s = null; System.out.println(s == null); System.out.println(s != null);",
-    );
+    let out =
+        run_main("String s = null; System.out.println(s == null); System.out.println(s != null);");
     assert_eq!(out, vec!["true", "false"]);
 }
 
@@ -40,17 +39,13 @@ fn non_null_branch_invokes_method_when_present() {
 
 #[test]
 fn instance_equals_returns_false_for_null_argument() {
-    let out = run_main(
-        r#"String s = "x"; System.out.println(s.equals(null));"#,
-    );
+    let out = run_main(r#"String s = "x"; System.out.println(s.equals(null));"#);
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn instance_equals_returns_true_for_equal_non_null() {
-    let out = run_main(
-        r#"String a = "vybe"; String b = "vybe"; System.out.println(a.equals(b));"#,
-    );
+    let out = run_main(r#"String a = "vybe"; String b = "vybe"; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -72,41 +67,32 @@ fn objects_equals_handles_one_null_reference() {
 
 #[test]
 fn objects_is_null_true_for_null_reference() {
-    let out = run_main(
-        "String s = null; System.out.println(java.util.Objects.isNull(s));",
-    );
+    let out = run_main("String s = null; System.out.println(java.util.Objects.isNull(s));");
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_is_null_false_for_present_reference() {
-    let out = run_main(
-        r#"String s = "ok"; System.out.println(java.util.Objects.isNull(s));"#,
-    );
+    let out = run_main(r#"String s = "ok"; System.out.println(java.util.Objects.isNull(s));"#);
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn objects_non_null_false_for_null_reference() {
-    let out = run_main(
-        "String s = null; System.out.println(java.util.Objects.nonNull(s));",
-    );
+    let out = run_main("String s = null; System.out.println(java.util.Objects.nonNull(s));");
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn objects_non_null_true_for_present_reference() {
-    let out = run_main(
-        r#"String s = "ok"; System.out.println(java.util.Objects.nonNull(s));"#,
-    );
+    let out = run_main(r#"String s = "ok"; System.out.println(java.util.Objects.nonNull(s));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn objects_require_non_null_returns_argument_when_present() {
-    let out = run_main(
-        r#"String s = java.util.Objects.requireNonNull("safe"); System.out.println(s);"#,
-    );
+    let out =
+        run_main(r#"String s = java.util.Objects.requireNonNull("safe"); System.out.println(s);"#);
     assert_eq!(out, vec!["safe"]);
 }
 
@@ -192,17 +178,13 @@ fn optional_if_present_runs_consumer_when_value_exists() {
 
 #[test]
 fn null_string_concatenation_with_literal() {
-    let out = run_main(
-        r#"String s = null; System.out.println("prefix" + s);"#,
-    );
+    let out = run_main(r#"String s = null; System.out.println("prefix" + s);"#);
     assert_eq!(out, vec!["prefixnull"]);
 }
 
 #[test]
 fn assigning_null_to_object_reference() {
-    let out = run_main(
-        r#"String s = "temp"; s = null; System.out.println(s == null);"#,
-    );
+    let out = run_main(r#"String s = "temp"; s = null; System.out.println(s == null);"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -222,9 +204,7 @@ fn optional_nested_or_else_picks_inner_default() {
 
 #[test]
 fn objects_equals_distinguishes_different_non_null_strings() {
-    let out = run_main(
-        r#"System.out.println(java.util.Objects.equals("a", "b"));"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.Objects.equals("a", "b"));"#);
     assert_eq!(out, vec!["false"]);
 }
 
@@ -271,8 +251,6 @@ fn null_coalesce_via_optional_chain_keeps_value() {
 
 #[test]
 fn comparing_null_to_null_with_equality() {
-    let out = run_main(
-        "String a = null; String b = null; System.out.println(a == b);",
-    );
+    let out = run_main("String a = null; String b = null; System.out.println(a == b);");
     assert_eq!(out, vec!["true"]);
 }

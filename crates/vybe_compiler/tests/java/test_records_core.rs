@@ -134,10 +134,7 @@ fn record_with_single_component() {
     let types = r#"
         static record Id(int value) {}
     "#;
-    let out = run_in_main(
-        "Id id = new Id(99); System.out.println(id.value());",
-        types,
-    );
+    let out = run_in_main("Id id = new Id(99); System.out.println(id.value());", types);
     assert_eq!(out, vec!["99"]);
 }
 
@@ -224,10 +221,7 @@ fn record_static_method_on_record() {
             static String label(int major, int minor) { return major + "." + minor; }
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(Version.label(1, 2));",
-        types,
-    );
+    let out = run_in_main("System.out.println(Version.label(1, 2));", types);
     assert_eq!(out, vec!["1.2"]);
 }
 
@@ -474,10 +468,7 @@ fn record_static_field_readable_before_instances() {
             static int maxId = 100;
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(Node.maxId);",
-        types,
-    );
+    let out = run_in_main("System.out.println(Node.maxId);", types);
     assert_eq!(out, vec!["100"]);
 }
 

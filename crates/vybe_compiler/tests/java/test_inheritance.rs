@@ -34,10 +34,7 @@ fn subclass_inherits_parent_field() {
         static class Parent { int value = 7; }
         static class Child extends Parent {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.value);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.value);", types);
     assert_eq!(out, vec!["7"]);
 }
 
@@ -47,10 +44,7 @@ fn subclass_constructor_chains_to_super() {
         static class A { int x; A(int v) { x = v; } }
         static class B extends A { B(int v) { super(v); } }
     "#;
-    let out = run_in_main(
-        "B b = new B(42); System.out.println(b.x);",
-        types,
-    );
+    let out = run_in_main("B b = new B(42); System.out.println(b.x);", types);
     assert_eq!(out, vec!["42"]);
 }
 

@@ -14,7 +14,10 @@ fn static_method_returns_boolean_negation() {
     let types = r#"
         static boolean flip(boolean b) { return !b; }
     "#;
-    let out = run_in_main("System.out.println(flip(true)); System.out.println(flip(false));", types);
+    let out = run_in_main(
+        "System.out.println(flip(true)); System.out.println(flip(false));",
+        types,
+    );
     assert_eq!(out, vec!["false", "true"]);
 }
 
@@ -210,7 +213,10 @@ fn static_method_invoked_from_within_instance_method() {
             int process(int n) { return doubleIt(n) + 1; }
         }
     "#;
-    let out = run_in_main("Util u = new Util(); System.out.println(u.process(5));", types);
+    let out = run_in_main(
+        "Util u = new Util(); System.out.println(u.process(5));",
+        types,
+    );
     assert_eq!(out, vec!["11"]);
 }
 
@@ -441,7 +447,10 @@ fn method_does_not_mutate_primitive_parameter_copy() {
     let types = r#"
         static int bumpCopy(int n) { n = n + 5; return n; }
     "#;
-    let out = run_in_main("int x = 3; System.out.println(bumpCopy(x)); System.out.println(x);", types);
+    let out = run_in_main(
+        "int x = 3; System.out.println(bumpCopy(x)); System.out.println(x);",
+        types,
+    );
     assert_eq!(out, vec!["8", "3"]);
 }
 

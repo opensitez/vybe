@@ -2,17 +2,14 @@ use crate::helpers::{run_in_main, run_main};
 
 #[test]
 fn string_equals_same_content_returns_true() {
-    let out = run_main(
-        r#"String a = "java"; String b = "java"; System.out.println(a.equals(b));"#,
-    );
+    let out = run_main(r#"String a = "java"; String b = "java"; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn string_equals_different_content_returns_false() {
-    let out = run_main(
-        r#"String a = "java"; String b = "kotlin"; System.out.println(a.equals(b));"#,
-    );
+    let out =
+        run_main(r#"String a = "java"; String b = "kotlin"; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["false"]);
 }
 
@@ -66,9 +63,7 @@ fn objects_is_null_true_for_null_reference() {
 
 #[test]
 fn objects_is_null_false_for_non_null_reference() {
-    let out = run_main(
-        r#"String s = "x"; System.out.println(java.util.Objects.isNull(s));"#,
-    );
+    let out = run_main(r#"String s = "x"; System.out.println(java.util.Objects.isNull(s));"#);
     assert_eq!(out, vec!["false"]);
 }
 
@@ -80,9 +75,7 @@ fn objects_non_null_false_for_null_reference() {
 
 #[test]
 fn objects_non_null_true_for_non_null_reference() {
-    let out = run_main(
-        r#"String s = "x"; System.out.println(java.util.Objects.nonNull(s));"#,
-    );
+    let out = run_main(r#"String s = "x"; System.out.println(java.util.Objects.nonNull(s));"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -96,9 +89,7 @@ fn null_reference_equality_only_matches_null() {
 
 #[test]
 fn string_literal_deep_equality_against_variable() {
-    let out = run_main(
-        r#"String built = "ja" + "va"; System.out.println(built.equals("java"));"#,
-    );
+    let out = run_main(r#"String built = "ja" + "va"; System.out.println(built.equals("java"));"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -110,9 +101,7 @@ fn string_equals_self_reference_returns_true() {
 
 #[test]
 fn string_equals_empty_strings_match() {
-    let out = run_main(
-        r#"String a = ""; String b = ""; System.out.println(a.equals(b));"#,
-    );
+    let out = run_main(r#"String a = ""; String b = ""; System.out.println(a.equals(b));"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -177,9 +166,8 @@ fn string_equals_after_concatenation_builds_deep_content() {
 
 #[test]
 fn string_not_equal_to_integer_wrapper_string_form() {
-    let out = run_main(
-        r#"String s = "7"; Integer n = 7; System.out.println(s.equals(n.toString()));"#,
-    );
+    let out =
+        run_main(r#"String s = "7"; Integer n = 7; System.out.println(s.equals(n.toString()));"#);
     assert_eq!(out, vec!["true"]);
 }
 

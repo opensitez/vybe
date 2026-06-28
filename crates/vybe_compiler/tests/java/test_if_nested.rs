@@ -120,9 +120,7 @@ fn assignment_in_if_condition_false_branch_skips_body() {
 
 #[test]
 fn assignment_in_nested_if_condition_propagates_value() {
-    let out = run_main(
-        "int x = 0; if (true) { if ((x = 4) == 4) { System.out.println(x); } }",
-    );
+    let out = run_main("int x = 0; if (true) { if ((x = 4) == 4) { System.out.println(x); } }");
     assert_eq!(out, vec!["4"]);
 }
 
@@ -192,9 +190,8 @@ fn compound_and_fails_when_middle_operand_false() {
 
 #[test]
 fn compound_or_with_three_range_escapes() {
-    let out = run_main(
-        "int v = -1; if (v < 0 || v == 5 || v > 100) { System.out.println(\"hit\"); }",
-    );
+    let out =
+        run_main("int v = -1; if (v < 0 || v == 5 || v > 100) { System.out.println(\"hit\"); }");
     assert_eq!(out, vec!["hit"]);
 }
 
@@ -224,9 +221,8 @@ fn mixing_and_or_without_parens_and_binds_tighter() {
 
 #[test]
 fn nested_if_with_not_and_compound_condition() {
-    let out = run_main(
-        "int x = 3; if (!(x < 0) && (x % 2 == 1)) { System.out.println(\"odd-pos\"); }",
-    );
+    let out =
+        run_main("int x = 3; if (!(x < 0) && (x % 2 == 1)) { System.out.println(\"odd-pos\"); }");
     assert_eq!(out, vec!["odd-pos"]);
 }
 
@@ -240,9 +236,7 @@ fn nested_if_else_if_inside_outer_else_branch() {
 
 #[test]
 fn deeply_nested_if_with_increment_in_condition() {
-    let out = run_main(
-        "int n = 0; if (n++ == 0) { if (n++ == 1) { System.out.println(n); } }",
-    );
+    let out = run_main("int n = 0; if (n++ == 0) { if (n++ == 1) { System.out.println(n); } }");
     assert_eq!(out, vec!["2"]);
 }
 
@@ -288,9 +282,7 @@ fn boolean_negation_with_and_in_nested_if() {
 
 #[test]
 fn nested_if_using_postfix_increment_in_condition() {
-    let out = run_main(
-        "int i = 4; if (i++ == 4) { if (i == 5) { System.out.println(i); } }",
-    );
+    let out = run_main("int i = 4; if (i++ == 4) { if (i == 5) { System.out.println(i); } }");
     assert_eq!(out, vec!["5"]);
 }
 

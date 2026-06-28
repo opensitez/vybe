@@ -54,7 +54,10 @@ fn final_blank_field_set_in_constructor() {
             Counter(int v) { value = v; }
         }
     "#;
-    let out = run_in_main("Counter c = new Counter(9); System.out.println(c.value);", types);
+    let out = run_in_main(
+        "Counter c = new Counter(9); System.out.println(c.value);",
+        types,
+    );
     assert_eq!(out, vec!["9"]);
 }
 
@@ -103,10 +106,7 @@ fn final_method_called_on_child_instance_directly() {
         }
         static class Child extends Base {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.tag());",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.tag());", types);
     assert_eq!(out, vec!["final"]);
 }
 
@@ -132,10 +132,7 @@ fn final_class_instance_created_and_used() {
     let types = r#"
         final class Seal {}
     "#;
-    let out = run_in_main(
-        "Seal s = new Seal(); System.out.println(s != null);",
-        types,
-    );
+    let out = run_in_main("Seal s = new Seal(); System.out.println(s != null);", types);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -218,9 +215,7 @@ fn final_local_in_for_loop_initializer_style() {
 
 #[test]
 fn final_array_reference_binding_elements_mutable() {
-    let out = run_main(
-        "final int[] data = {1, 2, 3}; data[1] = 9; System.out.println(data[1]);",
-    );
+    let out = run_main("final int[] data = {1, 2, 3}; data[1] = 9; System.out.println(data[1]);");
     assert_eq!(out, vec!["9"]);
 }
 
@@ -232,10 +227,7 @@ fn final_class_with_constructor_initializing_final_field() {
             Point(int v) { x = v; }
         }
     "#;
-    let out = run_in_main(
-        "Point p = new Point(8); System.out.println(p.x);",
-        types,
-    );
+    let out = run_in_main("Point p = new Point(8); System.out.println(p.x);", types);
     assert_eq!(out, vec!["8"]);
 }
 
@@ -271,9 +263,8 @@ fn final_static_field_used_in_instance_method() {
 
 #[test]
 fn final_local_in_nested_block_scope() {
-    let out = run_main(
-        "int out = 0; { final int inner = 6; out = inner; } System.out.println(out);",
-    );
+    let out =
+        run_main("int out = 0; { final int inner = 6; out = inner; } System.out.println(out);");
     assert_eq!(out, vec!["6"]);
 }
 
@@ -285,10 +276,7 @@ fn final_field_inheritance_visible_in_subclass() {
         }
         static class Child extends Parent {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.id);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.id);", types);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -301,10 +289,7 @@ fn final_method_in_grandparent_visible_in_grandchild() {
         static class B extends A {}
         static class C extends B {}
     "#;
-    let out = run_in_main(
-        "C c = new C(); System.out.println(c.mark());",
-        types,
-    );
+    let out = run_in_main("C c = new C(); System.out.println(c.mark());", types);
     assert_eq!(out, vec!["5"]);
 }
 
@@ -316,26 +301,19 @@ fn final_class_with_to_string_override() {
             public String toString() { return text; }
         }
     "#;
-    let out = run_in_main(
-        "Label l = new Label(); System.out.println(l);",
-        types,
-    );
+    let out = run_in_main("Label l = new Label(); System.out.println(l);", types);
     assert_eq!(out, vec!["done"]);
 }
 
 #[test]
 fn final_local_boolean_used_in_condition() {
-    let out = run_main(
-        "final boolean ok = true; if (ok) { System.out.println(\"yes\"); }",
-    );
+    let out = run_main("final boolean ok = true; if (ok) { System.out.println(\"yes\"); }");
     assert_eq!(out, vec!["yes"]);
 }
 
 #[test]
 fn final_local_double_precision_value() {
-    let out = run_main(
-        "final double pi = 3.5; System.out.println(pi + 0.5);",
-    );
+    let out = run_main("final double pi = 3.5; System.out.println(pi + 0.5);");
     assert_eq!(out, vec!["4.0"]);
 }
 
@@ -344,10 +322,7 @@ fn final_parameter_string_uppercase_helper() {
     let types = r#"
         static String shout(final String s) { return s.toUpperCase(); }
     "#;
-    let out = run_in_main(
-        r#"System.out.println(shout("go"));"#,
-        types,
-    );
+    let out = run_in_main(r#"System.out.println(shout("go"));"#, types);
     assert_eq!(out, vec!["GO"]);
 }
 
@@ -358,10 +333,7 @@ fn final_static_int_used_in_expression() {
             static final int OFFSET = 3;
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(10 + Const.OFFSET);",
-        types,
-    );
+    let out = run_in_main("System.out.println(10 + Const.OFFSET);", types);
     assert_eq!(out, vec!["13"]);
 }
 
@@ -423,10 +395,7 @@ fn final_blank_field_assigned_once_in_constructor_body() {
             }
         }
     "#;
-    let out = run_in_main(
-        "Holder h = new Holder(); System.out.println(h.msg);",
-        types,
-    );
+    let out = run_in_main("Holder h = new Holder(); System.out.println(h.msg);", types);
     assert_eq!(out, vec!["ready"]);
 }
 

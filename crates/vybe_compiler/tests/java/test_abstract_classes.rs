@@ -66,10 +66,7 @@ fn abstract_class_with_fields_initialized_in_subclass() {
         static abstract class Holder { int value; }
         static class Box extends Holder { Box(int v) { value = v; } }
     "#;
-    let out = run_in_main(
-        "Box b = new Box(15); System.out.println(b.value);",
-        types,
-    );
+    let out = run_in_main("Box b = new Box(15); System.out.println(b.value);", types);
     assert_eq!(out, vec!["15"]);
 }
 
@@ -80,10 +77,7 @@ fn abstract_subclass_still_requires_concrete_grandchild() {
         static abstract class B extends A {}
         static class C extends B { int n() { return 7; } }
     "#;
-    let out = run_in_main(
-        "A a = new C(); System.out.println(a.n());",
-        types,
-    );
+    let out = run_in_main("A a = new C(); System.out.println(a.n());", types);
     assert_eq!(out, vec!["7"]);
 }
 
@@ -130,10 +124,7 @@ fn abstract_method_overridden_in_grandchild() {
         static abstract class B extends A {}
         static class C extends B { String id() { return "C"; } }
     "#;
-    let out = run_in_main(
-        "A a = new C(); System.out.println(a.id());",
-        types,
-    );
+    let out = run_in_main("A a = new C(); System.out.println(a.id());", types);
     assert_eq!(out, vec!["C"]);
 }
 
@@ -391,10 +382,7 @@ fn abstract_expression_eval_literal() {
             int eval() { return value; }
         }
     "#;
-    let out = run_in_main(
-        "Expr e = new Lit(42); System.out.println(e.eval());",
-        types,
-    );
+    let out = run_in_main("Expr e = new Lit(42); System.out.println(e.eval());", types);
     assert_eq!(out, vec!["42"]);
 }
 
@@ -405,10 +393,7 @@ fn partial_abstract_middle_class() {
         static abstract class Mid extends Root { abstract int b(); }
         static class Leaf extends Mid { int a() { return 1; } int b() { return 2; } }
     "#;
-    let out = run_in_main(
-        "Root r = new Leaf(); System.out.println(r.a());",
-        types,
-    );
+    let out = run_in_main("Root r = new Leaf(); System.out.println(r.a());", types);
     assert_eq!(out, vec!["1"]);
 }
 
@@ -418,10 +403,7 @@ fn concrete_extends_partial_abstract() {
         static abstract class Mid { abstract int both(); }
         static class Leaf extends Mid { int both() { return 5; } }
     "#;
-    let out = run_in_main(
-        "Mid m = new Leaf(); System.out.println(m.both());",
-        types,
-    );
+    let out = run_in_main("Mid m = new Leaf(); System.out.println(m.both());", types);
     assert_eq!(out, vec!["5"]);
 }
 
@@ -462,10 +444,7 @@ fn abstract_void_method_side_effect() {
         static abstract class Logger { abstract void log(String msg); }
         static class PrintLogger extends Logger { void log(String msg) { System.out.println(msg); } }
     "#;
-    let out = run_in_main(
-        "Logger l = new PrintLogger(); l.log(\"trace\");",
-        types,
-    );
+    let out = run_in_main("Logger l = new PrintLogger(); l.log(\"trace\");", types);
     assert_eq!(out, vec!["trace"]);
 }
 

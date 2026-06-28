@@ -2,9 +2,8 @@ use crate::helpers::run_main;
 
 #[test]
 fn stringbuilder_empty_tostring_is_empty_string() {
-    let out = run_main(
-        r#"StringBuilder sb = new StringBuilder(); System.out.println(sb.toString());"#,
-    );
+    let out =
+        run_main(r#"StringBuilder sb = new StringBuilder(); System.out.println(sb.toString());"#);
     assert_eq!(out, vec![""]);
 }
 
@@ -130,17 +129,15 @@ fn stringbuilder_length_reports_character_count() {
 
 #[test]
 fn stringbuilder_length_zero_on_empty_builder() {
-    let out = run_main(
-        r#"StringBuilder sb = new StringBuilder(); System.out.println(sb.length());"#,
-    );
+    let out =
+        run_main(r#"StringBuilder sb = new StringBuilder(); System.out.println(sb.length());"#);
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn stringbuilder_capacity_constructor_accepts_initial_size() {
-    let out = run_main(
-        r#"StringBuilder sb = new StringBuilder(64); System.out.println(sb.length());"#,
-    );
+    let out =
+        run_main(r#"StringBuilder sb = new StringBuilder(64); System.out.println(sb.length());"#);
     assert_eq!(out, vec!["0"]);
 }
 

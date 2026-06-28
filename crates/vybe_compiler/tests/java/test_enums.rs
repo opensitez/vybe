@@ -17,10 +17,7 @@ fn enum_ordinal_reflects_declaration_index() {
     let types = r#"
         enum Size { SMALL, MEDIUM, LARGE }
     "#;
-    let out = run_in_main(
-        "System.out.println(Size.MEDIUM.ordinal());",
-        types,
-    );
+    let out = run_in_main("System.out.println(Size.MEDIUM.ordinal());", types);
     assert_eq!(out, vec!["1"]);
 }
 
@@ -56,9 +53,6 @@ fn enum_value_of_parses_name() {
     let types = r#"
         enum Status { ON, OFF }
     "#;
-    let out = run_in_main(
-        "System.out.println(Status.valueOf(\"ON\"));",
-        types,
-    );
+    let out = run_in_main("System.out.println(Status.valueOf(\"ON\"));", types);
     assert_eq!(out, vec!["ON"]);
 }

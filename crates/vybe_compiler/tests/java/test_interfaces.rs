@@ -50,10 +50,7 @@ fn interface_default_method_used_when_not_overridden() {
         interface Logger { default void log(String msg) { System.out.println(msg); } }
         static class ConsoleLogger implements Logger {}
     "#;
-    let out = run_in_main(
-        "Logger l = new ConsoleLogger(); l.log(\"ok\");",
-        types,
-    );
+    let out = run_in_main("Logger l = new ConsoleLogger(); l.log(\"ok\");", types);
     assert_eq!(out, vec!["ok"]);
 }
 
@@ -62,9 +59,6 @@ fn interface_static_method_called_by_qualified_name() {
     let types = r#"
         interface MathUtil { static int triple(int n) { return n * 3; } }
     "#;
-    let out = run_in_main(
-        "System.out.println(MathUtil.triple(4));",
-        types,
-    );
+    let out = run_in_main("System.out.println(MathUtil.triple(4));", types);
     assert_eq!(out, vec!["12"]);
 }

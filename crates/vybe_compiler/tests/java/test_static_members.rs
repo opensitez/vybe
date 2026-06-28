@@ -75,7 +75,10 @@ fn static_method_mutates_static_field() {
             static void bump() { n++; }
         }
     "#;
-    let out = run_in_main("Counter.bump(); Counter.bump(); System.out.println(Counter.n);", types);
+    let out = run_in_main(
+        "Counter.bump(); Counter.bump(); System.out.println(Counter.n);",
+        types,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -151,7 +154,10 @@ fn static_field_read_from_instance_method_via_class_name() {
             int read() { return Reader.value; }
         }
     "#;
-    let out = run_in_main("Reader r = new Reader(); System.out.println(r.read());", types);
+    let out = run_in_main(
+        "Reader r = new Reader(); System.out.println(r.read());",
+        types,
+    );
     assert_eq!(out, vec!["9"]);
 }
 

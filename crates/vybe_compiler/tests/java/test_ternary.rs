@@ -22,17 +22,15 @@ fn ternary_with_string_branches() {
 
 #[test]
 fn nested_ternary_selects_inner_true_branch() {
-    let out = run_main(
-        "int n = 5; int v = (n > 3) ? ((n > 4) ? 1 : 2) : 0; System.out.println(v);",
-    );
+    let out =
+        run_main("int n = 5; int v = (n > 3) ? ((n > 4) ? 1 : 2) : 0; System.out.println(v);");
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn nested_ternary_selects_inner_false_branch() {
-    let out = run_main(
-        "int n = 4; int v = (n > 3) ? ((n > 4) ? 1 : 2) : 0; System.out.println(v);",
-    );
+    let out =
+        run_main("int n = 4; int v = (n > 3) ? ((n > 4) ? 1 : 2) : 0; System.out.println(v);");
     assert_eq!(out, vec!["2"]);
 }
 
@@ -60,25 +58,19 @@ fn ternary_with_comparison_on_doubles() {
 
 #[test]
 fn ternary_double_branches() {
-    let out = run_main(
-        "double x = 3.0; double y = (x > 2.0) ? 9.5 : 1.5; System.out.println(y);",
-    );
+    let out = run_main("double x = 3.0; double y = (x > 2.0) ? 9.5 : 1.5; System.out.println(y);");
     assert_eq!(out, vec!["9.5"]);
 }
 
 #[test]
 fn ternary_char_branches() {
-    let out = run_main(
-        "boolean upper = true; char c = upper ? 'A' : 'a'; System.out.println(c);",
-    );
+    let out = run_main("boolean upper = true; char c = upper ? 'A' : 'a'; System.out.println(c);");
     assert_eq!(out, vec!["A"]);
 }
 
 #[test]
 fn ternary_long_branches() {
-    let out = run_main(
-        "long n = 1_000_000L; long v = (n > 0L) ? 99L : 0L; System.out.println(v);",
-    );
+    let out = run_main("long n = 1_000_000L; long v = (n > 0L) ? 99L : 0L; System.out.println(v);");
     assert_eq!(out, vec!["99"]);
 }
 
@@ -130,7 +122,8 @@ fn ternary_with_modulo_parity_condition() {
 
 #[test]
 fn ternary_primitive_int_vs_zero_default() {
-    let out = run_main("int score = 55; int grade = (score >= 60) ? 1 : 0; System.out.println(grade);");
+    let out =
+        run_main("int score = 55; int grade = (score >= 60) ? 1 : 0; System.out.println(grade);");
     assert_eq!(out, vec!["0"]);
 }
 

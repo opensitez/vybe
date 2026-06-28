@@ -196,9 +196,7 @@ fn string_joiner_four_elements_with_slash() {
 
 #[test]
 fn string_join_array_with_one_element() {
-    let out = run_main(
-        r#"String[] only = {"one"}; System.out.println(String.join("-", only));"#,
-    );
+    let out = run_main(r#"String[] only = {"one"}; System.out.println(String.join("-", only));"#);
     assert_eq!(out, vec!["one"]);
 }
 

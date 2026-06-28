@@ -48,10 +48,7 @@ fn varargs_accepts_explicit_int_array_argument() {
             return total;
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(sum(new int[] {2, 3, 5}));",
-        types,
-    );
+    let out = run_in_main("System.out.println(sum(new int[] {2, 3, 5}));", types);
     assert_eq!(out, vec!["10"]);
 }
 

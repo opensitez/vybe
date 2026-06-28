@@ -152,7 +152,8 @@ fn short_decrement_wraps_past_min() {
 
 #[test]
 fn byte_bitwise_and_masks_bits() {
-    let out = run_main("byte a = 0b11110000; byte b = 0b10101010; System.out.println((byte)(a & b));");
+    let out =
+        run_main("byte a = 0b11110000; byte b = 0b10101010; System.out.println((byte)(a & b));");
     assert_eq!(out, vec!["-128"]);
 }
 
@@ -200,13 +201,17 @@ fn short_comparison_equal_values() {
 
 #[test]
 fn byte_array_length_and_first_element() {
-    let out = run_main("byte[] data = {1, 2, 3}; System.out.println(data.length); System.out.println(data[0]);");
+    let out = run_main(
+        "byte[] data = {1, 2, 3}; System.out.println(data.length); System.out.println(data[0]);",
+    );
     assert_eq!(out, vec!["3", "1"]);
 }
 
 #[test]
 fn short_array_sum_in_loop() {
-    let out = run_main("short[] vals = {10, 20, 30}; int sum = 0; for (short v : vals) { sum += v; } System.out.println(sum);");
+    let out = run_main(
+        "short[] vals = {10, 20, 30}; int sum = 0; for (short v : vals) { sum += v; } System.out.println(sum);",
+    );
     assert_eq!(out, vec!["60"]);
 }
 
@@ -240,9 +245,6 @@ fn overload_prefers_byte_over_int() {
         static String pick(byte b) { return "byte"; }
         static String pick(int n) { return "int"; }
     "#;
-    let out = run_in_main(
-        "System.out.println(pick((byte) 2));",
-        types,
-    );
+    let out = run_in_main("System.out.println(pick((byte) 2));", types);
     assert_eq!(out, vec!["byte"]);
 }

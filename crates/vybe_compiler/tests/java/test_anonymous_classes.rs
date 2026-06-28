@@ -364,10 +364,7 @@ fn anonymous_class_nested_in_method() {
             }
         }
     "#;
-    let out = run_in_main(
-        "Maker m = new Maker(); m.make().run();",
-        types,
-    );
+    let out = run_in_main("Maker m = new Maker(); m.make().run();", types);
     assert_eq!(out, vec!["nested"]);
 }
 

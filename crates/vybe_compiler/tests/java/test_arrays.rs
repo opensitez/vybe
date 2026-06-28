@@ -26,7 +26,9 @@ fn multidimensional_array_row_count() {
 
 #[test]
 fn array_created_with_new_has_zero_initial_values() {
-    let out = run_main("int[] nums = new int[3]; System.out.println(nums[0]); System.out.println(nums[2]);");
+    let out = run_main(
+        "int[] nums = new int[3]; System.out.println(nums[0]); System.out.println(nums[2]);",
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 

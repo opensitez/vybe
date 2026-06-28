@@ -201,10 +201,7 @@ fn overload_object_and_string_reference_types() {
         static String label(Object o) { return "o"; }
         static String label(String s) { return "s" + s; }
     "#;
-    let out = run_in_main(
-        "System.out.println(label(\"hi\"));",
-        types,
-    );
+    let out = run_in_main("System.out.println(label(\"hi\"));", types);
     assert_eq!(out, vec!["shi"]);
 }
 

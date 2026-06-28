@@ -8,9 +8,8 @@ fn null_reference_prints_null() {
 
 #[test]
 fn null_equality_only_matches_null() {
-    let out = run_main(
-        "String s = null; System.out.println(s == null); System.out.println(s != null);",
-    );
+    let out =
+        run_main("String s = null; System.out.println(s == null); System.out.println(s != null);");
     assert_eq!(out, vec!["true", "false"]);
 }
 
@@ -24,9 +23,7 @@ fn null_safe_field_access_via_explicit_check() {
 
 #[test]
 fn objects_equals_handles_null_argument() {
-    let out = run_main(
-        "String s = \"x\"; System.out.println(s.equals(null));",
-    );
+    let out = run_main("String s = \"x\"; System.out.println(s.equals(null));");
     assert_eq!(out, vec!["false"]);
 }
 

@@ -134,7 +134,8 @@ fn double_compare_finite_less_than_nan_returns_negative_one() {
 
 #[test]
 fn double_compare_positive_infinity_greater_than_max_value() {
-    let out = run_main("System.out.println(Double.compare(Double.POSITIVE_INFINITY, Double.MAX_VALUE));");
+    let out =
+        run_main("System.out.println(Double.compare(Double.POSITIVE_INFINITY, Double.MAX_VALUE));");
     assert_eq!(out, vec!["1"]);
 }
 

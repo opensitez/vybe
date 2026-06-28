@@ -176,10 +176,7 @@ fn enum_inequality_different_constants_is_true() {
     let types = r#"
         enum Side { LEFT, RIGHT }
     "#;
-    let out = run_in_main(
-        "System.out.println(Side.LEFT != Side.RIGHT);",
-        types,
-    );
+    let out = run_in_main("System.out.println(Side.LEFT != Side.RIGHT);", types);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -188,10 +185,7 @@ fn enum_reference_reassigned_to_another_constant() {
     let types = r#"
         enum Dir { N, S, E, W }
     "#;
-    let out = run_in_main(
-        "Dir d = Dir.N; d = Dir.W; System.out.println(d);",
-        types,
-    );
+    let out = run_in_main("Dir d = Dir.N; d = Dir.W; System.out.println(d);", types);
     assert_eq!(out, vec!["W"]);
 }
 

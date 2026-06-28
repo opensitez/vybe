@@ -32,9 +32,7 @@ fn for_update_with_two_postfix_increments() {
 
 #[test]
 fn for_update_with_assignment_and_increment() {
-    let out = run_main(
-        "int k = 0; for (int i = 0; i < 3; i++, k += 2) { System.out.println(k); }",
-    );
+    let out = run_main("int k = 0; for (int i = 0; i < 3; i++, k += 2) { System.out.println(k); }");
     assert_eq!(out, vec!["0", "2", "4"]);
 }
 
@@ -46,7 +44,8 @@ fn for_update_print_side_effect_in_comma_list() {
 
 #[test]
 fn for_empty_body_semicolon_only_runs_updates() {
-    let out = run_main("int sum = 0; for (int i = 0; i < 4; i++) sum += i; System.out.println(sum);");
+    let out =
+        run_main("int sum = 0; for (int i = 0; i < 4; i++) sum += i; System.out.println(sum);");
     assert_eq!(out, vec!["6"]);
 }
 
@@ -64,9 +63,7 @@ fn infinite_for_exits_immediately_with_break() {
 
 #[test]
 fn infinite_for_counts_until_break() {
-    let out = run_main(
-        "int n = 0; for (;;) { System.out.println(n); n++; if (n == 3) break; }",
-    );
+    let out = run_main("int n = 0; for (;;) { System.out.println(n); n++; if (n == 3) break; }");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
@@ -101,7 +98,10 @@ fn labeled_break_on_enhanced_style_nested_classic() {
     let out = run_main(
         "scan: for (int i = 0; i < 4; i++) { for (int j = 0; j < 4; j++) { if (i + j == 5) { break scan; } System.out.println(i + j); } }",
     );
-    assert_eq!(out, vec!["0", "1", "2", "3", "1", "2", "3", "4", "2", "3", "4"]);
+    assert_eq!(
+        out,
+        vec!["0", "1", "2", "3", "1", "2", "3", "4", "2", "3", "4"]
+    );
 }
 
 #[test]
@@ -172,17 +172,15 @@ fn infinite_for_nested_break_from_inner_if() {
 
 #[test]
 fn for_with_break_in_middle_of_update_sequence() {
-    let out = run_main(
-        "for (int i = 0; i < 10; i++) { System.out.println(i); if (i == 2) break; }",
-    );
+    let out =
+        run_main("for (int i = 0; i < 10; i++) { System.out.println(i); if (i == 2) break; }");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn for_continue_skips_update_print_in_body() {
-    let out = run_main(
-        "for (int i = 0; i < 4; i++) { if (i == 2) continue; System.out.println(i); }",
-    );
+    let out =
+        run_main("for (int i = 0; i < 4; i++) { if (i == 2) continue; System.out.println(i); }");
     assert_eq!(out, vec!["0", "1", "3"]);
 }
 

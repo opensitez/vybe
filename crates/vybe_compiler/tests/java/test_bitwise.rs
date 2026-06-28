@@ -134,7 +134,9 @@ fn bitwise_and_or_xor_combined_expression() {
 
 #[test]
 fn bitwise_ops_on_variables() {
-    let out = run_main("int a = 0b1010; int b = 0b1100; System.out.println(a & b); System.out.println(a | b);");
+    let out = run_main(
+        "int a = 0b1010; int b = 0b1100; System.out.println(a & b); System.out.println(a | b);",
+    );
     assert_eq!(out, vec!["8", "14"]);
 }
 

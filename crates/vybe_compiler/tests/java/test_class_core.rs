@@ -35,7 +35,10 @@ fn field_default_initialization_applies_before_constructor_body() {
             Counter() {}
         }
     "#;
-    let out = run_in_main("Counter c = new Counter(); System.out.println(c.count);", types);
+    let out = run_in_main(
+        "Counter c = new Counter(); System.out.println(c.count);",
+        types,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
@@ -58,7 +61,10 @@ fn this_disambiguates_field_from_constructor_parameter() {
             Holder(int value) { this.value = value; }
         }
     "#;
-    let out = run_in_main("Holder h = new Holder(42); System.out.println(h.value);", types);
+    let out = run_in_main(
+        "Holder h = new Holder(42); System.out.println(h.value);",
+        types,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
@@ -120,7 +126,10 @@ fn new_keyword_creates_instance_with_constructor_args() {
             Label(String text) { this.text = text; }
         }
     "#;
-    let out = run_in_main("Label l = new Label(\"core\"); System.out.println(l.text);", types);
+    let out = run_in_main(
+        "Label l = new Label(\"core\"); System.out.println(l.text);",
+        types,
+    );
     assert_eq!(out, vec!["core"]);
 }
 
@@ -147,7 +156,10 @@ fn final_field_set_once_in_constructor_is_readable() {
             Config(int port) { this.port = port; }
         }
     "#;
-    let out = run_in_main("Config c = new Config(8080); System.out.println(c.port);", types);
+    let out = run_in_main(
+        "Config c = new Config(8080); System.out.println(c.port);",
+        types,
+    );
     assert_eq!(out, vec!["8080"]);
 }
 
@@ -158,7 +170,10 @@ fn final_field_with_initializer_at_declaration() {
             final int max = 100;
         }
     "#;
-    let out = run_in_main("Constants c = new Constants(); System.out.println(c.max);", types);
+    let out = run_in_main(
+        "Constants c = new Constants(); System.out.println(c.max);",
+        types,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
@@ -181,7 +196,10 @@ fn private_field_read_through_public_getter() {
             public int getSecret() { return secret; }
         }
     "#;
-    let out = run_in_main("Vault v = new Vault(); System.out.println(v.getSecret());", types);
+    let out = run_in_main(
+        "Vault v = new Vault(); System.out.println(v.getSecret());",
+        types,
+    );
     assert_eq!(out, vec!["13"]);
 }
 
@@ -195,7 +213,10 @@ fn protected_field_visible_in_subclass() {
             int read() { return level; }
         }
     "#;
-    let out = run_in_main("Child c = new Child(); System.out.println(c.read());", types);
+    let out = run_in_main(
+        "Child c = new Child(); System.out.println(c.read());",
+        types,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -220,7 +241,10 @@ fn default_tostring_on_plain_object_is_not_null() {
     let types = r#"
         static class Plain {}
     "#;
-    let out = run_in_main("Plain p = new Plain(); System.out.println(p.toString() != null);", types);
+    let out = run_in_main(
+        "Plain p = new Plain(); System.out.println(p.toString() != null);",
+        types,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -248,7 +272,10 @@ fn instance_method_uses_this_to_return_current_field() {
             int self() { return this.value; }
         }
     "#;
-    let out = run_in_main("Echo e = new Echo(55); System.out.println(e.self());", types);
+    let out = run_in_main(
+        "Echo e = new Echo(55); System.out.println(e.self());",
+        types,
+    );
     assert_eq!(out, vec!["55"]);
 }
 
@@ -278,7 +305,10 @@ fn implicit_no_arg_constructor_generated_when_none_declared() {
             int marker = 1;
         }
     "#;
-    let out = run_in_main("Empty e = new Empty(); System.out.println(e.marker);", types);
+    let out = run_in_main(
+        "Empty e = new Empty(); System.out.println(e.marker);",
+        types,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
@@ -326,7 +356,10 @@ fn instance_method_reads_mutable_field_after_assignment() {
             int peek() { return item; }
         }
     "#;
-    let out = run_in_main("Bag b = new Bag(); b.item = 9; System.out.println(b.peek());", types);
+    let out = run_in_main(
+        "Bag b = new Bag(); b.item = 9; System.out.println(b.peek());",
+        types,
+    );
     assert_eq!(out, vec!["9"]);
 }
 
@@ -339,7 +372,10 @@ fn instance_method_writes_field_visible_to_later_reads() {
             int get() { return value; }
         }
     "#;
-    let out = run_in_main("Store s = new Store(); s.put(21); System.out.println(s.get());", types);
+    let out = run_in_main(
+        "Store s = new Store(); s.put(21); System.out.println(s.get());",
+        types,
+    );
     assert_eq!(out, vec!["21"]);
 }
 
@@ -362,7 +398,10 @@ fn public_method_exposes_internal_computation() {
             public int triple(int n) { return base * n; }
         }
     "#;
-    let out = run_in_main("Calc c = new Calc(); System.out.println(c.triple(4));", types);
+    let out = run_in_main(
+        "Calc c = new Calc(); System.out.println(c.triple(4));",
+        types,
+    );
     assert_eq!(out, vec!["12"]);
 }
 
@@ -438,7 +477,10 @@ fn double_field_stores_fractional_value() {
             double ratio = 0.5;
         }
     "#;
-    let out = run_in_main("Measure m = new Measure(); System.out.println(m.ratio);", types);
+    let out = run_in_main(
+        "Measure m = new Measure(); System.out.println(m.ratio);",
+        types,
+    );
     assert_eq!(out, vec!["0.5"]);
 }
 
@@ -510,7 +552,10 @@ fn field_reassigned_after_construction_reflects_new_value() {
             int x = 1;
         }
     "#;
-    let out = run_in_main("Mutable m = new Mutable(); m.x = 8; System.out.println(m.x);", types);
+    let out = run_in_main(
+        "Mutable m = new Mutable(); m.x = 8; System.out.println(m.x);",
+        types,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
@@ -549,7 +594,10 @@ fn custom_tostring_includes_multiple_fields() {
             public String toString() { return "(" + x + "," + y + ")"; }
         }
     "#;
-    let out = run_in_main("Point p = new Point(2, 3); System.out.println(p.toString());", types);
+    let out = run_in_main(
+        "Point p = new Point(2, 3); System.out.println(p.toString());",
+        types,
+    );
     assert_eq!(out, vec!["(2,3)"]);
 }
 
@@ -564,7 +612,10 @@ fn tostring_delegates_to_helper_method_for_formatting() {
             public String toString() { return "v" + format(); }
         }
     "#;
-    let out = run_in_main("Version v = new Version(1, 4); System.out.println(v.toString());", types);
+    let out = run_in_main(
+        "Version v = new Version(1, 4); System.out.println(v.toString());",
+        types,
+    );
     assert_eq!(out, vec!["v1.4"]);
 }
 
@@ -594,7 +645,10 @@ fn protected_method_visible_to_subclass_override() {
             int total() { return baseValue() + 5; }
         }
     "#;
-    let out = run_in_main("Derived d = new Derived(); System.out.println(d.total());", types);
+    let out = run_in_main(
+        "Derived d = new Derived(); System.out.println(d.total());",
+        types,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
@@ -628,7 +682,10 @@ fn field_array_initializer_sets_first_element() {
             int[] data = {4, 5, 6};
         }
     "#;
-    let out = run_in_main("Buffer b = new Buffer(); System.out.println(b.data[0]);", types);
+    let out = run_in_main(
+        "Buffer b = new Buffer(); System.out.println(b.data[0]);",
+        types,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
@@ -675,6 +732,9 @@ fn public_static_factory_method_returns_new_instance() {
             static Token of(int value) { return new Token(value); }
         }
     "#;
-    let out = run_in_main("Token t = Token.of(77); System.out.println(t.value);", types);
+    let out = run_in_main(
+        "Token t = Token.of(77); System.out.println(t.value);",
+        types,
+    );
     assert_eq!(out, vec!["77"]);
 }

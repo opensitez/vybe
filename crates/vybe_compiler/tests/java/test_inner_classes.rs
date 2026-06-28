@@ -54,10 +54,7 @@ fn doubly_nested_static_class_accessible() {
             }
         }
     "#;
-    let out = run_in_main(
-        "A.B.C c = new A.B.C(); System.out.println(c.depth);",
-        types,
-    );
+    let out = run_in_main("A.B.C c = new A.B.C(); System.out.println(c.depth);", types);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -82,10 +79,7 @@ fn static_nested_static_method_without_outer_instance() {
             static class Inner { static int doubleIt(int n) { return n * 2; } }
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(Outer.Inner.doubleIt(5));",
-        types,
-    );
+    let out = run_in_main("System.out.println(Outer.Inner.doubleIt(5));", types);
     assert_eq!(out, vec!["10"]);
 }
 

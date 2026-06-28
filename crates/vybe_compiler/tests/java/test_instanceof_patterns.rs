@@ -18,25 +18,19 @@ fn instanceof_string_pattern_uppercases_bound_variable() {
 
 #[test]
 fn instanceof_integer_pattern_binds_numeric_value() {
-    let out = run_main(
-        "Object o = 15; if (o instanceof Integer n) { System.out.println(n + 1); }",
-    );
+    let out = run_main("Object o = 15; if (o instanceof Integer n) { System.out.println(n + 1); }");
     assert_eq!(out, vec!["16"]);
 }
 
 #[test]
 fn instanceof_negation_false_for_matching_string() {
-    let out = run_main(
-        "Object o = \"x\"; System.out.println(!(o instanceof String));",
-    );
+    let out = run_main("Object o = \"x\"; System.out.println(!(o instanceof String));");
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn instanceof_negation_true_for_non_matching_type() {
-    let out = run_main(
-        "Object o = 1; System.out.println(!(o instanceof String));",
-    );
+    let out = run_main("Object o = 1; System.out.println(!(o instanceof String));");
     assert_eq!(out, vec!["true"]);
 }
 
@@ -82,9 +76,7 @@ fn instanceof_pattern_false_skips_binding_block() {
 
 #[test]
 fn instanceof_null_reference_is_always_false() {
-    let out = run_main(
-        "Object o = null; System.out.println(o instanceof String);",
-    );
+    let out = run_main("Object o = null; System.out.println(o instanceof String);");
     assert_eq!(out, vec!["false"]);
 }
 
@@ -150,9 +142,8 @@ fn instanceof_array_pattern_on_int_array() {
 
 #[test]
 fn instanceof_array_pattern_on_string_array() {
-    let out = run_main(
-        "Object o = new String[] {\"a\"}; System.out.println(o instanceof String[]);",
-    );
+    let out =
+        run_main("Object o = new String[] {\"a\"}; System.out.println(o instanceof String[]);");
     assert_eq!(out, vec!["true"]);
 }
 
@@ -206,25 +197,19 @@ fn instanceof_double_pattern_binding() {
 
 #[test]
 fn instanceof_long_pattern_binding() {
-    let out = run_main(
-        "Object o = 20L; if (o instanceof Long l) { System.out.println(l - 5L); }",
-    );
+    let out = run_main("Object o = 20L; if (o instanceof Long l) { System.out.println(l - 5L); }");
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn instanceof_boolean_pattern_binding() {
-    let out = run_main(
-        "Object o = false; if (o instanceof Boolean b) { System.out.println(b); }",
-    );
+    let out = run_main("Object o = false; if (o instanceof Boolean b) { System.out.println(b); }");
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn instanceof_character_pattern_binding() {
-    let out = run_main(
-        "Object o = 'Q'; if (o instanceof Character c) { System.out.println(c); }",
-    );
+    let out = run_main("Object o = 'Q'; if (o instanceof Character c) { System.out.println(c); }");
     assert_eq!(out, vec!["Q"]);
 }
 
@@ -304,25 +289,20 @@ fn instanceof_compound_and_short_circuits_on_failed_type() {
 
 #[test]
 fn instanceof_pattern_on_wrapper_short_type() {
-    let out = run_main(
-        "Object o = (short) 6; if (o instanceof Short s) { System.out.println(s); }",
-    );
+    let out =
+        run_main("Object o = (short) 6; if (o instanceof Short s) { System.out.println(s); }");
     assert_eq!(out, vec!["6"]);
 }
 
 #[test]
 fn instanceof_pattern_on_wrapper_byte_type() {
-    let out = run_main(
-        "Object o = (byte) 11; if (o instanceof Byte b) { System.out.println(b); }",
-    );
+    let out = run_main("Object o = (byte) 11; if (o instanceof Byte b) { System.out.println(b); }");
     assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn instanceof_negation_with_null_is_true() {
-    let out = run_main(
-        "Object o = null; System.out.println(!(o instanceof String));",
-    );
+    let out = run_main("Object o = null; System.out.println(!(o instanceof String));");
     assert_eq!(out, vec!["true"]);
 }
 

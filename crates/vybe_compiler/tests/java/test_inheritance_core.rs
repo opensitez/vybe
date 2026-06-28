@@ -20,10 +20,7 @@ fn override_dispatches_to_most_specific_implementation() {
         static class Circle extends Shape { String label() { return "circle"; } }
         static class Dot extends Circle { String label() { return "dot"; } }
     "#;
-    let out = run_in_main(
-        "Shape s = new Dot(); System.out.println(s.label());",
-        types,
-    );
+    let out = run_in_main("Shape s = new Dot(); System.out.println(s.label());", types);
     assert_eq!(out, vec!["dot"]);
 }
 
@@ -58,10 +55,7 @@ fn child_inherits_parent_instance_field() {
         static class Parent { int value = 7; }
         static class Child extends Parent {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.value);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.value);", types);
     assert_eq!(out, vec!["7"]);
 }
 
@@ -117,10 +111,7 @@ fn three_level_inheritance_preserves_grandparent_field() {
         static class Parent extends Grand { int depth = 2; }
         static class Child extends Parent {}
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.depth);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.depth);", types);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -256,10 +247,7 @@ fn super_call_from_overridden_void_method_runs_parent_logic() {
             void log(String msg) { super.log(msg); System.out.println("child:" + msg); }
         }
     "#;
-    let out = run_in_main(
-        "AuditLogger a = new AuditLogger(); a.log(\"x\");",
-        types,
-    );
+    let out = run_in_main("AuditLogger a = new AuditLogger(); a.log(\"x\");", types);
     assert_eq!(out, vec!["parent:x", "child:x"]);
 }
 
@@ -298,10 +286,7 @@ fn field_shadowing_child_field_hides_parent_name() {
         static class Base { int value = 1; }
         static class Child extends Base { int value = 2; }
     "#;
-    let out = run_in_main(
-        "Child c = new Child(); System.out.println(c.value);",
-        types,
-    );
+    let out = run_in_main("Child c = new Child(); System.out.println(c.value);", types);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -374,10 +359,7 @@ fn multilevel_override_calls_middle_super() {
         static class B extends A { String id() { return super.id() + "B"; } }
         static class C extends B { String id() { return super.id() + "C"; } }
     "#;
-    let out = run_in_main(
-        "C c = new C(); System.out.println(c.id());",
-        types,
-    );
+    let out = run_in_main("C c = new C(); System.out.println(c.id());", types);
     assert_eq!(out, vec!["ABC"]);
 }
 
@@ -441,10 +423,7 @@ fn extends_chain_constructor_sets_all_levels() {
         static class L2 extends L1 { int b = 2; }
         static class L3 extends L2 { int sum() { return a + b; } }
     "#;
-    let out = run_in_main(
-        "L3 l = new L3(); System.out.println(l.sum());",
-        types,
-    );
+    let out = run_in_main("L3 l = new L3(); System.out.println(l.sum());", types);
     assert_eq!(out, vec!["3"]);
 }
 

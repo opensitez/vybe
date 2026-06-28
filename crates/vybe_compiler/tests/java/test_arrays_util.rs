@@ -98,9 +98,8 @@ fn arrays_equals_false_for_different_lengths() {
 
 #[test]
 fn arrays_equals_true_for_same_array_reference() {
-    let out = run_main(
-        "int[] nums = {1, 2}; System.out.println(java.util.Arrays.equals(nums, nums));",
-    );
+    let out =
+        run_main("int[] nums = {1, 2}; System.out.println(java.util.Arrays.equals(nums, nums));");
     assert_eq!(out, vec!["true"]);
 }
 
@@ -242,25 +241,20 @@ fn arrays_stream_filter_reduces_element_count() {
 
 #[test]
 fn arrays_to_string_formats_int_array_with_brackets() {
-    let out = run_main(
-        "int[] nums = {1, 2, 3}; System.out.println(java.util.Arrays.toString(nums));",
-    );
+    let out =
+        run_main("int[] nums = {1, 2, 3}; System.out.println(java.util.Arrays.toString(nums));");
     assert_eq!(out, vec!["[1, 2, 3]"]);
 }
 
 #[test]
 fn arrays_to_string_on_empty_array_is_empty_brackets() {
-    let out = run_main(
-        "int[] nums = {}; System.out.println(java.util.Arrays.toString(nums));",
-    );
+    let out = run_main("int[] nums = {}; System.out.println(java.util.Arrays.toString(nums));");
     assert_eq!(out, vec!["[]"]);
 }
 
 #[test]
 fn arrays_to_string_single_element_array() {
-    let out = run_main(
-        "int[] nums = {42}; System.out.println(java.util.Arrays.toString(nums));",
-    );
+    let out = run_main("int[] nums = {42}; System.out.println(java.util.Arrays.toString(nums));");
     assert_eq!(out, vec!["[42]"]);
 }
 

@@ -211,9 +211,8 @@ fn optional_stream_map_in_pipeline_transforms_value() {
 
 #[test]
 fn optional_stream_for_each_prints_contained_value() {
-    let out = run_main(
-        r#"java.util.Optional.of("one").stream().forEach(v -> System.out.println(v));"#,
-    );
+    let out =
+        run_main(r#"java.util.Optional.of("one").stream().forEach(v -> System.out.println(v));"#);
     assert_eq!(out, vec!["one"]);
 }
 

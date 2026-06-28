@@ -10,9 +10,8 @@ fn while_complex_condition_with_and_or_and_not() {
 
 #[test]
 fn while_condition_with_nested_parentheses_and_modulo() {
-    let out = run_main(
-        "int n = 1; while ((n % 3 != 0) && (n < 5)) { System.out.println(n); n++; }",
-    );
+    let out =
+        run_main("int n = 1; while ((n % 3 != 0) && (n < 5)) { System.out.println(n); n++; }");
     assert_eq!(out, vec!["1", "2", "4"]);
 }
 
@@ -142,9 +141,8 @@ fn while_sentinel_zero_terminates_accumulator() {
 
 #[test]
 fn while_complex_range_check_with_or_escape() {
-    let out = run_main(
-        "int v = 8; while (v > 0 && (v < 5 || v == 8)) { System.out.println(v); v--; }",
-    );
+    let out =
+        run_main("int v = 8; while (v > 0 && (v < 5 || v == 8)) { System.out.println(v); v--; }");
     assert_eq!(out, vec!["8"]);
 }
 
@@ -280,17 +278,13 @@ fn do_while_menu_nested_break_to_exit_session() {
 
 #[test]
 fn while_mixed_int_comparison_with_division() {
-    let out = run_main(
-        "int n = 16; while (n / 2 >= 2) { System.out.println(n); n /= 2; }",
-    );
+    let out = run_main("int n = 16; while (n / 2 >= 2) { System.out.println(n); n /= 2; }");
     assert_eq!(out, vec!["16", "8", "4"]);
 }
 
 #[test]
 fn while_condition_with_equality_and_less_combined() {
-    let out = run_main(
-        "int x = 0; while (x < 4 && x != 3) { System.out.println(x); x++; }",
-    );
+    let out = run_main("int x = 0; while (x < 4 && x != 3) { System.out.println(x); x++; }");
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 

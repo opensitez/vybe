@@ -29,7 +29,10 @@ fn default_constructor_leaves_string_field_null() {
             String text;
         }
     "#;
-    let out = run_in_main("Holder h = new Holder(); System.out.println(h.text);", types);
+    let out = run_in_main(
+        "Holder h = new Holder(); System.out.println(h.text);",
+        types,
+    );
     assert_eq!(out, vec!["null"]);
 }
 
@@ -198,7 +201,10 @@ fn this_disambiguates_field_from_constructor_parameter() {
             Holder(int value) { this.value = value; }
         }
     "#;
-    let out = run_in_main("Holder h = new Holder(42); System.out.println(h.value);", types);
+    let out = run_in_main(
+        "Holder h = new Holder(42); System.out.println(h.value);",
+        types,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
@@ -210,7 +216,10 @@ fn field_initializer_runs_before_constructor_body() {
             Counter() {}
         }
     "#;
-    let out = run_in_main("Counter c = new Counter(); System.out.println(c.count);", types);
+    let out = run_in_main(
+        "Counter c = new Counter(); System.out.println(c.count);",
+        types,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
@@ -258,7 +267,10 @@ fn this_square_constructor_sets_equal_dimensions() {
             Square(int side) { this.side = side; }
         }
     "#;
-    let out = run_in_main("Square s = new Square(6); System.out.println(s.side);", types);
+    let out = run_in_main(
+        "Square s = new Square(6); System.out.println(s.side);",
+        types,
+    );
     assert_eq!(out, vec!["6"]);
 }
 
@@ -290,7 +302,10 @@ fn implicit_no_arg_constructor_on_field_only_class() {
             int marker = 1;
         }
     "#;
-    let out = run_in_main("Empty e = new Empty(); System.out.println(e.marker);", types);
+    let out = run_in_main(
+        "Empty e = new Empty(); System.out.println(e.marker);",
+        types,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
@@ -302,7 +317,10 @@ fn constructor_accepts_expression_in_parameter() {
             Calc(int total) { this.total = total; }
         }
     "#;
-    let out = run_in_main("Calc c = new Calc(3 + 4); System.out.println(c.total);", types);
+    let out = run_in_main(
+        "Calc c = new Calc(3 + 4); System.out.println(c.total);",
+        types,
+    );
     assert_eq!(out, vec!["7"]);
 }
 

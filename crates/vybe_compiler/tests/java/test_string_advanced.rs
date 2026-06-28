@@ -70,9 +70,8 @@ fn offset_by_code_points_retreats_with_negative_count() {
 
 #[test]
 fn offset_by_code_points_counts_supplementary_as_single_step() {
-    let out = run_main(
-        r#"String s = "a\uD83D\uDE00b"; System.out.println(s.offsetByCodePoints(0, 2));"#,
-    );
+    let out =
+        run_main(r#"String s = "a\uD83D\uDE00b"; System.out.println(s.offsetByCodePoints(0, 2));"#);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -84,17 +83,13 @@ fn code_point_at_reads_ascii_letter_scalar() {
 
 #[test]
 fn code_point_at_reads_emoji_supplementary_scalar() {
-    let out = run_main(
-        r#"String s = "\uD83D\uDE00"; System.out.println(s.codePointAt(0));"#,
-    );
+    let out = run_main(r#"String s = "\uD83D\uDE00"; System.out.println(s.codePointAt(0));"#);
     assert_eq!(out, vec!["128512"]);
 }
 
 #[test]
 fn code_point_at_after_supplementary_uses_trailing_unit_index() {
-    let out = run_main(
-        r#"String s = "x\uD83D\uDE00y"; System.out.println(s.codePointAt(2));"#,
-    );
+    let out = run_main(r#"String s = "x\uD83D\uDE00y"; System.out.println(s.codePointAt(2));"#);
     assert_eq!(out, vec!["128512"]);
 }
 
@@ -112,9 +107,8 @@ fn code_point_count_equals_length_for_bmp_only_string() {
 
 #[test]
 fn code_point_count_treats_supplementary_pair_as_one() {
-    let out = run_main(
-        r#"String s = "a\uD83D\uDE00b"; System.out.println(s.codePointCount(0, 4));"#,
-    );
+    let out =
+        run_main(r#"String s = "a\uD83D\uDE00b"; System.out.println(s.codePointCount(0, 4));"#);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -176,9 +170,8 @@ fn replace_first_regex_changes_only_initial_digit() {
 
 #[test]
 fn split_with_limit_zero_drops_trailing_empty_tokens() {
-    let out = run_main(
-        r#"String[] parts = "a,b,".split(",", 0); System.out.println(parts.length);"#,
-    );
+    let out =
+        run_main(r#"String[] parts = "a,b,".split(",", 0); System.out.println(parts.length);"#);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -258,9 +251,8 @@ fn formatted_zero_pads_integer_width() {
 
 #[test]
 fn translate_escapes_converts_backslash_n_to_newline() {
-    let out = run_main(
-        r#"String s = String.translateEscapes("\\n"); System.out.println(s.length());"#,
-    );
+    let out =
+        run_main(r#"String s = String.translateEscapes("\\n"); System.out.println(s.length());"#);
     assert_eq!(out, vec!["1"]);
 }
 
@@ -274,9 +266,7 @@ fn translate_escapes_converts_backslash_t_to_tab() {
 
 #[test]
 fn translate_escapes_unicode_escape_yields_expected_letter() {
-    let out = run_main(
-        r#"String s = String.translateEscapes("\\u0041"); System.out.println(s);"#,
-    );
+    let out = run_main(r#"String s = String.translateEscapes("\\u0041"); System.out.println(s);"#);
     assert_eq!(out, vec!["A"]);
 }
 
@@ -319,9 +309,8 @@ fn value_of_object_delegates_to_to_string() {
 
 #[test]
 fn copy_value_of_char_array_duplicates_content() {
-    let out = run_main(
-        r#"char[] src = {'x', 'y', 'z'}; System.out.println(String.copyValueOf(src));"#,
-    );
+    let out =
+        run_main(r#"char[] src = {'x', 'y', 'z'}; System.out.println(String.copyValueOf(src));"#);
     assert_eq!(out, vec!["xyz"]);
 }
 

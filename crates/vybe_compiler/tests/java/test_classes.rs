@@ -54,10 +54,7 @@ fn static_method_called_without_instance() {
             static int add(int a, int b) { return a + b; }
         }
     "#;
-    let out = run_in_main(
-        "System.out.println(Math2.add(4, 5));",
-        types,
-    );
+    let out = run_in_main("System.out.println(Math2.add(4, 5));", types);
     assert_eq!(out, vec!["9"]);
 }
 

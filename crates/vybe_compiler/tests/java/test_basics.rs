@@ -34,7 +34,9 @@ fn arithmetic_add_sub_mul_div() {
 
 #[test]
 fn boolean_literals_true_and_false() {
-    let out = run_main("boolean t = true; boolean f = false; System.out.println(t); System.out.println(f);");
+    let out = run_main(
+        "boolean t = true; boolean f = false; System.out.println(t); System.out.println(f);",
+    );
     assert_eq!(out, vec!["true", "false"]);
 }
 

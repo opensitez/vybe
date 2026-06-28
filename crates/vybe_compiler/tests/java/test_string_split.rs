@@ -34,9 +34,7 @@ fn split_on_dot_regex_splits_extension() {
 
 #[test]
 fn split_on_pipe_regex_splits_fields() {
-    let out = run_main(
-        r#"String[] parts = "x|y|z".split("\\|"); System.out.println(parts[1]);"#,
-    );
+    let out = run_main(r#"String[] parts = "x|y|z".split("\\|"); System.out.println(parts[1]);"#);
     assert_eq!(out, vec!["y"]);
 }
 
@@ -50,9 +48,8 @@ fn split_on_colon_regex_parses_time_parts() {
 
 #[test]
 fn split_on_character_class_regex_splits_vowels() {
-    let out = run_main(
-        r#"String[] parts = "brisk".split("[aeiou]"); System.out.println(parts.length);"#,
-    );
+    let out =
+        run_main(r#"String[] parts = "brisk".split("[aeiou]"); System.out.println(parts.length);"#);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -82,9 +79,8 @@ fn split_with_limit_one_returns_whole_input() {
 
 #[test]
 fn split_with_limit_zero_drops_trailing_empty_tokens() {
-    let out = run_main(
-        r#"String[] parts = "a,b,".split(",", 0); System.out.println(parts.length);"#,
-    );
+    let out =
+        run_main(r#"String[] parts = "a,b,".split(",", 0); System.out.println(parts.length);"#);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -114,9 +110,7 @@ fn split_preserve_multiple_trailing_empties_with_negative_limit() {
 
 #[test]
 fn split_trailing_empty_dropped_with_default_limit() {
-    let out = run_main(
-        r#"String[] parts = "x,y,".split(","); System.out.println(parts.length);"#,
-    );
+    let out = run_main(r#"String[] parts = "x,y,".split(","); System.out.println(parts.length);"#);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -298,9 +292,8 @@ fn split_limit_zero_equals_default_for_trailing_empty() {
 
 #[test]
 fn split_on_regex_question_mark_optional_delimiter() {
-    let out = run_main(
-        r#"String[] parts = "a-b_c".split("[-_]?"); System.out.println(parts.length);"#,
-    );
+    let out =
+        run_main(r#"String[] parts = "a-b_c".split("[-_]?"); System.out.println(parts.length);"#);
     assert_eq!(out, vec!["5"]);
 }
 

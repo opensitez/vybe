@@ -49,9 +49,8 @@ fn anonymous_runnable_thread_start_join() {
 
 #[test]
 fn thread_sleep_allows_main_to_continue_after_delay() {
-    let out = run_main(
-        "System.out.println(\"before\"); Thread.sleep(1); System.out.println(\"after\");",
-    );
+    let out =
+        run_main("System.out.println(\"before\"); Thread.sleep(1); System.out.println(\"after\");");
     assert_eq!(out, vec!["before", "after"]);
 }
 
@@ -123,9 +122,7 @@ fn thread_norm_priority_between_min_and_max() {
 
 #[test]
 fn thread_is_alive_false_before_start() {
-    let out = run_main(
-        "Thread t = new Thread(() -> {}); System.out.println(t.isAlive());",
-    );
+    let out = run_main("Thread t = new Thread(() -> {}); System.out.println(t.isAlive());");
     assert_eq!(out, vec!["false"]);
 }
 
@@ -316,18 +313,14 @@ fn thread_subclass_overrides_run_not_start() {
             public void run() { System.out.println("body"); }
         }
     "#;
-    let out = run_in_main(
-        "Safe s = new Safe(); s.start(); s.join();",
-        types,
-    );
+    let out = run_in_main("Safe s = new Safe(); s.start(); s.join();", types);
     assert_eq!(out, vec!["body"]);
 }
 
 #[test]
 fn thread_join_on_current_thread_is_noop() {
-    let out = run_main(
-        "Thread t = Thread.currentThread(); t.join(); System.out.println(\"alive\");",
-    );
+    let out =
+        run_main("Thread t = Thread.currentThread(); t.join(); System.out.println(\"alive\");");
     assert_eq!(out, vec!["alive"]);
 }
 
@@ -380,9 +373,7 @@ fn thread_sleep_does_not_skip_subsequent_print() {
 
 #[test]
 fn thread_min_and_max_priority_constants_differ() {
-    let out = run_main(
-        "System.out.println(Thread.MIN_PRIORITY < Thread.MAX_PRIORITY);",
-    );
+    let out = run_main("System.out.println(Thread.MIN_PRIORITY < Thread.MAX_PRIORITY);");
     assert_eq!(out, vec!["true"]);
 }
 
