@@ -15,6 +15,7 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+materialize_bool_results = true
 # Python `arr[-1]` returns the last element. Compiler emits a
 # normalize-before-index sequence (`if i < 0: i = len + i`) when
 # this is set. JS/VB/C# leave it false — they return undefined.
@@ -37,12 +38,12 @@ uses_normalize_class = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-print           = { emit = "print",                         min_args = 0, max_args = 255 }
+print           = { emit = "common:python.print",            min_args = 0, max_args = 255 }
 input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-int             = { emit = "intrinsic:cint",        min_args = 1, max_args = 2 }
+int             = { emit = "common:to_int",         min_args = 1, max_args = 2 }
 parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
 str             = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }

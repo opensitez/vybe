@@ -1885,17 +1885,10 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                         optional: false,
                     });
                 } else if op_str == "//" {
-                    // Python floor division: floor(a / b)
-                    let div = Expression::new(ExprKind::Binary {
-                        op: BinOp::Div,
+                    left = Expression::new(ExprKind::Binary {
+                        op: BinOp::FloorDiv,
                         left: Box::new(left),
                         right: Box::new(right),
-                    });
-                    let callee = Expression::new(ExprKind::Ident("floor".into()));
-                    left = Expression::new(ExprKind::Call {
-                        callee: Box::new(callee),
-                        args: vec![Argument::positional(div)],
-                        optional: false,
                     });
                 } else {
                     let op = parse_binop(op_str);
@@ -2818,9 +2811,9 @@ fn parse_comparison_op(s: &str) -> BinOp {
         "<=" => BinOp::LtEq,
         ">=" => BinOp::GtEq,
         "in" => BinOp::In,
-        "is" => BinOp::Is,
+        "is" => BinOp::Eq,
         _ if s.contains("not") && s.contains("in") => BinOp::NotIn,
-        _ if s.contains("is") && s.contains("not") => BinOp::IsNot,
+        _ if s.contains("is") && s.contains("not") => BinOp::NotEq,
         _ => BinOp::Eq,
     }
 }

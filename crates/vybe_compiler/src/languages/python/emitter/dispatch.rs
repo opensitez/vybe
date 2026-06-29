@@ -53,6 +53,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.length" => {
             crate::emitter::python::collections_adapter::emit_length(chunks, current, line)
         }
+        "python.print" => {
+            crate::emitter::python::runtime_adapter::emit_print(chunks, current, argc, line)
+        }
         "python.range" => {
             crate::emitter::python::runtime_adapter::emit_range(chunks, current, argc, line)
         }

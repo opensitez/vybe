@@ -5,7 +5,64 @@
 //! the old runtime-helper function table.
 
 use crate::emitter::{collections, target::Target};
+use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+
+/// Python `print(...)` — Bool→True/False, None→None.
+/// Converts each arg through py_repr then calls wasi:logging/logging.log.
+pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc == 0 {
+        let idx = chunk.add_import("wasi:logging/logging", "log");
+        chunk.emit_string_const("", line);
+        chunk.emit_call(idx, 1, line);
+        return;
+    }
+    // Save all args, convert each, then call log with all converted args
+    let mut slots = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        let s = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, s, line);
+        slots.push(s);
+    }
+    slots.reverse();
+    for &s in &slots {
+        chunk.emit_op_u16(Op::LOCAL_GET, s, line);
+        emit_py_repr(chunk, line);
+    }
+    let idx = chunk.add_import("wasi:logging/logging", "log");
+    chunk.emit_call(idx, argc, line);
+}
+
+/// If top-of-stack is Bool → "True"/"False", Null → "None", else pass through.
+fn emit_py_repr(chunk: &mut Chunk, line: u32) {
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let scratch = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, scratch, line);
+    // Check null first
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("None", line);
+    chunk.emit_else(line);
+    // Check bool
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(test_bool, 1, line);
+    chunk.emit_if_value(line);
+    // cast Bool → i32 (1=true, 0=false)
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("True", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("False", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
 
 /// Python `range(...)`.
 ///
