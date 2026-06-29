@@ -751,9 +751,9 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, iter_slot, line);
         chunk.emit_br(0, line);
-        chunk.emit_end(line);           // end LOOP
+        chunk.emit_end(line); // end LOOP
         chunk.patch_loop(loop_patch);
-        chunk.emit_end(line);           // end BLOCK
+        chunk.emit_end(line); // end BLOCK
         chunk.patch_block(block_patch);
     }
     lget(&mut chunks[current], rate_slot, line);
