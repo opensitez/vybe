@@ -25,7 +25,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -235,7 +235,10 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     push_const(chunk, Value::I32(0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -250,7 +253,10 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     let ok_slot = alloc_local(chunk);
@@ -344,7 +350,10 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -359,11 +368,17 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, c_slot, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     lget(chunk, delims_slot, line);
@@ -395,7 +410,10 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_else(line);
     lget(chunk, delims_slot, line);
     lget(chunk, c_slot, line);
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_ge(chunk, line);
     chunk.emit_end(line);
@@ -414,7 +432,10 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toUpperCase");
+        chunk.emit_call(idx, 1, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
@@ -464,7 +485,10 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     let _ = chunk;
@@ -494,7 +518,10 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
     lget(chunk, end_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -540,7 +567,10 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, s_slot, line);
 
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, str_len_slot, line);
 
     lget(chunk, str_len_slot, line);
@@ -552,7 +582,10 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_else(line);
 
     lget(chunk, pad_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -650,19 +683,31 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, offset_slot, line);
     lget(chunk, length_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_else(line);
     lget(chunk, hay_slot, line);
     lget(chunk, offset_slot, line);
     lget(chunk, hay_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_end(line);
     lset(chunk, slice_slot, line);
 
     // if needle.length == 0: return 0
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -682,10 +727,19 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, slice_slot, line);
     lget(chunk, pos_slot, line);
     lget(chunk, slice_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, idx_slot, line);
     // condition: idx >= 0
     lget(chunk, idx_slot, line);
@@ -702,7 +756,10 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, pos_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, pos_slot, line);
     let _ = chunk;
@@ -741,14 +798,26 @@ fn emit_strstr_impl(
     if case_insensitive {
         // idx = lower(hay).indexOf(lower(needle))
         lget(chunk, hay_slot, line);
-        { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "toLowerCase");
+            chunk.emit_call(idx, 1, line);
+        }
         lget(chunk, needle_slot, line);
-        { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
-        { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "toLowerCase");
+            chunk.emit_call(idx, 1, line);
+        }
+        {
+            let idx = chunk.add_import("ecma:string", "indexOf");
+            chunk.emit_call(idx, 2, line);
+        }
     } else {
         lget(chunk, hay_slot, line);
         lget(chunk, needle_slot, line);
-        { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "indexOf");
+            chunk.emit_call(idx, 2, line);
+        }
     }
     lset(chunk, idx_slot, line);
 
@@ -769,13 +838,22 @@ fn emit_strstr_impl(
     lget(chunk, hay_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, idx_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_else(line);
     lget(chunk, hay_slot, line);
     lget(chunk, idx_slot, line);
     lget(chunk, hay_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -806,7 +884,10 @@ pub fn emit_urlencode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // Replace "%20" with "+"
     push_str(chunk, "%20", line);
     push_str(chunk, "+", line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
 }
 
 /// PHP `rawurlencode` — strict `encodeURIComponent`.
@@ -828,7 +909,10 @@ pub fn emit_urldecode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     coerce_to_str(chunk, line);
     push_str(chunk, "+", line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
     call_import(
         chunks,
         current,
@@ -872,7 +956,10 @@ pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, lin
     ] {
         push_str(chunk, from, line);
         push_str(chunk, to, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -883,7 +970,10 @@ pub fn emit_htmlentities(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     for (ch, entity) in HTML_NAMED_ENTITIES_ENCODE {
         push_str(chunk, ch, line);
         push_str(chunk, entity, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -984,7 +1074,10 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -999,7 +1092,10 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     // hi = (code >> 4) & 0xF; lo = code & 0xF
@@ -1018,11 +1114,17 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, out_slot, line);
     push_str(chunk, table, line);
     lget(chunk, hi_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     push_str(chunk, table, line);
     lget(chunk, lo_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
@@ -1049,14 +1151,20 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let lo_slot = alloc_local(chunk);
 
     coerce_to_str(chunk, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, s_slot, line);
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -1076,16 +1184,28 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     push_str(chunk, table, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, hi_slot, line);
     push_str(chunk, table, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, lo_slot, line);
 
     // if hi<0 || lo<0: return false
@@ -1113,7 +1233,10 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_MUL, line);
     lget(chunk, lo_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("wasm:js-string", "fromCharCode"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
@@ -1170,7 +1293,10 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, total_slot, line);
 
     let _ = chunk;
@@ -1190,7 +1316,10 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lget(chunk, i_slot, line);
     lget(chunk, length_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lget(chunk, end_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
@@ -1297,7 +1426,10 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // dot_idx = fixed.indexOf(".")
     lget(chunk, fixed_slot, line);
     push_str(chunk, ".", line);
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, dot_slot, line);
 
     // if dot_idx < 0: int_part = fixed; frac_part = ""
@@ -1314,15 +1446,24 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lget(chunk, fixed_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, dot_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, int_part_slot, line);
     lget(chunk, fixed_slot, line);
     lget(chunk, dot_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, fixed_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, frac_part_slot, line);
     chunk.emit_end(line);
 
@@ -1330,7 +1471,10 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
     lget(chunk, int_part_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -1371,7 +1515,10 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lget(chunk, out_slot, line);
     lget(chunk, int_part_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
@@ -1386,7 +1533,10 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     // if frac_part.length > 0: out += decsep + frac_part
     lget(chunk, frac_part_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -1430,7 +1580,10 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
     // len = str.length
     lget(chunk, str_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     // s = start < 0 ? max(len + start, 0) : min(start, len)
@@ -1525,7 +1678,10 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, str_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lget(chunk, repl_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lget(chunk, str_slot, line);
@@ -1533,7 +1689,10 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, l_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, len_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
 }
 
@@ -1564,7 +1723,10 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -1579,7 +1741,10 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     // is_sep: whitespace (9..=13, 32) | comma 44 | period 46 | ! 33 | ? 63 | ; 59 | : 58 | hyphen 45
@@ -1664,13 +1829,22 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 
     // lower = subj.toLowerCase(); srch_lower = srch.toLowerCase()
     lget(chunk, subj_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, lower_slot, line);
     lget(chunk, srch_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, srch_lower_slot, line);
     lget(chunk, srch_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, srch_len_slot, line);
 
     // if srch_len === 0: return subj; else do the replacement loop
@@ -1695,10 +1869,19 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lget(chunk, lower_slot, line);
     lget(chunk, pos_slot, line);
     lget(chunk, lower_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lget(chunk, srch_lower_slot, line);
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, idx_slot, line);
     // condition: idx >= 0
     lget(chunk, idx_slot, line);
@@ -1715,7 +1898,10 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lget(chunk, pos_slot, line);
     lget(chunk, idx_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lget(chunk, repl_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
@@ -1738,8 +1924,14 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lget(chunk, subj_slot, line);
     lget(chunk, pos_slot, line);
     lget(chunk, subj_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line); // end if (nonempty srch)
 }
@@ -1825,7 +2017,10 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 
     // if needle.length > 0: do replacement (else skip)
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
@@ -1862,7 +2057,10 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, subj_slot, line);
     lget(chunk, needle_slot, line);
     lget(chunk, rep_slot, line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, subj_slot, line);
 
     chunk.emit_end(line); // end if nonempty_needle
@@ -1888,7 +2086,10 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
 
     chunk.emit_end(line); // end scalar_path if-value
 }
@@ -1933,7 +2134,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let lines_slot = alloc_local(chunk);
     lget(chunk, s_slot, line);
     push_str(chunk, "\n", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, lines_slot, line);
 
     // out = []
@@ -1975,7 +2179,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     // if line.length > width: wrap; else: push as-is
     lget(chunk, line_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -1984,7 +2191,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     // needs wrapping: words = line.split(" ")
     lget(chunk, line_slot, line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, words_slot, line);
     lget(chunk, words_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -2014,7 +2224,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     // if current.length === 0: current = word
     lget(chunk, current_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -2024,11 +2237,17 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunk.emit_else(line);
     // else if current.length + 1 + word.length <= width: append
     lget(chunk, current_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, word_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
@@ -2073,7 +2292,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let cut_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, current_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     let _ = chunk;
@@ -2083,13 +2305,19 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     lget(chunk, current_slot, line);
     push_const(chunk, Value::I32(0), line);
     lget(chunk, width_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, cut_i_slot, line);
     // current = current[width..]
     lget(chunk, current_slot, line);
     lget(chunk, width_slot, line);
     push_const(chunk, Value::I32(i32::MAX), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, current_slot, line);
     // out.push(chunk)
     lget(chunk, out_slot, line);
@@ -2103,7 +2331,10 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     // if current.length > 0: out.push(current)
     lget(chunk, current_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -2173,7 +2404,10 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     let _ = chunk;
@@ -2189,7 +2423,10 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // c = s.charAt(i)
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, c_slot, line);
 
     // if in_q: handle in-quote state; else: handle normal state
@@ -2214,7 +2451,10 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     push_str(chunk, "\"", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -2317,14 +2557,20 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let digit_slot = alloc_local(chunk);
 
     coerce_to_str(chunk, line);
-    { let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toUpperCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, s_slot, line);
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
 
     // if s.length == 0: return ""; else: compute soundex
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -2335,7 +2581,10 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // out = first letter
     lget(chunk, s_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, out_slot, line);
 
     // last = digit_for(first letter)
@@ -2343,7 +2592,10 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lset(chunk, last_slot, line);
     lget(chunk, s_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
     emit_soundex_digit(chunks, current, code_slot, digit_slot, line);
     let chunk = &mut chunks[current];
@@ -2354,7 +2606,10 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     push_const(chunk, Value::F64(1.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     // while i < n && out.length < 4
@@ -2368,7 +2623,10 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, out_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(4.0), line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_else(line);
@@ -2381,11 +2639,17 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // c = s.charAt(i); code = s.charCodeAt(i); digit = lookup
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, c_slot, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
     emit_soundex_digit(chunks, current, code_slot, digit_slot, line);
     let chunk = &mut chunks[current];
@@ -2432,7 +2696,10 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let pad_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(4.0), line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
@@ -2512,10 +2779,16 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, a_slot, line);
 
     lget(chunk, a_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, m_slot, line);
     lget(chunk, b_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     // prev[j] = j  (distance from "" to b[..j])
@@ -2615,12 +2888,18 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_SUB, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lget(chunk, b_slot, line);
     lget(chunk, j_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_SUB, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
@@ -2742,10 +3021,16 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lset(chunk, a_slot, line);
 
     lget(chunk, a_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, m_slot, line);
     lget(chunk, b_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
@@ -2810,10 +3095,16 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
     lget(chunk, a_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lget(chunk, b_slot, line);
     lget(chunk, j_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if a[i]==b[j]
@@ -2875,14 +3166,20 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let code_slot = alloc_local(chunk);
 
     coerce_to_str(chunk, line);
-    { let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toUpperCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, s_slot, line);
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     let _ = chunk;
@@ -2897,11 +3194,17 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, c_slot, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     // First letter always kept; subsequent: skip vowels/H/W/Y, keep consonants
@@ -2998,7 +3301,10 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, n_slot, line);
 
     // Metacharacter codes: . 46, \\ 92, + 43, * 42, ? 63, [ 91, ^ 94,
@@ -3021,11 +3327,17 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // c = s.charAt(i); code = s.charCodeAt(i)
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, c_slot, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     // is_meta = code in metas OR delim.indexOf(c) >= 0 — compute flag
@@ -3044,14 +3356,20 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     }
     // delim check: if delim.length > 0 && delim.indexOf(c) >= 0: is_meta = true
     lget(chunk, delim_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, delim_slot, line);
     lget(chunk, c_slot, line);
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_ge(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -3158,7 +3476,10 @@ fn emit_trim_impl(
         push_const(chunk, Value::F64(0.0), line);
         lset(chunk, start_slot, line);
         lget(chunk, s_slot, line);
-        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("wasm:js-string", "length");
+            chunk.emit_call(idx, 1, line);
+        }
         lset(chunk, end_slot, line);
         (chars_slot, s_slot, start_slot, end_slot)
     }; // chunk borrow ends here
@@ -3173,8 +3494,14 @@ fn emit_trim_impl(
         lget(&mut chunks[current], chars_slot, line);
         lget(&mut chunks[current], s_slot, line);
         lget(&mut chunks[current], start_slot, line);
-        { let idx = chunks[current].add_import("ecma:string", "charAt"); chunks[current].emit_call(idx, 2, line); }
-        { let idx = chunks[current].add_import("ecma:string", "indexOf"); chunks[current].emit_call(idx, 2, line); }
+        {
+            let idx = chunks[current].add_import("ecma:string", "charAt");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        {
+            let idx = chunks[current].add_import("ecma:string", "indexOf");
+            chunks[current].emit_call(idx, 2, line);
+        }
         push_const(&mut chunks[current], Value::F64(0.0), line);
         crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
         chunks[current].emit_br_if(lstate.break_depth(0) as u32, line);
@@ -3196,8 +3523,14 @@ fn emit_trim_impl(
         lget(&mut chunks[current], end_slot, line);
         push_const(&mut chunks[current], Value::F64(1.0), line);
         chunks[current].emit_op(Op::F64_SUB, line);
-        { let idx = chunks[current].add_import("ecma:string", "charAt"); chunks[current].emit_call(idx, 2, line); }
-        { let idx = chunks[current].add_import("ecma:string", "indexOf"); chunks[current].emit_call(idx, 2, line); }
+        {
+            let idx = chunks[current].add_import("ecma:string", "charAt");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        {
+            let idx = chunks[current].add_import("ecma:string", "indexOf");
+            chunks[current].emit_call(idx, 2, line);
+        }
         push_const(&mut chunks[current], Value::F64(0.0), line);
         crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
         chunks[current].emit_br_if(rstate.break_depth(0) as u32, line);
@@ -3212,7 +3545,10 @@ fn emit_trim_impl(
     lget(&mut chunks[current], s_slot, line);
     lget(&mut chunks[current], start_slot, line);
     lget(&mut chunks[current], end_slot, line);
-    { let idx = chunks[current].add_import("wasm:js-string", "substring"); chunks[current].emit_call(idx, 3, line); }
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "substring");
+        chunks[current].emit_call(idx, 3, line);
+    }
 }
 
 // ── preg_split with limit ──────────────────────────────────────────
@@ -3226,27 +3562,55 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let has_flags = argc >= 4;
 
     // Alloc ALL locals up front in one block
-    let (flags_slot, limit_slot, str_slot, pat_slot, result_slot,
-         count_slot, pos_slot, new_result_slot, match_slot, i_slot) = {
+    let (
+        flags_slot,
+        limit_slot,
+        str_slot,
+        pat_slot,
+        result_slot,
+        count_slot,
+        pos_slot,
+        new_result_slot,
+        match_slot,
+        i_slot,
+    ) = {
         let c = &mut chunks[current];
-        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
-         alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c),
-         alloc_local(c), alloc_local(c))
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
     };
 
     // Pop args
     {
         let c = &mut chunks[current];
-        if has_flags { lset(c, flags_slot, line); }
-        else { push_const(c, Value::F64(0.0), line); lset(c, flags_slot, line); }
-        if has_limit { lset(c, limit_slot, line); }
+        if has_flags {
+            lset(c, flags_slot, line);
+        } else {
+            push_const(c, Value::F64(0.0), line);
+            lset(c, flags_slot, line);
+        }
+        if has_limit {
+            lset(c, limit_slot, line);
+        }
         lset(c, str_slot, line);
         lset(c, pat_slot, line);
         lget(c, str_slot, line);
         lget(c, pat_slot, line);
     }
     call_import(chunks, current, "ecma:regexp", "split", 2, line);
-    { let c = &mut chunks[current]; lset(c, result_slot, line); }
+    {
+        let c = &mut chunks[current];
+        lset(c, result_slot, line);
+    }
 
     if has_limit {
         {
@@ -3288,7 +3652,10 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             lget(c, str_slot, line);
             lget(c, pos_slot, line);
             push_const(c, Value::I32(i32::MAX), line);
-            { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, line); }
+            {
+                let idx = c.add_import("wasm:js-string", "substring");
+                c.emit_call(idx, 3, line);
+            }
         }
         call_import(chunks, current, "ecma:regexp", "exec", 2, line);
         {
@@ -3311,7 +3678,10 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             lget(c, match_slot, line);
             push_const(c, Value::F64(0.0), line);
             c.emit_op(Op::ARRAY_GET, line);
-            { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, line); }
+            {
+                let idx = c.add_import("wasm:js-string", "length");
+                c.emit_call(idx, 1, line);
+            }
             c.emit_op(Op::F64_ADD, line);
             lget(c, pos_slot, line);
             c.emit_op(Op::F64_ADD, line);
@@ -3371,7 +3741,10 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             lget(c, str_slot, line);
             lget(c, pos_slot, line);
             push_const(c, Value::I32(i32::MAX), line);
-            { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, line); }
+            {
+                let idx = c.add_import("wasm:js-string", "substring");
+                c.emit_call(idx, 3, line);
+            }
         }
         call_import(chunks, current, "ecma:array", "push", 2, line);
         {
@@ -3820,7 +4193,10 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // only push if val doesn't start with "foo"
     lget(chunk, filter_val_slot, line);
     push_str(chunk, "foo", line);
-    { let idx = chunk.add_import("ecma:string", "startsWith"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(idx, 2, line);
+    }
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     lget(chunk, filtered_slot, line);
@@ -4041,7 +4417,10 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 
     // subj_len = subj.length (for trailing slice)
     lget(chunk, subj_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, subj_len_slot, line);
 
     // while i < n
@@ -4075,7 +4454,10 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 
     // match_len = match_str.length
     lget(chunk, match_str_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, match_len_slot, line);
 
     // result += subj.substring(last_end, pos)
@@ -4083,8 +4465,14 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     lget(chunk, subj_slot, line);
     lget(chunk, last_end_slot, line);
     lget(chunk, pos_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, result_slot, line);
 
     // cb_ret = cb(m)
@@ -4098,7 +4486,10 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     // result += cb_ret
     lget(chunk, result_slot, line);
     lget(chunk, cb_ret_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, result_slot, line);
 
     // last_end = pos + match_len
@@ -4121,8 +4512,14 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     lget(chunk, subj_slot, line);
     lget(chunk, last_end_slot, line);
     lget(chunk, subj_len_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, result_slot, line);
 
     // Leave result on stack
@@ -4363,7 +4760,10 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -4382,7 +4782,10 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_op(Op::F64_ADD, line);
     // keep in 32-bit range via fmod 4294967296
     push_const(chunk, Value::F64(4294967296.0), line);
@@ -4418,7 +4821,10 @@ pub fn emit_addslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     for (from, to) in [("\\", "\\\\"), ("'", "\\'"), ("\"", "\\\"")] {
         push_str(chunk, from, line);
         push_str(chunk, to, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -4428,7 +4834,10 @@ pub fn emit_stripslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     for (from, to) in [("\\'", "'"), ("\\\"", "\""), ("\\\\", "\\")] {
         push_str(chunk, from, line);
         push_str(chunk, to, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -4476,7 +4885,10 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     let _ = chunk;
@@ -4491,7 +4903,10 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     // if code >= 65 (possibly a letter)
@@ -4540,7 +4955,10 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // append chr(rot) to out
     lget(chunk, out_slot, line);
     lget(chunk, rot_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "fromCharCode"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
@@ -4569,17 +4987,26 @@ pub fn emit_nl2br(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_if_value(line);
         push_str(chunk, "\n", line);
         push_str(chunk, "<br />\n", line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
         chunk.emit_else(line);
         push_str(chunk, "\n", line);
         push_str(chunk, "<br>\n", line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
         chunk.emit_end(line);
     } else {
         coerce_to_str(chunk, line);
         push_str(chunk, "\n", line);
         push_str(chunk, "<br />\n", line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -4600,7 +5027,10 @@ pub fn emit_htmlspecialchars_decode(chunks: &mut [Chunk], current: usize, argc: 
     ] {
         push_str(chunk, from, line);
         push_str(chunk, to, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -4611,7 +5041,10 @@ pub fn emit_html_entity_decode(chunks: &mut [Chunk], current: usize, argc: u8, l
     for (entity, ch) in HTML_NAMED_ENTITIES_DECODE {
         push_str(chunk, entity, line);
         push_str(chunk, ch, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
     }
 }
 
@@ -4758,7 +5191,10 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         // if allowed_tags is non-empty string: return str unchanged (simplified)
         lget(chunk, allowed_slot, line);
         coerce_to_str(chunk, line);
-        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("wasm:js-string", "length");
+            chunk.emit_call(idx, 1, line);
+        }
         push_const(chunk, Value::F64(0.0), line);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -4792,12 +5228,18 @@ pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, needle_slot, line);
     push_const(chunk, Value::I32(0), line);
     push_const(chunk, Value::I32(1), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, needle_slot, line);
 
     lget(chunk, hay_slot, line);
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("ecma:string", "lastIndexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "lastIndexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, pos_slot, line);
 
     // if pos < 0: false; else: hay.substring(pos)
@@ -4811,7 +5253,10 @@ pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, hay_slot, line);
     lget(chunk, pos_slot, line);
     push_const(chunk, Value::I32(i32::MAX), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_end(line);
 }
 
@@ -4822,7 +5267,10 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Stack on entry (argc=2): str, delim — delim is TOS
     if argc < 3 {
         let chunk = &mut chunks[current];
-        { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "split");
+            chunk.emit_call(idx, 2, line);
+        }
         return;
     }
 
@@ -4839,7 +5287,10 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, limit_slot, line); // pop limit
     lset(chunk, delim_slot, line); // pop delim; str remains on stack
     lget(chunk, delim_slot, line); // push delim back for STR_SPLIT
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); } // (str, delim) → array
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    } // (str, delim) → array
     lset(chunk, arr_slot, line);
     lget(chunk, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -4940,7 +5391,10 @@ pub fn emit_php_uniqid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // result = prefix + hex
     lget(chunk, prefix_slot, line);
     lget(chunk, hex_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, result_slot, line);
 
     if let Some(me_slot) = more_entropy_slot {
@@ -4949,7 +5403,10 @@ pub fn emit_php_uniqid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_if(line);
         lget(chunk, result_slot, line);
         push_str(chunk, ".00000000", line);
-        { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("wasm:js-string", "concat");
+            chunk.emit_call(idx, 2, line);
+        }
         lset(chunk, result_slot, line);
         chunk.emit_end(line);
     }
@@ -5000,12 +5457,21 @@ pub fn emit_strripos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_op(Op::DROP, line);
     }
     // needle → lower, haystack → lower
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); } // needle lower
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    } // needle lower
     let needle_slot = alloc_local(chunk);
     lset(chunk, needle_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); } // haystack lower
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    } // haystack lower
     lget(chunk, needle_slot, line);
-    { let idx = chunk.add_import("ecma:string", "lastIndexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "lastIndexOf");
+        chunk.emit_call(idx, 2, line);
+    }
 }
 
 // ── str_word_count with mode ──────────────────────────────────────────────
@@ -5032,7 +5498,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     // Use regex split on whitespace, filter empty
     lget(chunk, s_slot, line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let arr_slot = alloc_local(chunk);
     let i_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
@@ -5061,7 +5530,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     lset(chunk, word_slot, line);
     // only push non-empty words
     lget(chunk, word_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -5101,7 +5573,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     let wstart_slot = alloc_local(chunk);
     let obj_slot = alloc_local(chunk);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, slen_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, pos_slot, line);
@@ -5131,7 +5606,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, pos_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_else(line);
     push_const(chunk, Value::F64(32.0), line); // space sentinel at end
     chunk.emit_end(line);
@@ -5158,7 +5636,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     lget(chunk, s_slot, line);
     lget(chunk, wstart_slot, line);
     lget(chunk, pos_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, char_pos_slot, line); // reuse as word_str_slot
     lget(chunk, obj_slot, line);
     lget(chunk, wstart_slot, line);
@@ -5196,7 +5677,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     // For simplicity, rebuild from s_slot
     lget(chunk, s_slot, line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let arr2 = alloc_local(chunk);
     let len2 = alloc_local(chunk);
     let i2 = alloc_local(chunk);
@@ -5224,7 +5708,10 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, w2, line);
     lget(chunk, w2, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -5337,11 +5824,17 @@ pub fn emit_strncmp(chunks: &mut [Chunk], current: usize, case_insensitive: bool
     lget(chunk, a_slot, line);
     push_const(chunk, Value::I32(0), line);
     lget(chunk, n_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lget(chunk, b_slot, line);
     push_const(chunk, Value::I32(0), line);
     lget(chunk, n_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     if case_insensitive {
         // Swap to (lower_a, lower_b) for comparison
         let sub_b_slot = alloc_local(chunk);
@@ -5349,11 +5842,20 @@ pub fn emit_strncmp(chunks: &mut [Chunk], current: usize, case_insensitive: bool
         let sub_a_slot = alloc_local(chunk);
         lset(chunk, sub_a_slot, line);
         lget(chunk, sub_a_slot, line);
-        { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "toLowerCase");
+            chunk.emit_call(idx, 1, line);
+        }
         lget(chunk, sub_b_slot, line);
-        { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "toLowerCase");
+            chunk.emit_call(idx, 1, line);
+        }
     }
-    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "compare");
+        chunk.emit_call(idx, 2, line);
+    }
 }
 
 // ── strpbrk ───────────────────────────────────────────────────────────────
@@ -5374,10 +5876,16 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     push_const(chunk, Value::F64(-1.0), line);
     lset(chunk, found_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
     lget(chunk, chars_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, clen_slot, line);
     let _ = chunk;
     let outer = crate::emitter::loops::emit_loop_start(chunks, current, line);
@@ -5390,7 +5898,10 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let chunk = &mut chunks[current];
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
@@ -5405,7 +5916,10 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let chunk = &mut chunks[current];
     lget(chunk, chars_slot, line);
     lget(chunk, j_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lget(chunk, code_slot, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
@@ -5439,7 +5953,10 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, s_slot, line);
     lget(chunk, found_slot, line);
     push_const(chunk, Value::I32(i32::MAX), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     chunk.emit_else(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
@@ -5470,7 +5987,10 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, str_slot, line);
     lset(chunk, main_slot, line);
     lget(chunk, main_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, main_len_slot, line);
     // Normalize negative offset
     lget(chunk, off_slot, line);
@@ -5490,7 +6010,10 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, str_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
     chunk.emit_end(line);
     // sub1 = main.substring(offset, offset+len)
@@ -5499,28 +6022,46 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, off_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     let sub1_slot = alloc_local(chunk);
     lset(chunk, sub1_slot, line);
     // sub2 = str.substring(0, len)
     lget(chunk, str_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, len_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     let sub2_slot = alloc_local(chunk);
     lset(chunk, sub2_slot, line);
     lget(chunk, ci_slot, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, sub1_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lget(chunk, sub2_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
-    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "compare");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_else(line);
     lget(chunk, sub1_slot, line);
     lget(chunk, sub2_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "compare");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_end(line);
 }
 
@@ -5631,7 +6172,10 @@ pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         lget(chunk, rx_slot, line);
         push_str(chunk, from, line);
         push_str(chunk, to, line);
-        { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "replaceAll");
+            chunk.emit_call(idx, 3, line);
+        }
         lset(chunk, rx_slot, line);
     }
     let chunk = &mut chunks[current];
@@ -5639,20 +6183,32 @@ pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, rx_slot, line);
     push_str(chunk, "*", line);
     push_str(chunk, ".*", line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, rx_slot, line);
     // ? → .
     lget(chunk, rx_slot, line);
     push_str(chunk, "?", line);
     push_str(chunk, ".", line);
-    { let idx = chunk.add_import("ecma:string", "replaceAll"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, rx_slot, line);
     // ^pattern$
     push_str(chunk, "^", line);
     lget(chunk, rx_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     push_str(chunk, "$", line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, rx_slot, line);
     lget(chunk, rx_slot, line);
     lget(chunk, str_slot, line);
@@ -5677,8 +6233,14 @@ pub fn emit_strtok_init(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, delim_slot, line);
     push_const(chunk, Value::I32(0), line);
     push_const(chunk, Value::I32(1), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); } // first char of delim
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    } // first char of delim
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_op_u16(Op::GLOBAL_SET, 0, line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
@@ -5739,7 +6301,10 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toUpperCase");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_else(line);
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -5747,13 +6312,22 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_else(line);
     // MB_CASE_TITLE: ucwords
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let words_slot = alloc_local(chunk);
     lset(chunk, words_slot, line);
     let nw_slot = alloc_local(chunk);
@@ -5783,13 +6357,25 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     lget(chunk, word_slot, line);
     push_const(chunk, Value::I32(0), line);
     push_const(chunk, Value::I32(1), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
-    { let idx = chunk.add_import("ecma:string", "toUpperCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    {
+        let idx = chunk.add_import("ecma:string", "toUpperCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lget(chunk, word_slot, line);
     push_const(chunk, Value::I32(1), line);
     push_const(chunk, Value::I32(i32::MAX), line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, word_slot, line);
     lget(chunk, out_slot, line);
     lget(chunk, word_slot, line);

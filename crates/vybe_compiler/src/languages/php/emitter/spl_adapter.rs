@@ -268,13 +268,34 @@ pub fn emit_spl_objectstorage_new(
     line: u32,
 ) {
     let binds: Vec<(&'static str, usize)> = vec![
-        ("attach", build_map_method(chunks, "__spl_attach", "set", 3, true, line)),
-        ("detach", build_map_method(chunks, "__spl_detach", "delete", 2, true, line)),
-        ("contains", build_map_method(chunks, "__spl_contains", "has", 2, false, line)),
-        ("offsetexists", build_map_method(chunks, "__spl_offexists", "has", 2, false, line)),
-        ("offsetget", build_map_method(chunks, "__spl_offget", "get", 2, false, line)),
-        ("offsetset", build_map_method(chunks, "__spl_offset", "set", 3, true, line)),
-        ("offsetunset", build_map_method(chunks, "__spl_offunset", "delete", 2, true, line)),
+        (
+            "attach",
+            build_map_method(chunks, "__spl_attach", "set", 3, true, line),
+        ),
+        (
+            "detach",
+            build_map_method(chunks, "__spl_detach", "delete", 2, true, line),
+        ),
+        (
+            "contains",
+            build_map_method(chunks, "__spl_contains", "has", 2, false, line),
+        ),
+        (
+            "offsetexists",
+            build_map_method(chunks, "__spl_offexists", "has", 2, false, line),
+        ),
+        (
+            "offsetget",
+            build_map_method(chunks, "__spl_offget", "get", 2, false, line),
+        ),
+        (
+            "offsetset",
+            build_map_method(chunks, "__spl_offset", "set", 3, true, line),
+        ),
+        (
+            "offsetunset",
+            build_map_method(chunks, "__spl_offunset", "delete", 2, true, line),
+        ),
         ("count", build_map_count_method(chunks, line)),
     ];
 
@@ -348,12 +369,30 @@ pub fn emit_spl_heap_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, ar
 pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u8, line: u32) {
     let _ = kind; // all three share the same shape
     let binds: Vec<(&'static str, usize)> = vec![
-        ("push", build_array_method(chunks, "__spl_push", "push", 2, true, line)),
-        ("pop", build_array_method(chunks, "__spl_pop", "pop", 1, false, line)),
-        ("shift", build_array_method(chunks, "__spl_shift", "shift", 1, false, line)),
-        ("unshift", build_array_method(chunks, "__spl_unshift", "unshift", 2, true, line)),
-        ("enqueue", build_array_method(chunks, "__spl_enqueue", "push", 2, true, line)),
-        ("dequeue", build_array_method(chunks, "__spl_dequeue", "shift", 1, false, line)),
+        (
+            "push",
+            build_array_method(chunks, "__spl_push", "push", 2, true, line),
+        ),
+        (
+            "pop",
+            build_array_method(chunks, "__spl_pop", "pop", 1, false, line),
+        ),
+        (
+            "shift",
+            build_array_method(chunks, "__spl_shift", "shift", 1, false, line),
+        ),
+        (
+            "unshift",
+            build_array_method(chunks, "__spl_unshift", "unshift", 2, true, line),
+        ),
+        (
+            "enqueue",
+            build_array_method(chunks, "__spl_enqueue", "push", 2, true, line),
+        ),
+        (
+            "dequeue",
+            build_array_method(chunks, "__spl_dequeue", "shift", 1, false, line),
+        ),
         ("top", build_top_method(chunks, line)),
         ("bottom", build_bottom_method(chunks, line)),
         ("isempty", build_is_empty_method(chunks, line)),

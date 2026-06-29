@@ -29,7 +29,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -45,13 +45,7 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
-pub fn emit_php_loose_eq(
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    negate: bool,
-    line: u32,
-) {
+pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
     let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
     let abstract_eq = chunks[0].add_import("ecma:value", "abstractEq");
     let chunk = &mut chunks[current];
@@ -143,7 +137,10 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     // Both strings → lexicographic compare.
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    { let idx = chunk.add_import("wasm:js-string", "compare"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "compare");
+        chunk.emit_call(idx, 2, line);
+    }
     push_const(chunk, Value::I32(0), line);
     cmp_fn(chunk, line);
 

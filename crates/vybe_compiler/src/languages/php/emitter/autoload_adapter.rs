@@ -14,7 +14,6 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
@@ -26,7 +25,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }

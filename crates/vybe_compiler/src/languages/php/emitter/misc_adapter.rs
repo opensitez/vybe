@@ -23,7 +23,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -356,7 +356,10 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.emit_else(line);
-    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(undef_idx, 1, line); }
+    {
+        let undef_idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undef_idx, 1, line);
+    }
     chunk.emit_if(line);
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::RETURN, line);
@@ -491,7 +494,10 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         helper.emit_op(Op::RETURN, line);
         helper.emit_end(line);
         lget(&mut helper, value_slot, line);
-        { let undef_idx = helper.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
+        {
+            let undef_idx = helper.add_import("wasm:js-undefined", "test");
+            helper.emit_call(undef_idx, 1, line);
+        }
         helper.emit_if(line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -709,7 +715,10 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_if(line);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
-        { let undef_idx = helper.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
+        {
+            let undef_idx = helper.add_import("wasm:js-undefined", "test");
+            helper.emit_call(undef_idx, 1, line);
+        }
         helper.emit_if(line);
         helper.emit_else(line);
         lget(&mut helper, tmp_slot, line);
@@ -1019,7 +1028,10 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
         helper.emit_else(line);
-        { let undef_idx = helper.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
+        {
+            let undef_idx = helper.add_import("wasm:js-undefined", "test");
+            helper.emit_call(undef_idx, 1, line);
+        }
         helper.emit_if(line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -1066,7 +1078,10 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_if(line);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
-        { let undef_idx = helper.add_import("wasm:js-undefined", "test"); helper.emit_call(undef_idx, 1, line); }
+        {
+            let undef_idx = helper.add_import("wasm:js-undefined", "test");
+            helper.emit_call(undef_idx, 1, line);
+        }
         helper.emit_if(line);
         helper.emit_else(line);
         lget(&mut helper, assoc_slot, line);
@@ -1247,7 +1262,10 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     lget(chunk, value_slot, line);
-    { let undef_idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(undef_idx, 1, line); }
+    {
+        let undef_idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undef_idx, 1, line);
+    }
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
@@ -1378,7 +1396,10 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         let weak_k = c.add_constant(Value::String(Arc::from("__weak")));
         c.emit_op_u16(Op::LOCAL_GET, 0, line);
         c.emit_op_u16(Op::STRUCT_GET, weak_k, line);
-        { let idx = c.add_import("ecma:weakref", "deref"); c.emit_call(idx, 1, line); }
+        {
+            let idx = c.add_import("ecma:weakref", "deref");
+            c.emit_call(idx, 1, line);
+        }
         c.emit_op(Op::RETURN, line);
         c.local_count = c.local_count.max(1);
         chunks.push(c);
@@ -1399,7 +1420,10 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     // this.__weak = REF_MAKE_WEAK(obj)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    { let idx = chunk.add_import("ecma:weakref", "new"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:weakref", "new");
+        chunk.emit_call(idx, 1, line);
+    }
     let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
     chunk.emit_op_u16(Op::STRUCT_SET, weak_k, line);
     chunk.emit_op(Op::DROP, line);

@@ -38,7 +38,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -177,7 +177,10 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, "/", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     emit_array_get_const_index(chunk, date_parts_slot, 2.0, line);
@@ -216,7 +219,10 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, " ", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let parts_slot = alloc_local(chunk);
     local_set(chunk, parts_slot, line);
     emit_array_get_const_index(chunk, parts_slot, 0.0, line);
@@ -227,12 +233,18 @@ fn emit_datetime_create_from_format_impl(
     local_set(chunk, time_str_slot, line);
     local_get(chunk, date_str_slot, line);
     push_str(chunk, "/", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let date_parts_slot = alloc_local(chunk);
     local_set(chunk, date_parts_slot, line);
     local_get(chunk, time_str_slot, line);
     push_str(chunk, ":", line);
-    { let idx = chunk.add_import("ecma:string", "split"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
     let time_parts_slot = alloc_local(chunk);
     local_set(chunk, time_parts_slot, line);
 
@@ -373,7 +385,10 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
     for _ in 1..width {
         // if STR_LENGTH(s) < width: s = "0" + s
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+        {
+            let idx = chunk.add_import("wasm:js-string", "length");
+            chunk.emit_call(idx, 1, line);
+        }
         let idx = chunk.add_constant(Value::F64(width as f64));
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
@@ -1063,7 +1078,10 @@ fn emit_format_dt_runtime(
     local_set(chunk, i_slot, line);
     // len = STR_LENGTH(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     local_set(chunk, len_slot, line);
 
     // while i < len:  block { loop { ... } } — WASM structured control flow
@@ -1081,7 +1099,10 @@ fn emit_format_dt_runtime(
     //   c = fmt.charAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     local_set(chunk, c_slot, line);
 
     if !mode_strftime {
@@ -1102,7 +1123,10 @@ fn emit_format_dt_runtime(
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "charAt");
+            chunk.emit_call(idx, 2, line);
+        }
         emit_append_to_result(chunk, result_slot, line);
         chunk.emit_end(line);
         // i++
@@ -1143,7 +1167,10 @@ fn emit_format_dt_runtime(
         // c = fmt.charAt(i)
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "charAt");
+            chunk.emit_call(idx, 2, line);
+        }
         local_set(chunk, c_slot, line);
         emit_format_code_dispatch(
             chunks,

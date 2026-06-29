@@ -1,7 +1,7 @@
-use crate::emitter::instructions::core_wasm;
 use crate::ast::{ExprKind, Expression, Literal};
 use crate::compiler::*;
 use crate::emitter as common;
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::{Op, Value};
 
@@ -618,7 +618,12 @@ impl Compiler {
         known_functions.sort();
 
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        { let l = self.line; crate::emitter::instructions::host::CapabilityContext::get().functions.emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l); };
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::CapabilityContext::get()
+                .functions
+                .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
+        };
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
@@ -723,13 +728,31 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, key_slot);
-        { let l = self.line; crate::emitter::instructions::host::CapabilityContext::get().functions.emit(&mut self.chunks[self.current], "wasm:js-string", "test", 1, l); };
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::CapabilityContext::get()
+                .functions
+                .emit(
+                    &mut self.chunks[self.current],
+                    "wasm:js-string",
+                    "test",
+                    1,
+                    l,
+                );
+        };
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit(Op::ARRAY_LENGTH);
-        { let l = self.line; crate::emitter::instructions::core_wasm::i32_const(&mut self.chunks[self.current], l, 0); };
+        {
+            let l = self.line;
+            crate::emitter::instructions::core_wasm::i32_const(
+                &mut self.chunks[self.current],
+                l,
+                0,
+            );
+        };
         {
             let line = self.line;
             crate::emitter::ops::emit_dyn_ne(self.chunk(), line);

@@ -27,7 +27,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -194,14 +194,20 @@ fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u1
     let pad_block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, out_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
     push_str(chunk, "0", line);
     lget(chunk, out_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, out_slot, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -258,7 +264,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     lset(chunk, s_slot, line);
 
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
 
     push_const(chunk, Value::F64(-1.0), line);
@@ -277,7 +286,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -295,7 +307,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -318,7 +333,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "charCodeAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, code_slot, line);
 
     lget(chunk, code_slot, line);
@@ -373,13 +391,19 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     lget(chunk, s_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, suffix_start_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, prefix_slot, line);
 
     lget(chunk, s_slot, line);
     lget(chunk, suffix_start_slot, line);
     lget(chunk, len_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "substring"); chunk.emit_call(idx, 3, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
     lset(chunk, suffix_slot, line);
 
     lget(chunk, suffix_slot, line);
@@ -395,7 +419,10 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, prefix_slot, line);
     lget(chunk, out_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "concat"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
     chunk.emit_end(line);
     chunk.emit_else(line);
 

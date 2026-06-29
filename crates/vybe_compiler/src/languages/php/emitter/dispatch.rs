@@ -6,8 +6,8 @@
 //! so PHP-specific routing lives in the PHP module instead of the common
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
-use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
@@ -55,7 +55,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             for s in slots {
                 let val_slot = s;
                 crate::emitter::io::emit_write_stdout_with_imports(
-                    &mut chunks[current], write_idx, rd_slot, wr_slot, line,
+                    &mut chunks[current],
+                    write_idx,
+                    rd_slot,
+                    wr_slot,
+                    line,
                     |chunk| {
                         chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
                     },
@@ -70,15 +74,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let wr_slot = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
             crate::emitter::io::emit_write_stdout_with_imports(
-                &mut chunks[current], write_idx, rd_slot, wr_slot, line,
+                &mut chunks[current],
+                write_idx,
+                rd_slot,
+                wr_slot,
+                line,
                 |chunk| {
                     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
                 },
             );
             chunks[current].emit_i32_const(1, line);
         }
-        "php.compare_gt" => super::numeric_adapter::emit_php_compare_gt(chunks, current, argc, line),
-        "php.compare_lt" => super::numeric_adapter::emit_php_compare_lt(chunks, current, argc, line),
+        "php.compare_gt" => {
+            super::numeric_adapter::emit_php_compare_gt(chunks, current, argc, line)
+        }
+        "php.compare_lt" => {
+            super::numeric_adapter::emit_php_compare_lt(chunks, current, argc, line)
+        }
         "php.compare_gte" => {
             use vybe_bytecode::opcode::Op;
             let chunk = &mut chunks[current];
@@ -184,8 +196,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.uksort" => super::array_adapter::emit_php_uksort(chunks, current, argc, line),
         "php.implode" => super::array_adapter::emit_php_implode(chunks, current, argc, line),
         "php.in_array" => super::array_adapter::emit_php_in_array(chunks, current, argc, line),
-        "php.obj_to_array" => super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line),
-        "php.array_to_object" => super::array_adapter::emit_php_array_to_object(chunks, current, argc, line),
+        "php.obj_to_array" => {
+            super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line)
+        }
+        "php.array_to_object" => {
+            super::array_adapter::emit_php_array_to_object(chunks, current, argc, line)
+        }
         "php.var_export" => {
             crate::emitter::php::string_adapter::emit_var_export(chunks, current, argc, line)
         }
@@ -325,16 +341,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.intdiv" => {
             crate::emitter::php::numeric_adapter::emit_php_intdiv(chunks, current, argc, line)
         }
-        "php.loose_eq" => {
-            crate::emitter::php::relational_adapter::emit_php_loose_eq(
-                chunks, current, argc, false, line,
-            )
-        }
-        "php.loose_ne" => {
-            crate::emitter::php::relational_adapter::emit_php_loose_eq(
-                chunks, current, argc, true, line,
-            )
-        }
+        "php.loose_eq" => crate::emitter::php::relational_adapter::emit_php_loose_eq(
+            chunks, current, argc, false, line,
+        ),
+        "php.loose_ne" => crate::emitter::php::relational_adapter::emit_php_loose_eq(
+            chunks, current, argc, true, line,
+        ),
         "php.rand" => crate::emitter::php::numeric_adapter::emit_rand(chunks, current, argc, line),
 
         // ── PHP ctype_* predicates ─────────────────────────────────
@@ -439,9 +451,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.str_word_count" => {
             crate::emitter::php::string_adapter::emit_str_word_count(chunks, current, argc, line)
         }
-        "php.var_dump_stringify" => {
-            crate::emitter::php::string_adapter::emit_var_dump_stringify(chunks, current, argc, line)
-        }
+        "php.var_dump_stringify" => crate::emitter::php::string_adapter::emit_var_dump_stringify(
+            chunks, current, argc, line,
+        ),
         "php.strstr" => {
             crate::emitter::php::string_adapter::emit_strstr(chunks, current, argc, line)
         }
@@ -610,32 +622,64 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             argc,
             line,
         ),
-        "php.spl_splminheap" => {
-            crate::emitter::php::spl_adapter::emit_spl_heap_new(chunks, current, "SplMinHeap", argc, line)
-        }
-        "php.spl_splmaxheap" => {
-            crate::emitter::php::spl_adapter::emit_spl_heap_new(chunks, current, "SplMaxHeap", argc, line)
-        }
+        "php.spl_splminheap" => crate::emitter::php::spl_adapter::emit_spl_heap_new(
+            chunks,
+            current,
+            "SplMinHeap",
+            argc,
+            line,
+        ),
+        "php.spl_splmaxheap" => crate::emitter::php::spl_adapter::emit_spl_heap_new(
+            chunks,
+            current,
+            "SplMaxHeap",
+            argc,
+            line,
+        ),
         "php.spl_splpriorityqueue" => {
             crate::emitter::php::spl_adapter::emit_spl_pq_new(chunks, current, argc, line)
         }
         "php.spl_splobjectstorage" => crate::emitter::php::spl_adapter::emit_spl_objectstorage_new(
-            chunks, current, "SplObjectStorage", argc, line,
+            chunks,
+            current,
+            "SplObjectStorage",
+            argc,
+            line,
         ),
         "php.spl_weakmap" => crate::emitter::php::spl_adapter::emit_spl_objectstorage_new(
             chunks, current, "WeakMap", argc, line,
         ),
         // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
-        "php.array_merge" => crate::emitter::php::array_adapter::emit_php_array_merge(chunks, current, argc, line),
-        "php.uniq" => crate::emitter::php::array_adapter::emit_php_array_unique(chunks, current, argc, line),
-        "php.array_union" => crate::emitter::php::array_adapter::emit_php_array_union(chunks, current, argc, line),
-        "php.array_slice" => crate::emitter::php::array_adapter::emit_php_array_slice(chunks, current, argc, line),
-        "php.array_reverse" => crate::emitter::php::array_adapter::emit_php_array_reverse(chunks, current, argc, line),
-        "php.refl_class" => crate::emitter::php::reflection_adapter::emit_refl_class(chunks, current, argc, line),
-        "php.refl_method" => crate::emitter::php::reflection_adapter::emit_refl_method(chunks, current, argc, line),
-        "php.refl_property" => crate::emitter::php::reflection_adapter::emit_refl_property(chunks, current, argc, line),
-        "php.refl_function" => crate::emitter::php::reflection_adapter::emit_refl_function(chunks, current, argc, line),
-        "php.weak_ref_create" => crate::emitter::php::misc_adapter::emit_weak_ref_create(chunks, current, argc, line),
+        "php.array_merge" => {
+            crate::emitter::php::array_adapter::emit_php_array_merge(chunks, current, argc, line)
+        }
+        "php.uniq" => {
+            crate::emitter::php::array_adapter::emit_php_array_unique(chunks, current, argc, line)
+        }
+        "php.array_union" => {
+            crate::emitter::php::array_adapter::emit_php_array_union(chunks, current, argc, line)
+        }
+        "php.array_slice" => {
+            crate::emitter::php::array_adapter::emit_php_array_slice(chunks, current, argc, line)
+        }
+        "php.array_reverse" => {
+            crate::emitter::php::array_adapter::emit_php_array_reverse(chunks, current, argc, line)
+        }
+        "php.refl_class" => {
+            crate::emitter::php::reflection_adapter::emit_refl_class(chunks, current, argc, line)
+        }
+        "php.refl_method" => {
+            crate::emitter::php::reflection_adapter::emit_refl_method(chunks, current, argc, line)
+        }
+        "php.refl_property" => {
+            crate::emitter::php::reflection_adapter::emit_refl_property(chunks, current, argc, line)
+        }
+        "php.refl_function" => {
+            crate::emitter::php::reflection_adapter::emit_refl_function(chunks, current, argc, line)
+        }
+        "php.weak_ref_create" => {
+            crate::emitter::php::misc_adapter::emit_weak_ref_create(chunks, current, argc, line)
+        }
         "php.fiber_new" => {
             crate::emitter::php::fiber_adapter::emit_php_fiber_new(chunks, current, argc, line)
         }

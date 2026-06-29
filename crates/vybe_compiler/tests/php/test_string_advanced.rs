@@ -393,12 +393,7 @@ echo sprintf("%-10s|", "left");
 echo "\n";
 "#
         ),
-        &[
-            "00042",
-            "3.14",
-            "cart has 5 items     right",
-            "left      |",
-        ]
+        &["00042", "3.14", "cart has 5 items     right", "left      |",]
     );
 }
 

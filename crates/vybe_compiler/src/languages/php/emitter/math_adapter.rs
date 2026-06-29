@@ -21,7 +21,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::BigInt(v) => chunk.emit_i64_const(*v, line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        
+
         _ => {
             unreachable!("push_const: unexpected value type");
         }
@@ -277,7 +277,10 @@ fn emit_dec_to_radix(
     if hex_digits {
         push_str(chunk, "0123456789abcdef", line);
         lget(chunk, digit_slot, line);
-        { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+        {
+            let idx = chunk.add_import("ecma:string", "charAt");
+            chunk.emit_call(idx, 2, line);
+        }
     } else {
         push_str(chunk, "", line);
         lget(chunk, digit_slot, line);
@@ -328,7 +331,10 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_str(chunk, "", line);
     lget(chunk, s_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
-    { let idx = chunk.add_import("ecma:string", "toLowerCase"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, s_slot, line);
 
     let table_str = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -337,7 +343,10 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, n_slot, line);
     lget(chunk, s_slot, line);
-    { let idx = chunk.add_import("wasm:js-string", "length"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
     lset(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -356,8 +365,14 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_str(chunk, table_str, line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
-    { let idx = chunk.add_import("ecma:string", "indexOf"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
     lset(chunk, d_slot, line);
 
     // if d >= 0 && d < from: n = n*from + d
@@ -427,7 +442,10 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     push_str(chunk, table_str, line);
     lget(chunk, digit_slot, line);
-    { let idx = chunk.add_import("ecma:string", "charAt"); chunk.emit_call(idx, 2, line); }
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
     lget(chunk, out_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
