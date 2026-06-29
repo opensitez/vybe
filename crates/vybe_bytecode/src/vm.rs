@@ -1751,7 +1751,8 @@ impl VM {
             }
             // 1. js-string-builtins: imported string constants
             if import.module == "wasm:string-constants" {
-                self.import_table.push(ImportTarget::StringConst(Arc::from(import.name.as_str())));
+                self.import_table
+                    .push(ImportTarget::StringConst(Arc::from(import.name.as_str())));
                 continue;
             }
             // 2. Try host function registry (exact module:name match)
@@ -2038,7 +2039,9 @@ impl VM {
         // js-string-builtins: imported string constants (§ String constants).
         // The import name IS the string value.
         if import.module == "wasm:string-constants" {
-            return Ok(Some(ImportTarget::StringConst(Arc::from(import.name.as_str()))));
+            return Ok(Some(ImportTarget::StringConst(Arc::from(
+                import.name.as_str(),
+            ))));
         }
 
         if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {

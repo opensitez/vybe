@@ -252,12 +252,12 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
         }
         OperandFormat::RawF32 => {
             let start = ip + 2;
-            let bytes: [u8; 4] = chunk.code[start..start+4].try_into().unwrap_or([0;4]);
+            let bytes: [u8; 4] = chunk.code[start..start + 4].try_into().unwrap_or([0; 4]);
             let _ = write!(out, " {}", f32::from_le_bytes(bytes));
         }
         OperandFormat::RawF64 => {
             let start = ip + 2;
-            let bytes: [u8; 8] = chunk.code[start..start+8].try_into().unwrap_or([0;8]);
+            let bytes: [u8; 8] = chunk.code[start..start + 8].try_into().unwrap_or([0; 8]);
             let _ = write!(out, " {}", f64::from_le_bytes(bytes));
         }
     }

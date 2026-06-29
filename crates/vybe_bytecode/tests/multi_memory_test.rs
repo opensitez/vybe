@@ -301,10 +301,7 @@ fn emit_memarg64(c: &mut Chunk, align: u32, offset: u64, memidx: u32) {
 
 fn decoded_body_contains(bytes: &[u8], op: Op) -> bool {
     let chunks = wasm::read_wasm(bytes).expect("standard module should decode");
-    chunks[1]
-        .code
-        .windows(4)
-        .any(|w| w == op.encode())
+    chunks[1].code.windows(4).any(|w| w == op.encode())
 }
 
 #[test]
@@ -1202,8 +1199,12 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     let function = chunks.remove(1);
     let fs = Op::F64_STORE.encode();
     let fl = Op::F64_LOAD.encode();
-    assert!(function.code.windows(7).any(|w| w
-        == [fs[0], fs[1], fs[2], fs[3], 0x43, 0x00, 0x01]));
+    assert!(
+        function
+            .code
+            .windows(7)
+            .any(|w| w == [fs[0], fs[1], fs[2], fs[3], 0x43, 0x00, 0x01])
+    );
     assert!(
         function
             .code

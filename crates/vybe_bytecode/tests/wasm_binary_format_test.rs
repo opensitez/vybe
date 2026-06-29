@@ -930,7 +930,9 @@ fn reader_preserves_multi_memory_bulk_indices() {
     let mf = Op::MEMORY_FILL.encode();
     let patterns: Vec<Vec<u8>> = vec![
         vec![mg[0], mg[1], mg[2], mg[3], 0xEE, 0x00, 0x01],
-        vec![mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x01, 0xEE, 0x00, 0x02],
+        vec![
+            mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x01, 0xEE, 0x00, 0x02,
+        ],
         vec![mf[0], mf[1], mf[2], mf[3], 0xEE, 0x00, 0x01],
     ];
     for pattern in &patterns {

@@ -114,24 +114,9 @@ fn reader_preserves_if_else_and_i32_conditions() {
         0x0b, // end
     ]);
 
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::IF.encode())
-    );
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::ELSE.encode())
-    );
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::END.encode())
-    );
+    assert!(chunk.code.windows(4).any(|w| w == Op::IF.encode()));
+    assert!(chunk.code.windows(4).any(|w| w == Op::ELSE.encode()));
+    assert!(chunk.code.windows(4).any(|w| w == Op::END.encode()));
     assert_eq!(run_chunk(chunk).as_i32(), 22);
 }
 
@@ -164,12 +149,7 @@ fn reader_preserves_br_if_depth() {
         0x41, 0x09, // i32.const 9
     ]);
 
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::BR_IF.encode())
-    );
+    assert!(chunk.code.windows(4).any(|w| w == Op::BR_IF.encode()));
     assert_eq!(run_chunk(chunk).as_i32(), 9);
 }
 
@@ -259,18 +239,8 @@ fn reader_decodes_prefixed_proposal_opcodes() {
         0x41, 0x00, // i32.const 0
     ]);
 
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::I31_NEW.encode())
-    );
-    assert!(
-        chunk
-            .code
-            .windows(4)
-            .any(|w| w == Op::V128_CONST.encode())
-    );
+    assert!(chunk.code.windows(4).any(|w| w == Op::I31_NEW.encode()));
+    assert!(chunk.code.windows(4).any(|w| w == Op::V128_CONST.encode()));
     assert!(
         chunk
             .code

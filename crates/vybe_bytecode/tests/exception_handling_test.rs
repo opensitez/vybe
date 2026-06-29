@@ -88,7 +88,12 @@ fn standard_delegate_must_not_decode_as_noop() {
     ]);
 
     let chunks = wasm::read_wasm(&bytes).expect("delegate should decode");
-    assert!(chunks[1].code.windows(4).any(|w| w == Op::DELEGATE.encode()));
+    assert!(
+        chunks[1]
+            .code
+            .windows(4)
+            .any(|w| w == Op::DELEGATE.encode())
+    );
 }
 
 /// Emit TRY_TABLE with one catch-all handler. Returns the offset_pos to patch.
@@ -302,7 +307,12 @@ fn emit_try_table_typed_then_catch_all_start(c: &mut Chunk, tag_byte: u8) -> (us
     (typed_off_pos, catchall_off_pos)
 }
 
-fn patch_try_table_two(c: &mut Chunk, typed_off_pos: usize, catchall_off_pos: usize, catch_all_start: usize) {
+fn patch_try_table_two(
+    c: &mut Chunk,
+    typed_off_pos: usize,
+    catchall_off_pos: usize,
+    catch_all_start: usize,
+) {
     let typed_bytes = catch_all_start - (typed_off_pos + 2);
     c.code[typed_off_pos] = (typed_bytes >> 8) as u8;
     c.code[typed_off_pos + 1] = (typed_bytes & 0xFF) as u8;

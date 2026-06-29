@@ -163,7 +163,12 @@ fn standard_i32_atomic_load8_u_must_not_decode_as_noop() {
     ]);
 
     let chunks = wasm::read_wasm(&bytes).expect("i32.atomic.load8_u should decode");
-    assert!(chunks[1].code.windows(4).any(|w| w == [0x00, 0xFE, 0x00, 0x12]));
+    assert!(
+        chunks[1]
+            .code
+            .windows(4)
+            .any(|w| w == [0x00, 0xFE, 0x00, 0x12])
+    );
 }
 
 #[test]
@@ -177,7 +182,12 @@ fn standard_i64_atomic_rmw_and_must_not_decode_as_noop() {
     ]);
 
     let chunks = wasm::read_wasm(&bytes).expect("i64.atomic.rmw.and should decode");
-    assert!(chunks[1].code.windows(4).any(|w| w == [0x00, 0xFE, 0x00, 0x2D]));
+    assert!(
+        chunks[1]
+            .code
+            .windows(4)
+            .any(|w| w == [0x00, 0xFE, 0x00, 0x2D])
+    );
 }
 
 #[test]
@@ -459,7 +469,10 @@ fn all_standard_atomic_opcodes_decode_to_bytecode() {
             panic!("{name} should decode to bytecode instead of being skipped: {err}")
         });
         assert!(
-            chunks[1].code.windows(4).any(|w| w == [0x00, 0xFE, 0x00, *subopcode]),
+            chunks[1]
+                .code
+                .windows(4)
+                .any(|w| w == [0x00, 0xFE, 0x00, *subopcode]),
             "{name} must be present in bytecode"
         );
     }
@@ -475,7 +488,10 @@ fn standard_memory64_atomic_opcodes_decode_with_i64_address_shape() {
 
     let chunks = wasm::read_wasm(&bytes).expect("memory64 i32.atomic.load should decode");
     assert!(
-        chunks[1].code.windows(4).any(|w| w == [0x00, 0xFE, 0x00, 0x10]),
+        chunks[1]
+            .code
+            .windows(4)
+            .any(|w| w == [0x00, 0xFE, 0x00, 0x10]),
         "standard memory64 atomic opcode must remain the 0xFE i32.atomic.load opcode"
     );
 }

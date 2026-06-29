@@ -3,7 +3,9 @@
 use crate::ast::{Argument, ClassMember, ExprKind, Expression, ImportKind, Module, StmtKind};
 use crate::compiler::Compiler;
 use crate::emitter as common;
-use crate::platforms::plib::emitter::gcl::{GclClass, GclMethodTarget, builder, gcl_classes, is_gcl_unit};
+use crate::platforms::plib::emitter::gcl::{
+    GclClass, GclMethodTarget, builder, gcl_classes, is_gcl_unit,
+};
 
 pub(crate) fn module_uses_plib_gcl(module: &Module) -> bool {
     module.imports.iter().any(|import| match &import.kind {
@@ -30,10 +32,12 @@ impl Compiler {
         );
         let bind_event_idx = self.chunks_mut()[0]
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_BIND_EVENT);
-        let run_application_idx = self.chunks_mut()[0]
-            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_RUN_APPLICATION);
-        let app_exit_idx = self.chunks_mut()[0]
-            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_APP_EXIT);
+        let run_application_idx = self.chunks_mut()[0].add_import(
+            common::gui::GUI_MODULE,
+            common::gui::HOST_FN_RUN_APPLICATION,
+        );
+        let app_exit_idx =
+            self.chunks_mut()[0].add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_APP_EXIT);
         let msg_box_idx = self.chunks_mut()[0].add_import(common::gui::GUI_MODULE, "msgBox");
 
         for class in gcl_classes() {
@@ -133,7 +137,8 @@ impl Compiler {
             } else {
                 None
             };
-            let setter = builder::build_setter_chunk(class.name, property, setter_idx, size_sync_idx);
+            let setter =
+                builder::build_setter_chunk(class.name, property, setter_idx, size_sync_idx);
             self.chunks_mut().push(setter);
             setter_bindings.push(builder::AccessorBinding {
                 property_name: property,
@@ -225,9 +230,9 @@ fn stmt_uses_gcl_dialog(stmt: &crate::ast::Statement) -> bool {
         } => {
             expr_uses_gcl_dialog(cond)
                 || then_body.iter().any(stmt_uses_gcl_dialog)
-                || elifs
-                    .iter()
-                    .any(|(cond, body)| expr_uses_gcl_dialog(cond) || body.iter().any(stmt_uses_gcl_dialog))
+                || elifs.iter().any(|(cond, body)| {
+                    expr_uses_gcl_dialog(cond) || body.iter().any(stmt_uses_gcl_dialog)
+                })
                 || else_body
                     .as_ref()
                     .is_some_and(|body| body.iter().any(stmt_uses_gcl_dialog))
@@ -316,8 +321,7 @@ fn expr_uses_gcl_dialog(expr: &Expression) -> bool {
             expr_uses_gcl_dialog(target) || expr_uses_gcl_dialog(value)
         }
         ExprKind::Array(items) => items.iter().any(|item| {
-            item.key.as_ref().is_some_and(expr_uses_gcl_dialog)
-                || expr_uses_gcl_dialog(&item.value)
+            item.key.as_ref().is_some_and(expr_uses_gcl_dialog) || expr_uses_gcl_dialog(&item.value)
         }),
         _ => false,
     }

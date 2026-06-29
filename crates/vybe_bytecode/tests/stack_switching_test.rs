@@ -976,13 +976,15 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     let mut vm = VM::new();
     vm.label_stack.push(LabelEntry {
         target: 123,
-        is_loop: false, is_try: false,
+        is_loop: false,
+        is_try: false,
         result_arity: 0,
         stack_height: 0,
     });
     vm.label_stack.push(LabelEntry {
         target: 456,
-        is_loop: true, is_try: false,
+        is_loop: true,
+        is_try: false,
         result_arity: 0,
         stack_height: 0,
     });
@@ -1002,7 +1004,8 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     let mut vm = VM::new();
     vm.label_stack.push(LabelEntry {
         target: 42,
-        is_loop: true, is_try: false,
+        is_loop: true,
+        is_try: false,
         result_arity: 0,
         stack_height: 0,
     });

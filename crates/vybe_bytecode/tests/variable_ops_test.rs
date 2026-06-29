@@ -212,7 +212,8 @@ fn wasm_local_set_consumes_value_from_stack() {
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
     });
     assert_eq!(
-        r.as_i32(), 10,
+        r.as_i32(),
+        10,
         "local.set must pop the value (WASM §4.4.5.4); the underlying 10 should remain"
     );
 }
@@ -252,7 +253,8 @@ fn wasm_global_set_consumes_value_from_stack() {
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(
-        r.as_i32(), 10,
+        r.as_i32(),
+        10,
         "global.set must pop the value (WASM §4.4.5.3); the underlying 10 should remain"
     );
 }

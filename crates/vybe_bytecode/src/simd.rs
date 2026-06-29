@@ -279,8 +279,11 @@ impl VM {
                 Value::I32(_) => true,
                 Value::Object(o) => {
                     let ob = o.lock().unwrap();
-                    !matches!(ob.kind, crate::value::ObjectKind::Function(_)
-                        | crate::value::ObjectKind::HostFunction(_))
+                    !matches!(
+                        ob.kind,
+                        crate::value::ObjectKind::Function(_)
+                            | crate::value::ObjectKind::HostFunction(_)
+                    )
                 }
                 _ => false,
             };
@@ -294,8 +297,11 @@ impl VM {
             return match val {
                 Value::Object(o) => {
                     let ob = o.lock().unwrap();
-                    matches!(ob.kind, crate::value::ObjectKind::Function(_)
-                        | crate::value::ObjectKind::HostFunction(_))
+                    matches!(
+                        ob.kind,
+                        crate::value::ObjectKind::Function(_)
+                            | crate::value::ObjectKind::HostFunction(_)
+                    )
                 }
                 _ => false,
             };
@@ -305,9 +311,12 @@ impl VM {
             return match val {
                 Value::Object(o) => {
                     let ob = o.lock().unwrap();
-                    !matches!(ob.kind, crate::value::ObjectKind::Array(_)
-                        | crate::value::ObjectKind::Function(_)
-                        | crate::value::ObjectKind::HostFunction(_))
+                    !matches!(
+                        ob.kind,
+                        crate::value::ObjectKind::Array(_)
+                            | crate::value::ObjectKind::Function(_)
+                            | crate::value::ObjectKind::HostFunction(_)
+                    )
                 }
                 _ => false,
             };
@@ -374,9 +383,7 @@ impl VM {
             }
             Value::String(_) => target_name == "string",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => {
-                target_name == "integer"
-                    || target_name == "double"
-                    || target_name == "number"
+                target_name == "integer" || target_name == "double" || target_name == "number"
             }
             Value::Bool(_) => target_name == "boolean",
             Value::V128(_) => target_name == "v128",

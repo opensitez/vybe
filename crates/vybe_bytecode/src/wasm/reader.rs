@@ -2026,7 +2026,10 @@ fn translate_wasm_to_chunk(
 }
 
 fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
-    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode((0xFB) as u16, (s as u16) as u16)) else {
+    let Some(op) = u8::try_from(sub)
+        .ok()
+        .and_then(|s| Op::decode((0xFB) as u16, (s as u16) as u16))
+    else {
         return;
     };
     match op {
@@ -2116,7 +2119,10 @@ fn emit_simd_prefixed(
         return;
     }
 
-    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode((0xFD) as u16, (s as u16) as u16)) else {
+    let Some(op) = u8::try_from(sub)
+        .ok()
+        .and_then(|s| Op::decode((0xFD) as u16, (s as u16) as u16))
+    else {
         return;
     };
     match op {
@@ -2172,7 +2178,10 @@ fn emit_threads_prefixed(
     pos: &mut usize,
     uses_memory64: bool,
 ) {
-    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode((0xFE) as u16, (s as u16) as u16)) else {
+    let Some(op) = u8::try_from(sub)
+        .ok()
+        .and_then(|s| Op::decode((0xFE) as u16, (s as u16) as u16))
+    else {
         return;
     };
     match op {

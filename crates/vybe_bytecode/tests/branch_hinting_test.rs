@@ -226,10 +226,7 @@ fn branch_hint_marks_exception_handler_as_unlikely() {
     pos += n;
     let (hint_count, n) = leb128(&payload[pos..]);
     pos += n;
-    assert!(
-        hint_count >= 1,
-        "loop branch should produce a hint"
-    );
+    assert!(hint_count >= 1, "loop branch should produce a hint");
     let (_offset, n) = leb128(&payload[pos..]);
     pos += n;
     let (_len, n) = leb128(&payload[pos..]);

@@ -171,12 +171,16 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             (format!("{} {}", name, val), next)
         }
         OperandFormat::RawF32 => {
-            let bytes: [u8; 4] = chunk.code[operand_start..operand_start+4].try_into().unwrap_or([0;4]);
+            let bytes: [u8; 4] = chunk.code[operand_start..operand_start + 4]
+                .try_into()
+                .unwrap_or([0; 4]);
             let val = f32::from_le_bytes(bytes);
             (format!("{} {}", name, val), operand_start + 4)
         }
         OperandFormat::RawF64 => {
-            let bytes: [u8; 8] = chunk.code[operand_start..operand_start+8].try_into().unwrap_or([0;8]);
+            let bytes: [u8; 8] = chunk.code[operand_start..operand_start + 8]
+                .try_into()
+                .unwrap_or([0; 8]);
             let val = f64::from_le_bytes(bytes);
             (format!("{} {}", name, val), operand_start + 8)
         }

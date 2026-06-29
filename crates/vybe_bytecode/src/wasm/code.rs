@@ -66,7 +66,10 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
     let mut regions = std::collections::HashMap::new();
     let mut ip = 0;
     while ip + 3 < chunk.code.len() {
-        let Some(op) = Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) else {
+        let Some(op) = Op::decode(
+            ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
+            ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
+        ) else {
             ip += 4;
             continue;
         };
@@ -86,7 +89,10 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
             let mut try_end_pos: Option<usize> = None;
             let mut scan = ip;
             while scan + 3 < chunk.code.len() {
-                let Some(inner) = Op::decode(((chunk.code[scan] as u16) << 8) | chunk.code[scan+1] as u16, ((chunk.code[scan+2] as u16) << 8) | chunk.code[scan+3] as u16) else {
+                let Some(inner) = Op::decode(
+                    ((chunk.code[scan] as u16) << 8) | chunk.code[scan + 1] as u16,
+                    ((chunk.code[scan + 2] as u16) << 8) | chunk.code[scan + 3] as u16,
+                ) else {
                     scan += 4;
                     continue;
                 };
@@ -111,8 +117,10 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                 // Verify the 4 bytes before catch_ip are a BR opcode.
                 if catch_ip >= 6 && catch_ip <= chunk.code.len() {
                     let br_pos = catch_ip - 6;
-                    let br_group = ((chunk.code[br_pos] as u16) << 8) | chunk.code[br_pos + 1] as u16;
-                    let br_sub = ((chunk.code[br_pos + 2] as u16) << 8) | chunk.code[br_pos + 3] as u16;
+                    let br_group =
+                        ((chunk.code[br_pos] as u16) << 8) | chunk.code[br_pos + 1] as u16;
+                    let br_sub =
+                        ((chunk.code[br_pos + 2] as u16) << 8) | chunk.code[br_pos + 3] as u16;
                     let is_br = br_group == Op::BR.group() && br_sub == Op::BR.sub();
                     if is_br {
                         let br_off = ((chunk.code[br_pos + 4] as i16) << 8)
@@ -182,7 +190,10 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
         if ip + 3 >= chunk.code.len() {
             break;
         }
-        if let Some(op) = Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) {
+        if let Some(op) = Op::decode(
+            ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
+            ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
+        ) {
             if op == Op::CALL_REF {
                 // call_ref needs argc+1 temps (save args + table idx)
                 let call_argc = chunk.code.get(ip + 4).copied().unwrap_or(0) as u32;
@@ -232,7 +243,9 @@ fn is_binary_typed_op(op: Op) -> bool {
 }
 
 fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
-    if ip + 3 >= chunk.code.len() { return false; }
+    if ip + 3 >= chunk.code.len() {
+        return false;
+    }
     let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
     let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
     Op::decode(g, s).is_some()
@@ -451,7 +464,10 @@ pub fn encode_code_section(
             if ip + 3 >= chunk.code.len() {
                 break;
             }
-            let op = match Op::decode(((chunk.code[ip] as u16) << 8) | chunk.code[ip+1] as u16, ((chunk.code[ip+2] as u16) << 8) | chunk.code[ip+3] as u16) {
+            let op = match Op::decode(
+                ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
+                ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
+            ) {
                 Some(op) => op,
                 None => {
                     ip += 4;
@@ -2397,10 +2413,18 @@ fn emit_vm_internal_op(
             let memidx = read_optional_memidx_immediate(chunk, ip);
             write_leb128_u32(body, memidx);
         }
-        _ if op == Op::I32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub() as u8, 2),
-        _ if op == Op::I64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub() as u8, 3),
-        _ if op == Op::F32_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub() as u8, 2),
-        _ if op == Op::F64_LOAD_64 => emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub() as u8, 3),
+        _ if op == Op::I32_LOAD_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub() as u8, 2)
+        }
+        _ if op == Op::I64_LOAD_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub() as u8, 3)
+        }
+        _ if op == Op::F32_LOAD_64 => {
+            emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub() as u8, 2)
+        }
+        _ if op == Op::F64_LOAD_64 => {
+            emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub() as u8, 3)
+        }
         _ if op == Op::I32_LOAD8_S_64 => {
             emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub() as u8, 0)
         }
@@ -2431,23 +2455,39 @@ fn emit_vm_internal_op(
         _ if op == Op::I64_LOAD32_U_64 => {
             emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub() as u8, 2)
         }
-        _ if op == Op::I32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub() as u8, 2),
-        _ if op == Op::I64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub() as u8, 3),
-        _ if op == Op::F32_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub() as u8, 2),
-        _ if op == Op::F64_STORE_64 => emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub() as u8, 3),
-        _ if op == Op::I32_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub() as u8, 0),
+        _ if op == Op::I32_STORE_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub() as u8, 2)
+        }
+        _ if op == Op::I64_STORE_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub() as u8, 3)
+        }
+        _ if op == Op::F32_STORE_64 => {
+            emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub() as u8, 2)
+        }
+        _ if op == Op::F64_STORE_64 => {
+            emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub() as u8, 3)
+        }
+        _ if op == Op::I32_STORE8_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub() as u8, 0)
+        }
         _ if op == Op::I32_STORE16_64 => {
             emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub() as u8, 1)
         }
-        _ if op == Op::I64_STORE8_64 => emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub() as u8, 0),
+        _ if op == Op::I64_STORE8_64 => {
+            emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub() as u8, 0)
+        }
         _ if op == Op::I64_STORE16_64 => {
             emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub() as u8, 1)
         }
         _ if op == Op::I64_STORE32_64 => {
             emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub() as u8, 2)
         }
-        _ if op == Op::TABLE_GET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub() as u8),
-        _ if op == Op::TABLE_SET_64 => emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub() as u8),
+        _ if op == Op::TABLE_GET_64 => {
+            emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub() as u8)
+        }
+        _ if op == Op::TABLE_SET_64 => {
+            emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub() as u8)
+        }
         _ if op == Op::TABLE_INIT_64 => {
             emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub() as u8, true)
         }

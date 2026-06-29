@@ -54,7 +54,12 @@ impl Op {
     pub const fn encode(self) -> [u8; 4] {
         let g = self.group();
         let s = self.sub();
-        [(g >> 8) as u8, (g & 0xFF) as u8, (s >> 8) as u8, (s & 0xFF) as u8]
+        [
+            (g >> 8) as u8,
+            (g & 0xFF) as u8,
+            (s >> 8) as u8,
+            (s & 0xFF) as u8,
+        ]
     }
 
     /// Byte length in the internal bytecode stream (always 4).
