@@ -1935,8 +1935,8 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                 let right = walk_expression(items[i].clone())?;
                 i += 1;
                 if op_str == "*" {
-                    // Dynamic multiply via stdlib
-                    let callee = Expression::new(ExprKind::Ident("__vybe_dynmul".into()));
+                    // Route through __pymul__ which handles array repeat + string repeat + numeric
+                    let callee = Expression::new(ExprKind::Ident("__pymul__".into()));
                     left = Expression::new(ExprKind::Call {
                         callee: Box::new(callee),
                         args: vec![Argument::positional(left), Argument::positional(right)],
@@ -2038,6 +2038,67 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             null_safe,
                         } = &expr.kind
                         {
+                            if field == "sort" && args.iter().any(|a| a.name.as_deref() == Some("reverse")) {
+                                // arr.sort(reverse=True) → arr.sort(); arr.reverse()
+                                let sort_call = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "sort".into(),
+                                        null_safe: false,
+                                    })),
+                                    args: vec![],
+                                    optional: false,
+                                });
+                                let reverse_call = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "reverse".into(),
+                                        null_safe: false,
+                                    })),
+                                    args: vec![],
+                                    optional: false,
+                                });
+                                // Chain: sort then reverse. Use comma expression or sequence.
+                                // Emit sort as statement, then reverse
+                                expr = Expression::new(ExprKind::Sequence(vec![sort_call, reverse_call]));
+                                continue;
+                            }
+                            if field == "count" && args.len() == 1 {
+                                // arr.count(x) → arr.filter(e => e === x).length
+                                let needle = args.into_iter().next().unwrap().value;
+                                let param = Param {
+                                    name: "__e".into(), type_hint: None, default: None,
+                                    pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                                    is_optional: false, is_nullable: false,
+                                };
+                                let filter_fn = Expression::new(ExprKind::Lambda {
+                                    params: vec![param],
+                                    body: LambdaBody::Expr(Box::new(Expression::new(
+                                        ExprKind::Binary {
+                                            op: BinOp::StrictEq,
+                                            left: Box::new(Expression::new(ExprKind::Ident("__e".into()))),
+                                            right: Box::new(needle),
+                                        },
+                                    ))),
+                                    is_async: false,
+                                    captures: vec![],
+                                });
+                                let filter_call = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "filter".into(),
+                                        null_safe: false,
+                                    })),
+                                    args: vec![Argument::positional(filter_fn)],
+                                    optional: false,
+                                });
+                                expr = Expression::new(ExprKind::Member {
+                                    object: Box::new(filter_call),
+                                    field: "length".into(),
+                                    null_safe: false,
+                                });
+                                continue;
+                            }
                             if field == "join" && args.len() == 1 {
                                 let delim = object.clone();
                                 let array_arg = args.into_iter().next().unwrap().value;
@@ -2151,14 +2212,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 "list" if args.len() == 1 => {
                                     // list(iterable) → [...iterable]
                                     let iterable = args[0].value.clone();
-                                    expr = Expression::new(ExprKind::Array(vec![
-                                        ArrayElement {
-                                            key: None,
-                                            spread: true,
-                                            by_ref: false,
-                                            value: iterable,
-                                        },
-                                    ]));
+                                    expr = Expression::new(ExprKind::Array(vec![ArrayElement {
+                                        key: None,
+                                        spread: true,
+                                        by_ref: false,
+                                        value: iterable,
+                                    }]));
                                     continue;
                                 }
                                 "list" if args.is_empty() => {
@@ -2168,14 +2227,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 "tuple" if args.len() == 1 => {
                                     // tuple(iterable) → [...iterable]
                                     let iterable = args[0].value.clone();
-                                    expr = Expression::new(ExprKind::Array(vec![
-                                        ArrayElement {
-                                            key: None,
-                                            spread: true,
-                                            by_ref: false,
-                                            value: iterable,
-                                        },
-                                    ]));
+                                    expr = Expression::new(ExprKind::Array(vec![ArrayElement {
+                                        key: None,
+                                        spread: true,
+                                        by_ref: false,
+                                        value: iterable,
+                                    }]));
                                     continue;
                                 }
                                 "tuple" if args.is_empty() => {
@@ -2198,16 +2255,19 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 }
                                 "sorted" if args.len() >= 1 => {
                                     // sorted(iterable) → [...iterable].sort()
+                                    // sorted(iterable, reverse=True) → [...iterable].sort().reverse()
                                     let iterable = args[0].value.clone();
-                                    let spread_array = Expression::new(ExprKind::Array(vec![
-                                        ArrayElement {
+                                    let has_reverse = args.iter().any(|a| {
+                                        a.name.as_deref() == Some("reverse")
+                                    });
+                                    let spread_array =
+                                        Expression::new(ExprKind::Array(vec![ArrayElement {
                                             key: None,
                                             spread: true,
                                             by_ref: false,
                                             value: iterable,
-                                        },
-                                    ]));
-                                    expr = Expression::new(ExprKind::Call {
+                                        }]));
+                                    let sorted = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(spread_array),
                                             field: "sort".into(),
@@ -2216,6 +2276,19 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         args: vec![],
                                         optional: false,
                                     });
+                                    expr = if has_reverse {
+                                        Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: Box::new(sorted),
+                                                field: "reverse".into(),
+                                                null_safe: false,
+                                            })),
+                                            args: vec![],
+                                            optional: false,
+                                        })
+                                    } else {
+                                        sorted
+                                    };
                                     continue;
                                 }
                                 "set" => {
@@ -2661,6 +2734,16 @@ fn walk_comp_clause(pair: Pair<Rule>) -> Result<ComprehensionGen, String> {
         }
     }
 
+    // Wrap string literals in [...s] so comprehensions iterate chars
+    if matches!(iter.kind, ExprKind::Lit(Literal::Str(_))) {
+        iter = Expression::new(ExprKind::Array(vec![ArrayElement {
+            key: None,
+            spread: true,
+            by_ref: false,
+            value: iter,
+        }]));
+    }
+
     Ok(ComprehensionGen {
         target,
         iter,
@@ -3057,4 +3140,3 @@ fn parse_literal_to_expr(text: &str) -> Expression {
         Expression::string(text)
     }
 }
-

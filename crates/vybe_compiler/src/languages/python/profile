@@ -38,6 +38,7 @@ uses_normalize_class = true
 
 # ── Internal operators (emitter adapters) ────────────────────────────────────
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
+__pymul__       = { emit = "common:python.pymul",            min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,18 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance .method() calls
 # ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+map       = "__array_map"
+filter    = "__array_filter"
+forEach   = "__array_forEach"
+find      = "__array_find"
+findIndex = "__array_findIndex"
+includes  = "__array_includes"
+reduce    = "__array_reduce"
+sort      = "__array_sort"
+some      = "__array_some"
+every     = "__array_every"
 
 [value_methods]
 

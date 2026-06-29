@@ -59,6 +59,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.pyadd" => {
             crate::emitter::python::runtime_adapter::emit_pyadd(chunks, current, line)
         }
+        "python.pymul" => {
+            crate::emitter::python::runtime_adapter::emit_pymul(chunks, current, line)
+        }
         "python.range" => {
             crate::emitter::python::runtime_adapter::emit_range(chunks, current, argc, line)
         }

@@ -5,8 +5,8 @@
 //! the old runtime-helper function table.
 
 use crate::emitter::{collections, target::Target};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// Python `print(...)` — inline emitter that converts each arg to Python repr.
 /// Bool→True/False, None→None, Array→[...], else pass through.
@@ -118,6 +118,85 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// Python `*` operator: array repeat, string repeat, or numeric multiply.
+/// Stack: [a, b] → [result]
+pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let str_repeat = chunk.add_import("ecma:string", "repeat");
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    // if isArray(a): array repeat via newWithLength(n).fill(arr).flat(1)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    let new_arr = chunk.add_import("ecma:array", "newWithLength");
+    chunk.emit_call(new_arr, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    let fill = chunk.add_import("ecma:array", "fill");
+    chunk.emit_call(fill, 2, line);
+    chunk.emit_f64_const(1.0, line);
+    let flat = chunk.add_import("ecma:array", "flat");
+    chunk.emit_call(flat, 2, line);
+    chunk.emit_else(line);
+
+    // if string(a): string repeat
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(test_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(str_repeat, 2, line);
+    chunk.emit_else(line);
+
+    // numeric multiply
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// Python `.count(x)` — for arrays, count element occurrences.
+/// Stack: [receiver, needle] → [count]
+/// Uses ecma:array.filter + length to count matching elements.
+pub fn emit_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let needle = chunk.alloc_scratch(1);
+    let arr = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, needle, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    // if isArray(arr): use filter to count matches
+    chunk.emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+
+    // arr.filter(e => e === needle).length
+    // Use ecma:array.filter with a callback that compares to needle
+    // For simplicity, use the indexOf count approach:
+    // iterate and count via the runtime helper
+    chunk.emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    let count_fn = chunk.add_import("ecma:array", "count");
+    chunk.emit_call(count_fn, 2, line);
+
+    chunk.emit_else(line);
+    // string count: substring occurrences
+    chunk.emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    let str_count = chunk.add_import("ecma:string", "count");
+    chunk.emit_call(str_count, 2, line);
     chunk.emit_end(line);
 }
 
