@@ -136,4 +136,3 @@ outgoing_status_test!(
     "503 Service Unavailable",
     503.0
 );
-

@@ -87,7 +87,14 @@ pub fn register(vm: &mut VM) {
             let on_fulfilled = args.get(2).cloned().unwrap_or(Value::Undefined);
             let on_rejected = args.get(3).cloned().unwrap_or(Value::Undefined);
             let value = args.get(4).cloned().unwrap_or(Value::Undefined);
-            run_reaction(ctx, result_promise, &state, on_fulfilled, on_rejected, value);
+            run_reaction(
+                ctx,
+                result_promise,
+                &state,
+                on_fulfilled,
+                on_rejected,
+                value,
+            );
             Value::Undefined
         }),
     );
@@ -601,7 +608,12 @@ fn pending_promise_with_id(ctx: &mut HostContext) -> Value {
     promise
 }
 
-fn promise_reaction(result_promise: Value, state: &str, on_fulfilled: Value, on_rejected: Value) -> Value {
+fn promise_reaction(
+    result_promise: Value,
+    state: &str,
+    on_fulfilled: Value,
+    on_rejected: Value,
+) -> Value {
     let idx = *PROMISE_REACTION_HOST_IDX
         .get()
         .expect("ecma:promise::__reaction registered before Promise reactions");
@@ -633,9 +645,12 @@ fn finalizer_forwarder(on_finally: Value, state: &str) -> Value {
         .get()
         .expect("ecma:promise::__reaction registered before Promise reactions");
     let mut obj = Object::new();
-    obj.properties.insert("__promise_finally".into(), on_finally);
     obj.properties
-        .insert("__promise_finally_state".into(), Value::String(Arc::from(state)));
+        .insert("__promise_finally".into(), on_finally);
+    obj.properties.insert(
+        "__promise_finally_state".into(),
+        Value::String(Arc::from(state)),
+    );
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(Arc::new(Mutex::new(obj)))
 }

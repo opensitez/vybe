@@ -272,7 +272,12 @@ fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Va
     for _ in 0..100 {
         let next_proto = {
             let lock = current.lock().unwrap();
-            for check_key in [key, raw_key.as_str(), symbol_key.as_str(), symbol_paren_key.as_str()] {
+            for check_key in [
+                key,
+                raw_key.as_str(),
+                symbol_key.as_str(),
+                symbol_paren_key.as_str(),
+            ] {
                 if let Some(value) = lock.properties.get(check_key) {
                     if !matches!(value, Value::Null | Value::Undefined) {
                         return Some(value.clone());
@@ -1707,7 +1712,10 @@ fn register_enumeration(vm: &mut VM) {
                     let mut values = Vec::with_capacity(len);
                     for i in 0..len {
                         values.push(
-                            o.properties.get(&i.to_string()).cloned().unwrap_or(Value::Undefined),
+                            o.properties
+                                .get(&i.to_string())
+                                .cloned()
+                                .unwrap_or(Value::Undefined),
                         );
                     }
                     return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));

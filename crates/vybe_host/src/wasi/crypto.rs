@@ -37,7 +37,6 @@ pub fn register(vm: &mut VM) {
             Value::String(Arc::from(md5_hex(input.as_bytes()).as_str()))
         }),
     );
-
 }
 
 /// SHA-256 hex digest. Used directly by [`register`] above and reused
