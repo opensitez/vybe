@@ -173,7 +173,11 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    pub(super) fn captured_name_for_upvalue(&self, scope_idx: usize, upvalue_idx: u8) -> Option<String> {
+    pub(super) fn captured_name_for_upvalue(
+        &self,
+        scope_idx: usize,
+        upvalue_idx: u8,
+    ) -> Option<String> {
         let upvalue = self
             .scopes
             .get(scope_idx)?
@@ -473,7 +477,10 @@ impl Compiler {
         let parent_shared_env_names = self.shared_env_names.clone();
         let saved_shared_env_slot = self.shared_env_slot.take();
         let saved_shared_env_names = std::mem::take(&mut self.shared_env_names);
-        crate::compiler::collect_closure_captured_idents(body, &mut self.current_closure_captured_locals);
+        crate::compiler::collect_closure_captured_idents(
+            body,
+            &mut self.current_closure_captured_locals,
+        );
         // If parent has a shared env, pre-seed closure_env_names so
         // upvalue indices match the parent's shared env layout.
         if !parent_shared_env_names.is_empty() {
@@ -674,20 +681,21 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        if self.is_js_profile()
-            && crate::compiler::closures_in_body_reference_this(body)
-        {
+        if self.is_js_profile() && crate::compiler::closures_in_body_reference_this(body) {
             let this_idx = self.str_const("__js_this");
             self.emit_u16(Op::GLOBAL_GET, this_idx);
             let this_local = self.define_local("__js_this");
             self.emit_u16(Op::LOCAL_SET, this_local);
-            self.current_closure_captured_locals.insert("__js_this".to_string());
+            self.current_closure_captured_locals
+                .insert("__js_this".to_string());
         }
 
         if !self.current_closure_captured_locals.is_empty() {
-            let mut fn_scope_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            let mut fn_scope_names: HashSet<String> =
+                params.iter().map(|p| p.name.clone()).collect();
             crate::compiler::collect_declared_names(body, &mut fn_scope_names);
-            let mut captured_names: Vec<String> = self.current_closure_captured_locals
+            let mut captured_names: Vec<String> = self
+                .current_closure_captured_locals
                 .iter()
                 .filter(|name| {
                     fn_scope_names.contains(name.as_str())
@@ -707,17 +715,35 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, env_slot);
                 self.shared_env_slot = Some(env_slot);
                 self.shared_env_names = captured_names.clone();
-                let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                let mut local_decls: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
                 crate::compiler::collect_declared_names(body, &mut local_decls);
                 for (idx, cap_name) in captured_names.iter().enumerate() {
                     if let Some(param_slot) = self.scope().resolve(cap_name) {
                         self.emit_u16(Op::LOCAL_GET, param_slot);
-                        crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                        crate::emitter::closures::emit_env_set(
+                            self.chunk(),
+                            env_slot,
+                            idx as u16,
+                            line,
+                        );
                     } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
-                        if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                        if let Some(parent_idx) =
+                            parent_shared_env_names.iter().position(|n| n == cap_name)
+                        {
                             let closure_env = self.closure_env_slot();
-                            crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
-                            crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                            crate::emitter::closures::emit_env_get(
+                                self.chunk(),
+                                closure_env,
+                                parent_idx as u16,
+                                line,
+                            );
+                            crate::emitter::closures::emit_env_set(
+                                self.chunk(),
+                                env_slot,
+                                idx as u16,
+                                line,
+                            );
                         }
                     }
                 }
@@ -811,20 +837,10 @@ impl Compiler {
 
         let line = self.line;
         if uvs.is_empty() {
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                func_idx,
-                0,
-                line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, 0, line);
         } else if let Some(shared_slot) = parent_shared_env_slot {
             // Parent has a shared env — pass it directly as the upvalue.
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                func_idx,
-                1,
-                line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, 1, line);
             self.chunks[self.current].emit(1, line);
             self.chunks[self.current].emit(shared_slot as u8, line);
         } else {
@@ -837,7 +853,12 @@ impl Compiler {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
-                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        crate::emitter::closures::emit_env_get(
+                            self.chunk(),
+                            parent_env,
+                            parent_idx,
+                            line,
+                        );
                         self.emit_u16(Op::LOCAL_SET, tmp);
                         tmp
                     };
@@ -847,12 +868,7 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_{}", func_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                func_idx,
-                1,
-                line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, 1, line);
             self.chunks[self.current].emit(1, line);
             self.chunks[self.current].emit(env_slot as u8, line);
         }
@@ -1031,8 +1047,7 @@ impl Compiler {
             // the runtime reads/writes through auto-emitted __get_/__set_
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon =
-                    php_field_storage_name(self, auto_field_name, &php_method_names);
+                let pname_canon = php_field_storage_name(self, auto_field_name, &php_method_names);
                 if pname_canon != self.canon(auto_field_name) {
                     field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
                 }
@@ -1358,7 +1373,10 @@ impl Compiler {
             let saved_fn = cc.current_func_name.take();
             cc.current_func_name = Some(bound_name.clone());
             let saved_closure_captured = std::mem::take(&mut cc.current_closure_captured_locals);
-            crate::compiler::collect_closure_captured_idents(&m.body, &mut cc.current_closure_captured_locals);
+            crate::compiler::collect_closure_captured_idents(
+                &m.body,
+                &mut cc.current_closure_captured_locals,
+            );
 
             if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
@@ -1458,43 +1476,52 @@ impl Compiler {
             // locals, create a shared env array so mutations are visible
             // across all closures (same mechanism as compile_lambda_direct).
             if !cc.current_closure_captured_locals.is_empty() {
-                let mut captured_names: Vec<String> = cc.current_closure_captured_locals
+                let mut captured_names: Vec<String> = cc
+                    .current_closure_captured_locals
                     .iter()
                     .filter(|name| !cc.defined_globals.contains(name.as_str()))
                     .cloned()
                     .collect();
                 captured_names.sort();
-              if !captured_names.is_empty() {
-                let env_size = captured_names.len() as u16;
-                let line = cc.line;
-                for _ in 0..env_size {
-                    cc.emit(Op::NULL);
-                }
-                cc.chunks[cc.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
-                let env_slot = cc.define_local("__shared_env");
-                cc.emit_u16(Op::LOCAL_SET, env_slot);
-                cc.shared_env_slot = Some(env_slot);
-                cc.shared_env_names = captured_names.clone();
+                if !captured_names.is_empty() {
+                    let env_size = captured_names.len() as u16;
+                    let line = cc.line;
+                    for _ in 0..env_size {
+                        cc.emit(Op::NULL);
+                    }
+                    cc.chunks[cc.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                    let env_slot = cc.define_local("__shared_env");
+                    cc.emit_u16(Op::LOCAL_SET, env_slot);
+                    cc.shared_env_slot = Some(env_slot);
+                    cc.shared_env_names = captured_names.clone();
 
-                let mut local_decls: std::collections::HashSet<String> = user_params.iter().map(|p| p.name.clone()).collect();
-                if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
-                    local_decls.insert(self_kw.clone());
-                }
-                crate::compiler::collect_declared_names(&m.body, &mut local_decls);
+                    let mut local_decls: std::collections::HashSet<String> =
+                        user_params.iter().map(|p| p.name.clone()).collect();
+                    if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php")
+                    {
+                        local_decls.insert(self_kw.clone());
+                    }
+                    crate::compiler::collect_declared_names(&m.body, &mut local_decls);
 
-                for (idx, cap_name) in captured_names.iter().enumerate() {
-                    if let Some(param_slot) = cc.scope().resolve(cap_name) {
-                        cc.emit_u16(Op::LOCAL_GET, param_slot);
-                        crate::emitter::closures::emit_env_set(cc.chunk(), env_slot, idx as u16, line);
+                    for (idx, cap_name) in captured_names.iter().enumerate() {
+                        if let Some(param_slot) = cc.scope().resolve(cap_name) {
+                            cc.emit_u16(Op::LOCAL_GET, param_slot);
+                            crate::emitter::closures::emit_env_set(
+                                cc.chunk(),
+                                env_slot,
+                                idx as u16,
+                                line,
+                            );
+                        }
                     }
                 }
-              }
             }
 
             let async_try = if m.is_async && !m.is_generator && cc.is_js_profile() {
                 let line = cc.line;
                 Some(common::functions::emit_async_body_start(
-                    &mut cc.chunks[ci], line,
+                    &mut cc.chunks[ci],
+                    line,
                 ))
             } else {
                 None
@@ -1698,7 +1725,10 @@ impl Compiler {
                     self.emit(Op::RETURN);
                 }
 
-                { let ns = self.scope().next_slot; self.chunks[ci].finalize_local_count(ns); }
+                {
+                    let ns = self.scope().next_slot;
+                    self.chunks[ci].finalize_local_count(ns);
+                }
                 self.scopes.pop();
                 self.current = saved;
                 method_chunks.push((get_name, ci, false, prop_is_static));
@@ -1744,7 +1774,10 @@ impl Compiler {
 
                 let line = self.line;
                 common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
-                { let ns = self.scope().next_slot; self.chunks[ci].finalize_local_count(ns); }
+                {
+                    let ns = self.scope().next_slot;
+                    self.chunks[ci].finalize_local_count(ns);
+                }
                 self.scopes.pop();
                 self.current = saved;
                 method_chunks.push((set_name, ci, false, prop_is_static));
@@ -2512,7 +2545,10 @@ impl Compiler {
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
 
-            { let ns = self.scope().next_slot; self.chunks[helper_idx].finalize_local_count(ns); }
+            {
+                let ns = self.scope().next_slot;
+                self.chunks[helper_idx].finalize_local_count(ns);
+            }
             let helper_upvalues = self.scope().upvalues.clone();
             self.scopes.pop();
             self.current = saved_cur;
@@ -2587,7 +2623,10 @@ impl Compiler {
             self.emit(Op::NULL);
         }
         self.emit_return_through_finally(1)?;
-        { let ns = self.scope().next_slot; self.chunks[ctor_idx].finalize_local_count(ns); }
+        {
+            let ns = self.scope().next_slot;
+            self.chunks[ctor_idx].finalize_local_count(ns);
+        }
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
         self.current = saved_cur;

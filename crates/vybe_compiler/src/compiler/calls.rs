@@ -249,9 +249,10 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                     cond: js_nullish_check(JS_PROMISE_CHAIN_ON_FINALLY),
                     then_body: vec![],
                     elifs: vec![],
-                    else_body: Some(vec![Statement::new(StmtKind::Expr(
-                        js_call_ident(JS_PROMISE_CHAIN_ON_FINALLY, vec![]),
-                    ))]),
+                    else_body: Some(vec![Statement::new(StmtKind::Expr(js_call_ident(
+                        JS_PROMISE_CHAIN_ON_FINALLY,
+                        vec![],
+                    )))]),
                 }),
                 Statement::new(StmtKind::Return(Some(js_ident(input_var)))),
             ]
@@ -1802,9 +1803,8 @@ impl Compiler {
         };
 
         let wrapper_idx = self.chunks.len();
-        let chunk = common::functions::create_function_chunk(
-            &format!("<promise_{}>", field), arity,
-        );
+        let chunk =
+            common::functions::create_function_chunk(&format!("<promise_{}>", field), arity);
         self.chunks.push(chunk);
         emit_fn(&mut self.chunks, wrapper_idx, self.line);
         let line = self.line;
@@ -3208,6 +3208,10 @@ impl Compiler {
             if parts.len() >= 2 {
                 let compound = parts.join(".");
                 if self.try_compile_builtin(&compound, &arg_exprs)? {
+                    return Ok(());
+                }
+                // Component model fallback: try dotnet resolver for System.* chains
+                if self.try_compile_dotnet_component_call(&parts, &arg_exprs)? {
                     return Ok(());
                 }
             }
@@ -10525,9 +10529,7 @@ impl Compiler {
 
         let line = self.line;
         if uvs.is_empty() {
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current], factory_idx, 0, line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], factory_idx, 0, line);
         } else {
             let mut env_slots: Vec<u16> = Vec::new();
             for (i, uv) in uvs.iter().enumerate() {
@@ -10538,7 +10540,12 @@ impl Compiler {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
-                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        crate::emitter::closures::emit_env_get(
+                            self.chunk(),
+                            parent_env,
+                            parent_idx,
+                            line,
+                        );
                         self.emit_u16(Op::LOCAL_SET, tmp);
                         tmp
                     };
@@ -10548,9 +10555,7 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_factory_{}", factory_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current], factory_idx, 1, line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], factory_idx, 1, line);
             self.chunks[self.current].emit(1, line);
             self.chunks[self.current].emit(env_slot as u8, line);
         }
@@ -10613,10 +10618,16 @@ impl Compiler {
                 if Self::stmts_have_use_strict_directive(stmts) {
                     self.in_strict = true;
                 }
-                crate::compiler::collect_closure_captured_idents(stmts, &mut self.current_closure_captured_locals);
+                crate::compiler::collect_closure_captured_idents(
+                    stmts,
+                    &mut self.current_closure_captured_locals,
+                );
             }
             LambdaBody::Expr(expr) => {
-                crate::compiler::collect_closure_captured_in_expr(expr, &mut self.current_closure_captured_locals);
+                crate::compiler::collect_closure_captured_in_expr(
+                    expr,
+                    &mut self.current_closure_captured_locals,
+                );
             }
         }
         for p in params {
@@ -10636,7 +10647,9 @@ impl Compiler {
         // arrows can capture it via the shared env / upvalue chain.
         if self.is_js_profile() && self.scopes.len() > 1 {
             let parent_has_this = self.scopes.len() > 2
-                && self.scopes[self.scopes.len() - 2].resolve("__js_this").is_some();
+                && self.scopes[self.scopes.len() - 2]
+                    .resolve("__js_this")
+                    .is_some();
             if !parent_has_this {
                 let body_has_this = match body {
                     LambdaBody::Block(stmts) => crate::compiler::body_contains_this(stmts),
@@ -10647,13 +10660,15 @@ impl Compiler {
                     self.emit_u16(Op::GLOBAL_GET, this_idx);
                     let this_local = self.define_local("__js_this");
                     self.emit_u16(Op::LOCAL_SET, this_local);
-                    self.current_closure_captured_locals.insert("__js_this".to_string());
+                    self.current_closure_captured_locals
+                        .insert("__js_this".to_string());
                 }
             }
         }
 
         if !self.current_closure_captured_locals.is_empty() {
-            let mut captured_names: Vec<String> = self.current_closure_captured_locals
+            let mut captured_names: Vec<String> = self
+                .current_closure_captured_locals
                 .iter()
                 .filter(|name| !self.defined_globals.contains(name.as_str()))
                 .cloned()
@@ -10671,7 +10686,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, env_slot);
                 self.shared_env_slot = Some(env_slot);
                 self.shared_env_names = captured_names.clone();
-                let mut local_decls: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                let mut local_decls: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
                 local_decls.insert("__js_this".to_string());
                 if let LambdaBody::Block(stmts) = body {
                     crate::compiler::collect_declared_names(stmts, &mut local_decls);
@@ -10679,12 +10695,29 @@ impl Compiler {
                 for (idx, cap_name) in captured_names.iter().enumerate() {
                     if let Some(param_slot) = self.scope().resolve(cap_name) {
                         self.emit_u16(Op::LOCAL_GET, param_slot);
-                        crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                        crate::emitter::closures::emit_env_set(
+                            self.chunk(),
+                            env_slot,
+                            idx as u16,
+                            line,
+                        );
                     } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
-                        if let Some(parent_idx) = parent_shared_env_names.iter().position(|n| n == cap_name) {
+                        if let Some(parent_idx) =
+                            parent_shared_env_names.iter().position(|n| n == cap_name)
+                        {
                             let closure_env = self.closure_env_slot();
-                            crate::emitter::closures::emit_env_get(self.chunk(), closure_env, parent_idx as u16, line);
-                            crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx as u16, line);
+                            crate::emitter::closures::emit_env_get(
+                                self.chunk(),
+                                closure_env,
+                                parent_idx as u16,
+                                line,
+                            );
+                            crate::emitter::closures::emit_env_set(
+                                self.chunk(),
+                                env_slot,
+                                idx as u16,
+                                line,
+                            );
                         }
                     }
                 }
@@ -10783,18 +10816,12 @@ impl Compiler {
         let parent_locals = self.scope().locals.clone();
         let line = self.line;
         if uvs.is_empty() {
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                ci, 0, line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 0, line);
         } else if let Some(shared_slot) = parent_shared_env_slot {
             // Parent has a shared env — pass it directly as the upvalue.
             // The inner function's closure_env_names was pre-seeded from
             // parent_shared_env_names, so indices match.
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                ci, 1, line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 1, line);
             self.chunks[self.current].emit(1, line); // is_local = true
             self.chunks[self.current].emit(shared_slot as u8, line);
         } else {
@@ -10807,7 +10834,11 @@ impl Compiler {
                         let by_value = parent_locals
                             .iter()
                             .find(|l| l.slot == uv.index as u16)
-                            .map(|l| self.capture_by_value_vars.iter().any(|n| *n == self.canon(&l.name)))
+                            .map(|l| {
+                                self.capture_by_value_vars
+                                    .iter()
+                                    .any(|n| *n == self.canon(&l.name))
+                            })
                             .unwrap_or(false);
                         if by_value {
                             let orig_slot = uv.index as u16;
@@ -10822,7 +10853,12 @@ impl Compiler {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
-                        crate::emitter::closures::emit_env_get(self.chunk(), parent_env, parent_idx, line);
+                        crate::emitter::closures::emit_env_get(
+                            self.chunk(),
+                            parent_env,
+                            parent_idx,
+                            line,
+                        );
                         self.emit_u16(Op::LOCAL_SET, tmp);
                         tmp
                     };
@@ -10833,10 +10869,7 @@ impl Compiler {
             crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_{}", ci));
             self.emit_u16(Op::LOCAL_SET, env_slot);
-            common::functions::emit_ref_func(
-                &mut self.chunks[self.current],
-                ci, 1, line,
-            );
+            common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 1, line);
             self.chunks[self.current].emit(1, line); // is_local = true
             self.chunks[self.current].emit(env_slot as u8, line);
         }
@@ -10948,5 +10981,41 @@ impl Compiler {
         common::loops::emit_loop_end(&mut self.chunks, self.current, loop_state, line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
+    }
+
+    fn try_compile_dotnet_component_call(
+        &mut self,
+        parts: &[String],
+        args: &[&Expression],
+    ) -> Result<bool, String> {
+        let lower_parts: Vec<String> = parts.iter().map(|s| s.to_lowercase()).collect();
+        let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
+        let imports = crate::platforms::dotnet::emitter::core::imports::default_interface_imports();
+        let ctx = common::dotnet::ResolutionContext {
+            is_local: &|_: &str| false,
+            is_class_field: &|_: &str| false,
+            is_user_type: &|_: &str| false,
+            imports: &imports,
+        };
+        let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
+        match resolution {
+            common::dotnet::DottedResolution::CommonCall { emit } => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                let line = self.line;
+                self.emit_common(&emit, args.len() as u8, line);
+                Ok(true)
+            }
+            common::dotnet::DottedResolution::HostCall { module, func } => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                let idx = self.import(&module, &func);
+                self.emit_host_call(idx, args.len() as u8);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }

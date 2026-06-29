@@ -206,23 +206,44 @@ impl Compiler {
         // Detection logic lives in emitter/generators.rs; return handling
         // stays here because it needs Compiler state (finally blocks).
         self.emit_u16(Op::LOCAL_GET, control_slot);
-        { let l = self.line; crate::emitter::instructions::recipes::is_object(self.chunk(), l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::recipes::is_object(self.chunk(), l);
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         let line = self.line;
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
-        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::emit(
+                self.chunk(),
+                "wasm:js-string",
+                "equals",
+                2,
+                l,
+            );
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -234,8 +255,20 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, control_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
-        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::emit(
+                self.chunk(),
+                "wasm:js-string",
+                "equals",
+                2,
+                l,
+            );
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -258,22 +291,43 @@ impl Compiler {
 
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, resume_slot);
-        { let l = self.line; crate::emitter::instructions::recipes::is_object(self.chunk(), l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::recipes::is_object(self.chunk(), l);
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.str_const("op");
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("throw")));
-        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::emit(
+                self.chunk(),
+                "wasm:js-string",
+                "equals",
+                2,
+                l,
+            );
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -285,8 +339,20 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit_u16(Op::STRUCT_GET, op_key);
         self.emit_const(Value::String(Arc::from("return")));
-        { let l = self.line; crate::emitter::instructions::host::emit(self.chunk(), "wasm:js-string", "equals", 2, l); }
-        { let l = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l); }
+        {
+            let l = self.line;
+            crate::emitter::instructions::host::emit(
+                self.chunk(),
+                "wasm:js-string",
+                "equals",
+                2,
+                l,
+            );
+        }
+        {
+            let l = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+        }
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -638,7 +704,8 @@ impl Compiler {
                         let l = self.line;
                         crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
                     } else if self.is_js_profile() {
-                        if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this") {
+                        if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this")
+                        {
                             let env = self.closure_env_slot();
                             let idx = self.closure_env_index("__js_this");
                             let l = self.line;
@@ -976,10 +1043,7 @@ impl Compiler {
                     let right_is_bigint = right_hint.as_deref() == Some("bigint");
                     if left_is_bigint || right_is_bigint {
                         if left_is_bigint ^ right_is_bigint
-                            && matches!(
-                                op,
-                                BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                            )
+                            && matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq)
                         {
                             let number_idx = self.import("ecma:number", "Number");
                             self.compile_expr(left)?;
@@ -2557,7 +2621,10 @@ impl Compiler {
                                 fn_call!(self, "wasm:js-string", "test", 1);
                                 let line = self.line;
                                 self.chunk().emit_if_value(line);
-                                { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l); }
+                                {
+                                    let l = self.line;
+                                    crate::emitter::strings::emit_str_reverse(self.chunk(), l);
+                                }
                                 self.chunk().emit_else(line);
                                 self.emit(Op::NULL);
                                 self.emit(Op::NULL);
@@ -3089,7 +3156,9 @@ impl Compiler {
                             if let Some(arg) = args.first() {
                                 self.compile_expr(&arg.value)?;
                                 common::collections::emit_spread_iterable(
-                                    &mut self.chunks, self.current, self.line,
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
                                 );
                             } else {
                                 common::collections::emit_array_new(
@@ -3154,7 +3223,10 @@ impl Compiler {
                         let chunk = self.chunk();
                         chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
                         chunk.emit_dup(line);
-                        chunk.emit_string_const(&format!("Cannot instantiate abstract class {}", type_name), line);
+                        chunk.emit_string_const(
+                            &format!("Cannot instantiate abstract class {}", type_name),
+                            line,
+                        );
                         crate::emitter::errors::emit_exception_new_finalize(chunk, "Error", line);
                         chunk.emit_op(Op::THROW, line);
                         return Ok(());
@@ -3528,7 +3600,10 @@ impl Compiler {
                 // AFTER the first store so subsequent writes use cell_store.
                 if matches!(
                     &value.kind,
-                    ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+                    ExprKind::Unary {
+                        op: UnaryOp::AddrOf,
+                        ..
+                    }
                 ) {
                     if let ExprKind::Ident(name) = &target.kind {
                         self.mark_pointer_cell_binding(name);
@@ -3693,7 +3768,9 @@ impl Compiler {
                                     continue;
                                 }
                                 common::collections::emit_spread_iterable(
-                                    &mut self.chunks, self.current, self.line,
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
                                 );
                                 common::collections::emit_concat(
                                     &mut self.chunks,
@@ -4849,7 +4926,9 @@ impl Compiler {
                 // host fn can't do — route them through the
                 // `__stdlib_drain_generator` bytecode helper.
                 common::collections::emit_spread_iterable(
-                    &mut self.chunks, self.current, self.line,
+                    &mut self.chunks,
+                    self.current,
+                    self.line,
                 );
             }
 
@@ -4966,9 +5045,7 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
-                common::collections::emit_iter_for_of(
-                    &mut self.chunks, self.current, self.line,
-                );
+                common::collections::emit_iter_for_of(&mut self.chunks, self.current, self.line);
                 let iter_slot = self.define_local("__yield_star_iter");
                 let idx_slot = self.define_local("__yield_star_idx");
                 let len_slot = self.define_local("__yield_star_len");

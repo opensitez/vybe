@@ -750,35 +750,60 @@ fn collect_declared_names_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             out.insert(name.clone());
         }
         StmtKind::Block(stmts) => collect_declared_names(stmts, out),
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             collect_declared_names(then_body, out);
-            for (_, b) in elifs { collect_declared_names(b, out); }
-            if let Some(b) = else_body { collect_declared_names(b, out); }
+            for (_, b) in elifs {
+                collect_declared_names(b, out);
+            }
+            if let Some(b) = else_body {
+                collect_declared_names(b, out);
+            }
         }
-        StmtKind::While { body, .. }
-        | StmtKind::DoWhile { body, .. } => {
+        StmtKind::While { body, .. } | StmtKind::DoWhile { body, .. } => {
             collect_declared_names(body, out);
         }
         StmtKind::For { init, body, .. } => {
-            if let Some(i) = init { collect_declared_names_in_stmt(i, out); }
+            if let Some(i) = init {
+                collect_declared_names_in_stmt(i, out);
+            }
             collect_declared_names(body, out);
         }
         StmtKind::ForIn { var, body, .. } => {
             out.insert(var.clone());
             collect_declared_names(body, out);
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             collect_declared_names(body, out);
             for c in catches {
-                if let Some(name) = &c.var_name { out.insert(name.clone()); }
+                if let Some(name) = &c.var_name {
+                    out.insert(name.clone());
+                }
                 collect_declared_names(&c.body, out);
             }
-            if let Some(b) = else_body { collect_declared_names(b, out); }
-            if let Some(b) = finally { collect_declared_names(b, out); }
+            if let Some(b) = else_body {
+                collect_declared_names(b, out);
+            }
+            if let Some(b) = finally {
+                collect_declared_names(b, out);
+            }
         }
         StmtKind::Switch { cases, default, .. } => {
-            for case in cases { collect_declared_names(&case.body, out); }
-            if let Some(b) = default { collect_declared_names(b, out); }
+            for case in cases {
+                collect_declared_names(&case.body, out);
+            }
+            if let Some(b) = default {
+                collect_declared_names(b, out);
+            }
         }
         StmtKind::Labeled { body, .. } => collect_declared_names_in_stmt(body, out),
         _ => {}
@@ -787,12 +812,18 @@ fn collect_declared_names_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
 
 fn collect_binding_pattern_names(pat: &crate::ast::BindingPattern, out: &mut HashSet<String>) {
     match pat {
-        crate::ast::BindingPattern::Ident(name) => { out.insert(name.clone()); }
+        crate::ast::BindingPattern::Ident(name) => {
+            out.insert(name.clone());
+        }
         crate::ast::BindingPattern::Array(elems) => {
             for elem in elems {
                 match elem {
-                    crate::ast::ArrayPatternElem::Pattern(p, _) => collect_binding_pattern_names(p, out),
-                    crate::ast::ArrayPatternElem::Rest(name) => { out.insert(name.clone()); }
+                    crate::ast::ArrayPatternElem::Pattern(p, _) => {
+                        collect_binding_pattern_names(p, out)
+                    }
+                    crate::ast::ArrayPatternElem::Rest(name) => {
+                        out.insert(name.clone());
+                    }
                     crate::ast::ArrayPatternElem::Hole => {}
                 }
             }
@@ -846,7 +877,12 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
             collect_closure_captured_in_expr(value, out);
         }
         StmtKind::Block(stmts) => collect_closure_captured_idents(stmts, out),
-        StmtKind::If { cond, then_body, elifs, else_body, } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             collect_closure_captured_in_expr(cond, out);
             collect_closure_captured_idents(then_body, out);
             for (c, b) in elifs {
@@ -861,30 +897,63 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
             collect_closure_captured_in_expr(cond, out);
             collect_closure_captured_idents(body, out);
         }
-        StmtKind::For { init, cond, update, body, .. } => {
-            if let Some(i) = init { collect_closure_captured_in_stmt(i, out); }
-            if let Some(c) = cond { collect_closure_captured_in_expr(c, out); }
-            if let Some(u) = update { collect_closure_captured_in_expr(u, out); }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                collect_closure_captured_in_stmt(i, out);
+            }
+            if let Some(c) = cond {
+                collect_closure_captured_in_expr(c, out);
+            }
+            if let Some(u) = update {
+                collect_closure_captured_in_expr(u, out);
+            }
             collect_closure_captured_idents(body, out);
         }
         StmtKind::ForIn { iter, body, .. } => {
             collect_closure_captured_in_expr(iter, out);
             collect_closure_captured_idents(body, out);
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             collect_closure_captured_idents(body, out);
-            for c in catches { collect_closure_captured_idents(&c.body, out); }
-            if let Some(b) = else_body { collect_closure_captured_idents(b, out); }
-            if let Some(b) = finally { collect_closure_captured_idents(b, out); }
+            for c in catches {
+                collect_closure_captured_idents(&c.body, out);
+            }
+            if let Some(b) = else_body {
+                collect_closure_captured_idents(b, out);
+            }
+            if let Some(b) = finally {
+                collect_closure_captured_idents(b, out);
+            }
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             collect_closure_captured_in_expr(expr, out);
-            for case in cases { collect_closure_captured_idents(&case.body, out); }
-            if let Some(b) = default { collect_closure_captured_idents(b, out); }
+            for case in cases {
+                collect_closure_captured_idents(&case.body, out);
+            }
+            if let Some(b) = default {
+                collect_closure_captured_idents(b, out);
+            }
         }
         StmtKind::Labeled { body, .. } => collect_closure_captured_in_stmt(body, out),
         StmtKind::Throw { expr, .. } => {
-            if let Some(e) = expr { collect_closure_captured_in_expr(e, out); }
+            if let Some(e) = expr {
+                collect_closure_captured_in_expr(e, out);
+            }
         }
         _ => {}
     }
@@ -896,18 +965,39 @@ pub(crate) fn body_contains_this(stmts: &[Statement]) -> bool {
 
 fn stmt_contains_this(stmt: &Statement) -> bool {
     match &stmt.kind {
-        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => expr_contains_this(e),
-        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| d.init.as_ref().is_some_and(expr_contains_this)),
-        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => expr_contains_this(value),
-        StmtKind::If { cond, then_body, elifs, else_body, .. } => {
-            expr_contains_this(cond) || body_contains_this(then_body)
-                || elifs.iter().any(|(c, b)| expr_contains_this(c) || body_contains_this(b))
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
+            expr_contains_this(e)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|d| d.init.as_ref().is_some_and(expr_contains_this)),
+        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => {
+            expr_contains_this(value)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            expr_contains_this(cond)
+                || body_contains_this(then_body)
+                || elifs
+                    .iter()
+                    .any(|(c, b)| expr_contains_this(c) || body_contains_this(b))
                 || else_body.as_ref().is_some_and(|b| body_contains_this(b))
         }
         StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             expr_contains_this(cond) || body_contains_this(body)
         }
-        StmtKind::For { init, cond, update, body, .. } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
             init.as_ref().is_some_and(|s| stmt_contains_this(s))
                 || cond.as_ref().is_some_and(expr_contains_this)
                 || update.as_ref().is_some_and(expr_contains_this)
@@ -915,12 +1005,22 @@ fn stmt_contains_this(stmt: &Statement) -> bool {
         }
         StmtKind::ForIn { iter, body, .. } => expr_contains_this(iter) || body_contains_this(body),
         StmtKind::Block(stmts) => body_contains_this(stmts),
-        StmtKind::Try { body, catches, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
             body_contains_this(body)
                 || catches.iter().any(|c| body_contains_this(&c.body))
                 || finally.as_ref().is_some_and(|b| body_contains_this(b))
         }
-        StmtKind::Switch { expr, cases, default, .. } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
             expr_contains_this(expr)
                 || cases.iter().any(|c| body_contains_this(&c.body))
                 || default.as_ref().is_some_and(|b| body_contains_this(b))
@@ -933,33 +1033,40 @@ fn stmt_contains_this(stmt: &Statement) -> bool {
 pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::This => true,
-        ExprKind::Lambda { body, .. } => {
-            match body {
-                LambdaBody::Block(stmts) => body_contains_this(stmts),
-                LambdaBody::Expr(e) => expr_contains_this(e),
-            }
-        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Block(stmts) => body_contains_this(stmts),
+            LambdaBody::Expr(e) => expr_contains_this(e),
+        },
         ExprKind::FunctionExpr(_) => false,
-        ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr)
-        | ExprKind::TypeOf(expr) | ExprKind::Delete(expr) => expr_contains_this(expr),
-        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Assign { target: left, value: right } => {
-            expr_contains_this(left) || expr_contains_this(right)
-        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Delete(expr) => expr_contains_this(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        } => expr_contains_this(left) || expr_contains_this(right),
         ExprKind::Ternary { cond, then, else_ } => {
             expr_contains_this(cond) || expr_contains_this(then) || expr_contains_this(else_)
         }
         ExprKind::Call { callee, args, .. } => {
             expr_contains_this(callee) || args.iter().any(|a| expr_contains_this(&a.value))
         }
-        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => expr_contains_this(object),
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
+            expr_contains_this(object)
+        }
         ExprKind::Array(elems) => elems.iter().any(|e| expr_contains_this(&e.value)),
         ExprKind::Object(props) => props.iter().any(|p| match p {
             ObjectProperty::KeyValue { value, .. } => expr_contains_this(value),
             _ => false,
         }),
         ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
-            crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) => expr_contains_this(e),
+            crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) => {
+                expr_contains_this(e)
+            }
             _ => false,
         }),
         ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_this),
@@ -977,34 +1084,77 @@ pub(crate) fn closures_in_body_reference_this(stmts: &[Statement]) -> bool {
 
 fn stmt_has_closure_with_this(stmt: &Statement) -> bool {
     match &stmt.kind {
-        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => expr_has_closure_with_this(e),
-        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| d.init.as_ref().is_some_and(expr_has_closure_with_this)),
-        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => expr_has_closure_with_this(value),
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
+            expr_has_closure_with_this(e)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|d| d.init.as_ref().is_some_and(expr_has_closure_with_this)),
+        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => {
+            expr_has_closure_with_this(value)
+        }
         StmtKind::Block(stmts) => closures_in_body_reference_this(stmts),
-        StmtKind::If { cond, then_body, elifs, else_body, .. } => {
-            expr_has_closure_with_this(cond) || closures_in_body_reference_this(then_body)
-                || elifs.iter().any(|(c, b)| expr_has_closure_with_this(c) || closures_in_body_reference_this(b))
-                || else_body.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            expr_has_closure_with_this(cond)
+                || closures_in_body_reference_this(then_body)
+                || elifs.iter().any(|(c, b)| {
+                    expr_has_closure_with_this(c) || closures_in_body_reference_this(b)
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|b| closures_in_body_reference_this(b))
         }
         StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             expr_has_closure_with_this(cond) || closures_in_body_reference_this(body)
         }
-        StmtKind::For { init, cond, update, body, .. } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
             init.as_ref().is_some_and(|s| stmt_has_closure_with_this(s))
                 || cond.as_ref().is_some_and(expr_has_closure_with_this)
                 || update.as_ref().is_some_and(expr_has_closure_with_this)
                 || closures_in_body_reference_this(body)
         }
-        StmtKind::ForIn { iter, body, .. } => expr_has_closure_with_this(iter) || closures_in_body_reference_this(body),
-        StmtKind::Try { body, catches, finally, .. } => {
-            closures_in_body_reference_this(body)
-                || catches.iter().any(|c| closures_in_body_reference_this(&c.body))
-                || finally.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_has_closure_with_this(iter) || closures_in_body_reference_this(body)
         }
-        StmtKind::Switch { expr, cases, default, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            closures_in_body_reference_this(body)
+                || catches
+                    .iter()
+                    .any(|c| closures_in_body_reference_this(&c.body))
+                || finally
+                    .as_ref()
+                    .is_some_and(|b| closures_in_body_reference_this(b))
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
             expr_has_closure_with_this(expr)
-                || cases.iter().any(|c| closures_in_body_reference_this(&c.body))
-                || default.as_ref().is_some_and(|b| closures_in_body_reference_this(b))
+                || cases
+                    .iter()
+                    .any(|c| closures_in_body_reference_this(&c.body))
+                || default
+                    .as_ref()
+                    .is_some_and(|b| closures_in_body_reference_this(b))
         }
         StmtKind::Labeled { body, .. } => stmt_has_closure_with_this(body),
         _ => false,
@@ -1018,24 +1168,34 @@ fn expr_has_closure_with_this(expr: &Expression) -> bool {
             LambdaBody::Expr(e) => expr_contains_this(e),
         },
         ExprKind::FunctionExpr(_) => false,
-        ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr) => expr_has_closure_with_this(expr),
-        ExprKind::Binary { left, right, .. } | ExprKind::Assign { target: left, value: right } => {
-            expr_has_closure_with_this(left) || expr_has_closure_with_this(right)
+        ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr) => {
+            expr_has_closure_with_this(expr)
         }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        } => expr_has_closure_with_this(left) || expr_has_closure_with_this(right),
         ExprKind::Ternary { cond, then, else_ } => {
-            expr_has_closure_with_this(cond) || expr_has_closure_with_this(then) || expr_has_closure_with_this(else_)
+            expr_has_closure_with_this(cond)
+                || expr_has_closure_with_this(then)
+                || expr_has_closure_with_this(else_)
         }
         ExprKind::Call { callee, args, .. } => {
-            expr_has_closure_with_this(callee) || args.iter().any(|a| expr_has_closure_with_this(&a.value))
+            expr_has_closure_with_this(callee)
+                || args.iter().any(|a| expr_has_closure_with_this(&a.value))
         }
-        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => expr_has_closure_with_this(object),
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
+            expr_has_closure_with_this(object)
+        }
         ExprKind::Array(elems) => elems.iter().any(|e| expr_has_closure_with_this(&e.value)),
         ExprKind::Object(props) => props.iter().any(|p| match p {
             ObjectProperty::KeyValue { value, .. } => expr_has_closure_with_this(value),
             _ => false,
         }),
         ExprKind::New { class, args } => {
-            expr_has_closure_with_this(class) || args.iter().any(|a| expr_has_closure_with_this(&a.value))
+            expr_has_closure_with_this(class)
+                || args.iter().any(|a| expr_has_closure_with_this(&a.value))
         }
         ExprKind::Sequence(exprs) => exprs.iter().any(expr_has_closure_with_this),
         _ => false,
@@ -1064,7 +1224,8 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
             if let StmtKind::FunctionDecl { params, body, .. } = &stmt.kind {
                 let mut all_idents = HashSet::new();
                 collect_all_idents_in_stmts(body, &mut all_idents);
-                let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                let mut local_names: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
                 collect_declared_names(body, &mut local_names);
                 for name in all_idents {
                     if !local_names.contains(&name) {
@@ -1080,7 +1241,9 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
         }
         ExprKind::Call { callee, args, .. } => {
             collect_closure_captured_in_expr(callee, out);
-            for a in args { collect_closure_captured_in_expr(&a.value, out); }
+            for a in args {
+                collect_closure_captured_in_expr(&a.value, out);
+            }
         }
         ExprKind::Member { object, .. } => collect_closure_captured_in_expr(object, out),
         ExprKind::Index { object, index, .. } => {
@@ -1097,21 +1260,27 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
             collect_closure_captured_in_expr(value, out);
         }
         ExprKind::Array(elems) => {
-            for e in elems { collect_closure_captured_in_expr(&e.value, out); }
+            for e in elems {
+                collect_closure_captured_in_expr(&e.value, out);
+            }
         }
         ExprKind::Object(props) => {
             for p in props {
                 match p {
-                    ObjectProperty::KeyValue { value, .. } => collect_closure_captured_in_expr(value, out),
+                    ObjectProperty::KeyValue { value, .. } => {
+                        collect_closure_captured_in_expr(value, out)
+                    }
                     ObjectProperty::Computed { key, value } => {
                         collect_closure_captured_in_expr(key, out);
                         collect_closure_captured_in_expr(value, out);
                     }
-                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
                         if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
                             let mut all_idents = HashSet::new();
                             collect_all_idents_in_stmts(body, &mut all_idents);
-                            let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                            let mut local_names: HashSet<String> =
+                                params.iter().map(|p| p.name.clone()).collect();
                             collect_declared_names(body, &mut local_names);
                             for name in all_idents {
                                 if !local_names.contains(&name) {
@@ -1125,11 +1294,15 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
             }
         }
         ExprKind::Sequence(exprs) => {
-            for e in exprs { collect_closure_captured_in_expr(e, out); }
+            for e in exprs {
+                collect_closure_captured_in_expr(e, out);
+            }
         }
         ExprKind::Interpolation(parts) => {
             for part in parts {
-                if let crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) = part {
+                if let crate::ast::InterpolPart::Expr(e)
+                | crate::ast::InterpolPart::Formatted(e, _) = part
+                {
                     collect_closure_captured_in_expr(e, out);
                 }
             }
@@ -1139,7 +1312,9 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
         }
         ExprKind::New { class, args } => {
             collect_closure_captured_in_expr(class, out);
-            for a in args { collect_closure_captured_in_expr(&a.value, out); }
+            for a in args {
+                collect_closure_captured_in_expr(&a.value, out);
+            }
         }
         ExprKind::Lit(_) | ExprKind::This | ExprKind::Super | ExprKind::Yield(None) => {}
         _ => {}
@@ -1155,14 +1330,22 @@ fn collect_all_idents_in_stmts(stmts: &[Statement], out: &mut HashSet<String>) {
 fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::Expr(e) => collect_all_idents_in_expr(e, out),
-        StmtKind::Return(opt) => { if let Some(e) = opt { collect_all_idents_in_expr(e, out); } }
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_all_idents_in_expr(e, out);
+            }
+        }
         StmtKind::VarDecl { declarations, .. } => {
             for d in declarations {
-                if let Some(e) = &d.init { collect_all_idents_in_expr(e, out); }
+                if let Some(e) = &d.init {
+                    collect_all_idents_in_expr(e, out);
+                }
             }
         }
         StmtKind::Assign { targets, value } => {
-            for t in targets { collect_all_idents_in_expr(t, out); }
+            for t in targets {
+                collect_all_idents_in_expr(t, out);
+            }
             collect_all_idents_in_expr(value, out);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -1170,47 +1353,94 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             collect_all_idents_in_expr(value, out);
         }
         StmtKind::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             collect_all_idents_in_expr(cond, out);
             collect_all_idents_in_stmts(then_body, out);
-            for (c, b) in elifs { collect_all_idents_in_expr(c, out); collect_all_idents_in_stmts(b, out); }
-            if let Some(b) = else_body { collect_all_idents_in_stmts(b, out); }
+            for (c, b) in elifs {
+                collect_all_idents_in_expr(c, out);
+                collect_all_idents_in_stmts(b, out);
+            }
+            if let Some(b) = else_body {
+                collect_all_idents_in_stmts(b, out);
+            }
         }
         StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             collect_all_idents_in_expr(cond, out);
             collect_all_idents_in_stmts(body, out);
         }
-        StmtKind::For { init, cond, update, body, .. } => {
-            if let Some(i) = init { collect_all_idents_in_stmt(i, out); }
-            if let Some(c) = cond { collect_all_idents_in_expr(c, out); }
-            if let Some(u) = update { collect_all_idents_in_expr(u, out); }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                collect_all_idents_in_stmt(i, out);
+            }
+            if let Some(c) = cond {
+                collect_all_idents_in_expr(c, out);
+            }
+            if let Some(u) = update {
+                collect_all_idents_in_expr(u, out);
+            }
             collect_all_idents_in_stmts(body, out);
         }
         StmtKind::ForIn { iter, body, .. } => {
             collect_all_idents_in_expr(iter, out);
             collect_all_idents_in_stmts(body, out);
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             collect_all_idents_in_stmts(body, out);
-            for c in catches { collect_all_idents_in_stmts(&c.body, out); }
-            if let Some(b) = else_body { collect_all_idents_in_stmts(b, out); }
-            if let Some(b) = finally { collect_all_idents_in_stmts(b, out); }
+            for c in catches {
+                collect_all_idents_in_stmts(&c.body, out);
+            }
+            if let Some(b) = else_body {
+                collect_all_idents_in_stmts(b, out);
+            }
+            if let Some(b) = finally {
+                collect_all_idents_in_stmts(b, out);
+            }
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             collect_all_idents_in_expr(expr, out);
-            for case in cases { collect_all_idents_in_stmts(&case.body, out); }
-            if let Some(b) = default { collect_all_idents_in_stmts(b, out); }
+            for case in cases {
+                collect_all_idents_in_stmts(&case.body, out);
+            }
+            if let Some(b) = default {
+                collect_all_idents_in_stmts(b, out);
+            }
         }
         StmtKind::FunctionDecl { body, .. } => collect_all_idents_in_stmts(body, out),
         StmtKind::Labeled { body, .. } => collect_all_idents_in_stmt(body, out),
-        StmtKind::Throw { expr, .. } => { if let Some(e) = expr { collect_all_idents_in_expr(e, out); } }
+        StmtKind::Throw { expr, .. } => {
+            if let Some(e) = expr {
+                collect_all_idents_in_expr(e, out);
+            }
+        }
         _ => {}
     }
 }
 
 fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
-        ExprKind::Ident(name) => { out.insert(name.clone()); }
+        ExprKind::Ident(name) => {
+            out.insert(name.clone());
+        }
         ExprKind::Unary { expr, .. } => collect_all_idents_in_expr(expr, out),
         ExprKind::Binary { left, right, .. } => {
             collect_all_idents_in_expr(left, out);
@@ -1218,7 +1448,9 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::Call { callee, args, .. } => {
             collect_all_idents_in_expr(callee, out);
-            for a in args { collect_all_idents_in_expr(&a.value, out); }
+            for a in args {
+                collect_all_idents_in_expr(&a.value, out);
+            }
         }
         ExprKind::Member { object, .. } => collect_all_idents_in_expr(object, out),
         ExprKind::Index { object, index, .. } => {
@@ -1235,21 +1467,27 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
             collect_all_idents_in_expr(value, out);
         }
         ExprKind::Array(elems) => {
-            for e in elems { collect_all_idents_in_expr(&e.value, out); }
+            for e in elems {
+                collect_all_idents_in_expr(&e.value, out);
+            }
         }
         ExprKind::Object(props) => {
             for p in props {
                 match p {
-                    ObjectProperty::KeyValue { value, .. } => collect_all_idents_in_expr(value, out),
+                    ObjectProperty::KeyValue { value, .. } => {
+                        collect_all_idents_in_expr(value, out)
+                    }
                     ObjectProperty::Computed { key, value } => {
                         collect_all_idents_in_expr(key, out);
                         collect_all_idents_in_expr(value, out);
                     }
-                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
                         if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
                             let mut all_idents = HashSet::new();
                             collect_all_idents_in_stmts(body, &mut all_idents);
-                            let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                            let mut local_names: HashSet<String> =
+                                params.iter().map(|p| p.name.clone()).collect();
                             collect_declared_names(body, &mut local_names);
                             for name in all_idents {
                                 if !local_names.contains(&name) {
@@ -1263,21 +1501,23 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
             }
         }
         ExprKind::Sequence(exprs) => {
-            for e in exprs { collect_all_idents_in_expr(e, out); }
+            for e in exprs {
+                collect_all_idents_in_expr(e, out);
+            }
         }
         ExprKind::Interpolation(parts) => {
             for part in parts {
-                if let crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) = part {
+                if let crate::ast::InterpolPart::Expr(e)
+                | crate::ast::InterpolPart::Formatted(e, _) = part
+                {
                     collect_all_idents_in_expr(e, out);
                 }
             }
         }
-        ExprKind::Lambda { body, .. } => {
-            match body {
-                LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
-                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out),
-            }
-        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
+            LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out),
+        },
         ExprKind::FunctionExpr(stmt) => {
             if let StmtKind::FunctionDecl { body, .. } = &stmt.kind {
                 collect_all_idents_in_stmts(body, out);
@@ -1285,7 +1525,9 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::New { class, args } => {
             collect_all_idents_in_expr(class, out);
-            for a in args { collect_all_idents_in_expr(&a.value, out); }
+            for a in args {
+                collect_all_idents_in_expr(&a.value, out);
+            }
         }
         ExprKind::Await(inner) | ExprKind::Spread(inner) | ExprKind::Yield(Some(inner)) => {
             collect_all_idents_in_expr(inner, out);
@@ -3710,18 +3952,22 @@ impl Compiler {
             ExprKind::Ident(name)
                 if name == self_kw || name == "$this" || name.eq_ignore_ascii_case(self_kw) =>
             {
-                self.current_class
-                    .as_deref()
-                    .and_then(|class_name| self.php_property_storage_name_for_class(class_name, field))
+                self.current_class.as_deref().and_then(|class_name| {
+                    self.php_property_storage_name_for_class(class_name, field)
+                })
             }
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                .and_then(|class_name| self.php_property_storage_name_for_class(&class_name, field)),
+                .and_then(|class_name| {
+                    self.php_property_storage_name_for_class(&class_name, field)
+                }),
             _ => self
                 .infer_expr_type_hint(receiver)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(&type_hint))
-                .and_then(|class_name| self.php_property_storage_name_for_class(&class_name, field)),
+                .and_then(|class_name| {
+                    self.php_property_storage_name_for_class(&class_name, field)
+                }),
         }
     }
 
@@ -7810,7 +8056,10 @@ impl Compiler {
 
     /// Check if a name is in the current function's shared env.
     fn shared_env_index(&self, name: &str) -> Option<u16> {
-        self.shared_env_names.iter().position(|n| n == name).map(|i| i as u16)
+        self.shared_env_names
+            .iter()
+            .position(|n| n == name)
+            .map(|i| i as u16)
     }
 
     fn resolve_upvalue(&mut self, scope_idx: usize, name: &str) -> Option<u8> {
@@ -8629,7 +8878,10 @@ impl Compiler {
                     let is_ref_assign = self.is_php_profile()
                         && matches!(
                             &value.kind,
-                            ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+                            ExprKind::Unary {
+                                op: UnaryOp::AddrOf,
+                                ..
+                            }
                         );
                     for (i, target) in targets.iter().enumerate() {
                         if i < targets.len() - 1 {
@@ -9017,7 +9269,9 @@ impl Compiler {
                     if *of && key.is_none() {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         common::collections::emit_iter_for_of(
-                            &mut self.chunks, self.current, self.line,
+                            &mut self.chunks,
+                            self.current,
+                            self.line,
                         );
                         self.emit_u16(Op::LOCAL_SET, iter_slot);
                     }
@@ -12075,7 +12329,9 @@ impl Compiler {
                     // If this local is captured by inner closures, also store
                     // the initial value in the shared env array so closures
                     // see the same value.
-                    if let (Some(env_slot), Some(idx)) = (self.shared_env_slot, self.shared_env_index(name)) {
+                    if let (Some(env_slot), Some(idx)) =
+                        (self.shared_env_slot, self.shared_env_index(name))
+                    {
                         let l = self.line;
                         self.emit_u16(Op::LOCAL_GET, slot);
                         crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
@@ -12118,7 +12374,9 @@ impl Compiler {
             BindingPattern::Ident(name) => {
                 let slot = self.define_local(name);
                 self.emit_u16(Op::LOCAL_SET, slot);
-                if let (Some(env_slot), Some(idx)) = (self.shared_env_slot, self.shared_env_index(name)) {
+                if let (Some(env_slot), Some(idx)) =
+                    (self.shared_env_slot, self.shared_env_index(name))
+                {
                     let l = self.line;
                     self.emit_u16(Op::LOCAL_GET, slot);
                     crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
@@ -12212,7 +12470,9 @@ impl Compiler {
                 // Continuation returns undefined otherwise.
                 if self.is_js_profile() {
                     common::collections::emit_spread_iterable(
-                        &mut self.chunks, self.current, self.line,
+                        &mut self.chunks,
+                        self.current,
+                        self.line,
                     );
                 }
                 let arr_slot = self.define_local("__destruct_arr");
@@ -13104,7 +13364,12 @@ impl Compiler {
                 // PHP auto-vivification: $x[$k][] = $v → ensure $x[$k]
                 // is an array before pushing. If undefined, create [].
                 if is_append && self.is_php_profile() {
-                    if let ExprKind::Index { object: parent, index: key, .. } = &object.kind {
+                    if let ExprKind::Index {
+                        object: parent,
+                        index: key,
+                        ..
+                    } = &object.kind
+                    {
                         let parent_tmp = self.define_local("__vivify_parent");
                         let key_tmp = self.define_local("__vivify_key");
                         let sub_tmp = self.define_local("__vivify_sub");
@@ -13297,8 +13562,7 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let is_array_idx = self.import("ecma:array", "isArray");
-                        self.chunk()
-                            .emit_call(is_array_idx, 1, line);
+                        self.chunk().emit_call(is_array_idx, 1, line);
                         inst!(self, core_wasm::i32_const, 0);
                         {
                             let line = self.line;
@@ -15476,11 +15740,15 @@ impl Compiler {
                         self.compile_expr(args[0])?;
                         if async_drain {
                             common::generators::emit_drain_async_iterable(
-                                &mut self.chunks, self.current, self.line,
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
                             );
                         } else {
                             common::collections::emit_spread_iterable(
-                                &mut self.chunks, self.current, self.line,
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
                             );
                         }
                         for a in args.iter().skip(1) {
@@ -15645,7 +15913,10 @@ impl Compiler {
             "str_trim" => fn_call!(self, "ecma:string", "trim", 1),
             "str_trim_start" => fn_call!(self, "ecma:string", "trimStart", 1),
             "str_trim_end" => fn_call!(self, "ecma:string", "trimEnd", 1),
-            "str_reverse" => { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l) },
+            "str_reverse" => {
+                let l = self.line;
+                crate::emitter::strings::emit_str_reverse(self.chunk(), l)
+            }
             "str_from_char_code" => fn_call!(self, "wasm:js-string", "fromCharCode", 1),
             "str_char_at" => fn_call!(self, "ecma:string", "charAt", 2),
             "str_char_code_at" => fn_call!(self, "wasm:js-string", "charCodeAt", 2),
@@ -16095,7 +16366,10 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                { let l = self.line; crate::emitter::strings::emit_str_reverse(self.chunk(), l) };
+                {
+                    let l = self.line;
+                    crate::emitter::strings::emit_str_reverse(self.chunk(), l)
+                };
             }
             // SIMD v128 ops — args may be absent in plain WAT form
             "i8x16_splat" => {
