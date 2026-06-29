@@ -119,12 +119,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         ),
         "dotnet.sb_append_line" => {
             crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_append_line(
-                chunks, current, line,
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.sb_append_format" => {
+            crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_append_format(
+                chunks, current, argc, line,
             )
         }
         "dotnet.sb_to_string" => {
             crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_to_string(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.sb_clear" => crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_clear(
@@ -141,6 +146,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         ),
         "dotnet.sb_replace" => {
             crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_replace(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sb_index_get" => {
+            crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_index_get(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sb_index_set" => {
+            crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_index_set(
                 chunks, current, line,
             )
         }
@@ -264,6 +279,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.hashset_add" => {
             crate::emitter::dotnet::core::collections_adapter::emit_hashset_add(
+                chunks, current, line,
+            )
+        }
+        "dotnet.set_new_ignore_comparer" => {
+            crate::emitter::dotnet::core::collections_adapter::emit_set_new_ignore_comparer(
                 chunks, current, line,
             )
         }
@@ -886,7 +906,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_call(get, 2, line);
             chunk.emit_else(line);
             chunk.emit_string_const("The given key was not present in the dictionary.", line);
-            crate::emitter::errors::emit_exception_new_finalize(chunk, "KeyNotFoundException", line);
+            crate::emitter::errors::emit_exception_new_finalize(
+                chunk,
+                "KeyNotFoundException",
+                line,
+            );
             crate::emitter::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
         }
@@ -1036,9 +1060,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let idx = chunks[current].add_import("ecma:math", "sign");
             chunks[current].emit_call(idx, 1, line);
         }
-        "dotnet.system.math.clamp" => {
-            crate::emitter::math::emit_clamp(&mut chunks[current], line)
-        }
+        "dotnet.system.math.clamp" => crate::emitter::math::emit_clamp(&mut chunks[current], line),
         _ => return false,
     }
     true

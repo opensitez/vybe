@@ -1,7 +1,7 @@
 use super::{LuaParser, Rule};
 use crate::ast::*;
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 
 fn to_span(pair: &Pair<Rule>) -> Span {
     let (start_line, start_col) = pair.as_span().start_pos().line_col();
@@ -41,9 +41,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
 fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     // Pest may still emit a `statement` wrapper depending on call site.
     let pair = if pair.as_rule() == Rule::statement {
-        pair.into_inner()
-            .next()
-            .ok_or("empty statement wrapper")?
+        pair.into_inner().next().ok_or("empty statement wrapper")?
     } else {
         pair
     };
@@ -114,7 +112,9 @@ fn walk_for_numeric(pair: Pair<Rule>) -> Result<StmtKind, String> {
     };
     let body = body_pair.map(walk_block).transpose()?.unwrap_or_default();
 
-    Ok(super::normalize::build_numeric_for(var, start, limit, step, body))
+    Ok(super::normalize::build_numeric_for(
+        var, start, limit, step, body,
+    ))
 }
 
 fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -480,10 +480,9 @@ fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut body = Vec::new();
     for p in pair.into_inner() {
         let stmt_pair = match p.as_rule() {
-            Rule::stmt_not_else | Rule::stmt_not_end => p
-                .into_inner()
-                .next()
-                .ok_or("empty guarded statement")?,
+            Rule::stmt_not_else | Rule::stmt_not_end => {
+                p.into_inner().next().ok_or("empty guarded statement")?
+            }
             Rule::statement => p,
             other => return Err(format!("unexpected block item: {other:?}")),
         };
@@ -626,10 +625,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::call_expression => return walk_call_expression(pair),
         Rule::primary => return walk_primary(pair),
         Rule::postfix => {
-            let inner = pair
-                .into_inner()
-                .next()
-                .ok_or("empty postfix")?;
+            let inner = pair.into_inner().next().ok_or("empty postfix")?;
             return walk_call_expression(inner);
         }
         _ => {}
@@ -718,7 +714,9 @@ fn walk_pow_expr(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
             i += 1;
         }
     }
-    let mut acc = operands.pop().unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+    let mut acc = operands
+        .pop()
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
     while let Some(left) = operands.pop() {
         acc = Expression::new(ExprKind::Binary {
             op: BinOp::Pow,
@@ -758,7 +756,7 @@ fn is_lua_expr_rule(rule: Rule) -> bool {
         rule,
         Rule::or_expr
             | Rule::and_expr
-            |         Rule::compare_expr
+            | Rule::compare_expr
             | Rule::concat_expr
             | Rule::shift_expr
             | Rule::band_expr

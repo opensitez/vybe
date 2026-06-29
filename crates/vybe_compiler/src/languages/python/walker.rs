@@ -2038,7 +2038,9 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             null_safe,
                         } = &expr.kind
                         {
-                            if field == "sort" && args.iter().any(|a| a.name.as_deref() == Some("reverse")) {
+                            if field == "sort"
+                                && args.iter().any(|a| a.name.as_deref() == Some("reverse"))
+                            {
                                 // arr.sort(reverse=True) → arr.sort(); arr.reverse()
                                 let sort_call = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Member {
@@ -2060,23 +2062,33 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 });
                                 // Chain: sort then reverse. Use comma expression or sequence.
                                 // Emit sort as statement, then reverse
-                                expr = Expression::new(ExprKind::Sequence(vec![sort_call, reverse_call]));
+                                expr = Expression::new(ExprKind::Sequence(vec![
+                                    sort_call,
+                                    reverse_call,
+                                ]));
                                 continue;
                             }
                             if field == "count" && args.len() == 1 {
                                 // arr.count(x) → arr.filter(e => e === x).length
                                 let needle = args.into_iter().next().unwrap().value;
                                 let param = Param {
-                                    name: "__e".into(), type_hint: None, default: None,
-                                    pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
-                                    is_optional: false, is_nullable: false,
+                                    name: "__e".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
                                 };
                                 let filter_fn = Expression::new(ExprKind::Lambda {
                                     params: vec![param],
                                     body: LambdaBody::Expr(Box::new(Expression::new(
                                         ExprKind::Binary {
                                             op: BinOp::StrictEq,
-                                            left: Box::new(Expression::new(ExprKind::Ident("__e".into()))),
+                                            left: Box::new(Expression::new(ExprKind::Ident(
+                                                "__e".into(),
+                                            ))),
                                             right: Box::new(needle),
                                         },
                                     ))),
@@ -2257,9 +2269,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     // sorted(iterable) → [...iterable].sort()
                                     // sorted(iterable, reverse=True) → [...iterable].sort().reverse()
                                     let iterable = args[0].value.clone();
-                                    let has_reverse = args.iter().any(|a| {
-                                        a.name.as_deref() == Some("reverse")
-                                    });
+                                    let has_reverse =
+                                        args.iter().any(|a| a.name.as_deref() == Some("reverse"));
                                     let spread_array =
                                         Expression::new(ExprKind::Array(vec![ArrayElement {
                                             key: None,

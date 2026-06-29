@@ -2098,6 +2098,7 @@ impl Compiler {
                                         | "queue"
                                         | "stack"
                                         | "hashset"
+                                        | "sortedset"
                                         | "set"
                                         | "collection"
                                         | "icollection"
@@ -2173,8 +2174,29 @@ impl Compiler {
                         && !matches!(
                             &object.kind,
                             ExprKind::Ident(name)
-                                if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                         );
+
+                if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && self.profile.namespaces.use_dotnet
+                    && field == "Count"
+                    && receiver_type_hint
+                        .as_deref()
+                        .map(|type_hint| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            normalized.contains("hashset") || normalized.contains("sortedset")
+                        })
+                        .unwrap_or(false)
+                    && !matches!(
+                        &object.kind,
+                        ExprKind::Ident(name)
+                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                    )
+                {
+                    self.compile_expr(object)?;
+                    fn_call!(self, "ecma:set", "size", 1);
+                    return Ok(());
+                }
 
                 if *null_safe && is_csharp_len_accessor {
                     self.compile_expr(object)?;
@@ -2864,6 +2886,25 @@ impl Compiler {
                     self.chunk().emit_end(lookup_line);
                     self.chunk().emit_end(line);
                 } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    if self.profile.namespaces.use_dotnet
+                        && self
+                            .infer_expr_type_hint(object)
+                            .as_deref()
+                            .map(Self::normalize_type_hint)
+                            .is_some_and(|type_hint| {
+                                type_hint
+                                    .rsplit('.')
+                                    .next()
+                                    .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
+                            })
+                    {
+                        self.compile_expr(object)?;
+                        self.compile_collection_key(object, index)?;
+                        let line = self.line;
+                        self.emit_common("dotnet.sb_index_get", 2, line);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);

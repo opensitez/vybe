@@ -35,7 +35,8 @@ fn repeat_until_runs_once() {
 
 #[test]
 fn break_inside_while() {
-    let src = "local i = 0\nwhile true do\n  i = i + 1\n  if i == 2 then break end\nend\nprint(i)\n";
+    let src =
+        "local i = 0\nwhile true do\n  i = i + 1\n  if i == 2 then break end\nend\nprint(i)\n";
     let out = run_lua_one(src);
     assert_eq!(out, "2");
 }

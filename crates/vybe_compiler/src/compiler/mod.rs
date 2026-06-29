@@ -5889,6 +5889,7 @@ impl Compiler {
                     | "queue"
                     | "stack"
                     | "hashset"
+                    | "sortedset"
                     | "set"
                     | "collection"
                     | "icollection"
@@ -6999,6 +7000,27 @@ impl Compiler {
                             .strip_suffix("()")
                             .map(str::to_string)
                     });
+                }
+                if self.profile.namespaces.use_dotnet {
+                    if let ExprKind::Member { object, field, .. } = &callee.kind {
+                        if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                            if self
+                                .resolve_pending_class_name_for_type_hint(&receiver_type)
+                                .is_none()
+                            {
+                                let class_name = Self::normalize_type_hint(&receiver_type);
+                                if let Some(return_type) = common::dotnet::surface()
+                                    .lookup_instance_method_return_type(
+                                        &class_name,
+                                        field,
+                                        args.len() as u8,
+                                    )
+                                {
+                                    return Some(return_type);
+                                }
+                            }
+                        }
+                    }
                 }
                 self.infer_function_return_type(callee)
                     .or_else(|| self.infer_dotnet_factory_return_type(callee))
@@ -13411,6 +13433,26 @@ impl Compiler {
                     // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
                 } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    if self.profile.namespaces.use_dotnet
+                        && self
+                            .infer_expr_type_hint(object)
+                            .as_deref()
+                            .map(Self::normalize_type_hint)
+                            .is_some_and(|type_hint| {
+                                type_hint
+                                    .rsplit('.')
+                                    .next()
+                                    .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
+                            })
+                    {
+                        self.compile_expr(object)?;
+                        self.compile_collection_key(object, index)?;
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        self.emit_common("dotnet.sb_index_set", 3, line);
+                        self.emit(Op::DROP);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");

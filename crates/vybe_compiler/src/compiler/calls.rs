@@ -355,6 +355,26 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
                 {
                     return Some(return_type);
                 }
+
+                if compiler.profile.namespaces.use_dotnet {
+                    if let Some(receiver_type) = resolve_receiver_type_hint(compiler, object) {
+                        if compiler
+                            .resolve_pending_class_name_for_type_hint(&receiver_type)
+                            .is_none()
+                        {
+                            let class_name = Compiler::normalize_type_hint(&receiver_type);
+                            if let Some(return_type) = common::dotnet::surface()
+                                .lookup_instance_method_return_type(
+                                    &class_name,
+                                    field,
+                                    args.len() as u8,
+                                )
+                            {
+                                return Some(return_type);
+                            }
+                        }
+                    }
+                }
             }
 
             let inferred = compiler

@@ -59,9 +59,30 @@ pub fn is_gcl_unit(path: &str) -> bool {
 }
 
 const CONTROL_PROPERTIES: &[&str] = &[
-    "Name", "Text", "Caption", "Left", "Top", "Width", "Height", "Enabled", "Visible", "Align",
-    "Anchors", "Color", "Parent", "Hint", "ShowHint", "Tag", "OnClick", "OnChange", "OnCreate",
-    "OnClose", "OnTimer", "OnKeyPress", "OnKeyDown", "OnKeyUp",
+    "Name",
+    "Text",
+    "Caption",
+    "Left",
+    "Top",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Align",
+    "Anchors",
+    "Color",
+    "Parent",
+    "Hint",
+    "ShowHint",
+    "Tag",
+    "OnClick",
+    "OnChange",
+    "OnCreate",
+    "OnClose",
+    "OnTimer",
+    "OnKeyPress",
+    "OnKeyDown",
+    "OnKeyUp",
 ];
 
 const FORM_PROPERTIES: &[&str] = &[

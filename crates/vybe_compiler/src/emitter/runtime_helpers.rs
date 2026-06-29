@@ -4620,6 +4620,7 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     emit_const_index(&mut c, zero_num, 0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     c.emit_op(Op::RETURN, 0);
@@ -4646,6 +4647,7 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);
     crate::emitter::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     c.emit_op(Op::RETURN, 0);

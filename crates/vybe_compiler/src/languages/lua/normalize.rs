@@ -83,7 +83,10 @@ fn desugar_multi_assign(stmt: Statement) -> Vec<Statement> {
         return vec![stmt];
     };
     if targets.len() <= 1 {
-        return vec![Statement::with_span(StmtKind::Assign { targets, value }, stmt.span)];
+        return vec![Statement::with_span(
+            StmtKind::Assign { targets, value },
+            stmt.span,
+        )];
     }
     let values = match value.kind.clone() {
         ExprKind::Sequence(values) => values,
@@ -117,11 +120,15 @@ fn desugar_multi_assign(stmt: Statement) -> Vec<Statement> {
                             Expression::new(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(start.clone()),
-                                right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i as i64)))),
+                                right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
+                                    i as i64,
+                                )))),
                             })
                         };
                         out.push(Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::new(ExprKind::Ident("rawget".to_string()))),
+                            callee: Box::new(Expression::new(ExprKind::Ident(
+                                "rawget".to_string(),
+                            ))),
                             args: vec![
                                 Argument::positional(src.clone()),
                                 Argument::positional(idx),
@@ -131,13 +138,24 @@ fn desugar_multi_assign(stmt: Statement) -> Vec<Statement> {
                     }
                     out
                 } else {
-                    return vec![Statement::with_span(StmtKind::Assign { targets, value }, stmt.span)];
+                    return vec![Statement::with_span(
+                        StmtKind::Assign { targets, value },
+                        stmt.span,
+                    )];
                 }
             } else {
-                return vec![Statement::with_span(StmtKind::Assign { targets, value }, stmt.span)];
+                return vec![Statement::with_span(
+                    StmtKind::Assign { targets, value },
+                    stmt.span,
+                )];
             }
         }
-        _ => return vec![Statement::with_span(StmtKind::Assign { targets, value }, stmt.span)],
+        _ => {
+            return vec![Statement::with_span(
+                StmtKind::Assign { targets, value },
+                stmt.span,
+            )];
+        }
     };
     if values.len() != targets.len() {
         return vec![Statement::with_span(
@@ -249,10 +267,7 @@ fn desugar_multi_var_decl(stmt: Statement) -> Vec<Statement> {
             };
             decl.init = Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident("rawget".to_string()))),
-                args: vec![
-                    Argument::positional(src.clone()),
-                    Argument::positional(idx),
-                ],
+                args: vec![Argument::positional(src.clone()), Argument::positional(idx)],
                 optional: false,
             }));
             decl
@@ -477,7 +492,9 @@ fn maybe_wrap_numeric_loop_iife(kind: &mut StmtKind) {
             is_async: false,
             captures: Vec::new(),
         })),
-        args: vec![Argument::positional(Expression::new(ExprKind::Ident(index_var)))],
+        args: vec![Argument::positional(Expression::new(ExprKind::Ident(
+            index_var,
+        )))],
         optional: false,
     })));
     user_body.splice(wrap_start..wrap_end, [wrapped]);
@@ -527,10 +544,7 @@ fn numeric_loop_bind_prefix(inner: &[Statement]) -> Option<(String, usize)> {
     if let StmtKind::VarDecl { declarations, .. } = &first.kind {
         if declarations.len() == 1 {
             if let BindingPattern::Ident(name) = &declarations[0].pattern {
-                if let Some(ExprKind::Ident(ctrl)) = declarations[0]
-                    .init
-                    .as_ref()
-                    .map(|e| &e.kind)
+                if let Some(ExprKind::Ident(ctrl)) = declarations[0].init.as_ref().map(|e| &e.kind)
                 {
                     let expected = format!("__lua_ctrl_{name}");
                     if *ctrl == expected {
@@ -617,7 +631,9 @@ fn expr_contains_function_value(expr: &Expression) -> bool {
             expr_contains_function_value(left) || expr_contains_function_value(right)
         }
         ExprKind::Array(items) => items.iter().any(|e| expr_contains_function_value(&e.value)),
-        ExprKind::Tuple(items) | ExprKind::Set(items) => items.iter().any(expr_contains_function_value),
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            items.iter().any(expr_contains_function_value)
+        }
         _ => false,
     }
 }
@@ -1379,10 +1395,7 @@ fn lua_mm_lookup(obj: &str, mm: &str) -> Expression {
 fn lua_mm_call(mm_fn: Expression, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(mm_fn),
-        args: vec![
-            Argument::positional(left),
-            Argument::positional(right),
-        ],
+        args: vec![Argument::positional(left), Argument::positional(right)],
         optional: false,
     })
 }
@@ -1394,7 +1407,6 @@ fn lua_mm_call1(mm_fn: Expression, arg: Expression) -> Expression {
         optional: false,
     })
 }
-
 
 /// Binary op with Lua metamethod fallback (`__add`, `__sub`, …).
 /// Uses flat stmts inside one IIFE (not nested callee IIFEs). Unique temp names
@@ -1492,11 +1504,7 @@ fn try_desugar_lua_index_assign(target: Expression, value: &mut Expression) -> O
                 return None;
             }
             normalize_expr(value);
-            Some(wrap_lua_proto_set(
-                object,
-                lit_str(&field),
-                value.clone(),
-            ))
+            Some(wrap_lua_proto_set(object, lit_str(&field), value.clone()))
         }
         ExprKind::Index { object, index, .. } => {
             let object = Expression::new(normalize_expr_kind(object.kind, LuaExprCtx::Read));
@@ -1569,7 +1577,7 @@ fn desugar_lua_unary_mm(expr: Expression, _mm: &str, fallback_op: UnaryOp) -> Ex
             kind: VarDeclKind::Let,
         }),
         Statement::new(StmtKind::If {
-                    cond: lua_is_truthy(Expression::new(ExprKind::Ident(f.to_string()))),
+            cond: lua_is_truthy(Expression::new(ExprKind::Ident(f.to_string()))),
             then_body: vec![lua_return(lua_mm_call1(
                 Expression::new(ExprKind::Ident(f.to_string())),
                 Expression::new(ExprKind::Ident(a.to_string())),
@@ -1628,7 +1636,9 @@ fn desugar_lua_len_call(args: Vec<Argument>) -> ExprKind {
         cond: lua_type_is_function(Expression::new(ExprKind::Ident(f.clone()))),
         then_body: vec![lua_return(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Ident(f))),
-            args: vec![Argument::positional(Expression::new(ExprKind::Ident(v.clone())))],
+            args: vec![Argument::positional(Expression::new(ExprKind::Ident(
+                v.clone(),
+            )))],
             optional: false,
         }))],
         elifs: Vec::new(),
@@ -1754,9 +1764,7 @@ fn desugar_lua_type_call(arg: Expression) -> ExprKind {
 fn desugar_lua_print(args: Vec<Argument>) -> ExprKind {
     let wrapped: Vec<Argument> = args
         .into_iter()
-        .map(|a| {
-            Argument::positional(Expression::new(desugar_lua_tostring(vec![a])))
-        })
+        .map(|a| Argument::positional(Expression::new(desugar_lua_tostring(vec![a]))))
         .collect();
     ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident("print".to_string()))),
@@ -1940,7 +1948,9 @@ fn desugar_tonumber(args: Vec<Argument>) -> ExprKind {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(n.to_string()),
                 type_hint: None,
-                init: Some(lua_to_number(Expression::new(ExprKind::Ident(v.to_string())))),
+                init: Some(lua_to_number(Expression::new(ExprKind::Ident(
+                    v.to_string(),
+                )))),
                 array_bounds: None,
                 with_events: false,
             }],
@@ -2048,7 +2058,9 @@ fn desugar_getmetatable(args: Vec<Argument>) -> ExprKind {
         }),
         Statement::new(StmtKind::If {
             cond: lua_is_truthy(Expression::new(ExprKind::Ident(hidden.to_string()))),
-            then_body: vec![lua_return(Expression::new(ExprKind::Ident(hidden.to_string())))],
+            then_body: vec![lua_return(Expression::new(ExprKind::Ident(
+                hidden.to_string(),
+            )))],
             elifs: Vec::new(),
             else_body: None,
         }),
@@ -2249,7 +2261,9 @@ fn desugar_math_fmod(args: Vec<Argument>) -> ExprKind {
             left: Box::new(Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
                 left: Box::new(right.clone()),
-                right: Box::new(Expression::new(ExprKind::Lit(Literal::Float(f64::INFINITY)))),
+                right: Box::new(Expression::new(ExprKind::Lit(Literal::Float(
+                    f64::INFINITY,
+                )))),
             })),
             right: Box::new(Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
@@ -2359,19 +2373,21 @@ fn desugar_math_randomseed(args: Vec<Argument>) -> ExprKind {
         .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)))
         .unwrap_or_else(|| lit_float(0.0));
     ExprKind::Assign {
-        target: Box::new(Expression::new(ExprKind::Ident("__lua_rng_seed".to_string()))),
+        target: Box::new(Expression::new(ExprKind::Ident(
+            "__lua_rng_seed".to_string(),
+        ))),
         value: Box::new(seed),
     }
 }
 
 fn desugar_math_random(args: Vec<Argument>) -> ExprKind {
     let mut iter = args.into_iter();
-    let a = iter.next().map(|a| {
-        Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))
-    });
-    let b = iter.next().map(|a| {
-        Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))
-    });
+    let a = iter
+        .next()
+        .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)));
+    let b = iter
+        .next()
+        .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)));
     let seed_slot = "__lua_rng_seed";
     let r_slot = "__lua_rng_r";
     let next_seed = Expression::new(ExprKind::Binary {
@@ -2512,11 +2528,17 @@ fn desugar_lua_value_call(callee: Expression, args: Vec<Argument>) -> ExprKind {
             then_body: vec![
                 Statement::new(StmtKind::Assign {
                     targets: vec![Expression::new(ExprKind::Ident(mt.to_string()))],
-                    value: lua_raw_index(Expression::new(ExprKind::Ident(c.to_string())), lit_str("__lua_mt")),
+                    value: lua_raw_index(
+                        Expression::new(ExprKind::Ident(c.to_string())),
+                        lit_str("__lua_mt"),
+                    ),
                 }),
                 Statement::new(StmtKind::Assign {
                     targets: vec![Expression::new(ExprKind::Ident(f.to_string()))],
-                    value: lua_raw_index(Expression::new(ExprKind::Ident(mt.to_string())), lit_str("__call")),
+                    value: lua_raw_index(
+                        Expression::new(ExprKind::Ident(mt.to_string())),
+                        lit_str("__call"),
+                    ),
                 }),
             ],
             elifs: Vec::new(),
@@ -2678,11 +2700,7 @@ fn wrap_lua_proto_set(object: Expression, index: Expression, value: Expression) 
 }
 
 /// Colon method dispatch — own function slot, then `__lua_proto` (flat stmts, no nested IIFE callee).
-fn desugar_lua_colon_call(
-    object: Expression,
-    field: String,
-    mut args: Vec<Argument>,
-) -> ExprKind {
+fn desugar_lua_colon_call(object: Expression, field: String, mut args: Vec<Argument>) -> ExprKind {
     if !args.is_empty() {
         args.remove(0);
     }
@@ -2701,20 +2719,20 @@ fn desugar_lua_colon_call(
     let mut call_args = vec![Argument::positional(Expression::new(ExprKind::Ident(
         recv.to_string(),
     )))];
-    call_args.extend(
-        args.into_iter()
-            .map(|mut a| {
-                a.value = Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read));
-                a
-            }),
-    );
+    call_args.extend(args.into_iter().map(|mut a| {
+        a.value = Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read));
+        a
+    }));
     lua_iife(vec![
         Statement::new(StmtKind::VarDecl {
             declarations: vec![
                 VarDeclarator {
                     pattern: BindingPattern::Ident(recv.to_string()),
                     type_hint: None,
-                    init: Some(Expression::new(normalize_expr_kind(object.kind, LuaExprCtx::Read))),
+                    init: Some(Expression::new(normalize_expr_kind(
+                        object.kind,
+                        LuaExprCtx::Read,
+                    ))),
                     array_bounds: None,
                     with_events: false,
                 },
@@ -2755,11 +2773,7 @@ fn desugar_lua_colon_call(
     ])
 }
 
-fn desugar_lua_colon_call_expr(
-    object: Expression,
-    field: String,
-    args: Vec<Argument>,
-) -> ExprKind {
+fn desugar_lua_colon_call_expr(object: Expression, field: String, args: Vec<Argument>) -> ExprKind {
     desugar_lua_colon_call(object, field, args)
 }
 
@@ -2998,8 +3012,12 @@ fn wrap_lua_proto_get(object: Expression, index: Expression) -> ExprKind {
                         init: Some(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Ident(idx.to_string()))),
                             args: vec![
-                                Argument::positional(Expression::new(ExprKind::Ident(o.to_string()))),
-                                Argument::positional(Expression::new(ExprKind::Ident(k.to_string()))),
+                                Argument::positional(Expression::new(ExprKind::Ident(
+                                    o.to_string(),
+                                ))),
+                                Argument::positional(Expression::new(ExprKind::Ident(
+                                    k.to_string(),
+                                ))),
                             ],
                             optional: false,
                         })),
@@ -3136,7 +3154,12 @@ fn desugar_string_byte_call(args: Vec<Argument>) -> ExprKind {
         .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
     let index = iter
         .next()
-        .map(|a| lua_one_based_index(Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))))
+        .map(|a| {
+            lua_one_based_index(Expression::new(normalize_expr_kind(
+                a.value.kind,
+                LuaExprCtx::Read,
+            )))
+        })
         .unwrap_or_else(|| lit_float(0.0));
     ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -3291,10 +3314,9 @@ fn desugar_table_remove(args: Vec<Argument>) -> ExprKind {
                     null_safe: false,
                 })),
                 args: vec![
-                    Argument::positional(lua_one_based_index(Expression::new(normalize_expr_kind(
-                        pos.value.kind,
-                        LuaExprCtx::Read,
-                    )))),
+                    Argument::positional(lua_one_based_index(Expression::new(
+                        normalize_expr_kind(pos.value.kind, LuaExprCtx::Read),
+                    ))),
                     Argument::positional(lit_float(1.0)),
                 ],
                 optional: false,
@@ -3326,13 +3348,20 @@ fn desugar_table_concat(args: Vec<Argument>) -> ExprKind {
         .unwrap_or_else(|| lit_str(""));
     let start = iter
         .next()
-        .map(|a| lua_one_based_index(Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))))
+        .map(|a| {
+            lua_one_based_index(Expression::new(normalize_expr_kind(
+                a.value.kind,
+                LuaExprCtx::Read,
+            )))
+        })
         .unwrap_or_else(|| lit_float(0.0));
     let end = iter
         .next()
         .map(|a| Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read)))
         .unwrap_or_else(|| {
-            Expression::new(desugar_lua_len_call(vec![Argument::positional(table.clone())]))
+            Expression::new(desugar_lua_len_call(vec![Argument::positional(
+                table.clone(),
+            )]))
         });
     let slice = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -3444,7 +3473,12 @@ fn desugar_table_move(args: Vec<Argument>) -> ExprKind {
         .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
     let from = iter
         .next()
-        .map(|a| lua_one_based_index(Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))))
+        .map(|a| {
+            lua_one_based_index(Expression::new(normalize_expr_kind(
+                a.value.kind,
+                LuaExprCtx::Read,
+            )))
+        })
         .unwrap_or_else(|| lit_float(0.0));
     let end_exclusive = iter
         .next()
@@ -3452,7 +3486,12 @@ fn desugar_table_move(args: Vec<Argument>) -> ExprKind {
         .unwrap_or_else(|| lit_float(0.0));
     let target = iter
         .next()
-        .map(|a| lua_one_based_index(Expression::new(normalize_expr_kind(a.value.kind, LuaExprCtx::Read))))
+        .map(|a| {
+            lua_one_based_index(Expression::new(normalize_expr_kind(
+                a.value.kind,
+                LuaExprCtx::Read,
+            )))
+        })
         .unwrap_or_else(|| lit_float(0.0));
     let src = "__lua_move_src".to_string();
     let tmp = "__lua_move_tmp".to_string();
@@ -3618,7 +3657,9 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 BinOp::BitXor => desugar_lua_mm_binop(left, right, "__bxor", BinOp::BitXor, false),
                 BinOp::Shl => desugar_lua_mm_binop(left, right, "__shl", BinOp::Shl, false),
                 BinOp::Shr => desugar_lua_mm_binop(left, right, "__shr", BinOp::Shr, false),
-                BinOp::Concat => desugar_lua_mm_binop(left, right, "__concat", BinOp::Concat, false),
+                BinOp::Concat => {
+                    desugar_lua_mm_binop(left, right, "__concat", BinOp::Concat, false)
+                }
                 BinOp::Mod => desugar_lua_mod(left, right),
                 BinOp::Eq => desugar_lua_eq(left, right),
                 BinOp::NotEq => ExprKind::Unary {
@@ -3642,7 +3683,12 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
             ))),
             value: Box::new(Expression::new(normalize_expr_kind(value.kind, read))),
         },
-        ExprKind::Lambda { params, body, is_async, captures } => {
+        ExprKind::Lambda {
+            params,
+            body,
+            is_async,
+            captures,
+        } => {
             let body = match body {
                 LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(Expression::new(
                     normalize_expr_kind(expr.kind, read),
@@ -3666,8 +3712,10 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 .into_iter()
                 .map(|mut e| {
                     if let Some(key) = &mut e.key {
-                        let normalized_key =
-                            Expression::new(normalize_expr_kind(key.kind.clone(), LuaExprCtx::Read));
+                        let normalized_key = Expression::new(normalize_expr_kind(
+                            key.kind.clone(),
+                            LuaExprCtx::Read,
+                        ));
                         *key = lua_one_based_index(normalized_key);
                     }
                     normalize_expr(&mut e.value);
@@ -3684,7 +3732,11 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 .collect();
             ExprKind::Array(elements)
         }
-        ExprKind::Call { callee, args, optional } => {
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
             if let ExprKind::Member {
                 object,
                 field,
@@ -3692,11 +3744,7 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 ..
             } = &callee.kind
             {
-                return desugar_lua_colon_call_expr(
-                    object.as_ref().clone(),
-                    field.clone(),
-                    args,
-                );
+                return desugar_lua_colon_call_expr(object.as_ref().clone(), field.clone(), args);
             }
             if let ExprKind::Ident(name) = &callee.kind {
                 match name.as_str() {
@@ -3786,7 +3834,10 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 &callee_expr.kind,
                 ExprKind::Ident(name) if is_lua_global_builtin(name) || name == "type"
             );
-            if !args.iter().any(|a| a.spread) && !callee_is_profile_member && !callee_is_known_builtin {
+            if !args.iter().any(|a| a.spread)
+                && !callee_is_profile_member
+                && !callee_is_known_builtin
+            {
                 return desugar_lua_value_call(callee_expr, args);
             }
             ExprKind::Call {
@@ -3795,7 +3846,11 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 optional,
             }
         }
-        ExprKind::Member { object, field, null_safe } => {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => {
             let object = Expression::new(normalize_expr_kind(object.kind, read));
             if is_ident(&object, "math") && ctx == read {
                 match field.as_str() {
@@ -3823,7 +3878,11 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 }
             }
         }
-        ExprKind::Index { object, index, null_safe } => {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => {
             let object = Expression::new(normalize_expr_kind(object.kind, read));
             let index = lua_one_based_index(Expression::new(normalize_expr_kind(index.kind, read)));
             if ctx == read {
@@ -3878,7 +3937,15 @@ fn is_lua_profile_namespace(object: &Expression) -> bool {
     };
     matches!(
         name.as_str(),
-        "string" | "table" | "math" | "os" | "io" | "coroutine" | "debug" | "package" | "utf8"
+        "string"
+            | "table"
+            | "math"
+            | "os"
+            | "io"
+            | "coroutine"
+            | "debug"
+            | "package"
+            | "utf8"
             | "Object"
     )
 }
