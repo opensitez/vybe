@@ -851,14 +851,14 @@ char_literal = @{ "'" ~ ("\\" ~ ANY | !"'" ~ ANY) ~ "'" }
 // ── Literals ────────────────────────────────────────────────────────────────
 
 numeric_literal = @{
-    ("0x" | "0X") ~ ASCII_HEX_DIGIT+ ~ numeric_suffix?
-    | ("0b" | "0B") ~ ('0'..'1')+ ~ numeric_suffix?
+    ("0x" | "0X") ~ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_")* ~ numeric_suffix?
+    | ("0b" | "0B") ~ ('0'..'1') ~ ('0'..'1' | "_")* ~ numeric_suffix?
     // Decimal: a `.` followed by another `.` is NOT a decimal point — it's a
     // range operator (`1..3`). Negative lookahead prevents the literal from
     // greedily eating the first `.` of a range.
-    | ASCII_DIGIT+ ~ "." ~ !"." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
-    | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
-    | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ !"." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")*)? ~ numeric_suffix?
+    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")*)? ~ numeric_suffix?
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")*)? ~ numeric_suffix?
 }
 
 numeric_suffix = @{ "UL" | "ul" | "LU" | "lu" | "f" | "F" | "d" | "D" | "m" | "M" | "L" | "l" | "U" | "u" }

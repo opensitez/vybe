@@ -102,6 +102,13 @@ multi_value_tuple_returns = true
 "Char.Parse"         = { emit = "common:dotnet.parse_char",     min_args = 1, max_args = 1 }
 "Int32.Parse"        = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
 "Double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
+"decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
+"Decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
+"decimal.Truncate"   = { emit = "common:dotnet.system.math.truncate", min_args = 1, max_args = 1 }
+"Decimal.Truncate"   = { emit = "common:dotnet.system.math.truncate", min_args = 1, max_args = 1 }
+"decimal.Floor"      = { emit = "common:dotnet.system.math.floor", min_args = 1, max_args = 1 }
+"decimal.Ceiling"    = { emit = "common:dotnet.system.math.ceiling", min_args = 1, max_args = 1 }
+"decimal.Abs"        = { emit = "common:dotnet.system.math.abs", min_args = 1, max_args = 1 }
 # TryParse: `int.TryParse(s, out result)` returns bool. Stays on the
 # silent intrinsic since failure shouldn't throw (returns false).
 "Int32.TryParse"     = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
