@@ -29,20 +29,44 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
+fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+    if let Some((idx, _)) = chunk
+        .constants
+        .iter()
+        .enumerate()
+        .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
+    {
+        idx as u16
+    } else {
+        chunk.add_constant(Value::String(Arc::from(key)))
+    }
+}
+
 fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    struct_set_field(chunk, key_idx, line);
+    let value_slot = chunk.alloc_scratch(2);
+    let obj_slot = value_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    push_const(chunk, Value::String(Arc::from(key)), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let idx = chunk.add_import("ecma:object", "set");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(3, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from("TotalMilliseconds")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    push_const(chunk, Value::String(Arc::from("TotalMilliseconds")), line);
+    let idx = chunk.add_import("ecma:object", "get");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(2, line);
 }
 
 /// Build the TimeSpan object given the total milliseconds on the stack.
@@ -56,12 +80,12 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     let seconds_slot = ms_slot + 5;
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
 
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    let total_ms_key = chunk.add_constant(Value::String(Arc::from("totalmilliseconds")));
-    let total_sec_key = chunk.add_constant(Value::String(Arc::from("totalseconds")));
-    let total_min_key = chunk.add_constant(Value::String(Arc::from("totalminutes")));
-    let total_hr_key = chunk.add_constant(Value::String(Arc::from("totalhours")));
-    let total_day_key = chunk.add_constant(Value::String(Arc::from("totaldays")));
+    let type_key = string_key(chunk, "__type");
+    let total_ms_key = string_key(chunk, "totalmilliseconds");
+    let total_sec_key = string_key(chunk, "totalseconds");
+    let total_min_key = string_key(chunk, "totalminutes");
+    let total_hr_key = string_key(chunk, "totalhours");
+    let total_day_key = string_key(chunk, "totaldays");
 
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
@@ -108,7 +132,9 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     math::emit_trunc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    let object_new = chunk.add_import("ecma:object", "new");
+    chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
+    chunk.emit(0, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);

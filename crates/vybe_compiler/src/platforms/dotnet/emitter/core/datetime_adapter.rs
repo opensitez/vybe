@@ -32,10 +32,22 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
+fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+    if let Some((idx, _)) = chunk
+        .constants
+        .iter()
+        .enumerate()
+        .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
+    {
+        idx as u16
+    } else {
+        chunk.add_constant(Value::String(Arc::from(key)))
+    }
+}
+
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
-    chunk.emit_op(Op::DROP, line);
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
 }
 
 fn call_import(
@@ -46,9 +58,8 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module, func);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    let idx = chunks[current].add_import(module, func);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn emit_dt_getter(chunks: &mut [Chunk], current: usize, ms_slot: u16, getter: &str, line: u32) {
@@ -57,15 +68,19 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, ms_slot: u16, getter: &s
 }
 
 fn emit_datetime_time_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(TIME_KEY)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    push_const(chunk, Value::String(Arc::from(TIME_KEY)), line);
+    let idx = chunk.add_import("ecma:object", "get");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(2, line);
 }
 
 fn emit_named_field_from_obj(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    push_const(chunk, Value::String(Arc::from(field)), line);
+    let idx = chunk.add_import("ecma:object", "get");
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(2, line);
 }
 
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
@@ -186,7 +201,9 @@ fn emit_wrap_ms_internal(
     chunks[current].emit_op_u16(Op::LOCAL_SET, dow_slot, line);
 
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    let object_new = chunk.add_import("ecma:object", "new");
+    chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
+    chunk.emit(0, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("DateTime")), line);
     struct_set_named_field(chunk, TYPE_KEY, line);
@@ -194,6 +211,18 @@ fn emit_wrap_ms_internal(
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_named_field(chunk, TIME_KEY, line);
+
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("Unspecified")), line);
+    struct_set_named_field(chunk, "Kind", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(10_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    push_const(chunk, Value::F64(621_355_968_000_000_000.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    struct_set_named_field(chunk, "Ticks", line);
 
     for (field, slot) in [
         ("Year", year_slot),
@@ -291,15 +320,19 @@ pub fn emit_datetime_today(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     match argc {
-        3 | 6 => {
-            let second_slot = chunk.alloc_scratch(6);
+        3 | 6 | 7 => {
+            let second_slot = chunk.alloc_scratch(7);
             let minute_slot = second_slot + 1;
             let hour_slot = second_slot + 2;
             let day_slot = second_slot + 3;
             let month_slot = second_slot + 4;
             let year_slot = second_slot + 5;
+            let kind_slot = second_slot + 6;
 
-            if argc == 6 {
+            if argc == 7 {
+                chunk.emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+            }
+            if argc >= 6 {
                 chunk.emit_op_u16(Op::LOCAL_SET, second_slot, line);
                 chunk.emit_op_u16(Op::LOCAL_SET, minute_slot, line);
                 chunk.emit_op_u16(Op::LOCAL_SET, hour_slot, line);
@@ -314,12 +347,18 @@ pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
                 year_slot,
                 month_slot,
                 day_slot,
-                if argc == 6 { Some(hour_slot) } else { None },
-                if argc == 6 { Some(minute_slot) } else { None },
-                if argc == 6 { Some(second_slot) } else { None },
+                if argc >= 6 { Some(hour_slot) } else { None },
+                if argc >= 6 { Some(minute_slot) } else { None },
+                if argc >= 6 { Some(second_slot) } else { None },
                 line,
             );
             emit_wrap_ms(chunks, current, line);
+            if argc == 7 {
+                let chunk = &mut chunks[current];
+                core_wasm::dup(chunk, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
+                struct_set_named_field(chunk, "Kind", line);
+            }
         }
         _ => emit_datetime_now(chunks, current, line),
     }
@@ -479,7 +518,7 @@ pub fn emit_datetime_add_timespan(chunks: &mut [Chunk], current: usize, line: u3
     let chunk = &mut chunks[current];
     let span_slot = chunk.alloc_scratch(2);
     let date_slot = span_slot + 1;
-    let total_ms_key = chunk.add_constant(Value::String(Arc::from("TotalMilliseconds")));
+    let total_ms_key = string_key(chunk, "TotalMilliseconds");
     chunk.emit_op_u16(Op::LOCAL_SET, span_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);

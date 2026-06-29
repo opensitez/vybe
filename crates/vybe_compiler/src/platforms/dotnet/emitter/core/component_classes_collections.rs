@@ -55,7 +55,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Item",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "get")),
+                    MethodBody::Common("dotnet.dict_get_or_throw".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ContainsKey",
@@ -83,6 +83,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("ecma:map", "values")),
                 ))
                 .with_method(MethodDef::new(
+                    "EntriesSorted",
+                    0,
+                    MethodBody::Common("dotnet.sorted_dictionary_entries".into()),
+                ))
+                .with_method(MethodDef::new(
                     "Clear",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "clear")),
@@ -91,6 +96,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Count",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "size")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetValueOrDefault",
+                    1,
+                    MethodBody::Common("dotnet.dict_get_value_or_default".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryGetValue",
+                    2,
+                    MethodBody::Common("dotnet.dict_try_get_value".into()),
                 )),
         ),
         // .NET `Queue<T>` is a JS Array used FIFO - `Enqueue` appends
@@ -455,6 +470,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Find",
                     1,
                     MethodBody::Common("dotnet.linked_list_find".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "InsertAtRaw",
+                    2,
+                    MethodBody::Common("collections.insert".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "RemoveAt",
+                    1,
+                    MethodBody::Common("collections.remove_at".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
