@@ -36,6 +36,9 @@ uses_normalize_class = true
 
 [builtins]
 
+# ── Internal operators (emitter adapters) ────────────────────────────────────
+__pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print           = { emit = "common:python.print",            min_args = 0, max_args = 255 }

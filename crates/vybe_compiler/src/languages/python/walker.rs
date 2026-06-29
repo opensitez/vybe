@@ -1762,11 +1762,34 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if comparisons.len() <= 1 {
                 let mut left = operands.remove(0);
                 for (op, right) in comparisons {
-                    left = Expression::new(ExprKind::Binary {
-                        op,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    });
+                    // Normalize `x in {set}` → `{set}.has(x)`
+                    if matches!(op, BinOp::In | BinOp::NotIn)
+                        && matches!(right.kind, ExprKind::Set(_))
+                    {
+                        let has_call = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(right),
+                                field: "has".into(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(left.clone())],
+                            optional: false,
+                        });
+                        left = if op == BinOp::NotIn {
+                            Expression::new(ExprKind::Unary {
+                                op: UnaryOp::Not,
+                                expr: Box::new(has_call),
+                            })
+                        } else {
+                            has_call
+                        };
+                    } else {
+                        left = Expression::new(ExprKind::Binary {
+                            op,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        });
+                    }
                 }
                 Ok(left.kind)
             } else {
@@ -1794,7 +1817,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::bitxor_expr => walk_binary_chain(inner, |_| BinOp::BitXor),
         Rule::bitand_expr => walk_binary_chain(inner, |_| BinOp::BitAnd),
         Rule::shift_expr => walk_binary_chain_with_ops(inner),
-        Rule::additive => walk_binary_chain_with_ops(inner),
+        Rule::additive => walk_python_additive(inner),
         Rule::multiplicative => walk_python_multiplicative(inner),
         Rule::unary => {
             // unary_op ~ unary
@@ -1864,6 +1887,41 @@ fn walk_binary_chain(
 }
 
 /// Python-specific: `*` is dynamic (str repeat OR numeric mul).
+/// Python `+` routes through `__pyadd__` builtin (emitter adapter handles
+/// array concat vs string concat vs numeric add). `-` is always numeric.
+fn walk_python_additive(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(items.remove(0))?;
+    let mut i = 0;
+    while i < items.len() {
+        let p = &items[i];
+        if is_op_rule(p.as_rule()) {
+            let op_str = p.as_str().trim();
+            i += 1;
+            if i < items.len() {
+                let right = walk_expression(items[i].clone())?;
+                i += 1;
+                if op_str == "+" {
+                    left = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Ident("__pyadd__".into()))),
+                        args: vec![Argument::positional(left), Argument::positional(right)],
+                        optional: false,
+                    });
+                } else {
+                    let op = parse_binop(op_str);
+                    left = Expression::new(ExprKind::Binary {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    });
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(left.kind)
+}
+
 /// Emits Call(__vybe_dynmul, [a, b]) for `*`, delegates others to normal BinOp.
 fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
     let mut left = walk_expression(items.remove(0))?;
@@ -2075,6 +2133,159 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             continue;
                                         }
                                     }
+                                }
+                                "bool" if args.len() == 1 => {
+                                    // bool(x) → x ? True : False → ternary
+                                    let x = args[0].value.clone();
+                                    expr = Expression::new(ExprKind::Ternary {
+                                        cond: Box::new(x),
+                                        then: Box::new(Expression::bool(true)),
+                                        else_: Box::new(Expression::bool(false)),
+                                    });
+                                    continue;
+                                }
+                                "bool" if args.is_empty() => {
+                                    expr = Expression::bool(false);
+                                    continue;
+                                }
+                                "list" if args.len() == 1 => {
+                                    // list(iterable) → [...iterable]
+                                    let iterable = args[0].value.clone();
+                                    expr = Expression::new(ExprKind::Array(vec![
+                                        ArrayElement {
+                                            key: None,
+                                            spread: true,
+                                            by_ref: false,
+                                            value: iterable,
+                                        },
+                                    ]));
+                                    continue;
+                                }
+                                "list" if args.is_empty() => {
+                                    expr = Expression::new(ExprKind::Array(vec![]));
+                                    continue;
+                                }
+                                "tuple" if args.len() == 1 => {
+                                    // tuple(iterable) → [...iterable]
+                                    let iterable = args[0].value.clone();
+                                    expr = Expression::new(ExprKind::Array(vec![
+                                        ArrayElement {
+                                            key: None,
+                                            spread: true,
+                                            by_ref: false,
+                                            value: iterable,
+                                        },
+                                    ]));
+                                    continue;
+                                }
+                                "tuple" if args.is_empty() => {
+                                    expr = Expression::new(ExprKind::Array(vec![]));
+                                    continue;
+                                }
+                                "str" if args.len() == 1 => {
+                                    // str(x) → "" + x (stringify)
+                                    let x = args[0].value.clone();
+                                    expr = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Add,
+                                        left: Box::new(Expression::string("")),
+                                        right: Box::new(x),
+                                    });
+                                    continue;
+                                }
+                                "dict" if args.is_empty() => {
+                                    expr = Expression::new(ExprKind::Object(vec![]));
+                                    continue;
+                                }
+                                "sorted" if args.len() >= 1 => {
+                                    // sorted(iterable) → [...iterable].sort()
+                                    let iterable = args[0].value.clone();
+                                    let spread_array = Expression::new(ExprKind::Array(vec![
+                                        ArrayElement {
+                                            key: None,
+                                            spread: true,
+                                            by_ref: false,
+                                            value: iterable,
+                                        },
+                                    ]));
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(spread_array),
+                                            field: "sort".into(),
+                                            null_safe: false,
+                                        })),
+                                        args: vec![],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "set" => {
+                                    // set() → new Set(), set(iter) → new Set(iter)
+                                    expr = Expression::new(ExprKind::New {
+                                        class: Box::new(Expression::new(ExprKind::Ident(
+                                            "Set".into(),
+                                        ))),
+                                        args,
+                                    });
+                                    continue;
+                                }
+                                "frozenset" => {
+                                    expr = Expression::new(ExprKind::New {
+                                        class: Box::new(Expression::new(ExprKind::Ident(
+                                            "Set".into(),
+                                        ))),
+                                        args,
+                                    });
+                                    continue;
+                                }
+                                "round" if args.len() == 2 => {
+                                    // round(x, n) → Math.round(x * 10**n) / 10**n
+                                    let x = args[0].value.clone();
+                                    let n = args[1].value.clone();
+                                    let factor = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Pow,
+                                        left: Box::new(Expression::int(10)),
+                                        right: Box::new(n),
+                                    });
+                                    let scaled = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Mul,
+                                        left: Box::new(x),
+                                        right: Box::new(factor.clone()),
+                                    });
+                                    let rounded = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "round".into(),
+                                        ))),
+                                        args: vec![Argument::positional(scaled)],
+                                        optional: false,
+                                    });
+                                    expr = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Div,
+                                        left: Box::new(rounded),
+                                        right: Box::new(factor),
+                                    });
+                                    continue;
+                                }
+                                "pow" if args.len() == 3 => {
+                                    // pow(base, exp, mod) → pow(base, exp) % mod
+                                    let base = args[0].value.clone();
+                                    let exp = args[1].value.clone();
+                                    let modulus = args[2].value.clone();
+                                    let power = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "pow".into(),
+                                        ))),
+                                        args: vec![
+                                            Argument::positional(base),
+                                            Argument::positional(exp),
+                                        ],
+                                        optional: false,
+                                    });
+                                    expr = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Mod,
+                                        left: Box::new(power),
+                                        right: Box::new(modulus),
+                                    });
+                                    continue;
                                 }
                                 _ => {}
                             }
@@ -2846,3 +3057,4 @@ fn parse_literal_to_expr(text: &str) -> Expression {
         Expression::string(text)
     }
 }
+

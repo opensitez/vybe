@@ -8,17 +8,16 @@ use crate::emitter::{collections, target::Target};
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
 
-/// Python `print(...)` — Bool→True/False, None→None.
-/// Converts each arg through py_repr then calls wasi:logging/logging.log.
+/// Python `print(...)` — inline emitter that converts each arg to Python repr.
+/// Bool→True/False, None→None, Array→[...], else pass through.
 pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
-        let idx = chunk.add_import("wasi:logging/logging", "log");
         chunk.emit_string_const("", line);
+        let idx = chunk.add_import("wasi:logging/logging", "log");
         chunk.emit_call(idx, 1, line);
         return;
     }
-    // Save all args, convert each, then call log with all converted args
     let mut slots = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
         let s = chunk.alloc_scratch(1);
@@ -34,23 +33,52 @@ pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_call(idx, argc, line);
 }
 
-/// If top-of-stack is Bool → "True"/"False", Null → "None", else pass through.
+/// Python `+` operator: array→concat, else→dynamic add.
+pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let concat = chunk.add_import("ecma:array", "concat");
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    // if isArray(a)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+    // array concat: concat(a, b)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_else(line);
+    // dynamic add (string concat or numeric add)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_end(line);
+}
+
+/// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
 fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let json_str = chunk.add_import("ecma:json", "stringify");
+    let replace_all = chunk.add_import("ecma:string", "replaceAll");
     let scratch = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, scratch, line);
-    // Check null first
+
+    // null → "None"
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("None", line);
     chunk.emit_else(line);
-    // Check bool
+
+    // bool → "True"/"False"
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(test_bool, 1, line);
     chunk.emit_if_value(line);
-    // cast Bool → i32 (1=true, 0=false)
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(cast_bool, 1, line);
     chunk.emit_if_value(line);
@@ -59,7 +87,36 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("False", line);
     chunk.emit_end(line);
     chunk.emit_else(line);
+
+    // array → JSON stringify then fix spacing + Python bool/None literals
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(json_str, 1, line);
+    // Fix spacing
+    chunk.emit_string_const(",", line);
+    chunk.emit_string_const(", ", line);
+    chunk.emit_call(replace_all, 3, line);
+    // Fix Python bool/None capitalization
+    chunk.emit_string_const("true", line);
+    chunk.emit_string_const("True", line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_string_const("false", line);
+    chunk.emit_string_const("False", line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_string_const("null", line);
+    chunk.emit_string_const("None", line);
+    chunk.emit_call(replace_all, 3, line);
+    // Python uses single quotes for strings inside lists
+    chunk.emit_string_const("\"", line);
+    chunk.emit_string_const("'", line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_else(line);
+
+    // fallback: pass through
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }

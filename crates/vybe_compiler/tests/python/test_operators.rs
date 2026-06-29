@@ -78,22 +78,22 @@ fn unary_positive() {
 
 #[test]
 fn bool_and() {
-    assert_eq!(run_python_one("print(True and False)\n"), "false");
+    assert_eq!(run_python_one("print(True and False)\n"), "False");
 }
 
 #[test]
 fn bool_or() {
-    assert_eq!(run_python_one("print(True or False)\n"), "true");
+    assert_eq!(run_python_one("print(True or False)\n"), "True");
 }
 
 #[test]
 fn bool_not() {
-    assert_eq!(run_python_one("print(not True)\n"), "false");
+    assert_eq!(run_python_one("print(not True)\n"), "False");
 }
 
 #[test]
 fn bool_not_false() {
-    assert_eq!(run_python_one("print(not False)\n"), "true");
+    assert_eq!(run_python_one("print(not False)\n"), "True");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -130,27 +130,27 @@ fn ternary_with_expression() {
 
 #[test]
 fn comparison_less_than() {
-    assert_eq!(run_python_one("print(1 < 2)\n"), "true");
+    assert_eq!(run_python_one("print(1 < 2)\n"), "True");
 }
 
 #[test]
 fn comparison_greater_equal() {
-    assert_eq!(run_python_one("print(5 >= 5)\n"), "true");
+    assert_eq!(run_python_one("print(5 >= 5)\n"), "True");
 }
 
 #[test]
 fn comparison_not_equal() {
-    assert_eq!(run_python_one("print(1 != 2)\n"), "true");
+    assert_eq!(run_python_one("print(1 != 2)\n"), "True");
 }
 
 #[test]
 fn in_operator() {
-    assert_eq!(run_python_one("print(2 in [1, 2, 3])\n"), "true");
+    assert_eq!(run_python_one("print(2 in [1, 2, 3])\n"), "True");
 }
 
 #[test]
 fn not_in_operator() {
-    assert_eq!(run_python_one("print(5 not in [1, 2, 3])\n"), "true");
+    assert_eq!(run_python_one("print(5 not in [1, 2, 3])\n"), "True");
 }
 
 #[test]

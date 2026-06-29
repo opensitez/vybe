@@ -37,7 +37,7 @@ fn precedence_floor_div_same_as_mul() {
 
 #[test]
 fn precedence_mod_same_as_mul() {
-    assert_eq!(run_print("10 - 9 % 4"), "7");
+    assert_eq!(run_print("10 - 9 % 4"), "9");
 }
 
 #[test]
@@ -57,17 +57,17 @@ fn precedence_not_over_and() {
 
 #[test]
 fn precedence_bitwise_and_over_xor() {
-    assert_eq!(run_print("5 ^ 3 & 6"), "3");
+    assert_eq!(run_print("5 ^ 3 & 6"), "7");
 }
 
 #[test]
 fn precedence_bitwise_xor_over_or() {
-    assert_eq!(run_print("5 | 3 ^ 6"), "7");
+    assert_eq!(run_print("5 | 3 ^ 6"), "5");
 }
 
 #[test]
 fn precedence_bitwise_over_comparison() {
-    assert_eq!(run_print("5 & 3 > 1"), "True");
+    assert_eq!(run_print("5 & 3 > 1"), "False");
 }
 
 #[test]
@@ -87,12 +87,12 @@ fn precedence_chained_comparison_false() {
 
 #[test]
 fn precedence_chained_with_equal() {
-    assert_eq!(run_print("1 < 2 == True"), "True");
+    assert_eq!(run_print("1 < 2 == True"), "False");
 }
 
 #[test]
 fn precedence_member_over_comparison() {
-    assert_eq!(run_print("1 in [1, 2] == True"), "True");
+    assert_eq!(run_print("1 in [1, 2] == True"), "False");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn precedence_call_over_power() {
 
 #[test]
 fn precedence_conditional_over_or() {
-    assert_eq!(run_print("1 or 2 if False else 3"), "1");
+    assert_eq!(run_print("1 or 2 if False else 3"), "3");
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn precedence_multiple_or() {
 
 #[test]
 fn precedence_not_not() {
-    assert_eq!(run_print("not not 0"), "True");
+    assert_eq!(run_print("not not 0"), "False");
 }
 
 #[test]
