@@ -992,7 +992,30 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.system.math.truncate" | "dotnet.system.math.trunc" => {
             chunks[current].emit_op(Op::F64_TRUNC, line)
         }
-        "dotnet.system.math.round" => chunks[current].emit_op(Op::F64_NEAREST, line),
+        "dotnet.system.math.round" => {
+            if argc <= 1 {
+                chunks[current].emit_op(Op::F64_NEAREST, line);
+            } else {
+                // Round(value, digits): nearest(value * 10^digits) / 10^digits
+                let chunk = &mut chunks[current];
+                let digits_slot = chunk.alloc_scratch(1);
+                let val_slot = chunk.alloc_scratch(1);
+                let factor_slot = chunk.alloc_scratch(1);
+                chunk.emit_op_u16(Op::LOCAL_SET, digits_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line);
+                chunk.emit_f64_const(10.0, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, digits_slot, line);
+                let pow = chunk.add_import("ecma:math", "pow");
+                chunk.emit_call(pow, 2, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, factor_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, factor_slot, line);
+                chunk.emit_op(Op::F64_MUL, line);
+                chunk.emit_op(Op::F64_NEAREST, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, factor_slot, line);
+                chunk.emit_op(Op::F64_DIV, line);
+            }
+        }
         "dotnet.system.math.min" => chunks[current].emit_op(Op::F64_MIN, line),
         "dotnet.system.math.max" => chunks[current].emit_op(Op::F64_MAX, line),
         // Host calls (ecma:math)

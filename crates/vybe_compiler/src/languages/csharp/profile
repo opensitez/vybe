@@ -156,6 +156,7 @@ multi_value_tuple_returns = true
 
 # ── Object static methods ───────────────────────────────────────────────────
 
+"Object.assign"      = { emit = "host:ecma:object:assign",       min_args = 2, max_args = 255 }
 "Object.Equals"       = { emit = "common:dyn_eq",                 min_args = 2, max_args = 2 }
 "Object.ReferenceEquals" = { emit = "common:ref_eq",              min_args = 2, max_args = 2 }
 

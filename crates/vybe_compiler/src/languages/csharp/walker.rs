@@ -6062,6 +6062,31 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                     }
                 }
             }
+            Rule::primary_constructor_params => {
+                // C# 12 primary constructors: class Foo(int x, string s)
+                // Params become constructor parameters + backing fields
+                let ctor_params = walk_params(p)?;
+                let mut field_inits = Vec::new();
+                for param in &ctor_params {
+                    field_inits.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: param.name.clone(),
+                            null_safe: false,
+                        })],
+                        value: Expression::ident(&param.name),
+                    }));
+                }
+                if !ctor_params.is_empty() {
+                    members.insert(0, ClassMember::Constructor {
+                        params: ctor_params,
+                        body: field_inits,
+                        base_args: None,
+                        initializer_target: ConstructorInitializerTarget::Base,
+                        visibility: Visibility::Public,
+                    });
+                }
+            }
             Rule::class_body => {
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::class_member {
@@ -8415,6 +8440,29 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     }
                 }
             }
+            Rule::primary_constructor_params => {
+                let ctor_params = walk_params(p)?;
+                let mut field_inits = Vec::new();
+                for param in &ctor_params {
+                    field_inits.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: param.name.clone(),
+                            null_safe: false,
+                        })],
+                        value: Expression::ident(&param.name),
+                    }));
+                }
+                if !ctor_params.is_empty() {
+                    members.insert(0, ClassMember::Constructor {
+                        params: ctor_params,
+                        body: field_inits,
+                        base_args: None,
+                        initializer_target: ConstructorInitializerTarget::Base,
+                        visibility: Visibility::Public,
+                    });
+                }
+            }
             Rule::class_body => {
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::class_member {
@@ -10323,7 +10371,31 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
             }
         }
-        Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(unquote(pair.as_str())))),
+        Rule::string_literal => {
+            let raw = pair.as_str();
+            if raw.starts_with("u8\"") {
+                // UTF-8 string literal → byte array
+                let text = &raw[3..raw.len()-1];
+                let unescaped = text
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\")
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t")
+                    .replace("\\r", "\r")
+                    .replace("\\0", "\0");
+                let bytes: Vec<ArrayElement> = unescaped.as_bytes().iter().map(|&b| {
+                    ArrayElement {
+                        key: None,
+                        spread: false,
+                        by_ref: false,
+                        value: Expression::int(b as i64),
+                    }
+                }).collect();
+                Ok(ExprKind::Array(bytes))
+            } else {
+                Ok(ExprKind::Lit(Literal::Str(unquote(raw))))
+            }
+        }
         Rule::raw_string => Ok(ExprKind::Lit(Literal::Str(unquote_raw_string(
             pair.as_str(),
         )?))),
@@ -11858,11 +11930,7 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
     // the same prototype chain as the source.
     let mut body: Vec<Statement> = Vec::new();
     let assign_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident("Object")),
-            field: "assign".into(),
-            null_safe: false,
-        })),
+        callee: Box::new(Expression::new(ExprKind::Ident("Object.assign".into()))),
         args: vec![
             Argument::positional(Expression::new(ExprKind::Object(Vec::new()))),
             Argument::positional(Expression::ident("__src")),
@@ -13596,15 +13664,27 @@ fn rewrite_csharp_string_instance_call(
         ));
     }
     if field.eq_ignore_ascii_case("Substring") && (args.len() == 1 || args.len() == 2) {
-        let mut call_args = vec![Argument::positional(receiver)];
-        call_args.extend(args.to_vec());
-        if call_args.len() == 1 {
-            call_args.push(Argument::positional(Expression::int(i32::MAX as i64)));
+        if args.len() == 2 {
+            // .NET Substring(start, length) → JS substring(start, start + length)
+            let start = args[0].value.clone();
+            let length = args[1].value.clone();
+            let end = Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(start.clone()),
+                right: Box::new(length),
+            });
+            return Some(call_builtin("__csharp_str_substring", vec![
+                Argument::positional(receiver),
+                Argument::positional(start),
+                Argument::positional(end),
+            ]));
         }
-        if call_args.len() == 2 {
-            call_args.push(Argument::positional(Expression::int(i32::MAX as i64)));
-        }
-        return Some(call_builtin("__csharp_str_substring", call_args));
+        // 1-arg: Substring(start) → substring(start)
+        return Some(call_builtin("__csharp_str_substring", vec![
+            Argument::positional(receiver),
+            args[0].clone(),
+            Argument::positional(Expression::int(i32::MAX as i64)),
+        ]));
     }
     if field.eq_ignore_ascii_case("PadLeft") && (args.len() == 1 || args.len() == 2) {
         let mut call_args = vec![Argument::positional(receiver), args[0].clone()];

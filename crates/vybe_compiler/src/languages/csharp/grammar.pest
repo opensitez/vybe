@@ -49,8 +49,10 @@ attribute_list = { "[" ~ (!"]" ~ ANY)* ~ "]" }
 // ── Class ───────────────────────────────────────────────────────────────────
 
 class_declaration = {
-    class_modifiers ~ "class" ~ ident_name ~ generic_params? ~ base_list? ~ where_clauses? ~ class_body
+    class_modifiers ~ "class" ~ ident_name ~ generic_params? ~ primary_constructor_params? ~ base_list? ~ where_clauses? ~ class_body
 }
+
+primary_constructor_params = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 
 // `where T : new()`, `where T : class`, `where T : IComparable<T>`, etc.
 // Captured by the grammar but ignored by the walker — generic
@@ -213,7 +215,7 @@ var_declarator = { ident_name ~ ("=" ~ (array_initializer | expression))? }
 // ── Struct ──────────────────────────────────────────────────────────────────
 
 struct_declaration = {
-    class_modifiers ~ "struct" ~ ident_name ~ generic_params? ~ base_list? ~ where_clauses? ~ class_body
+    class_modifiers ~ "struct" ~ ident_name ~ generic_params? ~ primary_constructor_params? ~ base_list? ~ where_clauses? ~ class_body
 }
 
 // ── Interface ───────────────────────────────────────────────────────────────
@@ -862,7 +864,8 @@ numeric_literal = @{
 numeric_suffix = @{ "UL" | "ul" | "LU" | "lu" | "f" | "F" | "d" | "D" | "m" | "M" | "L" | "l" | "U" | "u" }
 
 string_literal = @{
-    "\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
+    "u8\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
+    | "\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
 }
 
 // ── Type names ──────────────────────────────────────────────────────────────
