@@ -1,9 +1,9 @@
 //! Go runtime-surface helpers routed via `common:go.*`.
 
-use crate::emitter::instructions::host;
 use crate::emitter::collections;
-use vybe_bytecode::opcode::Op;
+use crate::emitter::instructions::host;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 pub fn emit_helper(
     name: &str,
