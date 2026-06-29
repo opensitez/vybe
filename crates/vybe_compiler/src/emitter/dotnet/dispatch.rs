@@ -868,7 +868,177 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.
+        "dotnet.dict_get_or_throw" => {
+            // map[key] — get or throw KeyNotFoundException
+            let chunk = &mut chunks[current];
+            let has = chunk.add_import("ecma:map", "has");
+            let get = chunk.add_import("ecma:map", "get");
+            let key_slot = chunk.alloc_scratch(1);
+            let map_slot = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+            chunk.emit_call(has, 2, line);
+            chunk.emit_if_value(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+            chunk.emit_call(get, 2, line);
+            chunk.emit_else(line);
+            chunk.emit_string_const("The given key was not present in the dictionary.", line);
+            crate::emitter::errors::emit_exception_new_finalize(chunk, "KeyNotFoundException", line);
+            crate::emitter::errors::emit_throw(chunk, line);
+            chunk.emit_end(line);
+        }
+        "dotnet.dict_get_value_or_default" => {
+            // Stack: [map, key] or [map, key, default]
+            // map.has(key) ? map.get(key) : default
+            let chunk = &mut chunks[current];
+            let has = chunk.add_import("ecma:map", "has");
+            let get = chunk.add_import("ecma:map", "get");
+            if argc >= 3 {
+                // Explicit default: [map, key, default]
+                let default_slot = chunk.alloc_scratch(1);
+                let key_slot = chunk.alloc_scratch(1);
+                let map_slot = chunk.alloc_scratch(1);
+                chunk.emit_op_u16(Op::LOCAL_SET, default_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+                chunk.emit_call(has, 2, line);
+                chunk.emit_if_value(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+                chunk.emit_call(get, 2, line);
+                chunk.emit_else(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, default_slot, line);
+                chunk.emit_end(line);
+            } else {
+                // No explicit default: [map, key] → default is 0
+                let key_slot = chunk.alloc_scratch(1);
+                let map_slot = chunk.alloc_scratch(1);
+                chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+                chunk.emit_call(has, 2, line);
+                chunk.emit_if_value(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+                chunk.emit_call(get, 2, line);
+                chunk.emit_else(line);
+                chunk.emit_f64_const(0.0, line);
+                chunk.emit_end(line);
+            }
+        }
+        "dotnet.dict_try_get_value" => {
+            // TryGetValue(key, out value) → has(key) ? (value=get(key), true) : (value=default, false)
+            // Simplified: returns get(key) or null, caller checks
+            let chunk = &mut chunks[current];
+            let out_slot = chunk.alloc_scratch(1);
+            let key_slot = chunk.alloc_scratch(1);
+            let map_slot = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+            let has = chunk.add_import("ecma:map", "has");
+            chunk.emit_call(has, 2, line);
+            chunk.emit_if_value(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
+            let get = chunk.add_import("ecma:map", "get");
+            chunk.emit_call(get, 2, line);
+            chunk.emit_else(line);
+            chunk.emit_f64_const(0.0, line);
+            chunk.emit_end(line);
+        }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
+
+        // ── System.Math — shared .NET BCL math surface ──────────────
+        // WASM opcodes (zero overhead)
+        "dotnet.system.math.abs" => chunks[current].emit_op(Op::F64_ABS, line),
+        "dotnet.system.math.floor" => chunks[current].emit_op(Op::F64_FLOOR, line),
+        "dotnet.system.math.ceiling" | "dotnet.system.math.ceil" => {
+            chunks[current].emit_op(Op::F64_CEIL, line)
+        }
+        "dotnet.system.math.sqrt" => chunks[current].emit_op(Op::F64_SQRT, line),
+        "dotnet.system.math.truncate" | "dotnet.system.math.trunc" => {
+            chunks[current].emit_op(Op::F64_TRUNC, line)
+        }
+        "dotnet.system.math.round" => chunks[current].emit_op(Op::F64_NEAREST, line),
+        "dotnet.system.math.min" => chunks[current].emit_op(Op::F64_MIN, line),
+        "dotnet.system.math.max" => chunks[current].emit_op(Op::F64_MAX, line),
+        // Host calls (ecma:math)
+        "dotnet.system.math.pow" => {
+            let idx = chunks[current].add_import("ecma:math", "pow");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "dotnet.system.math.sin" => {
+            let idx = chunks[current].add_import("ecma:math", "sin");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.cos" => {
+            let idx = chunks[current].add_import("ecma:math", "cos");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.tan" => {
+            let idx = chunks[current].add_import("ecma:math", "tan");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.asin" => {
+            let idx = chunks[current].add_import("ecma:math", "asin");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.acos" => {
+            let idx = chunks[current].add_import("ecma:math", "acos");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.atan" => {
+            let idx = chunks[current].add_import("ecma:math", "atan");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.atan2" => {
+            let idx = chunks[current].add_import("ecma:math", "atan2");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "dotnet.system.math.log" => {
+            let idx = chunks[current].add_import("ecma:math", "log");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.log10" => {
+            let idx = chunks[current].add_import("ecma:math", "log10");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.log2" => {
+            let idx = chunks[current].add_import("ecma:math", "log2");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.exp" => {
+            let idx = chunks[current].add_import("ecma:math", "exp");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.sinh" => {
+            let idx = chunks[current].add_import("ecma:math", "sinh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.cosh" => {
+            let idx = chunks[current].add_import("ecma:math", "cosh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.tanh" => {
+            let idx = chunks[current].add_import("ecma:math", "tanh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.sign" => {
+            let idx = chunks[current].add_import("ecma:math", "sign");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.clamp" => {
+            crate::emitter::math::emit_clamp(&mut chunks[current], line)
+        }
         _ => return false,
     }
     true

@@ -29,5 +29,3 @@ pub fn is_func(c: &mut Chunk, line: u32) {
     let type_idx = c.add_constant(Value::String(Arc::from("func")));
     c.emit_op_u16(Op::REF_TEST, type_idx, line);
 }
-
-

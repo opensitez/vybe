@@ -1280,7 +1280,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // iterator and turn a plain `[1,2,3]` into a user-iterator drain.
     let arr_step = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    { let idx = c.add_import("ecma:array", "isArray"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0); // not array → continue past this block
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
@@ -1295,7 +1298,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // ECMA for-of adapter before the object-method protocol path.
     let string_step = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    { let idx = c.add_import("wasm:js-string", "test"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "test");
+        c.emit_call(idx, 1, 0);
+    }
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0); // not string → continue past this block
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
@@ -1337,7 +1343,12 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_string_const("Symbol(@@iterator)", 0);
     crate::emitter::collections::emit_import_call_into(
-        imports, &mut c, "ecma:value", "getMethodForCall", 2, 0,
+        imports,
+        &mut c,
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        0,
     );
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
@@ -1368,7 +1379,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // typeof method !== "function" → result = v, exit
     let has_method = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    { let idx = c.add_import("ecma:value", "typeof"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:value", "typeof");
+        c.emit_call(idx, 1, 0);
+    }
     c.emit_string_const("function", 0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_br_if(0, 0); // is function → skip early-exit
@@ -1440,7 +1454,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // typeof method !== "function" → result = out, exit
     let next_ok = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    { let idx = c.add_import("ecma:value", "typeof"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:value", "typeof");
+        c.emit_call(idx, 1, 0);
+    }
     c.emit_string_const("function", 0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
@@ -2148,7 +2165,10 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
 
     let array_path = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    { let idx = c.add_import("ecma:array", "isArray"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
@@ -2162,7 +2182,10 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
 
     let string_path = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    { let idx = c.add_import("wasm:js-string", "test"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "test");
+        c.emit_call(idx, 1, 0);
+    }
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
 
@@ -2186,7 +2209,10 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op(Op::F64_FROM_I32, 0);
-    { let idx = c.add_import("ecma:string", "charAt"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "charAt");
+        c.emit_call(idx, 2, 0);
+    }
     crate::emitter::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -2213,7 +2239,10 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
 
     let drained_array = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, drained, 0);
-    { let idx = c.add_import("ecma:array", "isArray"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, drained, 0);
@@ -2664,7 +2693,10 @@ fn build_string_is_null_or_empty(imports: &mut Chunk) -> Chunk {
     c.patch_block(non_null);
 
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "length");
+        c.emit_call(idx, 1, 0);
+    }
     core_wasm::i32_const(&mut c, 0, 0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2689,8 +2721,14 @@ fn build_string_is_null_or_whitespace(imports: &mut Chunk) -> Chunk {
     c.patch_block(non_null);
 
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
-    { let idx = c.add_import("wasm:js-string", "length"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:string", "trim");
+        c.emit_call(idx, 1, 0);
+    }
+    {
+        let idx = c.add_import("wasm:js-string", "length");
+        c.emit_call(idx, 1, 0);
+    }
     core_wasm::i32_const(&mut c, 0, 0);
     crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2708,7 +2746,10 @@ fn build_str_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "substring");
+        c.emit_call(idx, 3, 0);
+    }
 
     // prefix + value (keeps current coercion behavior for non-string values)
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
@@ -2718,8 +2759,14 @@ fn build_str_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_i32_const(i32::MAX, 0);
-    { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, 0); }
-    { let idx = c.add_import("wasm:js-string", "concat"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "substring");
+        c.emit_call(idx, 3, 0);
+    }
+    {
+        let idx = c.add_import("wasm:js-string", "concat");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2733,7 +2780,10 @@ fn build_str_remove_start(_imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "substring");
+        c.emit_call(idx, 3, 0);
+    }
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2748,7 +2798,10 @@ fn build_str_remove_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "substring");
+        c.emit_call(idx, 3, 0);
+    }
 
     // suffix = str[start+count:]
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -2756,8 +2809,14 @@ fn build_str_remove_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_i32_const(i32::MAX, 0);
-    { let idx = c.add_import("wasm:js-string", "substring"); c.emit_call(idx, 3, 0); }
-    { let idx = c.add_import("wasm:js-string", "concat"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("wasm:js-string", "substring");
+        c.emit_call(idx, 3, 0);
+    }
+    {
+        let idx = c.add_import("wasm:js-string", "concat");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2983,7 +3042,10 @@ fn build_str_count(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, max, 0);
     emit_str_substring(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, needle, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     // Save indexOf result to local (don't use DUP — value can't cross block boundary)
     let idx_result = 4u16; // reuse local slot (local_count=4, slot 4 is beyond declared but safe with extra locals)
     c.local_count = 5; // need one more local for idx_result
@@ -4008,7 +4070,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
 
     // fmt_lower = picture.Trim().ToLowerCase(); val_str = String(value)
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:string", "trim");
+        c.emit_call(idx, 1, 0);
+    }
     c.emit_call(to_lower, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt_lower, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
@@ -4024,7 +4089,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
     emit_const_index(&mut c, space_str, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     let no_date_space = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
@@ -4055,7 +4123,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     emit_const_index(&mut c, space_str, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     let no_prefix = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
@@ -4069,7 +4140,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, slash_str, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
     let keep_work = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
@@ -4090,7 +4164,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.patch_block(no_prefix);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     emit_const_index(&mut c, space_str, 0);
-    { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "lastIndexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     core_wasm::i32_const(&mut c, 0, 0);
@@ -4107,11 +4184,17 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
-    { let idx = c.add_import("ecma:string", "lastIndexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "lastIndexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     emit_const_index(&mut c, colon_str, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, work, 0);
     let already_short_time = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
@@ -4199,7 +4282,10 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     let dot_str = c.add_constant(Value::String(Arc::from(".")));
     emit_const_index(&mut c, dot_str, 0);
-    { let idx = c.add_import("ecma:string", "indexOf"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "indexOf");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op_u16(Op::LOCAL_SET, dot_pos, 0);
 
     // If no dot: return prefix + String(parseInt(value))
@@ -4355,7 +4441,10 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, format, 0);
     c.emit_call(to_str, 1, 0);
-    { let idx = c.add_import("ecma:string", "trim"); c.emit_call(idx, 1, 0); }
+    {
+        let idx = c.add_import("ecma:string", "trim");
+        c.emit_call(idx, 1, 0);
+    }
     c.emit_call(to_upper, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, fmt, 0);
 
@@ -5302,7 +5391,10 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    { let idx = c.add_import("ecma:string", "charAt"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "charAt");
+        c.emit_call(idx, 2, 0);
+    }
     crate::emitter::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_else(0);
@@ -5362,7 +5454,10 @@ fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // skip if a is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    { let idx = c.add_import("ecma:string", "repeat"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "repeat");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0);
     c.patch_block(a_block_p);
@@ -5376,7 +5471,10 @@ fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // skip if b is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    { let idx = c.add_import("ecma:string", "repeat"); c.emit_call(idx, 2, 0); }
+    {
+        let idx = c.add_import("ecma:string", "repeat");
+        c.emit_call(idx, 2, 0);
+    }
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0);
     c.patch_block(b_block_p);

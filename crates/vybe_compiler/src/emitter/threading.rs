@@ -12,8 +12,8 @@
 //!
 //! The VM implements these with real Rust atomics on shared memory.
 
-use crate::emitter::instructions::core_wasm;
 use crate::emitter::functions::create_function_chunk;
+use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 

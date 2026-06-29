@@ -31,7 +31,10 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    { let idx = chunks[current].add_import("ecma:array", "isArray"); chunks[current].emit_call(idx, 1, line); }
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
@@ -76,7 +79,10 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    { let idx = chunks[current].add_import("ecma:array", "isArray"); chunks[current].emit_call(idx, 1, line); }
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 

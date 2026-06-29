@@ -69,7 +69,10 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    { let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id"))); chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line); }
+    {
+        let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id")));
+        chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
+    }
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -92,7 +95,10 @@ pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, l
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    { let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id"))); chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line); }
+    {
+        let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id")));
+        chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
+    }
     chunk.emit_op(Op::DROP, line);
 }
 

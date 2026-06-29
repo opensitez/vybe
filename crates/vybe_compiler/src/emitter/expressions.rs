@@ -235,7 +235,9 @@ pub fn emit_rich_arithmetic(
 pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
-    if chunk.local_count > chunk.scratch_high_water { chunk.scratch_high_water = chunk.local_count; }
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from("__str__")));
@@ -264,7 +266,9 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
-    if chunk.local_count > chunk.scratch_high_water { chunk.scratch_high_water = chunk.local_count; }
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from("__bool__")));
@@ -345,7 +349,9 @@ pub fn emit_rich_compare_locals(
 ) {
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
-    if chunk.local_count > chunk.scratch_high_water { chunk.scratch_high_water = chunk.local_count; }
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
 
     // Try struct_get dunder on left
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
@@ -406,7 +412,9 @@ pub fn emit_rich_compare_locals(
 pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
-    if chunk.local_count > chunk.scratch_high_water { chunk.scratch_high_water = chunk.local_count; }
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
 
     // Try struct_get "__get_length" on object
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);

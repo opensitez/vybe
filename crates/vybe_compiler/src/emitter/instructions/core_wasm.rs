@@ -1,5 +1,5 @@
-use vybe_bytecode::{Chunk, Op};
 use vybe_bytecode::Value;
+use vybe_bytecode::{Chunk, Op};
 
 pub fn dup(c: &mut Chunk, line: u32) {
     c.emit_dup(line);
@@ -46,7 +46,9 @@ pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
         Value::BigInt(v) => c.emit_i64_const(*v, line),
         Value::V128(v) => {
             c.emit_op(Op::V128_CONST, line);
-            for b in v { c.emit(*b, line); }
+            for b in v {
+                c.emit(*b, line);
+            }
         }
         other => panic!("emit_value: no WASM-compliant encoding for {:?}", other),
     }

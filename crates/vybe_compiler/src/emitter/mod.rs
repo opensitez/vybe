@@ -11,7 +11,6 @@
 
 pub mod bundle;
 pub mod canonical;
-pub mod instructions;
 pub mod channels;
 pub mod classes;
 pub mod closures;
@@ -28,6 +27,7 @@ pub mod functions;
 pub mod generators;
 pub mod gui;
 pub mod imports;
+pub mod instructions;
 pub mod invoke;
 pub mod io;
 pub mod loops;

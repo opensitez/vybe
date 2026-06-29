@@ -74,7 +74,10 @@ fn emit_js_to_number_f64(
     line: u32,
 ) {
     load(chunk, slot, line);
-    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_if(line);
     f64_const(chunk, f64::NAN, line);
     chunk.emit_else(line);
@@ -319,7 +322,10 @@ fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
     load(chunk, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     load(chunk, slot, line);
-    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
 }
@@ -341,10 +347,16 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     save(chunk, a_slot, line);
 
     load(chunk, a_slot, line);
-    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_if(line);
     load(chunk, b_slot, line);
-    { let idx = chunk.add_import("wasm:js-undefined", "test"); chunk.emit_call(idx, 1, line); }
+    {
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+    }
     chunk.emit_else(line);
 
     emit_slot_is_null_only(chunk, a_slot, line);

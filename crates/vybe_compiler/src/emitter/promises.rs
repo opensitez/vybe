@@ -11,11 +11,11 @@
 //! returns the result. The chunk uses `emit_await` (JSPI suspend) for
 //! the await point — no custom opcodes.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
-use std::sync::Arc;
 use super::functions;
+use std::sync::Arc;
 
 /// Emit a `.then(onFulfilled, onRejected)` chain step.
 /// Stack before: [promise, onFulfilled, onRejected_or_null]

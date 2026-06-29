@@ -29,16 +29,11 @@ impl FunctionRegistry {
         Self { functions }
     }
 
-    pub fn emit(
-        &self,
-        c: &mut Chunk,
-        module: &str,
-        name: &str,
-        argc: u8,
-        line: u32,
-    ) {
+    pub fn emit(&self, c: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
         debug_assert!(
-            self.functions.keys().any(|(m, n)| *m == module && *n == name),
+            self.functions
+                .keys()
+                .any(|(m, n)| *m == module && *n == name),
             "host function {module}.{name} was not registered by vybe_host::register_all"
         );
         let idx = c.add_import(module, name);
@@ -46,7 +41,9 @@ impl FunctionRegistry {
     }
 
     pub fn has(&self, module: &str, name: &str) -> bool {
-        self.functions.keys().any(|(m, n)| *m == module && *n == name)
+        self.functions
+            .keys()
+            .any(|(m, n)| *m == module && *n == name)
     }
 }
 
@@ -94,5 +91,7 @@ impl CapabilityContext {
 }
 
 pub fn emit(c: &mut Chunk, module: &'static str, name: &'static str, argc: u8, line: u32) {
-    CapabilityContext::get().functions.emit(c, module, name, argc, line);
+    CapabilityContext::get()
+        .functions
+        .emit(c, module, name, argc, line);
 }

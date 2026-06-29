@@ -6,9 +6,9 @@
 //! and the WASM writer can still aggregate those imports into a module
 //! section.
 
+use crate::emitter::Target;
 #[allow(unused_imports)]
 use crate::emitter::instructions::core_wasm;
-use crate::emitter::Target;
 use std::sync::Arc;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
@@ -133,7 +133,10 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(&mut chunks[current], value_slot, line);
 
     lget(&mut chunks[current], value_slot, line);
-    { let idx = chunks[current].add_import("wasm:js-string", "test"); chunks[current].emit_call(idx, 1, line); }
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "test");
+        chunks[current].emit_call(idx, 1, line);
+    }
     // wasm:js-string.test already returns I32(0/1) — use it directly as the if
     // condition. Do NOT call emit_dyn_to_bool here: that registers imports on
     // chunks[current] via chunk.add_import, which collides with the global
@@ -723,7 +726,10 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let outer = code.emit_block(line);
     let str_block = code.emit_block(line);
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
-    { let idx = code.add_import("wasm:js-string", "test"); code.emit_call(idx, 1, line); }
+    {
+        let idx = code.add_import("wasm:js-string", "test");
+        code.emit_call(idx, 1, line);
+    }
     // wasm:js-string.test already yields i32(0/1); invert with I32_EQZ. Do NOT use
     // emit_dyn_not here — it calls emit_dyn_to_bool, which registers imports
     // on `code` via add_import. Those collide with the chunks[0]-based global
