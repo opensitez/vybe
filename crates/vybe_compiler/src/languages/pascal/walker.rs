@@ -1,7 +1,7 @@
 use super::{PascalParser, Rule};
 use crate::ast::*;
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
 const PASCAL_VARIANT_FIELD_MARKER: &str = "__pascal_variant_field__";
@@ -117,7 +117,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => crate::platforms::plib::emitter::gcl::is_gcl_unit(path),
+        | ImportKind::Default { path, .. } => {
+            crate::platforms::plib::emitter::gcl::is_gcl_unit(path)
+        }
     });
     if uses_gcl {
         normalize_pascal_gcl_form_classes(&mut body);

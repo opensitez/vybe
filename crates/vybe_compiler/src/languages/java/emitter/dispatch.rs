@@ -9,8 +9,8 @@
 
 use crate::emitter::instructions::{core_wasm, host};
 use crate::emitter::{collections, strings};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
@@ -61,10 +61,22 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
         }
         "java.compare_ignore_case" => {
-            host::emit(&mut chunks[current], "ecma:string", "compareIgnoreCase", 2, line);
+            host::emit(
+                &mut chunks[current],
+                "ecma:string",
+                "compareIgnoreCase",
+                2,
+                line,
+            );
         }
         "java.equals_ignore_case" => {
-            host::emit(&mut chunks[current], "ecma:string", "equalsIgnoreCase", 2, line);
+            host::emit(
+                &mut chunks[current],
+                "ecma:string",
+                "equalsIgnoreCase",
+                2,
+                line,
+            );
         }
         "java.str_matches" => {
             host::emit(&mut chunks[current], "ecma:string", "matches", 2, line);
@@ -207,13 +219,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.list_for_each" => {
             // Delegate to runtime helper; avoids needing pre-allocated local slots.
-            collections::emit_runtime_helper_call(
-                chunks,
-                current,
-                "__array_for_each",
-                argc,
-                line,
-            );
+            collections::emit_runtime_helper_call(chunks, current, "__array_for_each", argc, line);
         }
         "java.queue_poll" => {
             collections::emit_shift(chunks, current, line);
@@ -259,7 +265,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             host::emit(&mut chunks[current], "ecma:object", "putIfAbsent", 3, line);
         }
         "java.compute_if_absent" => {
-            host::emit(&mut chunks[current], "ecma:object", "computeIfAbsent", 3, line);
+            host::emit(
+                &mut chunks[current],
+                "ecma:object",
+                "computeIfAbsent",
+                3,
+                line,
+            );
         }
         "java.map_merge" => {
             host::emit(&mut chunks[current], "ecma:object", "merge", 4, line);
@@ -365,7 +377,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             host::emit(&mut chunks[current], "ecma:optional", "ifPresent", 2, line);
         }
         "java.optional_or_else_throw" => {
-            host::emit(&mut chunks[current], "ecma:optional", "orElseThrow", 1, line);
+            host::emit(
+                &mut chunks[current],
+                "ecma:optional",
+                "orElseThrow",
+                1,
+                line,
+            );
         }
 
         // ── Object utilities ──────────────────────────────────────────────
@@ -376,7 +394,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             host::emit(&mut chunks[current], "ecma:object", "hashCode", 1, line);
         }
         "java.require_non_null" => {
-            host::emit(&mut chunks[current], "ecma:object", "requireNonNull", argc, line);
+            host::emit(
+                &mut chunks[current],
+                "ecma:object",
+                "requireNonNull",
+                argc,
+                line,
+            );
         }
         "java.is_null" => {
             host::emit(&mut chunks[current], "ecma:object", "isNull", 1, line);

@@ -99,11 +99,21 @@ fn to_span(pair: &Pair<Rule>) -> Span {
 fn is_kw(rule: Rule) -> bool {
     matches!(
         rule,
-        Rule::final_kw | Rule::static_kw | Rule::public_kw | Rule::private_kw
-            | Rule::protected_kw | Rule::abstract_kw | Rule::synchronized_kw
-            | Rule::native_kw | Rule::transient_kw | Rule::volatile_kw
-            | Rule::strictfp_kw | Rule::default_kw | Rule::sealed_kw
-            | Rule::non_sealed_kw | Rule::var_kw
+        Rule::final_kw
+            | Rule::static_kw
+            | Rule::public_kw
+            | Rule::private_kw
+            | Rule::protected_kw
+            | Rule::abstract_kw
+            | Rule::synchronized_kw
+            | Rule::native_kw
+            | Rule::transient_kw
+            | Rule::volatile_kw
+            | Rule::strictfp_kw
+            | Rule::default_kw
+            | Rule::sealed_kw
+            | Rule::non_sealed_kw
+            | Rule::var_kw
     )
 }
 
@@ -271,16 +281,24 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 }
             }
             Rule::class_declaration => {
-                members.push(ClassMember::NestedType(Box::new(Statement::new(walk_class(p)?))));
+                members.push(ClassMember::NestedType(Box::new(Statement::new(
+                    walk_class(p)?,
+                ))));
             }
             Rule::interface_declaration => {
-                members.push(ClassMember::NestedType(Box::new(Statement::new(walk_interface(p)?))));
+                members.push(ClassMember::NestedType(Box::new(Statement::new(
+                    walk_interface(p)?,
+                ))));
             }
             Rule::enum_declaration => {
-                members.push(ClassMember::NestedType(Box::new(Statement::new(walk_enum_decl(p)?))));
+                members.push(ClassMember::NestedType(Box::new(Statement::new(
+                    walk_enum_decl(p)?,
+                ))));
             }
             Rule::record_declaration => {
-                members.push(ClassMember::NestedType(Box::new(Statement::new(walk_record(p)?))));
+                members.push(ClassMember::NestedType(Box::new(Statement::new(
+                    walk_record(p)?,
+                ))));
             }
             Rule::static_initializer | Rule::instance_initializer => {
                 // treat as method named __init_block__
@@ -722,7 +740,11 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::switch_statement => walk_switch(pair)?,
 
         Rule::return_statement => {
-            let e = pair.into_inner().find(|p| !is_kw(p.as_rule())).map(walk_expression).transpose()?;
+            let e = pair
+                .into_inner()
+                .find(|p| !is_kw(p.as_rule()))
+                .map(walk_expression)
+                .transpose()?;
             StmtKind::Return(e)
         }
 
@@ -771,13 +793,19 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         }
 
         Rule::yield_statement => {
-            let e = pair.into_inner().find(|p| !is_kw(p.as_rule())).map(walk_expression).transpose()?;
+            let e = pair
+                .into_inner()
+                .find(|p| !is_kw(p.as_rule()))
+                .map(walk_expression)
+                .transpose()?;
             StmtKind::Return(e)
         }
 
         Rule::labeled_statement => {
             // Strip label; walk inner statement
-            let inner = pair.into_inner().find(|p| !matches!(p.as_rule(), Rule::ident_name));
+            let inner = pair
+                .into_inner()
+                .find(|p| !matches!(p.as_rule(), Rule::ident_name));
             if let Some(s) = inner {
                 return walk_statement(s);
             }
@@ -798,10 +826,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 .filter(|p| p.as_rule() == Rule::argument_list)
                 .flat_map(|al| walk_arguments(al).unwrap_or_default())
                 .collect();
-            StmtKind::Expr(Expression::new(ExprKind::SuperCall {
-                method: None,
-                args,
-            }))
+            StmtKind::Expr(Expression::new(ExprKind::SuperCall { method: None, args }))
         }
 
         Rule::this_constructor_call => {
@@ -823,7 +848,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         }
 
         Rule::local_class_declaration => {
-            let cls = pair.into_inner().find(|p| p.as_rule() == Rule::class_declaration);
+            let cls = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::class_declaration);
             if let Some(c) = cls {
                 walk_class(c)?
             } else {
@@ -832,7 +859,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         }
 
         Rule::local_record_declaration => {
-            let rec = pair.into_inner().find(|p| p.as_rule() == Rule::record_declaration);
+            let rec = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::record_declaration);
             if let Some(r) = rec {
                 walk_record(r)?
             } else {
@@ -896,7 +925,11 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         false
     };
 
-    let kind = if is_final { VarDeclKind::Const } else { VarDeclKind::Let };
+    let kind = if is_final {
+        VarDeclKind::Const
+    } else {
+        VarDeclKind::Let
+    };
 
     // var_kw or type_ref
     let type_hint: Option<String> = if inner.peek().map(|p| p.as_rule()) == Some(Rule::var_kw) {
@@ -918,7 +951,10 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::VarDecl { declarations, kind })
 }
 
-fn walk_var_declarator(pair: Pair<Rule>, type_hint: Option<String>) -> Result<VarDeclarator, String> {
+fn walk_var_declarator(
+    pair: Pair<Rule>,
+    type_hint: Option<String>,
+) -> Result<VarDeclarator, String> {
     let mut name = String::new();
     let mut init = None;
 
@@ -1058,14 +1094,21 @@ fn walk_for_init(pair: Pair<Rule>) -> Result<Statement, String> {
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref) {
         // variable declaration
         let type_hint = Some(extract_ref_name(&inner.next().unwrap()));
-        let kind = if is_final { VarDeclKind::Const } else { VarDeclKind::Let };
+        let kind = if is_final {
+            VarDeclKind::Const
+        } else {
+            VarDeclKind::Let
+        };
         let mut decls = Vec::new();
         for p in inner {
             if p.as_rule() == Rule::var_declarator {
                 decls.push(walk_var_declarator(p, type_hint.clone())?);
             }
         }
-        return Ok(Statement::new(StmtKind::VarDecl { declarations: decls, kind }));
+        return Ok(Statement::new(StmtKind::VarDecl {
+            declarations: decls,
+            kind,
+        }));
     }
 
     // expression list
@@ -1079,7 +1122,9 @@ fn walk_for_init(pair: Pair<Rule>) -> Result<Statement, String> {
         let e = exprs.remove(0);
         Ok(Statement::new(StmtKind::Expr(e)))
     } else {
-        Ok(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Sequence(exprs)))))
+        Ok(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Sequence(exprs),
+        ))))
     }
 }
 
@@ -1096,7 +1141,11 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         inner.next();
     }
 
-    let var = inner.next().ok_or("for-each: missing var")?.as_str().to_string();
+    let var = inner
+        .next()
+        .ok_or("for-each: missing var")?
+        .as_str()
+        .to_string();
     let iter = walk_expr_inner(&mut inner)?;
     let body = walk_body_inner(&mut inner)?;
 
@@ -1127,7 +1176,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let mut body: Vec<Statement> = Vec::new();
         let mut is_default = false;
         let src = {
-            let tmp = ci.peek().map(|p| p.as_str().to_string()).unwrap_or_default();
+            let tmp = ci
+                .peek()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
             tmp
         };
 
@@ -1266,7 +1318,11 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
     } else {
         false
     };
-    let name = inner.next().ok_or("param: missing name")?.as_str().to_string();
+    let name = inner
+        .next()
+        .ok_or("param: missing name")?
+        .as_str()
+        .to_string();
     // skip dim_suffix(s)
     while inner.peek().map(|p| p.as_rule()) == Some(Rule::dim_suffix) {
         inner.next();
@@ -1402,7 +1458,9 @@ fn walk_instanceof(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut saw_instanceof = false;
     for p in inner {
         match p.as_rule() {
-            Rule::instanceof_kw => { saw_instanceof = true; }
+            Rule::instanceof_kw => {
+                saw_instanceof = true;
+            }
             Rule::type_ref if saw_instanceof => {
                 let type_name = extract_ref_name(&p);
                 base = Expression::new(ExprKind::IsType {
@@ -1474,7 +1532,11 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
         match chain.as_rule() {
             Rule::method_call_suffix => {
                 let mut ci = chain.into_inner().peekable();
-                let method_name = ci.next().ok_or("method call: missing name")?.as_str().to_string();
+                let method_name = ci
+                    .next()
+                    .ok_or("method call: missing name")?
+                    .as_str()
+                    .to_string();
                 if ci.peek().map(|x| x.as_rule()) == Some(Rule::type_args) {
                     ci.next();
                 }
@@ -1542,9 +1604,15 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     // System.out.println(x) → println(x)
     // System.out.print(x)   → print(x)
     // receiver = Member { Ident("System"), "out" }, method = "println"
-    if let ExprKind::Member { object: ref root_obj, field: ref root_field, .. } = receiver.kind {
+    if let ExprKind::Member {
+        object: ref root_obj,
+        field: ref root_field,
+        ..
+    } = receiver.kind
+    {
         if let ExprKind::Ident(ref root_name) = root_obj.kind {
-            if root_name == "System" && root_field == "out"
+            if root_name == "System"
+                && root_field == "out"
                 && (method == "println" || method == "print" || method == "printf")
             {
                 return Expression::new(ExprKind::Call {
@@ -1591,10 +1659,25 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 fn is_java_type_or_util(name: &str) -> bool {
     matches!(
         name,
-        "Integer" | "Long" | "Short" | "Byte" | "Float" | "Double"
-        | "Boolean" | "Character" | "String" | "Math" | "Arrays"
-        | "Collections" | "Objects" | "Optional" | "Stream"
-        | "System" | "Thread" | "Runtime" | "Class"
+        "Integer"
+            | "Long"
+            | "Short"
+            | "Byte"
+            | "Float"
+            | "Double"
+            | "Boolean"
+            | "Character"
+            | "String"
+            | "Math"
+            | "Arrays"
+            | "Collections"
+            | "Objects"
+            | "Optional"
+            | "Stream"
+            | "System"
+            | "Thread"
+            | "Runtime"
+            | "Class"
     )
 }
 
@@ -1605,9 +1688,7 @@ fn walk_primary_atom(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::array_creation => walk_array_creation(inner),
         Rule::switch_expression => Ok(Expression::null()),
         Rule::lambda_expression => walk_lambda(inner),
-        Rule::paren_expression => {
-            walk_expression(inner.into_inner().next().ok_or("paren: empty")?)
-        }
+        Rule::paren_expression => walk_expression(inner.into_inner().next().ok_or("paren: empty")?),
         Rule::literal => walk_literal(inner),
         Rule::this_kw => Ok(Expression::new(ExprKind::This)),
         Rule::super_kw => Ok(Expression::new(ExprKind::Super)),
@@ -1711,7 +1792,11 @@ fn walk_initializer_as_array(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_super_call(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
-    let method_name = inner.next().ok_or("super call: missing name")?.as_str().to_string();
+    let method_name = inner
+        .next()
+        .ok_or("super call: missing name")?
+        .as_str()
+        .to_string();
     let args = if let Some(al) = inner.next() {
         if al.as_rule() == Rule::argument_list {
             walk_arguments(al)?
@@ -1730,7 +1815,11 @@ fn walk_super_call(pair: Pair<Rule>) -> Result<Expression, String> {
 fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let obj = inner.next().ok_or("method ref: missing object")?;
-    let method = inner.next().ok_or("method ref: missing method")?.as_str().to_string();
+    let method = inner
+        .next()
+        .ok_or("method ref: missing method")?
+        .as_str()
+        .to_string();
 
     let obj_expr = walk_expression(obj)?;
     if method == "new" {
@@ -1788,15 +1877,29 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         for tp in p.into_inner() {
                             if tp.as_rule() == Rule::typed_lambda_param {
                                 let mut ti = tp.into_inner().peekable();
-                                if ti.peek().map(|x| x.as_rule()) == Some(Rule::final_kw) { ti.next(); }
-                                let type_hint = if ti.peek().map(|x| x.as_rule()) == Some(Rule::type_ref) {
-                                    Some(extract_ref_name(&ti.next().unwrap()))
-                                } else { None };
-                                let name = ti.next().ok_or("typed lambda param: missing name")?.as_str().to_string();
+                                if ti.peek().map(|x| x.as_rule()) == Some(Rule::final_kw) {
+                                    ti.next();
+                                }
+                                let type_hint =
+                                    if ti.peek().map(|x| x.as_rule()) == Some(Rule::type_ref) {
+                                        Some(extract_ref_name(&ti.next().unwrap()))
+                                    } else {
+                                        None
+                                    };
+                                let name = ti
+                                    .next()
+                                    .ok_or("typed lambda param: missing name")?
+                                    .as_str()
+                                    .to_string();
                                 params.push(Param {
-                                    name, type_hint, default: None,
-                                    pass_by: PassBy::Value, is_rest: false,
-                                    is_kwargs: false, is_optional: false, is_nullable: false,
+                                    name,
+                                    type_hint,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
                                 });
                             }
                         }
@@ -1805,18 +1908,28 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         for ip in p.into_inner() {
                             if ip.as_rule() == Rule::ident_name {
                                 params.push(Param {
-                                    name: ip.as_str().to_string(), type_hint: None, default: None,
-                                    pass_by: PassBy::Value, is_rest: false,
-                                    is_kwargs: false, is_optional: false, is_nullable: false,
+                                    name: ip.as_str().to_string(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
                                 });
                             }
                         }
                     }
                     Rule::ident_name => {
                         params.push(Param {
-                            name: p.as_str().to_string(), type_hint: None, default: None,
-                            pass_by: PassBy::Value, is_rest: false,
-                            is_kwargs: false, is_optional: false, is_nullable: false,
+                            name: p.as_str().to_string(),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
                         });
                     }
                     _ => {}
@@ -1825,9 +1938,14 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
         }
         Rule::ident_name => {
             params.push(Param {
-                name: pair.as_str().to_string(), type_hint: None, default: None,
-                pass_by: PassBy::Value, is_rest: false,
-                is_kwargs: false, is_optional: false, is_nullable: false,
+                name: pair.as_str().to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
             });
         }
         _ => {}
@@ -1843,7 +1961,12 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             let first = ai.next().ok_or("arg: empty")?;
             if first.as_rule() == Rule::spread_arg {
                 let e = walk_expression(first.into_inner().next().ok_or("spread: empty")?)?;
-                args.push(Argument { value: e, name: None, by_ref: false, spread: true });
+                args.push(Argument {
+                    value: e,
+                    name: None,
+                    by_ref: false,
+                    spread: true,
+                });
             } else {
                 args.push(Argument::positional(walk_expression(first)?));
             }
@@ -1904,7 +2027,9 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         Rule::string_literal => {
             let s = inner.as_str();
-            Ok(Expression::string(&unescape_java_string(&s[1..s.len() - 1])))
+            Ok(Expression::string(&unescape_java_string(
+                &s[1..s.len() - 1],
+            )))
         }
         Rule::text_block => {
             let s = inner.as_str();
@@ -1926,16 +2051,21 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
 /// start with an explicit super/base call.
 fn inject_implicit_super(members: &mut Vec<ClassMember>) {
     for m in members.iter_mut() {
-        if let ClassMember::Constructor { base_args, body, .. } = m {
+        if let ClassMember::Constructor {
+            base_args, body, ..
+        } = m
+        {
             if base_args.is_none() {
                 let already_has_super = body
                     .first()
                     .map(|s| match &s.kind {
-                        StmtKind::Expr(e) => matches!(
-                            &e.kind,
-                            ExprKind::Call { callee, .. }
-                                if matches!(&callee.kind, ExprKind::Super)
-                        ) || matches!(&e.kind, ExprKind::SuperCall { .. }),
+                        StmtKind::Expr(e) => {
+                            matches!(
+                                &e.kind,
+                                ExprKind::Call { callee, .. }
+                                    if matches!(&callee.kind, ExprKind::Super)
+                            ) || matches!(&e.kind, ExprKind::SuperCall { .. })
+                        }
                         _ => false,
                     })
                     .unwrap_or(false);
@@ -1965,12 +2095,8 @@ fn extract_base_call_from_body(body: &mut Vec<Statement>, base_args: &mut Option
         let s = body.remove(0);
         if let StmtKind::Expr(e) = s.kind {
             let args_exprs: Vec<Expression> = match e.kind {
-                ExprKind::SuperCall { args, .. } => {
-                    args.into_iter().map(|a| a.value).collect()
-                }
-                ExprKind::Call { args, .. } => {
-                    args.into_iter().map(|a| a.value).collect()
-                }
+                ExprKind::SuperCall { args, .. } => args.into_iter().map(|a| a.value).collect(),
+                ExprKind::Call { args, .. } => args.into_iter().map(|a| a.value).collect(),
                 _ => vec![],
             };
             *base_args = Some(args_exprs);
@@ -2083,7 +2209,10 @@ fn unescape_java_string(s: &str) -> String {
                 Some('\'') => out.push('\''),
                 Some('\\') => out.push('\\'),
                 Some('0') => out.push('\0'),
-                Some(c) => { out.push('\\'); out.push(c); }
+                Some(c) => {
+                    out.push('\\');
+                    out.push(c);
+                }
                 None => {}
             }
         } else {

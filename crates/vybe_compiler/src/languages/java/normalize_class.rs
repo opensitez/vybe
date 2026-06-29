@@ -73,11 +73,9 @@ pub fn normalize_class(
                     continue;
                 };
 
-                let (canonical, special_kind) =
-                    canonicalize_method(ClassLang::Java, src_name);
+                let (canonical, special_kind) = canonicalize_method(ClassLang::Java, src_name);
                 let access = access_from_visibility(m.visibility);
-                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access)
-                else {
+                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
                 };
                 if let Some(kind) = special_kind {

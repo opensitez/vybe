@@ -9089,11 +9089,7 @@ fn build_fortran_findloc_expr(
                 right: Box::new(value_expr),
             })),
         });
-        let method = if back {
-            "findLastIndex"
-        } else {
-            "findIndex"
-        };
+        let method = if back { "findLastIndex" } else { "findIndex" };
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(array_expr),
@@ -12177,8 +12173,8 @@ fn fortran_inquiry_model_from_expr(
             range: 0,
             digits: 0,
         }),
-        ExprKind::Ident(name) if name.eq_ignore_ascii_case(".true.")
-            || name.eq_ignore_ascii_case(".false.") =>
+        ExprKind::Ident(name)
+            if name.eq_ignore_ascii_case(".true.") || name.eq_ignore_ascii_case(".false.") =>
         {
             Some(FortranInquiryModel {
                 bits: 32,
@@ -12235,8 +12231,7 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                     .map(|arg| arg.value.clone())
                     .collect::<Vec<_>>();
                 if let Some(first) = positional_args.first() {
-                    if let Some(folded) =
-                        fold_fortran_type_inquiry(&lowered, first, type_env, None)
+                    if let Some(folded) = fold_fortran_type_inquiry(&lowered, first, type_env, None)
                     {
                         *expr = folded;
                     }

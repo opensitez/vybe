@@ -1,7 +1,7 @@
 use crate::emitter::instructions::host;
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use super::support::stash_args;
 
