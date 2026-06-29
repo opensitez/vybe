@@ -40,11 +40,23 @@ fn emit_dotnet_format_value_call(
     width_slot: u16,
     line: u32,
 ) {
-    let helper = chunk.add_constant(Value::String(Arc::from("__vybe_dotnet_numeric_format")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, helper, line);
+    let value_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    let helper = chunk.add_constant(Value::String(Arc::from("__vybe_dotnet_numeric_format")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, helper, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_end(line);
+
     chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, width_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 3, line);
@@ -136,15 +148,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // skip past open-brace handler if not '{'
 
-    emit_handle_open_brace(
-        chunk,
-        fmt_slot,
-        i_slot,
-        len_slot,
-        out_slot,
-        args_slot,
-        line,
-    );
+    emit_handle_open_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, args_slot, line);
     // br(1) = continue loop (depth 0 = open_block, 1 = loop, 2 = outer)
     chunk.emit_br(1, line);
     chunk.emit_end(line);
@@ -159,14 +163,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_br_if(0, line);
 
     // peek next char; if also '}' append literal '}' and skip 2, else skip 1.
-    emit_handle_close_brace(
-        chunk,
-        fmt_slot,
-        i_slot,
-        len_slot,
-        out_slot,
-        line,
-    );
+    emit_handle_close_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(close_block);
@@ -321,7 +318,7 @@ fn emit_handle_open_brace(
     host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, colon_slot, line);
 
-    chunk.emit_string_const("", line);
+    chunk.emit_string_const("G", line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
 
     chunk.emit_f64_const(0.0, line);

@@ -203,6 +203,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_constructor(
                     ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")),
                 )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.set_new_ignore_comparer"),
+                )
                 .with_method(MethodDef::new(
                     "Add",
                     1,
@@ -419,6 +422,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("SortedSet")
                 .with_constructor(
                     ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")),
+                )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.set_new_ignore_comparer"),
                 )
                 .with_method(MethodDef::new(
                     "Add",

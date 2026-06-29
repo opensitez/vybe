@@ -26,6 +26,11 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     base
 }
 
+pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    call_import(chunks, current, "ecma:set", "new", 0, line);
+}
+
 pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;

@@ -12,8 +12,8 @@
 //! Pure WASM, zero `vybe:types` involvement.
 
 use crate::emitter::instructions::{core_wasm, host};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// `Array.Clear(arr, idx, count)` — reset `count` elements starting at
 /// `idx` to a .NET-style default. Until the runtime carries per-array

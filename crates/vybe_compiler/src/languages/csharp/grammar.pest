@@ -757,6 +757,8 @@ primary = {
     | nameof_expression
     | default_expression
     | checked_expression
+    | raw_interpolated_string
+    | raw_string
     | interpolated_string
     | verbatim_string
     | char_literal
@@ -806,16 +808,39 @@ checked_expression = { ("checked" | "unchecked") ~ "(" ~ expression ~ ")" }
 // This prevents pest's WHITESPACE from eating spaces between text and {expr}.
 
 interpolated_string = @{
-    "$\"" ~ interp_content* ~ "\""
+    ("$@\"" | "@$\"" | "$\"") ~ interp_content* ~ "\""
 }
 
-interp_content = _{ interp_hole | interp_char }
+interp_content = _{ interp_escape_open | interp_escape_close | interp_hole | interp_char }
+interp_escape_open = _{ "{{" }
+interp_escape_close = _{ "}}" }
 interp_hole = _{ "{" ~ (!"}" ~ ANY)* ~ "}" }
 interp_char = _{ !"\"" ~ !"{" ~ ANY }
 
 // ── Verbatim strings ────────────────────────────────────────────────────────
 
 verbatim_string = @{ "@\"" ~ ("\"\"" | !"\"" ~ ANY)* ~ "\"" }
+
+// ── Raw strings ────────────────────────────────────────────────────────────
+// C# raw strings use a delimiter of 3+ quotes. Pest cannot back-reference the
+// delimiter length, so cover the lengths used by the conformance tests and put
+// longer delimiters first so `""""""x""""""` is not consumed as `"""`.
+
+raw_interpolated_string = @{
+    "$" ~ (raw_string_empty_7 | raw_string_7 | raw_string_6 | raw_string_empty | raw_string_5 | raw_string_4 | raw_string_3)
+}
+
+raw_string = @{
+    raw_string_empty_7 | raw_string_7 | raw_string_6 | raw_string_empty | raw_string_5 | raw_string_4 | raw_string_3
+}
+
+raw_string_empty_7 = { "\"\"\"\"\"\"\"" }
+raw_string_7 = { "\"\"\"\"\"\"\"" ~ (!"\"\"\"\"\"\"\"" ~ ANY)* ~ "\"\"\"\"\"\"\"" }
+raw_string_6 = { "\"\"\"\"\"\"" ~ (!"\"\"\"\"\"\"" ~ ANY)* ~ "\"\"\"\"\"\"" }
+raw_string_empty = { "\"\"\"\"\"\"" }
+raw_string_5 = { "\"\"\"\"\"" ~ (!"\"\"\"\"\"" ~ ANY)* ~ "\"\"\"\"\"" }
+raw_string_4 = { "\"\"\"\"" ~ (!"\"\"\"\"" ~ ANY)* ~ "\"\"\"\"" }
+raw_string_3 = { "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\"" }
 
 // ── Char literal ────────────────────────────────────────────────────────────
 

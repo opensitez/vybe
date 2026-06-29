@@ -9,8 +9,8 @@
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
 use crate::emitter::instructions::{core_wasm, host};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

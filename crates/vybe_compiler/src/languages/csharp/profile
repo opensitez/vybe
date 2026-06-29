@@ -119,6 +119,24 @@ multi_value_tuple_returns = true
 "string.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
 
+# C# walker-private string lowering helpers. These avoid generic member-call
+# fallback for C# string methods that overlap with .NET collection methods.
+"__csharp_str_contains"    = { emit = "common:str_includes",        min_args = 2, max_args = 2 }
+"__csharp_str_starts_with" = { emit = "common:str_starts_with",     min_args = 2, max_args = 2 }
+"__csharp_str_ends_with"   = { emit = "common:str_ends_with",       min_args = 2, max_args = 2 }
+"__csharp_str_index_of"    = { emit = "common:strings.index_of",    min_args = 2, max_args = 3 }
+"__csharp_str_to_upper"    = { emit = "common:strings.to_upper",    min_args = 1, max_args = 1 }
+"__csharp_str_to_lower"    = { emit = "common:strings.to_lower",    min_args = 1, max_args = 1 }
+"__csharp_str_trim"        = { emit = "common:strings.trim",        min_args = 1, max_args = 1 }
+"__csharp_str_split"       = { emit = "common:strings.split",       min_args = 2, max_args = 3 }
+"__csharp_str_replace"     = { emit = "common:strings.replace",     min_args = 3, max_args = 3 }
+"__csharp_str_substring"   = { emit = "common:strings.substring",   min_args = 2, max_args = 3 }
+"__csharp_str_pad_left"    = { emit = "common:str_pad_start",       min_args = 3, max_args = 3 }
+"__csharp_str_pad_right"   = { emit = "common:str_pad_end",         min_args = 3, max_args = 3 }
+"__csharp_str_length"      = { emit = "common:strings.length",      min_args = 1, max_args = 1 }
+"__csharp_str_char_code_at" = { emit = "common:str_char_code_at",   min_args = 2, max_args = 2 }
+"__csharp_to_string"       = { emit = "common:dotnet.tostring",     min_args = 1, max_args = 1 }
+
 # ── Array static methods ────────────────────────────────────────────────────
 # All shared with VB via `common:dotnet.array_*` adapters in
 # `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`.

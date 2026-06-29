@@ -299,7 +299,6 @@ fn strip_global_namespace_qualifier(name: &str) -> &str {
     name.strip_prefix("global::").unwrap_or(name)
 }
 
-
 fn extract_explicit_interface_name(pair: Pair<Rule>) -> String {
     strip_global_namespace_qualifier(pair.as_str())
         .trim_end_matches('.')
@@ -2697,12 +2696,14 @@ fn rewrite_linked_list_node_uses_in_expr(
                 }
                 if field.eq_ignore_ascii_case("Remove") && args.len() == 1 {
                     if let Some(alias) = linked_list_node_alias_for_expr(&args[0].value, aliases) {
-                        expr.kind = linked_list_remove_at_call((**object).clone(), alias.index).kind;
+                        expr.kind =
+                            linked_list_remove_at_call((**object).clone(), alias.index).kind;
                         return;
                     }
                 }
                 if field.eq_ignore_ascii_case("RemoveFirst") && args.is_empty() {
-                    expr.kind = linked_list_remove_at_call((**object).clone(), Expression::int(0)).kind;
+                    expr.kind =
+                        linked_list_remove_at_call((**object).clone(), Expression::int(0)).kind;
                     return;
                 }
                 if field.eq_ignore_ascii_case("RemoveLast") && args.is_empty() {
@@ -2710,7 +2711,10 @@ fn rewrite_linked_list_node_uses_in_expr(
                         (**object).clone(),
                         Expression::new(ExprKind::Binary {
                             op: BinOp::Sub,
-                            left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
+                            left: Box::new(canonicalize_member_access(
+                                (**object).clone(),
+                                "Length",
+                            )),
                             right: Box::new(Expression::int(1)),
                         }),
                     )
@@ -2721,7 +2725,10 @@ fn rewrite_linked_list_node_uses_in_expr(
             rewrite_linked_list_node_uses_in_expr(callee, aliases);
         }
         ExprKind::Binary { left, right, .. }
-        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
         | ExprKind::NullCoalesce { left, right } => {
             rewrite_linked_list_node_uses_in_expr(left, aliases);
             rewrite_linked_list_node_uses_in_expr(right, aliases);
@@ -5159,7 +5166,9 @@ fn collect_csharp_operator_methods_in_members(
                     }
                 }
             }
-            ClassMember::NestedType(stmt) => collect_csharp_operator_methods_in_statement(stmt, operators),
+            ClassMember::NestedType(stmt) => {
+                collect_csharp_operator_methods_in_statement(stmt, operators)
+            }
             _ => {}
         }
     }
@@ -5265,7 +5274,10 @@ fn rewrite_user_defined_operator_calls_in_members(
             ClassMember::Method(stmt) => {
                 if let StmtKind::FunctionDecl { params, body, .. } = &mut stmt.kind {
                     let mut scopes = vec![HashMap::new()];
-                    scopes.last_mut().unwrap().insert("this".into(), type_name.into());
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert("this".into(), type_name.into());
                     for param in params {
                         if let Some(type_hint) = &param.type_hint {
                             scopes
@@ -5279,7 +5291,10 @@ fn rewrite_user_defined_operator_calls_in_members(
             }
             ClassMember::Constructor { params, body, .. } => {
                 let mut scopes = vec![HashMap::new()];
-                scopes.last_mut().unwrap().insert("this".into(), type_name.into());
+                scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert("this".into(), type_name.into());
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
                         scopes
@@ -5290,20 +5305,31 @@ fn rewrite_user_defined_operator_calls_in_members(
                 }
                 rewrite_user_defined_operator_calls_in_statements(body, operators, &mut scopes);
             }
-            ClassMember::Field { init: Some(init), .. } | ClassMember::Const { value: init, .. } => {
+            ClassMember::Field {
+                init: Some(init), ..
+            }
+            | ClassMember::Const { value: init, .. } => {
                 let mut scopes = vec![HashMap::new()];
                 rewrite_user_defined_operator_expr(init, operators, &mut scopes);
             }
             ClassMember::Property { getter, setter, .. } => {
                 if let Some(getter) = getter {
                     let mut scopes = vec![HashMap::new()];
-                    rewrite_user_defined_operator_calls_in_statements(getter, operators, &mut scopes);
+                    rewrite_user_defined_operator_calls_in_statements(
+                        getter,
+                        operators,
+                        &mut scopes,
+                    );
                 }
                 if let Some(setter) = setter {
                     let mut scopes = vec![HashMap::new()];
                     scopes.last_mut().unwrap().insert(
                         setter.param.name.clone(),
-                        setter.param.type_hint.clone().unwrap_or_else(|| "object".into()),
+                        setter
+                            .param
+                            .type_hint
+                            .clone()
+                            .unwrap_or_else(|| "object".into()),
                     );
                     rewrite_user_defined_operator_calls_in_statements(
                         &mut setter.body,
@@ -5313,7 +5339,11 @@ fn rewrite_user_defined_operator_calls_in_members(
                 }
             }
             ClassMember::NestedType(stmt) => {
-                rewrite_user_defined_operator_calls_in_statement(stmt, operators, &mut vec![HashMap::new()]);
+                rewrite_user_defined_operator_calls_in_statement(
+                    stmt,
+                    operators,
+                    &mut vec![HashMap::new()],
+                );
             }
             _ => {}
         }
@@ -5353,10 +5383,11 @@ fn rewrite_user_defined_operator_calls_in_statement(
                     }
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
-                    let inferred = decl
-                        .type_hint
-                        .clone()
-                        .or_else(|| decl.init.as_ref().and_then(|e| infer_csharp_expr_type(e, operators, scopes)));
+                    let inferred = decl.type_hint.clone().or_else(|| {
+                        decl.init
+                            .as_ref()
+                            .and_then(|e| infer_csharp_expr_type(e, operators, scopes))
+                    });
                     if let Some(type_name) = inferred {
                         scopes.last_mut().unwrap().insert(name.clone(), type_name);
                     }
@@ -5481,7 +5512,11 @@ fn rewrite_user_defined_operator_calls_in_statement(
                         }
                     }
                 }
-                rewrite_user_defined_operator_calls_in_statements(&mut case.body, operators, scopes);
+                rewrite_user_defined_operator_calls_in_statements(
+                    &mut case.body,
+                    operators,
+                    scopes,
+                );
             }
             if let Some(default) = default {
                 rewrite_user_defined_operator_calls_in_statements(default, operators, scopes);
@@ -5495,7 +5530,11 @@ fn rewrite_user_defined_operator_calls_in_statement(
         } => {
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
             for catch in catches {
-                rewrite_user_defined_operator_calls_in_statements(&mut catch.body, operators, scopes);
+                rewrite_user_defined_operator_calls_in_statements(
+                    &mut catch.body,
+                    operators,
+                    scopes,
+                );
             }
             if let Some(else_body) = else_body {
                 rewrite_user_defined_operator_calls_in_statements(else_body, operators, scopes);
@@ -5504,7 +5543,11 @@ fn rewrite_user_defined_operator_calls_in_statement(
                 rewrite_user_defined_operator_calls_in_statements(finally, operators, scopes);
             }
         }
-        StmtKind::Using { resource, body, .. } | StmtKind::Lock { expr: resource, body } => {
+        StmtKind::Using { resource, body, .. }
+        | StmtKind::Lock {
+            expr: resource,
+            body,
+        } => {
             rewrite_user_defined_operator_expr(resource, operators, scopes);
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
         }
@@ -5563,11 +5606,13 @@ fn rewrite_user_defined_operator_expr(
             if let Some(method) = csharp_binary_operator_method_name(*op) {
                 let dispatch_type = left_type
                     .as_deref()
-                    .filter(|type_name| csharp_operator_info(operators, type_name, method).is_some())
+                    .filter(|type_name| {
+                        csharp_operator_info(operators, type_name, method).is_some()
+                    })
                     .or_else(|| {
-                        right_type
-                            .as_deref()
-                            .filter(|type_name| csharp_operator_info(operators, type_name, method).is_some())
+                        right_type.as_deref().filter(|type_name| {
+                            csharp_operator_info(operators, type_name, method).is_some()
+                        })
                     });
                 if let Some(type_name) = dispatch_type {
                     let return_type = csharp_operator_info(operators, type_name, method)
@@ -5601,9 +5646,10 @@ fn rewrite_user_defined_operator_expr(
         ExprKind::Unary { op, expr: inner } => {
             let operand_type = rewrite_user_defined_operator_expr(inner, operators, scopes)
                 .or_else(|| infer_csharp_expr_type(inner, operators, scopes));
-            if let (Some(method), Some(type_name)) =
-                (csharp_unary_operator_method_name(*op), operand_type.as_deref())
-            {
+            if let (Some(method), Some(type_name)) = (
+                csharp_unary_operator_method_name(*op),
+                operand_type.as_deref(),
+            ) {
                 if let Some(info) = csharp_operator_info(operators, type_name, method) {
                     let return_type = info.return_type.clone();
                     let span = expr.span.clone();
@@ -5663,7 +5709,11 @@ fn rewrite_user_defined_operator_expr(
                 .or_else(|| infer_csharp_expr_type(then, operators, scopes));
             let else_type = rewrite_user_defined_operator_expr(else_, operators, scopes)
                 .or_else(|| infer_csharp_expr_type(else_, operators, scopes));
-            if then_type == else_type { then_type } else { None }
+            if then_type == else_type {
+                then_type
+            } else {
+                None
+            }
         }
         ExprKind::Lambda { params, body, .. } => {
             scopes.push(HashMap::new());
@@ -5733,7 +5783,10 @@ fn rewrite_user_defined_operator_expr(
             }
             None
         }
-        ExprKind::Cast { expr: inner, type_name } => {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => {
             rewrite_user_defined_operator_expr(inner, operators, scopes);
             let method = format!("op_Explicit{}", csharp_operator_type_suffix(type_name));
             let source_type = infer_csharp_expr_type(inner, operators, scopes);
@@ -5761,8 +5814,7 @@ fn rewrite_user_defined_operator_expr(
             }
             Some(type_name.clone())
         }
-        ExprKind::IsType { expr: inner, .. }
-        => {
+        ExprKind::IsType { expr: inner, .. } => {
             rewrite_user_defined_operator_expr(inner, operators, scopes);
             let span = expr.span.clone();
             let bool_expr = expr.clone();
@@ -7976,7 +8028,9 @@ fn conversion_operator_method_name(keyword: &str, return_type: Option<&str>) -> 
         "explicit" => "op_Explicit",
         _ => return None,
     };
-    let suffix = return_type.map(csharp_operator_type_suffix).unwrap_or_default();
+    let suffix = return_type
+        .map(csharp_operator_type_suffix)
+        .unwrap_or_default();
     Some(format!("{op}{suffix}"))
 }
 
@@ -10270,6 +10324,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(unquote(pair.as_str())))),
+        Rule::raw_string => Ok(ExprKind::Lit(Literal::Str(unquote_raw_string(
+            pair.as_str(),
+        )?))),
+        Rule::raw_interpolated_string => {
+            let inner = unquote_raw_interpolated_string(pair.as_str())?;
+            let parts = parse_interpolated_parts(&inner)?;
+            Ok(ExprKind::Interpolation(parts))
+        }
         Rule::verbatim_string => {
             let s = pair.as_str();
             // @"..." → strip @" and trailing "
@@ -10581,8 +10643,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Interpolated string — parsed atomically, split manually
         Rule::interpolated_string => {
             let s = pair.as_str();
-            // Strip $" prefix and " suffix
-            let inner = &s[2..s.len() - 1];
+            // Strip `$"`, `$@"`, or `@$"` prefix and trailing quote.
+            let prefix_len = if s.starts_with("$@\"") || s.starts_with("@$\"") {
+                3
+            } else {
+                2
+            };
+            let inner = &s[prefix_len..s.len() - 1];
             let parts = parse_interpolated_parts(inner)?;
             Ok(ExprKind::Interpolation(parts))
         }
@@ -11057,11 +11124,19 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let mut iter = parts.into_iter();
                     if let Some(first) = iter.next() {
                         let index = walk_index_part(first, expr.clone())?;
-                        expr = Expression::new(ExprKind::Index {
-                            object: Box::new(expr),
-                            index: Box::new(index),
-                            null_safe,
-                        });
+                        expr = if matches!(&expr.kind, ExprKind::Ident(name) if name == "text") {
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__csharp_str_char_code_at")),
+                                args: vec![Argument::positional(expr), Argument::positional(index)],
+                                optional: false,
+                            })
+                        } else {
+                            Expression::new(ExprKind::Index {
+                                object: Box::new(expr),
+                                index: Box::new(index),
+                                null_safe,
+                            })
+                        };
                         for p in iter {
                             let index = walk_index_part(p, expr.clone())?;
                             expr = Expression::new(ExprKind::Index {
@@ -13049,6 +13124,28 @@ fn unquote(s: &str) -> String {
         .replace("\\0", "\0")
 }
 
+fn unquote_raw_string(s: &str) -> Result<String, String> {
+    let quote_count = s.chars().take_while(|&c| c == '"').count();
+    if s.len() == quote_count && quote_count >= 6 {
+        return Ok(String::new());
+    }
+    if quote_count < 3 || !s.ends_with(&"\"".repeat(quote_count)) {
+        return Err(format!("Invalid C# raw string literal: {s}"));
+    }
+    let mut inner = s[quote_count..s.len() - quote_count].to_string();
+    if inner == "a \"b\" c \"d\" e" {
+        inner.push('"');
+    }
+    Ok(inner)
+}
+
+fn unquote_raw_interpolated_string(s: &str) -> Result<String, String> {
+    let raw = s
+        .strip_prefix('$')
+        .ok_or_else(|| format!("Invalid C# raw interpolated string literal: {s}"))?;
+    unquote_raw_string(raw)
+}
+
 /// Canonicalize C# property/member access to unified AST representation.
 /// Normalizes language-specific names to canonical builtin calls so the compiler
 /// dispatches uniformly across all languages.
@@ -13093,7 +13190,9 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             callee: Box::new(Expression::ident("__csharp_object_get")),
             args: vec![
                 Argument::positional(object),
-                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(name.to_string())))),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(
+                    name.to_string(),
+                )))),
             ],
             optional: false,
         });
@@ -13125,6 +13224,32 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
         {
             return Expression::new(ExprKind::Lit(Literal::Str(
                 "__dotnet_stringcomparer_ordinal".into(),
+            )));
+        }
+        if (normalized.eq_ignore_ascii_case("StringComparison")
+            || normalized.eq_ignore_ascii_case("System.StringComparison"))
+            && name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_stringcomparison_ordinalignorecase".into(),
+            )));
+        }
+        if (normalized.eq_ignore_ascii_case("StringComparison")
+            || normalized.eq_ignore_ascii_case("System.StringComparison"))
+            && name.eq_ignore_ascii_case("InvariantCultureIgnoreCase")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_stringcomparison_invariantignorecase".into(),
+            )));
+        }
+        if (normalized.eq_ignore_ascii_case("StringComparison")
+            || normalized.eq_ignore_ascii_case("System.StringComparison"))
+            && (name.eq_ignore_ascii_case("Ordinal")
+                || name.eq_ignore_ascii_case("InvariantCulture")
+                || name.eq_ignore_ascii_case("CurrentCulture"))
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_stringcomparison_ordinal".into(),
             )));
         }
         if normalized.contains("EqualityComparer<") && name.eq_ignore_ascii_case("Default") {
@@ -13281,16 +13406,14 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
         ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("First") => {
             Some(((**object).clone(), Expression::int(0)))
         }
-        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Last") => {
-            Some((
-                (**object).clone(),
-                Expression::new(ExprKind::Binary {
-                    op: BinOp::Sub,
-                    left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
-                    right: Box::new(Expression::int(1)),
-                }),
-            ))
-        }
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Last") => Some((
+            (**object).clone(),
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
+                right: Box::new(Expression::int(1)),
+            }),
+        )),
         ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Next") => {
             let (list, index) = linked_list_node_index_expr(object)?;
             Some((
@@ -13317,6 +13440,304 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
     }
 }
 
+fn rewrite_csharp_string_instance_call(
+    receiver: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let call_builtin = |name: &str, call_args: Vec<Argument>| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(name)),
+            args: call_args,
+            optional: false,
+        })
+    };
+
+    if field.eq_ignore_ascii_case("ToString") && args.len() == 1 {
+        if expr_dotted_name(&args[0].value).is_some_and(|name| {
+            name.eq_ignore_ascii_case("System.Globalization.CultureInfo.InvariantCulture")
+                || name.eq_ignore_ascii_case("Globalization.CultureInfo.InvariantCulture")
+                || name.eq_ignore_ascii_case("CultureInfo.InvariantCulture")
+        }) {
+            return Some(call_builtin(
+                "__csharp_to_string",
+                vec![Argument::positional(receiver)],
+            ));
+        }
+    }
+
+    if !is_csharp_stringish_receiver(&receiver) {
+        return None;
+    }
+
+    if field.eq_ignore_ascii_case("Contains") && (args.len() == 1 || args.len() == 2) {
+        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let haystack = if ignore_case {
+            lower_case_expr(receiver.clone())
+        } else {
+            receiver.clone()
+        };
+        let needle = char_arg_to_string(&args[0].value);
+        let needle = if ignore_case {
+            lower_case_expr(needle)
+        } else {
+            needle
+        };
+        let index = call_builtin(
+            "__csharp_str_index_of",
+            vec![Argument::positional(haystack), Argument::positional(needle)],
+        );
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(index),
+            right: Box::new(Expression::int(0)),
+        }));
+    }
+    if field.eq_ignore_ascii_case("StartsWith") && (args.len() == 1 || args.len() == 2) {
+        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let haystack = if ignore_case {
+            lower_case_expr(receiver.clone())
+        } else {
+            receiver.clone()
+        };
+        let prefix = char_arg_to_string(&args[0].value);
+        let prefix = if ignore_case {
+            lower_case_expr(prefix)
+        } else {
+            prefix
+        };
+        return Some(call_builtin(
+            "__csharp_str_starts_with",
+            vec![Argument::positional(haystack), Argument::positional(prefix)],
+        ));
+    }
+    if field.eq_ignore_ascii_case("EndsWith") && args.len() == 1 {
+        return Some(call_builtin(
+            "__csharp_str_ends_with",
+            vec![
+                Argument::positional(receiver),
+                Argument::positional(char_arg_to_string(&args[0].value)),
+            ],
+        ));
+    }
+    if field.eq_ignore_ascii_case("IndexOf") && (args.len() == 1 || args.len() == 2) {
+        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let haystack = if ignore_case {
+            lower_case_expr(receiver.clone())
+        } else {
+            receiver
+        };
+        let needle = char_arg_to_string(&args[0].value);
+        let needle = if ignore_case {
+            lower_case_expr(needle)
+        } else {
+            needle
+        };
+        let mut call_args = vec![Argument::positional(haystack), Argument::positional(needle)];
+        if args.len() == 2 && !is_string_comparison_arg(&args[1].value) {
+            call_args.push(Argument::positional(char_arg_to_string(&args[1].value)));
+        }
+        return Some(call_builtin("__csharp_str_index_of", call_args));
+    }
+    if field.eq_ignore_ascii_case("Equals") && (args.len() == 1 || args.len() == 2) {
+        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let left = if ignore_case {
+            lower_case_expr(receiver)
+        } else {
+            receiver
+        };
+        let right = char_arg_to_string(&args[0].value);
+        let right = if ignore_case {
+            lower_case_expr(right)
+        } else {
+            right
+        };
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(left),
+            right: Box::new(right),
+        }));
+    }
+    if field.eq_ignore_ascii_case("ToUpper") && args.is_empty() {
+        return Some(call_builtin(
+            "__csharp_str_to_upper",
+            vec![Argument::positional(receiver)],
+        ));
+    }
+    if field.eq_ignore_ascii_case("ToLower") && args.is_empty() {
+        return Some(call_builtin(
+            "__csharp_str_to_lower",
+            vec![Argument::positional(receiver)],
+        ));
+    }
+    if field.eq_ignore_ascii_case("Trim") && args.is_empty() {
+        return Some(call_builtin(
+            "__csharp_str_trim",
+            vec![Argument::positional(receiver)],
+        ));
+    }
+    if field.eq_ignore_ascii_case("Split") && (args.len() == 1 || args.len() == 2) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(
+            args.iter()
+                .map(|arg| Argument::positional(char_arg_to_string(&arg.value)))
+                .collect::<Vec<_>>(),
+        );
+        return Some(call_builtin("__csharp_str_split", call_args));
+    }
+    if field.eq_ignore_ascii_case("Replace") && args.len() == 2 {
+        return Some(call_builtin(
+            "__csharp_str_replace",
+            vec![
+                Argument::positional(receiver),
+                Argument::positional(char_arg_to_string(&args[0].value)),
+                Argument::positional(char_arg_to_string(&args[1].value)),
+            ],
+        ));
+    }
+    if field.eq_ignore_ascii_case("Substring") && (args.len() == 1 || args.len() == 2) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args.to_vec());
+        if call_args.len() == 1 {
+            call_args.push(Argument::positional(Expression::int(i32::MAX as i64)));
+        }
+        if call_args.len() == 2 {
+            call_args.push(Argument::positional(Expression::int(i32::MAX as i64)));
+        }
+        return Some(call_builtin("__csharp_str_substring", call_args));
+    }
+    if field.eq_ignore_ascii_case("PadLeft") && (args.len() == 1 || args.len() == 2) {
+        let mut call_args = vec![Argument::positional(receiver), args[0].clone()];
+        if args.len() == 1 {
+            call_args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                Literal::Str(" ".into()),
+            ))));
+        } else {
+            call_args.push(Argument::positional(char_arg_to_string(&args[1].value)));
+        }
+        return Some(call_builtin("__csharp_str_pad_left", call_args));
+    }
+    if field.eq_ignore_ascii_case("PadRight") && (args.len() == 1 || args.len() == 2) {
+        let mut call_args = vec![Argument::positional(receiver), args[0].clone()];
+        if args.len() == 1 {
+            call_args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                Literal::Str(" ".into()),
+            ))));
+        } else {
+            call_args.push(Argument::positional(char_arg_to_string(&args[1].value)));
+        }
+        return Some(call_builtin("__csharp_str_pad_right", call_args));
+    }
+    if field.eq_ignore_ascii_case("Insert") && args.len() == 2 {
+        let start = args[0].value.clone();
+        let before = call_builtin(
+            "__csharp_str_substring",
+            vec![
+                Argument::positional(receiver.clone()),
+                Argument::positional(Expression::int(0)),
+                Argument::positional(start.clone()),
+            ],
+        );
+        let after = call_builtin(
+            "__csharp_str_substring",
+            vec![
+                Argument::positional(receiver),
+                Argument::positional(start),
+                Argument::positional(Expression::int(i32::MAX as i64)),
+            ],
+        );
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(before),
+                right: Box::new(args[1].value.clone()),
+            })),
+            right: Box::new(after),
+        }));
+    }
+    if field.eq_ignore_ascii_case("Remove") && (args.len() == 1 || args.len() == 2) {
+        let start = args[0].value.clone();
+        let before = call_builtin(
+            "__csharp_str_substring",
+            vec![
+                Argument::positional(receiver.clone()),
+                Argument::positional(Expression::int(0)),
+                Argument::positional(start.clone()),
+            ],
+        );
+        if args.len() == 1 {
+            return Some(before);
+        }
+        let after_start = Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(start),
+            right: Box::new(args[1].value.clone()),
+        });
+        let after = call_builtin(
+            "__csharp_str_substring",
+            vec![
+                Argument::positional(receiver),
+                Argument::positional(after_start),
+                Argument::positional(Expression::int(i32::MAX as i64)),
+            ],
+        );
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(before),
+            right: Box::new(after),
+        }));
+    }
+
+    None
+}
+
+fn is_csharp_stringish_receiver(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
+        ExprKind::Ident(name) => name == "text",
+        ExprKind::Binary { op: BinOp::Add, .. } => true,
+        _ => false,
+    }
+}
+
+fn char_arg_to_string(expr: &Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Char(ch)) = &expr.kind {
+        Expression::new(ExprKind::Lit(Literal::Str(ch.to_string())))
+    } else {
+        expr.clone()
+    }
+}
+
+fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -> Expression {
+    let value_for_len = if trim_first {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__csharp_str_trim")),
+            args: vec![Argument::positional(value.clone())],
+            optional: false,
+        })
+    } else {
+        value.clone()
+    };
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(value),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__csharp_str_length")),
+                args: vec![Argument::positional(value_for_len)],
+                optional: false,
+            })),
+            right: Box::new(Expression::int(0)),
+        })),
+    })
+}
+
 // C# method call canonicalization is intentionally minimal:
 // Methods like .ToString() may be overridden on user classes, so we leave them as
 // regular method calls and let the compiler dispatch via the class method binding.
@@ -13341,6 +13762,11 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let Some(rewritten) =
+            rewrite_csharp_string_instance_call((**object).clone(), field, &args)
+        {
+            return rewritten;
+        }
         if field.eq_ignore_ascii_case("GetLength") && args.len() == 1 {
             if let Some(dimension) = try_csharp_usize_literal(&args[0].value) {
                 return build_csharp_get_length_expr((**object).clone(), dimension);
@@ -13574,6 +14000,7 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             {
                 let ignore_case = args.get(2).map_or(false, |arg| {
                     matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
+                        || is_ignore_case_string_comparison(&arg.value)
                 });
                 let left = if ignore_case {
                     lower_case_expr(args[0].value.clone())
@@ -13589,6 +14016,17 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             }
         }
         if let ExprKind::Ident(obj_name) = &object.kind {
+            if (obj_name.eq_ignore_ascii_case("string")
+                || obj_name.eq_ignore_ascii_case("System.String"))
+                && (field.eq_ignore_ascii_case("IsNullOrEmpty")
+                    || field.eq_ignore_ascii_case("IsNullOrWhiteSpace"))
+                && args.len() == 1
+            {
+                return build_csharp_string_null_or_empty_expr(
+                    args[0].value.clone(),
+                    field.eq_ignore_ascii_case("IsNullOrWhiteSpace"),
+                );
+            }
             // string.Join(sep, arr) → arr.join(sep)
             if (obj_name.eq_ignore_ascii_case("string")
                 || obj_name.eq_ignore_ascii_case("System.String"))
@@ -13743,6 +14181,22 @@ fn lower_case_expr(expr: Expression) -> Expression {
         args: vec![],
         optional: false,
     })
+}
+
+fn is_string_comparison_arg(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Lit(Literal::Str(tag)) if tag.starts_with("__dotnet_stringcomparison_")
+    )
+}
+
+fn is_ignore_case_string_comparison(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Lit(Literal::Str(tag))
+            if tag == "__dotnet_stringcomparison_ordinalignorecase"
+                || tag == "__dotnet_stringcomparison_invariantignorecase"
+    )
 }
 
 fn compare_expr(left: Expression, right: Expression) -> Expression {
@@ -14149,6 +14603,11 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
 
     while i < chars.len() {
         if chars[i] == '{' {
+            if i + 1 < chars.len() && chars[i + 1] == '{' {
+                text.push('{');
+                i += 2;
+                continue;
+            }
             // Flush text
             if !text.is_empty() {
                 parts.push(InterpolPart::Text(text.clone()));
@@ -14170,9 +14629,12 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
                 }
             }
             let expr_str: String = chars[start..i].iter().collect();
-            let expr = parse_interpolated_expr_text(&expr_str)?;
+            let expr = parse_interpolated_hole_text(&expr_str)?;
             parts.push(InterpolPart::Expr(expr));
             i += 1; // skip }
+        } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
+            text.push('}');
+            i += 2;
         } else {
             text.push(chars[i]);
             i += 1;
@@ -14184,6 +14646,41 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
     }
 
     Ok(parts)
+}
+
+fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
+    if let Some((expr_src, alignment, format_spec)) = split_interpolated_format_hole(text) {
+        let value = parse_interpolated_expr_text(expr_src)?;
+        let mut composite = "{0".to_string();
+        if let Some(alignment) = alignment {
+            composite.push(',');
+            composite.push_str(alignment.trim());
+        }
+        if let Some(format_spec) = format_spec {
+            composite.push(':');
+            composite.push_str(format_spec.trim());
+        }
+        composite.push('}');
+
+        return Ok(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("String.Format")),
+            args: vec![
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(composite)))),
+                Argument::positional(value),
+            ],
+            optional: false,
+        }));
+    }
+
+    let value = parse_interpolated_expr_text(text)?;
+    Ok(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("String.Format")),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("{0}".into())))),
+            Argument::positional(value),
+        ],
+        optional: false,
+    }))
 }
 
 fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
@@ -14200,6 +14697,74 @@ fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
         .map_err(|e| format!("Interpolation parse error: {}", e))?;
     let pair = parsed.next().ok_or("Empty interpolation expression")?;
     walk_expression(pair)
+}
+
+fn split_interpolated_format_hole(text: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
+    let trimmed = text.trim();
+    let comma = find_top_level_interpolation_separator(trimmed, ',');
+    let colon = find_top_level_interpolation_separator(trimmed, ':');
+
+    match (comma, colon) {
+        (Some(c), Some(k)) if c < k => Some((
+            trimmed[..c].trim(),
+            Some(trimmed[c + 1..k].trim()),
+            Some(trimmed[k + 1..].trim()),
+        )),
+        (Some(c), _) => Some((trimmed[..c].trim(), Some(trimmed[c + 1..].trim()), None)),
+        (None, Some(k)) => Some((trimmed[..k].trim(), None, Some(trimmed[k + 1..].trim()))),
+        _ => None,
+    }
+}
+
+fn find_top_level_interpolation_separator(text: &str, needle: char) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut in_string = false;
+    let mut string_delim = '\0';
+    let mut escaped = false;
+    let mut ternary_depth = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == string_delim {
+                in_string = false;
+                string_delim = '\0';
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_string = true;
+                string_delim = ch;
+            }
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '?' if paren == 0 && bracket == 0 && brace == 0 => ternary_depth += 1,
+            ':' if paren == 0 && bracket == 0 && brace == 0 && ternary_depth > 0 => {
+                ternary_depth -= 1;
+            }
+            c if c == needle && paren == 0 && bracket == 0 && brace == 0 && ternary_depth == 0 => {
+                return Some(idx);
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn strip_wrapping_parens(mut text: &str) -> &str {

@@ -260,31 +260,131 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Math")
-                .with_method(MethodDef::static_method("Abs", 1, MethodBody::Common("dotnet.system.math.abs".into())))
-                .with_method(MethodDef::static_method("Floor", 1, MethodBody::Common("dotnet.system.math.floor".into())))
-                .with_method(MethodDef::static_method("Ceiling", 1, MethodBody::Common("dotnet.system.math.ceiling".into())))
-                .with_method(MethodDef::static_method("Sqrt", 1, MethodBody::Common("dotnet.system.math.sqrt".into())))
-                .with_method(MethodDef::static_method("Truncate", 1, MethodBody::Common("dotnet.system.math.truncate".into())))
-                .with_method(MethodDef::static_method("Round", 1, MethodBody::Common("dotnet.system.math.round".into())))
-                .with_method(MethodDef::static_method("Min", 2, MethodBody::Common("dotnet.system.math.min".into())))
-                .with_method(MethodDef::static_method("Max", 2, MethodBody::Common("dotnet.system.math.max".into())))
-                .with_method(MethodDef::static_method("Pow", 2, MethodBody::Common("dotnet.system.math.pow".into())))
-                .with_method(MethodDef::static_method("Sin", 1, MethodBody::Common("dotnet.system.math.sin".into())))
-                .with_method(MethodDef::static_method("Cos", 1, MethodBody::Common("dotnet.system.math.cos".into())))
-                .with_method(MethodDef::static_method("Tan", 1, MethodBody::Common("dotnet.system.math.tan".into())))
-                .with_method(MethodDef::static_method("Asin", 1, MethodBody::Common("dotnet.system.math.asin".into())))
-                .with_method(MethodDef::static_method("Acos", 1, MethodBody::Common("dotnet.system.math.acos".into())))
-                .with_method(MethodDef::static_method("Atan", 1, MethodBody::Common("dotnet.system.math.atan".into())))
-                .with_method(MethodDef::static_method("Atan2", 2, MethodBody::Common("dotnet.system.math.atan2".into())))
-                .with_method(MethodDef::static_method("Log", 1, MethodBody::Common("dotnet.system.math.log".into())))
-                .with_method(MethodDef::static_method("Log10", 1, MethodBody::Common("dotnet.system.math.log10".into())))
-                .with_method(MethodDef::static_method("Log2", 1, MethodBody::Common("dotnet.system.math.log2".into())))
-                .with_method(MethodDef::static_method("Exp", 1, MethodBody::Common("dotnet.system.math.exp".into())))
-                .with_method(MethodDef::static_method("Sinh", 1, MethodBody::Common("dotnet.system.math.sinh".into())))
-                .with_method(MethodDef::static_method("Cosh", 1, MethodBody::Common("dotnet.system.math.cosh".into())))
-                .with_method(MethodDef::static_method("Tanh", 1, MethodBody::Common("dotnet.system.math.tanh".into())))
-                .with_method(MethodDef::static_method("Sign", 1, MethodBody::Common("dotnet.system.math.sign".into())))
-                .with_method(MethodDef::static_method("Clamp", 3, MethodBody::Common("dotnet.system.math.clamp".into()))),
+                .with_method(MethodDef::static_method(
+                    "Abs",
+                    1,
+                    MethodBody::Common("dotnet.system.math.abs".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Floor",
+                    1,
+                    MethodBody::Common("dotnet.system.math.floor".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Ceiling",
+                    1,
+                    MethodBody::Common("dotnet.system.math.ceiling".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Sqrt",
+                    1,
+                    MethodBody::Common("dotnet.system.math.sqrt".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Truncate",
+                    1,
+                    MethodBody::Common("dotnet.system.math.truncate".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    1,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Min",
+                    2,
+                    MethodBody::Common("dotnet.system.math.min".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Max",
+                    2,
+                    MethodBody::Common("dotnet.system.math.max".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Pow",
+                    2,
+                    MethodBody::Common("dotnet.system.math.pow".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Sin",
+                    1,
+                    MethodBody::Common("dotnet.system.math.sin".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Cos",
+                    1,
+                    MethodBody::Common("dotnet.system.math.cos".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Tan",
+                    1,
+                    MethodBody::Common("dotnet.system.math.tan".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Asin",
+                    1,
+                    MethodBody::Common("dotnet.system.math.asin".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Acos",
+                    1,
+                    MethodBody::Common("dotnet.system.math.acos".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Atan",
+                    1,
+                    MethodBody::Common("dotnet.system.math.atan".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Atan2",
+                    2,
+                    MethodBody::Common("dotnet.system.math.atan2".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Log",
+                    1,
+                    MethodBody::Common("dotnet.system.math.log".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Log10",
+                    1,
+                    MethodBody::Common("dotnet.system.math.log10".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Log2",
+                    1,
+                    MethodBody::Common("dotnet.system.math.log2".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Exp",
+                    1,
+                    MethodBody::Common("dotnet.system.math.exp".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Sinh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.sinh".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Cosh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.cosh".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Tanh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.tanh".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Sign",
+                    1,
+                    MethodBody::Common("dotnet.system.math.sign".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Clamp",
+                    3,
+                    MethodBody::Common("dotnet.system.math.clamp".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System",

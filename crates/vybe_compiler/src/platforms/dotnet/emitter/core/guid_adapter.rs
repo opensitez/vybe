@@ -5,9 +5,9 @@
 //! shared .NET dispatch layer can preserve value-type semantics without host
 //! changes.
 
-use crate::emitter::instructions::core_wasm;
 use crate::emitter::classes::emit_bind_method_with_aliases;
 use crate::emitter::functions::create_function_chunk;
+use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};

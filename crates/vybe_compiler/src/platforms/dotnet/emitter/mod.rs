@@ -208,6 +208,40 @@ impl DotnetSurface {
             })
     }
 
+    pub fn lookup_instance_method_return_type(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        arg_count: u8,
+    ) -> Option<String> {
+        let requested = class_name.trim();
+        let requested_short = requested.rsplit('.').next().unwrap_or(requested);
+        self.component_descriptor
+            .classes
+            .iter()
+            .find(|class| {
+                class.name.eq_ignore_ascii_case(requested)
+                    || class.name.eq_ignore_ascii_case(requested_short)
+            })
+            .and_then(|class| {
+                class
+                    .methods
+                    .iter()
+                    .filter(|method| {
+                        !method.is_static && method.name.eq_ignore_ascii_case(method_name)
+                    })
+                    .find(|method| method.arity == arg_count)
+                    .or_else(|| {
+                        class.methods.iter().find(|method| {
+                            !method.is_static && method.name.eq_ignore_ascii_case(method_name)
+                        })
+                    })
+                    .and_then(|method| {
+                        dotnet_instance_method_return_type(&class.name, &method.name)
+                    })
+            })
+    }
+
     pub fn lookup_instance_property(
         &self,
         class_name: &str,
@@ -333,6 +367,22 @@ impl DotnetSurface {
             })
         })
     }
+}
+
+fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
+    let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("StringBuilder") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "append" | "appendline" | "appendformat" | "insert" | "remove" | "replace" | "clear"
+        ) {
+            return Some("StringBuilder".into());
+        }
+        if method_name.eq_ignore_ascii_case("ToString") {
+            return Some("string".into());
+        }
+    }
+    None
 }
 
 pub fn default_interface_imports() -> Vec<String> {

@@ -7,9 +7,9 @@
 //! No `vybe:types` involvement — pure compile-time adapter, runtime
 //! work happens in `node:child_process.spawnSync` etc.
 
-use crate::emitter::instructions::{core_wasm, host};
 use crate::emitter::classes::emit_bind_method;
 use crate::emitter::functions::create_function_chunk;
+use crate::emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};

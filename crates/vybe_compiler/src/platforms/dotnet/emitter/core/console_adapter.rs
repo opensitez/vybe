@@ -13,8 +13,8 @@
 //! and `is_constant_pattern` etc. fail their .NET-shaped assertions.
 
 use crate::emitter::instructions::host;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// `Console.WriteLine(v)` / `Console.Write(v)` — emit the bool/null
 /// fixup then dispatch to `wasi:cli.log`. Stack: [v] → [null].

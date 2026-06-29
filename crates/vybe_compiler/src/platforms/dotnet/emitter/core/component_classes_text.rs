@@ -16,12 +16,32 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ))
                 .with_method(MethodDef::new(
                     "AppendLine",
+                    0,
+                    MethodBody::Common("dotnet.sb_append_line".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AppendLine",
                     1,
                     MethodBody::Common("dotnet.sb_append_line".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "AppendFormat",
+                    2,
+                    MethodBody::Common("dotnet.sb_append_format".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AppendFormat",
+                    3,
+                    MethodBody::Common("dotnet.sb_append_format".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ToString",
                     0,
+                    MethodBody::Common("dotnet.sb_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    2,
                     MethodBody::Common("dotnet.sb_to_string".into()),
                 ))
                 .with_method(MethodDef::new(
